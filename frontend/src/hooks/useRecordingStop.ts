@@ -8,6 +8,7 @@ import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateCon
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
 import Analytics from '@/lib/analytics';
+import { applyPinnedSummaryLanguageToMeeting } from '@/lib/summary-language-preferences';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -259,6 +260,12 @@ export function useRecordingStop(
           if (!meetingId) {
             console.error('No meeting_id in response:', responseData);
             throw new Error('No meeting ID received from save operation');
+          }
+
+          try {
+            await applyPinnedSummaryLanguageToMeeting(meetingId);
+          } catch (error) {
+            console.warn('Failed to apply pinned summary language to new meeting:', error);
           }
 
           console.log('✅ Successfully saved COMPLETE meeting with ID:', meetingId);

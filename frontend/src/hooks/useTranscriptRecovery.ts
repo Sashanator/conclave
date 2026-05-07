@@ -9,6 +9,7 @@ import { useState, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { indexedDBService, MeetingMetadata, StoredTranscript } from '@/services/indexedDBService';
 import { storageService } from '@/services/storageService';
+import { applyPinnedSummaryLanguageToMeeting } from '@/lib/summary-language-preferences';
 
 interface AudioRecoveryStatus {
   status: string; // "success" | "partial" | "failed" | "none"
@@ -181,6 +182,12 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
       );
 
       const savedMeetingId = saveResponse.meeting_id;
+
+      try {
+        await applyPinnedSummaryLanguageToMeeting(savedMeetingId);
+      } catch (error) {
+        console.warn('Failed to apply pinned summary language to recovered meeting:', error);
+      }
 
       // 7. Mark as saved in IndexedDB
       await indexedDBService.markMeetingSaved(meetingId);

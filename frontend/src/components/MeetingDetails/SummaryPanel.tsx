@@ -95,21 +95,10 @@ export function SummaryPanel({
 }: SummaryPanelProps) {
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [langPickerOpen, setLangPickerOpen] = useState(false);
-  const { addRecent, pinned } = useRecentLanguages();
+  const { addRecent } = useRecentLanguages();
 
-  const effectiveLangCode = summaryLang ?? pinned;
-  const effectiveLangLabel = effectiveLangCode ? labelForCode(effectiveLangCode) : 'Auto';
-  const labelFromPin = !summaryLang && pinned != null;
-
-  const autoSubtitle = (() => {
-    if (pinned) return `Uses default (${labelForCode(pinned)})`;
-    if (typeof window !== 'undefined') {
-      const raw = window.localStorage.getItem('primaryLanguage');
-      const normalised = normaliseLanguageCode(raw);
-      if (normalised) return `Matches transcription (${labelForCode(normalised)})`;
-    }
-    return 'Falls back to English';
-  })();
+  const effectiveLangLabel = summaryLang ? labelForCode(summaryLang) : 'Auto';
+  const autoSubtitle = 'Uses dominant transcript language';
 
   useEffect(() => {
     let cancelled = false;
@@ -163,7 +152,7 @@ export function SummaryPanel({
         <Button
           variant="outline"
           size="sm"
-          title={`Summary language: ${effectiveLangLabel}${labelFromPin ? ' (default)' : ''}`}
+          title={`Summary language: ${effectiveLangLabel}`}
           aria-label="Set summary language"
         >
           <Languages size={18} />
@@ -176,7 +165,7 @@ export function SummaryPanel({
         className="w-auto p-0 border-0 shadow-none bg-transparent"
       >
         <LanguagePickerPopover
-          value={effectiveLangCode}
+          value={summaryLang}
           onChange={handleLangChange}
           onClose={() => setLangPickerOpen(false)}
           autoSubtitle={autoSubtitle}

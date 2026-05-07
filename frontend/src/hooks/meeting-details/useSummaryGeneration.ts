@@ -9,27 +9,10 @@ import { isOllamaNotInstalledError } from '@/lib/utils';
 import { BuiltInModelInfo } from '@/lib/builtin-ai';
 import { normaliseLanguageCode } from '@/lib/summary-languages';
 
-function resolveStoredLanguageFallback(): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    const defaultLang = window.localStorage.getItem('summaryLanguageDefault');
-    if (defaultLang) {
-      const normalised = normaliseLanguageCode(defaultLang);
-      if (normalised) return normalised;
-    }
-
-    const transcription = window.localStorage.getItem('primaryLanguage');
-    if (transcription && transcription !== 'auto' && transcription !== 'auto-translate') {
-      const normalised = normaliseLanguageCode(transcription);
-      if (normalised) return normalised;
-    }
-    return null;
-  } catch {
-    return null;
-  }
-}
-
-async function resolveSummaryLanguage(meetingId: string): Promise<string | null> {
+async function resolveSummaryLanguage(
+  meetingId: string,
+  transcriptTexts: string[]
+): Promise<string | null> {
   try {
     const perMeeting = await invokeTauri<string | null>('api_get_meeting_summary_language', {
       meetingId,
@@ -40,7 +23,15 @@ async function resolveSummaryLanguage(meetingId: string): Promise<string | null>
     console.warn('Failed to load meeting summary language:', err);
   }
 
-  return resolveStoredLanguageFallback();
+  try {
+    const detected = await invokeTauri<string | null>('api_detect_transcript_summary_language', {
+      transcriptTexts,
+    });
+    return normaliseLanguageCode(detected);
+  } catch (err) {
+    console.warn('Failed to detect transcript summary language:', err);
+    return null;
+  }
 }
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -95,10 +86,12 @@ export function useSummaryGeneration({
   // Unified summary processing logic
   const processSummary = useCallback(async ({
     transcriptText,
+    transcriptTexts,
     customPrompt = '',
     isRegeneration = false,
   }: {
     transcriptText: string;
+    transcriptTexts?: string[];
     customPrompt?: string;
     isRegeneration?: boolean;
   }) => {
@@ -138,24 +131,11 @@ export function useSummaryGeneration({
         duration: 3000,
       });
 
-      // Resolve summary output language from metadata.json, then UI defaults.
-      const summaryLanguage = await resolveSummaryLanguage(meeting.id);
-
-      // Warn when transcription language is set but not in the supported translation list
-      if (!summaryLanguage && typeof window !== 'undefined') {
-        const transcription = window.localStorage.getItem('primaryLanguage');
-        if (
-          transcription &&
-          transcription !== 'auto' &&
-          transcription !== 'auto-translate' &&
-          normaliseLanguageCode(transcription) === null
-        ) {
-          toast.warning(
-            `Transcription language "${transcription}" is not supported for summary translation — summary will be in English.`,
-            { duration: 6000 }
-          );
-        }
-      }
+      // Resolve explicit metadata override first; Auto detects the transcript language.
+      const summaryLanguage = await resolveSummaryLanguage(
+        meeting.id,
+        transcriptTexts?.length ? transcriptTexts : [transcriptText]
+      );
 
       // Process transcript and get process_id
       const result = await invokeTauri('api_process_transcript', {
@@ -616,7 +596,11 @@ export function useSummaryGeneration({
       .map(t => `${formatTime(t.audio_start_time, t.timestamp)} ${t.text}`)
       .join('\n');
 
-    await processSummary({ transcriptText: fullTranscript, customPrompt });
+    await processSummary({
+      transcriptText: fullTranscript,
+      transcriptTexts: allTranscripts.map(t => t.text),
+      customPrompt,
+    });
   }, [meeting.id, fetchAllTranscripts, processSummary, modelConfig, isModelConfigLoading, selectedTemplate]);
 
   // Public API: Regenerate summary from original transcript

@@ -6,6 +6,7 @@ use crate::state::AppState;
 use crate::summary::metadata::{
     read_summary_language_from_metadata, write_summary_language_to_metadata,
 };
+use crate::summary::language_detection::detect_dominant_summary_language;
 use crate::summary::service::SummaryService;
 use log::{error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Serialize};
@@ -101,6 +102,14 @@ pub async fn api_save_meeting_summary_language<R: Runtime>(
     let folder = resolve_meeting_folder(state.db_manager.pool(), &meeting_id).await?;
     write_summary_language_to_metadata(&folder, summary_language.as_deref())
         .map_err(|e| e.to_string())
+}
+
+/// Detects the dominant supported summary language from transcript segments.
+#[tauri::command]
+pub async fn api_detect_transcript_summary_language(
+    transcript_texts: Vec<String>,
+) -> Result<Option<String>, String> {
+    Ok(detect_dominant_summary_language(&transcript_texts))
 }
 
 async fn resolve_meeting_folder(

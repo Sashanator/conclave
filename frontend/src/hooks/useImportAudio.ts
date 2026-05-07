@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import Analytics from '@/lib/analytics';
+import { applyPinnedSummaryLanguageToMeeting } from '@/lib/summary-language-preferences';
 
 export interface AudioFileInfo {
   path: string;
@@ -108,6 +109,11 @@ export function useImportAudio({
 
           setStatus('complete');
           setProgress(null);
+          try {
+            await applyPinnedSummaryLanguageToMeeting(event.payload.meeting_id);
+          } catch (error) {
+            console.warn('Failed to apply pinned summary language to imported meeting:', error);
+          }
           onCompleteRef.current?.(event.payload);
         }
       );

@@ -45,14 +45,19 @@ export function LanguagePickerPopover({
 
   const filter = query.trim().toLowerCase();
 
+  const recentCodes = useMemo(() => new Set(recents), [recents]);
+
   const filteredAll = useMemo(() => {
-    if (!filter) return LANGUAGE_OPTIONS;
-    return LANGUAGE_OPTIONS.filter(
+    const options = mode === "meeting"
+      ? LANGUAGE_OPTIONS.filter((l) => !recentCodes.has(l.code))
+      : LANGUAGE_OPTIONS;
+    if (!filter) return options;
+    return options.filter(
       (l) =>
         l.code.toLowerCase().includes(filter) ||
         l.label.toLowerCase().includes(filter),
     );
-  }, [filter]);
+  }, [filter, mode, recentCodes]);
 
   const recentsResolved = useMemo(
     () =>
@@ -118,10 +123,6 @@ export function LanguagePickerPopover({
           </>
         )}
 
-        <div className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
-          All Languages
-        </div>
-
         {showAuto && (
           <button
             type="button"
@@ -138,6 +139,12 @@ export function LanguagePickerPopover({
             </span>
             {value === null && <span className="text-blue-600">✓</span>}
           </button>
+        )}
+
+        {filteredAll.length > 0 && (
+          <div className="px-3 pt-1 pb-1 text-[10px] font-semibold uppercase tracking-wider text-gray-400">
+            {mode === "meeting" ? "Other Languages" : "All Languages"}
+          </div>
         )}
 
         {filteredAll.map((opt) => (

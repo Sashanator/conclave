@@ -1,27 +1,22 @@
 import { useCallback, useEffect, useState } from 'react';
 import { normaliseLanguageCode } from '@/lib/summary-languages';
+import {
+  SUMMARY_LANGUAGE_DEFAULT_KEY,
+  SUMMARY_LANGUAGE_RECENTS_KEY,
+  readPinnedSummaryLanguageDefault,
+  writePinnedSummaryLanguageDefault,
+} from '@/lib/summary-language-preferences';
 
-const MRU_KEY = 'summaryLanguageRecents';
-const PINNED_KEY = 'summaryLanguageDefault';
+const MRU_KEY = SUMMARY_LANGUAGE_RECENTS_KEY;
+const PINNED_KEY = SUMMARY_LANGUAGE_DEFAULT_KEY;
 const MAX_RECENTS = 5;
 
 function readPinnedFromStorage(): string | null {
-  if (typeof window === 'undefined') return null;
-  try {
-    return normaliseLanguageCode(window.localStorage.getItem(PINNED_KEY));
-  } catch {
-    return null;
-  }
+  return readPinnedSummaryLanguageDefault();
 }
 
 function writePinnedToStorage(value: string | null): void {
-  if (typeof window === 'undefined') return;
-  try {
-    if (value) window.localStorage.setItem(PINNED_KEY, value);
-    else window.localStorage.removeItem(PINNED_KEY);
-  } catch {
-    // Silent — preference is cosmetic; resolution falls back to transcription.
-  }
+  writePinnedSummaryLanguageDefault(value);
 }
 
 function readFromStorage(): string[] {

@@ -78,12 +78,11 @@ jobs:
           pnpm install --frozen-lockfile
           pnpm run build
 
-      - name: Stub sidecars (tauri-build checks every externalBin exists; tests never run them)
+      - name: Stub llama-helper sidecar (tauri-build checks externalBin exists; tests never run it)
         shell: bash
         run: |
           mkdir -p frontend/src-tauri/binaries
           touch frontend/src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe
-          touch frontend/src-tauri/binaries/ffmpeg-x86_64-pc-windows-msvc.exe
 
       - name: Rust tests (Windows)
         run: cargo test --workspace --exclude llama-helper

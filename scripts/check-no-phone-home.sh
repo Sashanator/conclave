@@ -9,6 +9,11 @@ PATTERNS=(
   '@/lib/analytics'
   'src/lib/analytics'
   'Analytics(Provider|ConsentSwitch|DataModal)'
+  'plugin-updater'
+  'tauri_plugin_updater'
+  'updater:default'
+  'releases/latest/download/latest\.json'
+  'createUpdaterArtifacts": true'
 )
 
 SEARCH_PATHS=(frontend/src frontend/src-tauri/src frontend/src-tauri/Cargo.toml frontend/src-tauri/tauri.conf.json frontend/src-tauri/capabilities frontend/package.json frontend/tests)

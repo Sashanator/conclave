@@ -14,7 +14,6 @@ PATTERNS=(
   'updater:default'
   'releases/latest/download/latest\.json'
   'createUpdaterArtifacts"[[:space:]]*:[[:space:]]*(true|"v1Compatible")'
-  'meetily\.zackriya\.com'
   'zackriya\.com'
   'github\.com/your-org'
   'github\.com/Zackriya-Solutions'

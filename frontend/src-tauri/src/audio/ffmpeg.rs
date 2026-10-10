@@ -1,9 +1,4 @@
-use ffmpeg_sidecar::{
-    command::ffmpeg_is_installed,
-    download::{check_latest_version, download_ffmpeg_package, ffmpeg_download_url, unpack_ffmpeg},
-    paths::sidecar_dir,
-    version::ffmpeg_version,
-};
+use ffmpeg_sidecar::paths::sidecar_dir;
 use log::{debug, error};
 use once_cell::sync::Lazy;
 use std::path::PathBuf;
@@ -113,18 +108,7 @@ fn find_ffmpeg_path_internal() -> Option<PathBuf> {
         }
     }
 
-    debug!("ffmpeg not found. installing...");
-
-    if let Err(error) = handle_ffmpeg_installation() {
-        error!("failed to install ffmpeg: {}", error);
-        return None;
-    }
-
-    if let Ok(path) = which(EXECUTABLE_NAME) {
-        debug!("found ffmpeg after installation: {:?}", path);
-        return Some(path);
-    }
-
+    // Never download ffmpeg at runtime: it is bundled next to Conclave.exe by the installer.
     let installation_dir = sidecar_dir().map_err(|e| e.to_string()).unwrap();
     let ffmpeg_in_installation = installation_dir.join(EXECUTABLE_NAME);
     if ffmpeg_in_installation.is_file() {
@@ -157,76 +141,6 @@ fn find_ffmpeg_path_internal() -> Option<PathBuf> {
         }
     }
 
-    error!("ffmpeg not found even after installation");
+    error!("ffmpeg not found next to Conclave.exe; reinstall Conclave");
     None // Return None if ffmpeg is not found
-}
-
-fn handle_ffmpeg_installation() -> Result<(), anyhow::Error> {
-    if ffmpeg_is_installed() {
-        debug!("ffmpeg is already installed");
-        return Ok(());
-    }
-
-    debug!("ffmpeg not found. installing...");
-    match check_latest_version() {
-        Ok(version) => debug!("latest version: {}", version),
-        Err(e) => debug!("skipping version check due to error: {e}"),
-    }
-
-    let download_url = ffmpeg_download_url()?;
-    let destination = get_ffmpeg_install_dir()?;
-
-    debug!("downloading from: {:?}", download_url);
-    let archive_path = download_ffmpeg_package(download_url, &destination)?;
-    debug!("downloaded package: {:?}", archive_path);
-
-    debug!("extracting...");
-    unpack_ffmpeg(&archive_path, &destination)?;
-
-    let version = ffmpeg_version()?;
-
-    debug!("done! installed ffmpeg version {}", version);
-    Ok(())
-}
-
-#[cfg(target_os = "macos")]
-fn get_ffmpeg_install_dir() -> Result<PathBuf, anyhow::Error> {
-    let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("couldn't find home directory"))?;
-
-    let local_bin = home.join(".local").join("bin");
-
-    // Create directory if it doesn't exist
-    if !local_bin.exists() {
-        debug!("creating .local/bin directory");
-        std::fs::create_dir_all(&local_bin)?;
-
-        // Check both .bashrc and .zshrc
-        let shell_configs = vec![
-            home.join(".bashrc"),
-            home.join(".bash_profile"), // macOS often uses .bash_profile instead of .bashrc
-            home.join(".zshrc"),
-        ];
-
-        for config in shell_configs {
-            if config.exists() {
-                let content = std::fs::read_to_string(&config)?;
-                if !content.contains(".local/bin") {
-                    debug!("adding .local/bin to PATH in {:?}", config);
-                    std::fs::write(
-                        config,
-                        format!("{}\nexport PATH=\"$HOME/.local/bin:$PATH\"\n", content),
-                    )?;
-                }
-            }
-        }
-    }
-
-    Ok(local_bin)
-}
-
-// For other platforms, keep your existing installation directory logic
-#[cfg(not(target_os = "macos"))]
-fn get_ffmpeg_install_dir() -> Result<PathBuf, anyhow::Error> {
-    // Your existing logic for other platforms
-    sidecar_dir().map_err(|e| anyhow::anyhow!(e))
 }

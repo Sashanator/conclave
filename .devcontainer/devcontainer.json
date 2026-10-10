@@ -1,0 +1,103 @@
+{
+  "name": "Project Conclave Devcontainer",
+  "build": {
+    "dockerfile": "Dockerfile",
+    "args": {
+      "TZ": "${localEnv:TZ:UTC}"
+    }
+  },
+  "features": {
+    // Docker-in-Docker: an isolated Docker daemon inside the devcontainer (runs the container privileged)
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {
+      "moby": false
+    },
+    // GitHub CLI (auth: `gh auth login`; the login is shared by all projects via the gh-config volume)
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  // Add the project's app ports here
+  "forwardPorts": [],
+  "remoteUser": "node",
+  "containerUser": "node",
+  // Host side, on every window open: exports the host X cookie as a wildcard entry (any display number) so
+  // xclip can use VS Code's forwarded X socket for CLI image paste. Needs xauth on the host. Never commit the file.
+  "initializeCommand": "umask 077; xauth nlist \"$DISPLAY\" | awk '{print \"ffff 0000  0000\", $(NF-3), $(NF-2), $(NF-1), $NF}' | xauth -f .devcontainer/.Xauthority nmerge - || true",
+  // Installs the default Claude Code plugins + MCP servers and registers codebase-memory-mcp with Claude/Codex/Antigravity
+  "postCreateCommand": "bash .devcontainer/setup-agents.sh",
+  "postStartCommand": "ln -sf /workspace/.devcontainer/.Xauthority ~/.Xauthority",
+  // Updates Claude Code, Codex and Antigravity on every attach (window open) with their own updaters; the Dockerfile installs them.
+  // Codex lives under /usr/local, but root's npm prefix is node's npm-global, hence the prefix override. A failed update never blocks opening.
+  "postAttachCommand": "claude update || true; sudo env NPM_CONFIG_PREFIX=/usr/local codex update || true; sudo agy update || true",
+  "runArgs": [
+    "--add-host=host.docker.internal:host-gateway"
+  ],
+  "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
+  "workspaceFolder": "/workspace",
+  "mounts": [
+    // Per-project Claude home (settings, plugins, memory, login); only settings.json + statusline.sh are committed
+    "source=${localWorkspaceFolder}/.claude,target=/home/node/.claude,type=bind,consistency=cached",
+    // Shared by all projects: log in once
+    "source=antigravity-auth,target=/home/node/.gemini,type=volume", // agy OAuth token + config
+    "source=gh-config,target=/home/node/.config/gh,type=volume", // GitHub CLI login
+    "source=${localEnv:HOME}/.codex/auth.json,target=/home/node/.codex/auth.json,type=bind", // Codex login from the host
+    // Per project: every project lives at /workspace, so shared state would collide
+    "source=codebase-memory-cache-${devcontainerId},target=/home/node/.cache/codebase-memory-mcp,type=volume", // graph index + ADRs
+    "source=bashhistory-${devcontainerId},target=/commandhistory,type=volume"
+  ],
+  "containerEnv": {
+    "NODE_OPTIONS": "--max-old-space-size=4096",
+    "CLAUDE_CONFIG_DIR": "/home/node/.claude",
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true"
+  },
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "anthropic.claude-code",
+        "openai.chatgpt",
+        "cweijan.vscode-office"
+      ],
+      "settings": {
+        "claudeCode.allowDangerouslySkipPermissions": true,
+        "editor.formatOnSave": true,
+        "editor.codeActionsOnSave": {
+          "source.fixAll.eslint": "explicit"
+        },
+        "terminal.integrated.profiles.linux": {
+          "Claude Code": {
+            "path": "zsh",
+            "args": [
+              "-l",
+              "-c",
+              "printf '\\033]0;Claude Code\\007'; claude --dangerously-skip-permissions; exec zsh"
+            ],
+            "overrideName": true
+          },
+          "Codex CLI": {
+            "path": "zsh",
+            "args": [
+              "-l",
+              "-c",
+              "printf '\\033]0;Codex CLI\\007'; codex --dangerously-bypass-approvals-and-sandbox; exec zsh"
+            ],
+            "overrideName": true
+          },
+          "Antigravity": {
+            "path": "zsh",
+            "args": [
+              "-l",
+              "-c",
+              "printf '\\033]0;Antigravity\\007'; agy --dangerously-skip-permissions; exec zsh"
+            ],
+            "overrideName": true
+          },
+          "bash": {
+            "path": "bash",
+            "icon": "terminal-bash"
+          },
+          "zsh": {
+            "path": "zsh"
+          }
+        }
+      }
+    }
+  }
+}

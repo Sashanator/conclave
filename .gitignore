@@ -77,3 +77,22 @@ experiments/
 target/
 
 frontend/src-tauri/binaries/
+# ---- Conclave workspace ----
+# Claude home is bind-mounted here; retain only reusable configuration.
+/.claude/*
+!/.claude/settings.json
+!/.claude/statusline.sh
+!/.claude/agents/
+/.claude/agents/*
+!/.claude/agents/reviewer.md
+
+# Host X11 cookie (initializeCommand): grants access to the host display.
+/.devcontainer/.Xauthority
+
+# Local agent authentication and state.
+/.codex/
+/.agents/
+.env
+.env.*
+!.env.example
+.DS_Store

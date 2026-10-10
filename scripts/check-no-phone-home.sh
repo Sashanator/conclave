@@ -18,6 +18,14 @@ PATTERNS=(
   'zackriya\.com'
   'github\.com/your-org'
   'github\.com/Zackriya-Solutions'
+  'join\("Meetily"\)'
+  'push\("Meetily"\)'
+  '"Meetily/"'
+  '"identifier": "com\.meetily\.ai"'
+  '"productName": "meetily"'
+  'Notification::new\("Meetily'
+  '"Meetily( Error)?",'
+  '= "Meetily";'
 )
 
 SEARCH_PATHS=(frontend/src frontend/src-tauri/src frontend/src-tauri/Cargo.toml frontend/src-tauri/tauri.conf.json frontend/src-tauri/capabilities frontend/package.json frontend/tests)

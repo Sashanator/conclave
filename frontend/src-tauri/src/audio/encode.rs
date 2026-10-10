@@ -28,7 +28,7 @@ pub fn encode_single_audio(
     }
 
     let ffmpeg_path = find_ffmpeg_path().ok_or_else(|| {
-        anyhow::anyhow!("FFmpeg not found. Please install FFmpeg to save recordings.")
+        anyhow::anyhow!("FFmpeg not found next to Conclave.exe — reinstall Conclave.")
     })?;
 
     debug!("Using FFmpeg at: {:?}", ffmpeg_path);

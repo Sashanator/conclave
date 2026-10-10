@@ -2,7 +2,6 @@
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
-import Analytics from '@/lib/analytics';
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { SummaryProcessResponse } from '@/types';
@@ -51,8 +50,6 @@ interface SidebarContextType {
   isSearching: boolean;
   setServerAddress: (address: string) => void;
   serverAddress: string;
-  transcriptServerAddress: string;
-  setTranscriptServerAddress: (address: string) => void;
   // Summary polling management
   startSummaryPolling: (
     meetingId: string,
@@ -84,7 +81,6 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [searchResults, setSearchResults] = useState<any[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [serverAddress, setServerAddress] = useState('');
-  const [transcriptServerAddress, setTranscriptServerAddress] = useState('');
   const summaryPollsRef = React.useRef(new Map<string, SummaryPoll>());
 
   // Use recording state from RecordingStateContext (single source of truth)
@@ -103,11 +99,9 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
           title: meeting.title
         }));
         setMeetings(transformedMeetings);
-        Analytics.trackBackendConnection(true);
       } catch (error) {
         console.error('Error fetching meetings:', error);
         setMeetings([]);
-        Analytics.trackBackendConnection(false, error instanceof Error ? error.message : 'Unknown error');
       }
     }
   }, [serverAddress]);
@@ -119,7 +113,6 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const fetchSettings = async () => {
       setServerAddress('http://localhost:5167');
-      setTranscriptServerAddress('http://127.0.0.1:8178/stream');
     };
     fetchSettings();
   }, []);
@@ -167,9 +160,6 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         sessionStorage.setItem('autoStartRecording', 'true');
         router.push('/');
       }
-
-      // Track recording initiation from sidebar
-      Analytics.trackButtonClick('start_recording', 'sidebar');
     }
     // The actual recording start/stop is handled in the Home component
   };
@@ -311,8 +301,6 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       isSearching,
       setServerAddress,
       serverAddress,
-      transcriptServerAddress,
-      setTranscriptServerAddress,
       startSummaryPolling,
       stopSummaryPolling,
       refetchMeetings: fetchMeetings,

@@ -41,7 +41,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
 
 ## Invariants (do not break)
 
-- **No telemetry and no phone-home.** No PostHog, no analytics, no updater, and no Meetily-owned URLs. `scripts/check-no-phone-home.sh` enforces this in CI. Allowed outbound calls are listed in `docs/network-calls.md`.
+- **No telemetry and no phone-home.** No PostHog, no analytics, no updater, and no Meetily-owned URLs except the Parakeet model host and the build-time ffmpeg-binaries download, both listed in `docs/network-calls.md`. `scripts/check-no-phone-home.sh` enforces this in CI. Allowed outbound calls are listed in `docs/network-calls.md`.
 - **App identity is `Conclave` / `com.conclave.app`.** Data folders are named `Conclave`, never `Meetily`. The only user-visible "Meetily" is the MIT credit in About.
 - **Rename only what users see.** Internal crate, module and folder names stay as Meetily had them unless code is being touched anyway.
 - **Never commit secrets:** `.claude/` (except `settings.json`, `statusline.sh`, `agents/reviewer.md`), `.env*`, `.devcontainer/.Xauthority`.
@@ -210,7 +210,7 @@ await listen<TranscriptUpdate>('transcript-update', (event) => {
 **Model Storage Locations**:
 - **Development**: `frontend/models/`
 - **Production (macOS)**: `~/Library/Application Support/Conclave/models/`
-- **Production (Windows)**: `%APPDATA%\Conclave\models\`
+- **Production (Windows)**: `%APPDATA%\com.conclave.app\models\` (app_data_dir; `whisper_engine/commands.rs:16-19`)
 
 **Model Loading** (frontend/src-tauri/src/whisper_engine/whisper_engine.rs):
 ```rust

@@ -1,5 +1,5 @@
 {
-    "name": "meetily",
+    "name": "conclave",
     "version": "0.4.1",
     "private": true,
     "main": "electron/main.js",
@@ -61,7 +61,6 @@
         "@tauri-apps/plugin-os": "^2.3.2",
         "@tauri-apps/plugin-process": "^2.3.0",
         "@tauri-apps/plugin-store": "^2.4.0",
-        "@tauri-apps/plugin-updater": "^2.3.0",
         "@tiptap/pm": "^2.10.4",
         "@tiptap/react": "^2.10.4",
         "@tiptap/starter-kit": "^2.10.4",

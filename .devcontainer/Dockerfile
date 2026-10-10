@@ -81,6 +81,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN npm install -g --prefix /usr/local bun@1.2.21 \
     && curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash | bash -s -- 1.7.7 /usr/local/bin
 # pnpm 9.15.9 is the version the frontend docs require; pnpm 12 rejects the committed lockfile
-RUN npm install -g pnpm@9.15.9
+RUN npm install -g --prefix /usr/local pnpm@9.15.9
 
 WORKDIR /workspace

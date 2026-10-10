@@ -78,6 +78,8 @@ target/
 
 frontend/src-tauri/binaries/
 # ---- Conclave workspace ----
+# Local pnpm store (pnpm puts it at the workspace root in this container)
+/.pnpm-store/
 # Claude home is bind-mounted here; retain only reusable configuration.
 /.claude/*
 !/.claude/settings.json

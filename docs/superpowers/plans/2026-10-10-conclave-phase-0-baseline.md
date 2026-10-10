@@ -42,7 +42,7 @@ The plan runs subagent-driven, with these models:
 - **Installer:** NSIS only (`--bundles nsis`) and unsigned. No `.msi`, no `signCommand`, no `SM_*`, `SUPABASE_*`, `MEETILY_RSA_*` or `TAURI_SIGNING_*` secrets.
 - **Versioning:** the version comes from tag `vX.Y.Z`. The first release is `v0.1.0`.
 - **CI minutes (about 3,000 per month, Windows counts double): minimise them.**
-  - **Verify locally first, for free:** frontend type-check, lint, `bun test` and build; `cargo test` on Linux; `cargo check --target x86_64-pc-windows-msvc` for `meeting-detector`; `actionlint` for workflows; and the guard script.
+  - **Verify locally first, for free:** frontend type-check, `bun test` and build (no lint: user ruling at Task 2); `cargo test` on Linux; `cargo check --target x86_64-pc-windows-msvc` for `meeting-detector`; `actionlint` for workflows; and the guard script.
   - **Push only at CI checkpoints:** Task 3 (Windows baseline), Task 9 (detector on Windows), and Task 10 (review and merge, then the tag). Tasks 4–8 commit locally and are pushed together with Task 9.
   - **`ci.yml` keeps every run cheap:**
     - The frontend checks and guard run on `ubuntu-latest`, which bills at 1×.
@@ -162,7 +162,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
 
 - **Target:** Windows 10 x64 only. The user's PC has an NVIDIA RTX 4070 Ti SUPER. Development happens in a Linux devcontainer, which has no Windows toolchain and no GPU.
 - **Verified on Linux (free):**
-  - `cd frontend && pnpm install --frozen-lockfile && pnpm exec tsc --noEmit && pnpm run lint && bun test && pnpm run build`
+  - `cd frontend && pnpm install --frozen-lockfile && pnpm exec tsc --noEmit && bun test && pnpm run build`
   - `cargo test --workspace --exclude llama-helper`. It needs `frontend/out` (from `pnpm run build`) and a stub sidecar: `touch frontend/src-tauri/binaries/llama-helper-x86_64-unknown-linux-gnu`.
   - `cargo check -p meeting-detector --target x86_64-pc-windows-msvc --tests`
   - `bash scripts/check-no-phone-home.sh`, and `actionlint` for workflows
@@ -400,12 +400,11 @@ jobs:
         with:
           bun-version: 1.2.21
 
-      - name: Frontend (install, typecheck, lint, test, build)
+      - name: Frontend (install, typecheck, test, build)
         working-directory: frontend
         run: |
           pnpm install --frozen-lockfile
           pnpm exec tsc --noEmit
-          pnpm run lint
           bun test
           pnpm run build
 
@@ -584,7 +583,7 @@ Then apply these rules in each listed file:
 - Delete the `import Analytics …` / `import AnalyticsConsentSwitch …` / `import AnalyticsProvider …` line.
 - Delete every statement whose only purpose is analytics: `Analytics.track…(…)`, `await Analytics.…(…)`, `Analytics.identify…`, `Analytics.trackPageView(…)`. A multi-line call is deleted in full, including its argument object.
 - If a `try { … } catch` exists only for analytics (for example `useRecordingStop.ts` lines ~347–395, from `// Track meeting completion analytics` through `} catch (analyticsError) { … }`), delete the whole block, including the `Store.load('analytics.json')` use.
-- If a variable or helper is computed only to feed analytics (for example the duration or word-count calculations right before a track call), delete it too. The compiler's unused-variable warnings and lint point to them.
+- If a variable or helper is computed only to feed analytics (for example the duration or word-count calculations right before a track call), delete it too. The compiler's unused-variable warnings point to them (`tsc --noEmit`; there is no lint — see Task 2 ruling).
 - `layout.tsx`: remove the `<AnalyticsProvider>` wrapper and keep its children.
 - `PreferenceSettings.tsx` and `About.tsx`: remove the `{/* Analytics Section */}` block and `<AnalyticsConsentSwitch />`.
 - `betaFeatures.ts`: remove `BETA_FEATURE_ANALYTICS_MAP` and its doc-comment line. Remove its uses in `ConfigContext.tsx`.
@@ -595,7 +594,7 @@ Then apply these rules in each listed file:
 - [ ] **Step 5: Verify**
 
 ```bash
-cd /workspace/frontend && pnpm exec tsc --noEmit && pnpm run lint && bun test && pnpm run build
+cd /workspace/frontend && pnpm exec tsc --noEmit && bun test && pnpm run build
 cd /workspace && cargo test --workspace --exclude llama-helper 2>&1 | tail -5
 bash scripts/check-no-phone-home.sh
 ```
@@ -681,7 +680,7 @@ Then make the manual edits to `tauri.conf.json`, `lib.rs`, `tray.rs`, the capabi
 - [ ] **Step 3: Verify**
 
 ```bash
-cd /workspace/frontend && pnpm exec tsc --noEmit && pnpm run lint && bun test && pnpm run build
+cd /workspace/frontend && pnpm exec tsc --noEmit && bun test && pnpm run build
 cd /workspace && cargo test --workspace --exclude llama-helper 2>&1 | tail -5
 bash scripts/check-no-phone-home.sh
 grep -rn "check-updates-from-tray" frontend/src frontend/src-tauri/src; echo "leftover=$?"
@@ -764,7 +763,7 @@ Expected: hits in `About.tsx`, `SetupOverviewStep.tsx` and `BluetoothPlaybackWar
 - [ ] **Step 4: Remove the links listed under Files, then verify**
 
 ```bash
-cd /workspace/frontend && pnpm exec tsc --noEmit && pnpm run lint && bun test && pnpm run build
+cd /workspace/frontend && pnpm exec tsc --noEmit && bun test && pnpm run build
 cd /workspace && bash scripts/check-no-phone-home.sh
 ```
 
@@ -836,7 +835,7 @@ Expected: the only frontend hit is the About credit line. Any Rust hit must be a
 - [ ] **Step 4: Verify**
 
 ```bash
-cd /workspace/frontend && pnpm exec tsc --noEmit && pnpm run lint && bun test && pnpm run build
+cd /workspace/frontend && pnpm exec tsc --noEmit && bun test && pnpm run build
 cd /workspace && cargo test --workspace --exclude llama-helper 2>&1 | tail -5
 bash scripts/check-no-phone-home.sh
 ```
@@ -1649,7 +1648,7 @@ Expected: `ok`.
 Before pushing, run the full local suite once (free), so CI only confirms it:
 
 ```bash
-cd /workspace/frontend && pnpm exec tsc --noEmit && pnpm run lint && bun test && pnpm run build
+cd /workspace/frontend && pnpm exec tsc --noEmit && bun test && pnpm run build
 cd /workspace && cargo test --workspace --exclude llama-helper 2>&1 | tail -5
 cargo check -p meeting-detector --target x86_64-pc-windows-msvc --tests --bins
 bash scripts/check-no-phone-home.sh && actionlint && node --test scripts/set-version.test.mjs

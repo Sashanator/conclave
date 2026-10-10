@@ -24,8 +24,7 @@
         "tauri:build:metal": "tauri build -- --features metal",
         "tauri:build:coreml": "tauri build -- --features coreml",
         "tauri:build:openblas": "tauri build -- --features openblas",
-        "tauri:build:hipblas": "tauri build -- --features hipblas",
-        "lint": "next lint"
+        "tauri:build:hipblas": "tauri build -- --features hipblas"
     },
     "dependencies": {
         "@blocknote/core": "0.36.0",
@@ -96,6 +95,7 @@
         }
     },
     "devDependencies": {
+        "@happy-dom/global-registrator": "20.14.5",
         "@tailwindcss/container-queries": "^0.1.1",
         "@tailwindcss/typography": "^0.5.15",
         "@tauri-apps/cli": "^2.1.0",

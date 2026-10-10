@@ -87,6 +87,7 @@ frontend/src-tauri/binaries/
 !/.claude/agents/
 /.claude/agents/*
 !/.claude/agents/reviewer.md
+!/.claude/agents/conclave-implementer.md
 
 # Host X11 cookie (initializeCommand): grants access to the host display.
 /.devcontainer/.Xauthority

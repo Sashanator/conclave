@@ -24,26 +24,17 @@ fn main() {
         }
     };
     println!("conclave-probe {} — read-only. Join/mute/leave calls and switch mics; press Ctrl+C to quit.", env!("CARGO_PKG_VERSION"));
-    println!("Legend: via=notify means Windows sent a change notification; via=timeout means it was only caught by the 5 s re-read.\n");
+    println!("Legend: via=startup is the snapshot taken at launch; via=notify means Windows sent a change notification; via=timeout means it was only caught by the 5 s re-read.\n");
 
     let mut prev: HashMap<String, bool> = HashMap::new();
-    let mut prev_sessions: BTreeSet<String> = BTreeSet::new();
-    let mut first = true;
-    loop {
-        let via = match watcher.wait(5000) {
-            Ok(Wake::Changed) => "notify",
-            Ok(Wake::Timeout) => "timeout",
-            Err(e) => {
-                log(format!("ERROR waiting for change: {e}"));
-                std::thread::sleep(std::time::Duration::from_secs(5));
-                "error-retry"
-            }
-        };
+    let mut prev_sessions: Option<BTreeSet<String>> = None;
+    // Logs changes since the last call. Apps already using the mic at startup show as START; nothing is printed for STOP.
+    let mut poll = |via: &str| {
         match read_mic_users(CONSENT_PATH) {
             Ok(users) => {
                 for u in users {
                     let was = prev.insert(u.app.clone(), u.in_use).unwrap_or(false);
-                    if u.in_use != was && !(first && !u.in_use) {
+                    if u.in_use != was {
                         let kind = if u.packaged { "packaged" } else { "desktop" };
                         log(format!("MIC {} {} ({kind}) via={via}", if u.in_use { "START" } else { "STOP " }, u.app));
                         if u.in_use && is_browser(&u.app) {
@@ -63,7 +54,7 @@ fn main() {
                     .filter(|s| s.active)
                     .map(|s| format!("{} [{}] ← {} (pid {})", s.device_name, s.device_id, s.process_name.as_deref().unwrap_or("?"), s.process_id))
                     .collect();
-                if now != prev_sessions {
+                if prev_sessions.as_ref() != Some(&now) {
                     log("ACTIVE CAPTURE SESSIONS:".to_string());
                     if now.is_empty() {
                         log("    (none)".to_string());
@@ -71,11 +62,24 @@ fn main() {
                     for s in &now {
                         log(format!("    {s}"));
                     }
-                    prev_sessions = now;
+                    prev_sessions = Some(now);
                 }
             }
             Err(e) => log(format!("ERROR listing capture sessions: {e}")),
         }
-        first = false;
+    };
+
+    poll("startup");
+    loop {
+        let via = match watcher.wait(5000) {
+            Ok(Wake::Changed) => "notify",
+            Ok(Wake::Timeout) => "timeout",
+            Err(e) => {
+                log(format!("ERROR waiting for change: {e}"));
+                std::thread::sleep(std::time::Duration::from_secs(5));
+                "error-retry"
+            }
+        };
+        poll(via);
     }
 }

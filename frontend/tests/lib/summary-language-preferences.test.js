@@ -1,6 +1,8 @@
-import { beforeEach, describe, expect, mock, test } from "bun:test";
+import { afterEach, beforeEach, describe, expect, mock, test } from "bun:test";
 
 const invokeMock = mock(async () => null);
+// Other tests run in the same process with the happy-dom window; restore it after each test.
+const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
 
 mock.module("@tauri-apps/api/core", () => ({
   invoke: invokeMock,
@@ -52,6 +54,11 @@ describe("summary language local fallback", () => {
   beforeEach(() => {
     invokeMock.mockReset();
     storageValues = installLocalStorage();
+  });
+
+  afterEach(() => {
+    if (originalWindow) Object.defineProperty(globalThis, "window", originalWindow);
+    else delete globalThis.window;
   });
 
   test("reads summary language from local fallback when meeting has no folder", async () => {

@@ -277,16 +277,7 @@ fn convert_to_wav_with_ffmpeg(
     input_path: &Path,
     progress_callback: Option<&ProgressCallback>,
 ) -> Result<tempfile::TempPath> {
-    let ffmpeg_path = find_ffmpeg_path().ok_or_else(|| {
-        anyhow!(
-            "FFmpeg not found. FFmpeg is required to decode .{} files. \
-             It will be downloaded automatically on next launch, or install it manually.",
-            input_path
-                .extension()
-                .and_then(|e| e.to_str())
-                .unwrap_or("this format")
-        )
-    })?;
+    let ffmpeg_path = find_ffmpeg_path().ok_or_else(|| anyhow!("FFmpeg not found next to Conclave.exe — reinstall Conclave."))?;
 
     // Create temp file in the same directory as the input to avoid cross-device issues
     let parent_dir = input_path.parent().unwrap_or_else(|| Path::new("."));

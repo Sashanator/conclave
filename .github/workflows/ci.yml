@@ -1,0 +1,121 @@
+name: CI
+
+on:
+  pull_request:
+    paths-ignore: ['docs/**', '**/*.md', '.devcontainer/**', '.claude/**', '.vscode/**']
+  workflow_dispatch:
+    inputs:
+      full:
+        description: 'Also run the full Windows app tests (slow: ~30–60 billed minutes)'
+        type: boolean
+        default: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  checks:
+    name: Frontend checks (Linux)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Guard (no telemetry / updater / Meetily hosts)
+        shell: bash
+        run: bash scripts/check-no-phone-home.sh
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.2.21
+
+      - name: Frontend (install, typecheck, test, build)
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm exec tsc --noEmit
+          bun test
+          pnpm run build
+
+  windows-app:
+    name: Windows app tests (manual, full)
+    if: github.event_name == 'workflow_dispatch' && inputs.full
+    runs-on: windows-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 9.15.9
+          run_install: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: pnpm
+          cache-dependency-path: frontend/pnpm-lock.yaml
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: ci-app-v1
+          cache-on-failure: true
+
+      - name: Build frontend (tauri embeds frontend/out at compile time)
+        working-directory: frontend
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+
+      - name: Stub llama-helper sidecar (tauri-build checks externalBin exists; tests never run it)
+        shell: bash
+        run: |
+          mkdir -p frontend/src-tauri/binaries
+          touch frontend/src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe
+
+      - name: Rust tests (Windows)
+        run: cargo test --workspace --exclude llama-helper
+
+  detector:
+    name: meeting-detector (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: ci-detector-v1
+          cache-on-failure: true
+
+      - name: Test meeting-detector (incl. Windows-only registry/COM tests)
+        run: cargo test -p meeting-detector
+
+      - name: Build conclave-probe
+        run: cargo build --release -p meeting-detector --bin conclave-probe
+
+      - name: Upload conclave-probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: conclave-probe
+          path: target/release/conclave-probe.exe
+          if-no-files-found: error
+          retention-days: 30

@@ -13,7 +13,7 @@ At each completed implementation task, before asking for my review:
 ## Agent routing (user preference)
 
 - Orchestration: the main session (Opus 5.5, high effort).
-- Implementation and code-search subagents: `model: "haiku"` (Haiku 5.5), `effort: "high"`.
+- Implementation: the `conclave-implementer` agent (Haiku 5.5, high effort; rules in `.claude/agents/conclave-implementer.md`). Code search: `Explore` with `model: "haiku"`, `effort: "high"`.
 - Code review: the `reviewer` agent with `model: "opus"` (Opus 5.5), `effort: "medium"`.
 - Codex pass for hard or dangerous changes (security or credentials, data persistence or deletion, concurrency or restart, untrusted input): tell the reviewer to run Codex as
   `codex review -c model="gpt-6.1-sol" -c model_reasoning_effort="medium" -c sandbox_mode='"danger-full-access"' -`.

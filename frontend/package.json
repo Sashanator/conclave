@@ -1,5 +1,5 @@
 {
-    "name": "meetily",
+    "name": "conclave",
     "version": "0.4.1",
     "private": true,
     "main": "electron/main.js",
@@ -24,8 +24,7 @@
         "tauri:build:metal": "tauri build -- --features metal",
         "tauri:build:coreml": "tauri build -- --features coreml",
         "tauri:build:openblas": "tauri build -- --features openblas",
-        "tauri:build:hipblas": "tauri build -- --features hipblas",
-        "lint": "next lint"
+        "tauri:build:hipblas": "tauri build -- --features hipblas"
     },
     "dependencies": {
         "@blocknote/core": "0.36.0",
@@ -62,7 +61,6 @@
         "@tauri-apps/plugin-os": "^2.3.2",
         "@tauri-apps/plugin-process": "^2.3.0",
         "@tauri-apps/plugin-store": "^2.4.0",
-        "@tauri-apps/plugin-updater": "^2.3.0",
         "@tiptap/pm": "^2.10.4",
         "@tiptap/react": "^2.10.4",
         "@tiptap/starter-kit": "^2.10.4",
@@ -96,6 +94,7 @@
         }
     },
     "devDependencies": {
+        "@happy-dom/global-registrator": "20.14.5",
         "@tailwindcss/container-queries": "^0.1.1",
         "@tailwindcss/typography": "^0.5.15",
         "@tauri-apps/cli": "^2.1.0",

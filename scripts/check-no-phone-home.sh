@@ -25,6 +25,7 @@ PATTERNS=(
   'Notification::new\("Meetily'
   '"Meetily( Error)?",'
   '= "Meetily";'
+  'Welcome to meetily'
 )
 
 SEARCH_PATHS=(frontend/src frontend/src-tauri/src frontend/src-tauri/Cargo.toml frontend/src-tauri/tauri.conf.json frontend/src-tauri/capabilities frontend/package.json frontend/tests)

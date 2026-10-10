@@ -27,7 +27,7 @@ export function About() {
                 <h1 className="text-xl font-bold text-gray-900">Conclave</h1>
                 <span className="text-sm text-gray-500"> v{currentVersion}</span>
                 <p className="text-medium text-gray-600 mt-1">
-                    Real-time notes and summaries that never leave your machine.
+                    Transcription runs locally on your PC. Summaries are sent to the LLM provider you configure, using your own API key.
                 </p>
             </div>
 
@@ -37,7 +37,7 @@ export function About() {
                 <div className="grid grid-cols-2 gap-2">
                     <div className="bg-gray-50 rounded p-3 hover:bg-gray-100 transition-colors">
                         <h3 className="font-bold text-sm text-gray-900 mb-1">Privacy-first</h3>
-                        <p className="text-xs text-gray-600 leading-relaxed">Your data & AI processing workflow can now stay within your premise. No cloud, no leaks.</p>
+                        <p className="text-xs text-gray-600 leading-relaxed">Meetings, transcripts and recordings stay on your PC. Only the text sent for a summary leaves it, and only to the provider you choose.</p>
                     </div>
                     <div className="bg-gray-50 rounded p-3 hover:bg-gray-100 transition-colors">
                         <h3 className="font-bold text-sm text-gray-900 mb-1">Use Any Model</h3>
@@ -52,13 +52,6 @@ export function About() {
                         <p className="text-xs text-gray-600 leading-relaxed">Google Meet, Zoom, Teams-online or offline.</p>
                     </div>
                 </div>
-            </div>
-
-            {/* Coming Soon - Compact */}
-            <div className="bg-blue-50 rounded p-3">
-                <p className="text-s text-blue-800">
-                    <span className="font-bold">Coming soon:</span> A library of on-device AI agents-automating follow-ups, action tracking, and more.
-                </p>
             </div>
 
             {/* Footer - Compact */}

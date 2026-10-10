@@ -83,8 +83,11 @@ Two workflows:
   - **The version comes from the tag.** The workflow writes the version from `vX.Y.Z` into `tauri.conf.json` and `Cargo.toml` before building, so every installer carries a higher version than the last one and upgrades it in place.
 
 **Install, update and uninstall (user flow):**
-- **Update:** download the newer `…-setup.exe` from the Releases page and run it. It upgrades the existing install in place. Do not uninstall first. Meetings, settings and downloaded Whisper models live in `%APPDATA%\com.conclave.app`, which updates do not touch.
-- **Uninstall:** use Windows Settings → Apps & features (or Control Panel → Programs and Features) → Conclave → Uninstall. The uninstaller has a "Delete the application data" checkbox. It is unchecked by default, which keeps meetings and models; checking it removes them. Do not delete the install folder by hand, because that leaves the Start-menu entry and the uninstall registration behind.
+- **Update:** download the newer `…-setup.exe` from the Releases page and run it. It upgrades the existing install in place. Do not uninstall first. Updates do not touch your data, which lives in three places:
+  - `%APPDATA%\com.conclave.app`: the meetings database, settings and downloaded models.
+  - `%APPDATA%\Conclave`: custom summary templates, notification settings and a fallback model folder.
+  - `%USERPROFILE%\Music\conclave-recordings` (falls back to Documents if Music is unavailable): recordings.
+- **Uninstall:** use Windows Settings → Apps & features (or Control Panel → Programs and Features) → Conclave → Uninstall. The uninstaller has a "Delete the application data" checkbox. It is unchecked by default. Checking it removes the `%APPDATA%\com.conclave.app` folder (meetings, settings and models). It does not remove `%APPDATA%\Conclave` or `%USERPROFILE%\Music\conclave-recordings`; those must be deleted by hand if wanted. Do not delete the install folder by hand, because that leaves the Start-menu entry and the uninstall registration behind.
 - **Meetily:** a separate app with its own identifier and data folder. It can stay installed next to Conclave or be uninstalled the same way, with no effect on Conclave.
 
 The last task of Phase 0 is the `conclave-probe` diagnostic tool (§5.4).

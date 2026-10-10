@@ -10,11 +10,15 @@ Download `Conclave_<version>_x64-setup.exe` from the Releases page of this repos
 
 ## Update
 
-Download the newer `…-setup.exe` from the Releases page and run it. It upgrades the existing install in place, so do not uninstall first. Meetings, settings and downloaded Whisper models live in `%APPDATA%\com.conclave.app`, which updates do not touch.
+Download the newer `…-setup.exe` from the Releases page and run it. It upgrades the existing install in place, so do not uninstall first. Updates do not touch your data, which lives in three places:
+
+- `%APPDATA%\com.conclave.app`: the meetings database, settings and downloaded models.
+- `%APPDATA%\Conclave`: custom summary templates, notification settings and a fallback model folder.
+- `%USERPROFILE%\Music\conclave-recordings` (falls back to Documents if Music is unavailable): recordings.
 
 ## Uninstall
 
-Use Windows Settings → Apps & features (or Control Panel → Programs and Features) → Conclave → Uninstall. The uninstaller has a "Delete the application data" checkbox. It is unchecked by default, which keeps meetings and models. Checking it removes them. Do not delete the install folder by hand, because that leaves the Start-menu entry and the uninstall registration behind.
+Use Windows Settings → Apps & features (or Control Panel → Programs and Features) → Conclave → Uninstall. The uninstaller has a "Delete the application data" checkbox. It is unchecked by default. Checking it removes the `%APPDATA%\com.conclave.app` folder (meetings, settings and models). It does not remove `%APPDATA%\Conclave` or `%USERPROFILE%\Music\conclave-recordings`; delete those by hand if you want them gone. Do not delete the install folder by hand, because that leaves the Start-menu entry and the uninstall registration behind.
 
 ## Credits
 

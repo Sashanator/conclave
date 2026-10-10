@@ -84,4 +84,4 @@ These run while the installer is built, not when Conclave runs. They are not in 
 - **ollama.com/download.** Kept as the "Download Ollama" link, as the brief's template lists it. The Global Constraints allowed list names only localhost Ollama, so the user should confirm.
 - **Parakeet v3 host `meetily.towardsgeneralintelligence.com`.** Meetily-owned. Kept as the Parakeet v3 model host (the spec allows existing model hosts), contacted only on a Parakeet model download.
 - **ffmpeg-binaries host `github.com/Zackriya-Solutions/ffmpeg-binaries`.** Meetily-owned, used only at build time to bundle ffmpeg. Kept for Phase 0, not changed.
-- **Signing gate in `frontend/build.ps1`.** Lines 12-50 still require `TAURI_SIGNING_PRIVATE_KEY`, which conflicts with the "no TAURI_SIGNING_* secrets" constraint. Not changed, as the ruling was limited to the updater line.
+- **Signing gate in `frontend/build.ps1`.** Lines 12-50 required `TAURI_SIGNING_PRIVATE_KEY`, which conflicted with the "no TAURI_SIGNING_* secrets" constraint. Removed in Task 8 (no signing secrets).

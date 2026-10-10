@@ -35,3 +35,28 @@ test('rejects a non X.Y.Z version and changes nothing', () => {
   assert.equal(r.status, 1);
   assert.equal(JSON.parse(readFileSync(join(root, 'frontend/package.json'), 'utf8')).version, '0.4.1');
 });
+
+test('rejects a leading-zero version and changes nothing', () => {
+  const root = fixture();
+  const r = spawnSync('node', [script, '01.2.3', root]);
+  assert.equal(r.status, 1);
+  assert.equal(JSON.parse(readFileSync(join(root, 'frontend/package.json'), 'utf8')).version, '0.4.1');
+});
+
+test('fails and changes no file when Cargo.toml has no [package] version line', () => {
+  const root = fixture();
+  writeFileSync(join(root, 'frontend/src-tauri/Cargo.toml'), '[package]\nname = "meetily"\n\n[dependencies]\nfoo = { version = "1.2.3" }\n');
+  const tauriBefore = readFileSync(join(root, 'frontend/src-tauri/tauri.conf.json'), 'utf8');
+  const pkgBefore = readFileSync(join(root, 'frontend/package.json'), 'utf8');
+  const r = spawnSync('node', [script, '1.2.3', root]);
+  assert.equal(r.status, 1);
+  assert.equal(readFileSync(join(root, 'frontend/src-tauri/tauri.conf.json'), 'utf8'), tauriBefore);
+  assert.equal(readFileSync(join(root, 'frontend/package.json'), 'utf8'), pkgBefore);
+});
+
+test('keeps 2-space indentation and the missing trailing newline', () => {
+  const root = fixture();
+  writeFileSync(join(root, 'frontend/package.json'), '{\n  "name": "meetily",\n  "version": "0.4.1"\n}');
+  execFileSync('node', [script, '1.2.3', root]);
+  assert.equal(readFileSync(join(root, 'frontend/package.json'), 'utf8'), '{\n  "name": "meetily",\n  "version": "1.2.3"\n}');
+});

@@ -3,7 +3,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [version, root = process.cwd()] = process.argv.slice(2);
-if (!/^\d+\.\d+\.\d+$/.test(version ?? '')) {
+if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? '')) {
   console.error(`set-version: expected X.Y.Z, got '${version}'`);
   process.exit(1);
 }

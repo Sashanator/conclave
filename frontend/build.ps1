@@ -67,7 +67,6 @@ if ($buildExitCode -eq 0) {
     Write-Host "✅ Signed build completed successfully!" -ForegroundColor Green
     Write-Host "========================================" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Updater artifacts have been signed and are ready for release."
 } else {
     Write-Host ""
     Write-Host "❌ Build failed with exit code: $buildExitCode" -ForegroundColor Red

@@ -13,7 +13,11 @@ PATTERNS=(
   'tauri_plugin_updater'
   'updater:default'
   'releases/latest/download/latest\.json'
-  'createUpdaterArtifacts": true'
+  'createUpdaterArtifacts"[[:space:]]*:[[:space:]]*(true|"v1Compatible")'
+  'meetily\.zackriya\.com'
+  'zackriya\.com'
+  'github\.com/your-org'
+  'github\.com/Zackriya-Solutions'
 )
 
 SEARCH_PATHS=(frontend/src frontend/src-tauri/src frontend/src-tauri/Cargo.toml frontend/src-tauri/tauri.conf.json frontend/src-tauri/capabilities frontend/package.json frontend/tests)

@@ -170,7 +170,7 @@ impl IncrementalAudioSaver {
         std::fs::write(&list_file, list_content)?;
 
         let ffmpeg_path = find_ffmpeg_path()
-            .ok_or_else(|| anyhow!("FFmpeg not found. Please install FFmpeg to finalize recordings."))?;
+            .ok_or_else(|| anyhow!("FFmpeg not found next to Conclave.exe — reinstall Conclave."))?;
         info!("Using FFmpeg at: {:?}", ffmpeg_path);
 
         // Run FFmpeg concat command
@@ -307,7 +307,7 @@ pub async fn recover_audio_from_checkpoints(
         .to_string();
 
     let ffmpeg_path = find_ffmpeg_path()
-        .ok_or_else(|| "FFmpeg not found. Please install FFmpeg to recover audio.".to_string())?;
+        .ok_or_else(|| "FFmpeg not found next to Conclave.exe — reinstall Conclave.".to_string())?;
     info!("Using FFmpeg at: {:?}", ffmpeg_path);
 
     let mut command = std::process::Command::new(ffmpeg_path);

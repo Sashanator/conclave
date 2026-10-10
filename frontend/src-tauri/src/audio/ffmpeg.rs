@@ -109,32 +109,33 @@ fn find_ffmpeg_path_internal() -> Option<PathBuf> {
     }
 
     // Never download ffmpeg at runtime: it is bundled next to Conclave.exe by the installer.
-    let installation_dir = sidecar_dir().map_err(|e| e.to_string()).unwrap();
-    let ffmpeg_in_installation = installation_dir.join(EXECUTABLE_NAME);
-    if ffmpeg_in_installation.is_file() {
-        debug!("found ffmpeg in directory: {:?}", ffmpeg_in_installation);
-        return Some(ffmpeg_in_installation);
-    }
+    if let Ok(installation_dir) = sidecar_dir() {
+        let ffmpeg_in_installation = installation_dir.join(EXECUTABLE_NAME);
+        if ffmpeg_in_installation.is_file() {
+            debug!("found ffmpeg in directory: {:?}", ffmpeg_in_installation);
+            return Some(ffmpeg_in_installation);
+        }
 
-    // Windows often has nested structure like ffmpeg-6.0-full_build/bin/ffmpeg.exe
-    #[cfg(windows)]
-    {
-        debug!("Searching for nested ffmpeg in {:?}", installation_dir);
-        if let Ok(entries) = std::fs::read_dir(&installation_dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.is_dir() {
-                    // Check bin/ffmpeg.exe
-                    let bin_ffmpeg = path.join("bin").join(EXECUTABLE_NAME);
-                    if bin_ffmpeg.exists() {
-                        debug!("found ffmpeg in nested bin: {:?}", bin_ffmpeg);
-                        return Some(bin_ffmpeg);
-                    }
-                    // Check root of subdir
-                    let root_ffmpeg = path.join(EXECUTABLE_NAME);
-                    if root_ffmpeg.exists() {
-                        debug!("found ffmpeg in nested root: {:?}", root_ffmpeg);
-                        return Some(root_ffmpeg);
+        // Windows often has nested structure like ffmpeg-6.0-full_build/bin/ffmpeg.exe
+        #[cfg(windows)]
+        {
+            debug!("Searching for nested ffmpeg in {:?}", installation_dir);
+            if let Ok(entries) = std::fs::read_dir(&installation_dir) {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if path.is_dir() {
+                        // Check bin/ffmpeg.exe
+                        let bin_ffmpeg = path.join("bin").join(EXECUTABLE_NAME);
+                        if bin_ffmpeg.exists() {
+                            debug!("found ffmpeg in nested bin: {:?}", bin_ffmpeg);
+                            return Some(bin_ffmpeg);
+                        }
+                        // Check root of subdir
+                        let root_ffmpeg = path.join(EXECUTABLE_NAME);
+                        if root_ffmpeg.exists() {
+                            debug!("found ffmpeg in nested root: {:?}", root_ffmpeg);
+                            return Some(root_ffmpeg);
+                        }
                     }
                 }
             }

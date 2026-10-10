@@ -12,7 +12,8 @@
       "moby": false
     },
     // GitHub CLI (auth: `gh auth login`; the login is shared by all projects via the gh-config volume)
-    "ghcr.io/devcontainers/features/github-cli:1": {}
+    "ghcr.io/devcontainers/features/github-cli:1": {},
+    "ghcr.io/devcontainers/features/rust:1": { "version": "stable", "targets": "x86_64-pc-windows-msvc" }
   },
   // Add the project's app ports here
   "forwardPorts": [],

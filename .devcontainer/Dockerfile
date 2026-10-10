@@ -71,4 +71,16 @@ RUN apt-get update \
 RUN mkdir -p /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.cache/codebase-memory-mcp \
     && chown -R node:node /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.cache
 
+# Tauri 2 / Conclave Linux build dependencies (local cargo check/test; Windows is built in CI)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential cmake pkg-config clang libclang-dev \
+        libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
+        libasound2-dev libpulse-dev \
+    && rm -rf /var/lib/apt/lists/*
+# Bun runs the frontend tests (bun:test); actionlint checks workflows locally (saves CI minutes)
+RUN npm install -g --prefix /usr/local bun@1.2.21 \
+    && curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash | bash -s -- 1.7.7 /usr/local/bin
+# pnpm 9.15.9 is the version the frontend docs require; pnpm 12 rejects the committed lockfile
+RUN npm install -g pnpm@9.15.9
+
 WORKDIR /workspace

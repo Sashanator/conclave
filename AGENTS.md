@@ -33,7 +33,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
 - **Target:** Windows 10 x64 only. The user's PC has an NVIDIA RTX 4070 Ti SUPER. Development happens in a Linux devcontainer, which has no Windows toolchain and no GPU.
 - **Verified on Linux (free):**
   - `cd frontend && pnpm install --frozen-lockfile && pnpm exec tsc --noEmit && pnpm run lint && bun test && pnpm run build`
-  - `cargo test --workspace --exclude llama-helper`. It needs `frontend/out` (from `pnpm run build`) and a stub sidecar: `touch frontend/src-tauri/binaries/llama-helper-x86_64-unknown-linux-gnu`.
+  - `cargo test --workspace --exclude llama-helper`. It needs `frontend/out` (from `pnpm run build`) and a stub sidecar: `mkdir -p frontend/src-tauri/binaries && touch frontend/src-tauri/binaries/llama-helper-x86_64-unknown-linux-gnu`.
   - `cargo check -p meeting-detector --target x86_64-pc-windows-msvc --tests`
   - `bash scripts/check-no-phone-home.sh`, and `actionlint` for workflows
 - **Verified only on Windows:** the Windows-only Rust code, through GitHub Actions on `windows-latest`. CI minutes are scarce (about 3,000 per month, Windows counts double): verify locally, push only at checkpoints, and run the full Windows app tests only by manual dispatch (`gh workflow run ci.yml -f full=true`).

@@ -94,5 +94,7 @@ frontend/src-tauri/binaries/
 /.agents/
 .env
 .env.*
-!.env.example
+*.env
+!/frontend/.env.example
+!backend/temp.env
 .DS_Store

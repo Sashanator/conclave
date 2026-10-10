@@ -22,6 +22,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Guard (no telemetry / updater / Meetily hosts)
+        shell: bash
+        run: bash scripts/check-no-phone-home.sh
+
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.9
@@ -86,3 +90,32 @@ jobs:
 
       - name: Rust tests (Windows)
         run: cargo test --workspace --exclude llama-helper
+
+  detector:
+    name: meeting-detector (Windows)
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: ". -> target"
+          key: ci-detector-v1
+          cache-on-failure: true
+
+      - name: Test meeting-detector (incl. Windows-only registry/COM tests)
+        run: cargo test -p meeting-detector
+
+      - name: Build conclave-probe
+        run: cargo build --release -p meeting-detector --bin conclave-probe
+
+      - name: Upload conclave-probe
+        uses: actions/upload-artifact@v4
+        with:
+          name: conclave-probe
+          path: target/release/conclave-probe.exe
+          if-no-files-found: error
+          retention-days: 30

@@ -209,8 +209,8 @@ await listen<TranscriptUpdate>('transcript-update', (event) => {
 
 **Model Storage Locations**:
 - **Development**: `frontend/models/`
-- **Production (macOS)**: `~/Library/Application Support/Conclave/models/`
-- **Production (Windows)**: `%APPDATA%\com.conclave.app\models\` (app_data_dir; `whisper_engine/commands.rs:16-19`)
+- **Production (macOS)**: `~/Library/Application Support/com.conclave.app/models/`
+- **Production (Windows)**: `%APPDATA%\com.conclave.app\models\` (fallback: `%APPDATA%\Conclave\models\`; app_data_dir; `whisper_engine/commands.rs:16-19`)
 
 **Model Loading** (frontend/src-tauri/src/whisper_engine/whisper_engine.rs):
 ```rust

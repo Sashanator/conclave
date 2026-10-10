@@ -4,7 +4,7 @@ import Image from 'next/image';
 
 
 export function About() {
-    const [currentVersion, setCurrentVersion] = useState<string>('0.4.1');
+    const [currentVersion, setCurrentVersion] = useState<string>('');
 
     useEffect(() => {
         // Get current version on mount
@@ -25,7 +25,7 @@ export function About() {
                     />
                 </div>
                 <h1 className="text-xl font-bold text-gray-900">Conclave</h1>
-                <span className="text-sm text-gray-500"> v{currentVersion}</span>
+                {currentVersion && <span className="text-sm text-gray-500"> v{currentVersion}</span>}
                 <p className="text-medium text-gray-600 mt-1">
                     Transcription runs locally on your PC. Summaries are sent to the LLM provider you configure, using your own API key.
                 </p>

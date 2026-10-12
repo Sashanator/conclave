@@ -1,9 +1,10 @@
-//! CUDA builds delay-load these DLLs (see build.rs) instead of bundling them; probing them here
-//! lets a PC without the CUDA 12 toolkit run Whisper on the CPU instead of failing to start.
+//! cudart64_12.dll is bundled with the app. cublas and cublasLt come from the user's CUDA 12 toolkit,
+//! and nvcuda.dll is the NVIDIA driver; build.rs delay-loads cublas64_12.dll and nvcuda.dll. Probing
+//! these here lets a PC without them run Whisper on the CPU instead of failing to start.
 
 use std::sync::OnceLock;
 
-pub const CUDA_RUNTIME_DLLS: [&str; 3] = ["cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"];
+pub const CUDA_RUNTIME_DLLS: [&str; 3] = ["cublas64_12.dll", "cublasLt64_12.dll", "nvcuda.dll"];
 
 /// The runtime DLLs for which `loadable` returns false, in `CUDA_RUNTIME_DLLS` order.
 pub fn missing_from(loadable: impl Fn(&str) -> bool) -> Vec<&'static str> {

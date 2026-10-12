@@ -23,6 +23,7 @@
 | Implementation | `conclave-implementer` | Haiku 5.5, high |
 | Review | `reviewer` | Opus 5.5, medium |
 | Codex pass (Tasks 1, 3, and the phase review) | inside the reviewer brief | `codex review -c model="gpt-6.1-sol" -c model_reasoning_effort="medium" -c sandbox_mode='"danger-full-access"' -` |
+| 3rd reviewer, whole branch only (Task 4 Step 3) | Antigravity CLI, run by the controller | `agy -p "<prompt>" --model gemini-3.8-flash-high --mode plan --dangerously-skip-permissions --print-timeout 1800s` (Gemini 3.8 Flash High; read-only plan mode) |
 
 Parallel streams:
 - **Stream A:** Task 1, then Task 2, in worktree `.worktrees/p1-app` on branch `p1-app`.
@@ -538,7 +539,17 @@ Expected: everything passes, with 249 app tests (245 + 4).
 
   All must pass.
 - [ ] **Step 2: Push and open a PR.** Push `phase-1-cuda` (push point 1) and open a PR to `main`. PR #2 (`docs/cuda-setup`) is included in this branch's history. Wait for PR checks (Linux `checks`, Windows `detector`).
-- [ ] **Step 3: Phase review.** Get a `reviewer` review with a Codex pass of `main..phase-1-cuda`. Fix the confirmed findings, then get one recheck. After two cycles, bring unresolved findings to the user.
+- [ ] **Step 3: Phase review (three reviewers).** Run these in parallel:
+  - a `reviewer` review with a Codex pass of `main..phase-1-cuda`;
+  - an **Antigravity CLI** review, which the controller runs in the background from `/workspace`:
+    ```bash
+    agy -p "Review the changes in git diff main...phase-1-cuda of this repo against docs/superpowers/specs/2026-10-10-conclave-v1-design.md section 4 and docs/superpowers/plans/2026-10-12-conclave-phase-1-cuda.md. Read-only: do not modify files. Report only confirmed bugs or risks, each with file:line, failure scenario and fix." \
+      --model gemini-3.8-flash-high --mode plan --dangerously-skip-permissions --print-timeout 1800s \
+      > /tmp/claude-1000/-workspace/856fdc4d-db31-4468-b4a5-55dd868575b4/scratchpad/agy-phase1-review.txt 2>&1
+    ```
+    Check that `git status` is unchanged afterwards. Treat Antigravity's findings like Codex's: the `reviewer` (or a re-review) verifies each one before anything is fixed, labelled with its source.
+
+  Fix the confirmed findings, then get one recheck. After two cycles, bring unresolved findings to the user.
 - [ ] **Step 4: Ask the user** "Merge and tag v0.2.0?" and wait for an explicit yes.
 - [ ] **Step 5: Merge, then tag `v0.2.0`** (push point 2). Watch the Release run.
   - **If the build, `dumpbin` or smoke step fails:** the draft stays unpublished. Fix on a branch, merge, delete the draft, move the tag (`git tag -fa v0.2.0`, then `git push -f origin v0.2.0`) and tell the user.

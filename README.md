@@ -8,7 +8,7 @@ Design spec: [docs/superpowers/specs/2026-10-10-conclave-v1-design.md](docs/supe
 
 Download `Conclave_<version>_x64-setup.exe` from the Releases page of this repository and run it. The installer is unsigned, so Windows SmartScreen shows "Unknown publisher" once per install. Click **More info → Run anyway**.
 
-GPU (NVIDIA) transcription needs the CUDA 12 runtime: see [CUDA_SETUP.md](CUDA_SETUP.md). Without it Conclave transcribes on the CPU.
+GPU (NVIDIA) transcription needs cuBLAS from a CUDA 12 toolkit on your PC: see [CUDA_SETUP.md](CUDA_SETUP.md). The installer ships only the small `cudart64_12.dll`. Without the toolkit Conclave transcribes on the CPU.
 
 ## Update
 

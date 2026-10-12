@@ -37,7 +37,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
   - `cargo check -p meeting-detector --target x86_64-pc-windows-msvc --tests`
   - `bash scripts/check-no-phone-home.sh`, and `actionlint` for workflows
 - **Verified only on Windows:** the Windows-only Rust code, through GitHub Actions on `windows-latest`. CI minutes are scarce (about 3,000 per month, Windows counts double): verify locally, push only at checkpoints, and run the full Windows app tests only by manual dispatch (`gh workflow run ci.yml -f full=true`).
-- **Releases:** tag `vX.Y.Z` → `release.yml` builds an unsigned NSIS `Conclave_X.Y.Z_x64-setup.exe` (CUDA build: `--features cuda`, sm_89) and publishes it on the private repo. The CUDA DLLs are delay-loaded from the user's own toolkit (`CUDA_SETUP.md`), not bundled. Releases are drafts until the delay-load check and the no-CUDA smoke test pass. The app has no updater.
+- **Releases:** tag `vX.Y.Z` → `release.yml` builds an unsigned NSIS `Conclave_X.Y.Z_x64-setup.exe` (CUDA build: `--features cuda`, sm_89) and publishes it on the private repo. Only `cudart64_12.dll` (~0.5 MB) is bundled next to the exe. cuBLAS and the driver are delay-loaded from the user's own CUDA 12 toolkit (`CUDA_SETUP.md`). The build runs on `windows-2022` (nvcc 12.8 rejects the VS 2026 on `windows-latest`). Releases are drafts until the delay-load check and the no-CUDA smoke test pass. The app has no updater.
 
 ## Invariants (do not break)
 

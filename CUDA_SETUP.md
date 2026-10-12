@@ -1,6 +1,6 @@
 # CUDA setup on Windows 10
 
-Conclave's GPU builds (Phase 1 onward) do **not** ship the CUDA runtime DLLs, which keeps the installer small. They load them from the CUDA 12 toolkit installed on your PC.
+Conclave's GPU builds (Phase 1 onward) ship only the tiny `cudart64_12.dll` (about 0.5 MB). The big cuBLAS libraries (about 600 MB) come from the CUDA 12 toolkit installed on your PC, which keeps the installer small. Without the toolkit, or without an NVIDIA driver, Conclave still starts and transcribes on the CPU.
 
 > v0.1.0 is a CPU-only build. It doesn't need CUDA, and installing CUDA now does no harm.
 
@@ -39,7 +39,6 @@ Open a **new** PowerShell window and run:
 echo $env:CUDA_PATH          # C:\Program Files\NVIDIA GPU Computing Toolkit\CUDA\v12.8
 where.exe cublas64_12.dll    # ...\CUDA\v12.8\bin\cublas64_12.dll
 where.exe cublasLt64_12.dll
-where.exe cudart64_12.dll
 ```
 
 If `where.exe` finds nothing:
@@ -49,12 +48,13 @@ If `where.exe` finds nothing:
 
 ## 5. Keep it installed
 
-The CUDA build needs these three DLLs:
-- `cudart64_12.dll`
+The CUDA build needs these two DLLs from the toolkit:
 - `cublas64_12.dll`
 - `cublasLt64_12.dll`
 
-If you uninstall the toolkit or replace it with 13.x, a CUDA build of Conclave can no longer use the GPU. To fix it, reinstall a 12.x toolkit.
+`cudart64_12.dll` ships with Conclave.
+
+If you uninstall the toolkit or replace it with 13.x, Conclave falls back to the CPU and shows "CUDA 12 runtime not found". To fix it, reinstall a 12.x toolkit.
 
 ## 6. Check that Conclave uses the GPU (CUDA builds)
 

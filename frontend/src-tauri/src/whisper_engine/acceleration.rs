@@ -62,8 +62,13 @@ pub fn whisper_context_acceleration_for(
     compiled_backend: WhisperCompiledBackend,
     runtime_detected_gpu: GpuType,
     performance_tier: PerformanceTier,
+    cuda_runtime_available: bool,
 ) -> WhisperContextAcceleration {
-    let use_gpu = !matches!(compiled_backend, WhisperCompiledBackend::Cpu);
+    let use_gpu = match compiled_backend {
+        WhisperCompiledBackend::Cpu => false,
+        WhisperCompiledBackend::Cuda => cuda_runtime_available,
+        _ => true,
+    };
     let fast_tier = matches!(performance_tier, PerformanceTier::High | PerformanceTier::Ultra);
     let flash_attn = match compiled_backend {
         WhisperCompiledBackend::Metal | WhisperCompiledBackend::Cuda => fast_tier,
@@ -89,6 +94,7 @@ mod tests {
             WhisperCompiledBackend::Vulkan,
             GpuType::Cuda,
             PerformanceTier::High,
+            true,
         );
 
         assert_eq!(params.compiled_backend, WhisperCompiledBackend::Vulkan);
@@ -103,6 +109,7 @@ mod tests {
             WhisperCompiledBackend::Vulkan,
             GpuType::None,
             PerformanceTier::Low,
+            true,
         );
 
         assert!(params.use_gpu);
@@ -115,11 +122,13 @@ mod tests {
             WhisperCompiledBackend::Cuda,
             GpuType::Cuda,
             PerformanceTier::High,
+            true,
         );
         let ultra = whisper_context_acceleration_for(
             WhisperCompiledBackend::Cuda,
             GpuType::Cuda,
             PerformanceTier::Ultra,
+            true,
         );
 
         assert!(high.use_gpu);
@@ -135,10 +144,23 @@ mod tests {
                 WhisperCompiledBackend::Cpu,
                 runtime_gpu,
                 PerformanceTier::Ultra,
+                true,
             );
 
             assert!(!params.use_gpu);
             assert!(!params.flash_attn);
         }
+    }
+
+    #[test]
+    fn acceleration_cuda_backend_without_runtime_falls_back_to_cpu() {
+        let params = whisper_context_acceleration_for(
+            WhisperCompiledBackend::Cuda,
+            GpuType::Cuda,
+            PerformanceTier::Ultra,
+            false,
+        );
+        assert!(!params.use_gpu);
+        assert!(!params.flash_attn);
     }
 }

@@ -21,6 +21,17 @@ fn main() {
     ffmpeg::ensure_ffmpeg_binary();
     onnxruntime::ensure_onnxruntime_runtime();
 
+    // CUDA runtime DLLs come from the user's CUDA 12 toolkit (not bundled): delay-load them so a PC
+    // without the toolkit can still start the app; whisper_engine/cuda_runtime.rs then picks CPU.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_FEATURE_CUDA").is_ok()
+    {
+        for dll in ["cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll"] {
+            println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
+        }
+        println!("cargo:rustc-link-lib=delayimp");
+    }
+
     tauri_build::build()
 }
 

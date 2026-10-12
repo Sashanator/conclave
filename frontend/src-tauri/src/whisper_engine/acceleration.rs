@@ -84,6 +84,25 @@ pub fn whisper_context_acceleration_for(
     }
 }
 
+/// One-line note for the settings UI (spec §4.2).
+pub fn backend_label(
+    compiled_backend: WhisperCompiledBackend,
+    missing_cuda_dlls: &[&str],
+    gpu_name: Option<&str>,
+) -> String {
+    match compiled_backend {
+        WhisperCompiledBackend::Cuda if !missing_cuda_dlls.is_empty() => {
+            "Whisper running on: CPU — CUDA 12 runtime not found (see CUDA_SETUP.md)".to_string()
+        }
+        WhisperCompiledBackend::Cuda => match gpu_name {
+            Some(name) => format!("Whisper running on: CUDA ({name})"),
+            None => "Whisper running on: CUDA".to_string(),
+        },
+        WhisperCompiledBackend::Cpu => "Whisper running on: CPU".to_string(),
+        other => format!("Whisper running on: {}", other.as_str()),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +181,32 @@ mod tests {
         );
         assert!(!params.use_gpu);
         assert!(!params.flash_attn);
+    }
+
+    #[test]
+    fn label_cuda_with_gpu_name() {
+        assert_eq!(
+            backend_label(WhisperCompiledBackend::Cuda, &[], Some("NVIDIA GeForce RTX 4070 Ti SUPER")),
+            "Whisper running on: CUDA (NVIDIA GeForce RTX 4070 Ti SUPER)"
+        );
+    }
+
+    #[test]
+    fn label_cuda_without_gpu_name() {
+        assert_eq!(backend_label(WhisperCompiledBackend::Cuda, &[], None), "Whisper running on: CUDA");
+    }
+
+    #[test]
+    fn label_cuda_runtime_missing_points_to_setup_guide() {
+        assert_eq!(
+            backend_label(WhisperCompiledBackend::Cuda, &["cublas64_12.dll"], Some("RTX")),
+            "Whisper running on: CPU — CUDA 12 runtime not found (see CUDA_SETUP.md)"
+        );
+    }
+
+    #[test]
+    fn label_cpu_and_other_backends() {
+        assert_eq!(backend_label(WhisperCompiledBackend::Cpu, &[], None), "Whisper running on: CPU");
+        assert_eq!(backend_label(WhisperCompiledBackend::Vulkan, &[], None), "Whisper running on: Vulkan");
     }
 }

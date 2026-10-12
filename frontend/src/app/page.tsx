@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
@@ -59,6 +60,17 @@ export default function Home() {
   } = useTranscriptRecovery();
 
   const router = useRouter();
+
+  // Warn once at startup when a CUDA build cannot find its runtime and Whisper falls back to CPU
+  useEffect(() => {
+    invoke<{ label: string; cuda_runtime_missing: boolean }>('get_whisper_backend_status')
+      .then((s) => {
+        if (s.cuda_runtime_missing) {
+          toast.warning('CUDA 12 runtime not found — Whisper runs on CPU. See CUDA_SETUP.md', { duration: 10000 });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Startup recovery check
   useEffect(() => {

@@ -1,5 +1,6 @@
 pub mod whisper_engine;
 pub mod acceleration;
+pub mod cuda_runtime;
 pub mod commands;
 pub mod system_monitor;
 pub mod parallel_processor;

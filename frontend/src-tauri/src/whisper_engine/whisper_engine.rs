@@ -317,10 +317,18 @@ impl WhisperEngine {
                 // PERFORMANCE OPTIMIZATION: Use comprehensive hardware profile for optimal GPU configuration
                 let hardware_profile = crate::audio::HardwareProfile::detect();
                 let adaptive_config = hardware_profile.get_whisper_config();
+                let missing_cuda = crate::whisper_engine::cuda_runtime::missing_cuda_runtime_dlls();
+                if !missing_cuda.is_empty() {
+                    log::warn!(
+                        "CUDA 12 runtime not found ({}); Whisper will run on CPU. See CUDA_SETUP.md",
+                        missing_cuda.join(", ")
+                    );
+                }
                 let acceleration = whisper_context_acceleration_for(
                     WhisperCompiledBackend::current(),
                     hardware_profile.gpu_type,
                     hardware_profile.performance_tier,
+                    missing_cuda.is_empty(),
                 );
 
                 let context_param = WhisperContextParameters {

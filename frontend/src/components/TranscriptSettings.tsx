@@ -27,11 +27,18 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
     const [isApiKeyLocked, setIsApiKeyLocked] = useState<boolean>(true);
     const [isLockButtonVibrating, setIsLockButtonVibrating] = useState<boolean>(false);
     const [uiProvider, setUiProvider] = useState<TranscriptModelProps['provider']>(transcriptModelConfig.provider);
+    const [backendLabel, setBackendLabel] = useState<string>('');
 
     // Sync uiProvider when backend config changes (e.g., after model selection or initial load)
     useEffect(() => {
         setUiProvider(transcriptModelConfig.provider);
     }, [transcriptModelConfig.provider]);
+
+    useEffect(() => {
+        invoke<{ label: string; cuda_runtime_missing: boolean }>('get_whisper_backend_status')
+            .then((s) => setBackendLabel(s.label))
+            .catch(() => setBackendLabel(''));
+    }, []);
 
     useEffect(() => {
         if (transcriptModelConfig.provider === 'localWhisper' || transcriptModelConfig.provider === 'parakeet') {
@@ -154,6 +161,9 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
 
                     {uiProvider === 'localWhisper' && (
                         <div className="mt-6">
+                            {backendLabel && (
+                                <p className="text-xs text-gray-500 mb-2 mx-1">{backendLabel}</p>
+                            )}
                             <ModelManager
                                 selectedModel={transcriptModelConfig.provider === 'localWhisper' ? transcriptModelConfig.model : undefined}
                                 onModelSelect={handleWhisperModelSelect}

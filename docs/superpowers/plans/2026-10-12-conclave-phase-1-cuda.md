@@ -34,7 +34,7 @@ Both branch from `phase-1-cuda`, which is created from `docs/cuda-setup`. The fi
 ## Global Constraints
 
 - **CUDA 12.x only, pinned to 12.8.0 in CI**, built on `windows-2022`. nvcc 12.8 rejects the VS 2026 compiler on `windows-latest`.
-- **Bundle only `cudart64_12.dll`** (about 0.5 MB), as a normal import next to the exe. `cublas64_12.dll` and `cublasLt64_12.dll` are never bundled. `cublas64_12.dll` and `nvcuda.dll` (the driver) are **delay-loaded**. The probe list is `cublas64_12.dll`, `cublasLt64_12.dll` and `nvcuda.dll`. This is a controller ruling of 2026-10-12, made after the Task 3 review.
+- **Bundle only `cudart64_12.dll`** (about 0.5 MB), as a normal import next to the exe. `cublas64_12.dll` and `cublasLt64_12.dll` are never bundled. `cublas64_12.dll`, `cublasLt64_12.dll` and `nvcuda.dll` (the driver) are **delay-loaded**. The probe list is `cublas64_12.dll`, `cublasLt64_12.dll` and `nvcuda.dll`. This is a controller ruling of 2026-10-12, made after the Task 3 review.
 - `CMAKE_CUDA_ARCHITECTURES=89` (RTX 40 series) for the release build. whisper-rs-sys forwards every `CMAKE_*` environment variable to CMake (`whisper-rs-sys-0.11.1/build.rs:236-243`).
 - Only `release.yml` builds CUDA. `ci.yml` stays CPU-only and unchanged. No Vulkan build.
 - **A missing CUDA runtime** means: the app starts, Whisper runs on the CPU, the Settings note reads `Whisper running on: CPU — CUDA 12 runtime not found (see CUDA_SETUP.md)`, and a toast is shown once at startup.

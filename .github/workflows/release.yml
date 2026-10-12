@@ -41,7 +41,7 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
-      - name: Install CUDA 12.8 toolkit (build only; the installer does not bundle CUDA DLLs)
+      - name: Install CUDA 12.8 toolkit (build; only cudart64_12.dll is bundled)
         uses: Jimver/cuda-toolkit@v0.2.36
         with:
           cuda: '12.8.0'
@@ -113,7 +113,7 @@ jobs:
           args: --target x86_64-pc-windows-msvc --bundles nsis --features cuda ${{ steps.portability.outputs.args }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Conclave {0}', github.ref_name) || '' }}
-          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 runtime — see CUDA_SETUP.md in the repo (without it Whisper runs on CPU). Update by running the new setup over the old one.'
+          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 toolkit (cuBLAS) — see CUDA_SETUP.md in the repo; without it Whisper runs on CPU. Update by running the new setup over the old one.'
           releaseDraft: true
           includeUpdaterJson: false
 
@@ -147,6 +147,7 @@ jobs:
           $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'CUDA' }) -join ';'
           $env:CUDA_PATH = $null
           $p = Start-Process -FilePath $exe -PassThru
+          $null = $p.Handle  # keeps the handle open so $p.ExitCode is reliable if the exe dies at once
           Start-Sleep -Seconds 20
           if ($p.HasExited) {
             # Any exit within 20 s fails: a CUDA DLL problem is one cause, but so is any other startup crash.

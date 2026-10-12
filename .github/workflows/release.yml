@@ -40,6 +40,13 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Install CUDA 12.8 toolkit (build only; the installer does not bundle CUDA DLLs)
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.8.0'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+
       - name: Configure portable Windows native build
         id: portability
         shell: pwsh
@@ -56,7 +63,7 @@ jobs:
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-          key: release-cpu-v1
+          key: release-cuda-v1
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -82,18 +89,58 @@ jobs:
           path: frontend/src-tauri/binaries/onnxruntime
           key: ${{ runner.os }}-onnxruntime-x86_64-pc-windows-msvc-${{ hashFiles('frontend/src-tauri/build/onnxruntime.rs') }}
 
-      - name: Build installer (and publish release on tag)
+      - name: Build installer (draft release on tag)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CMAKE_CUDA_ARCHITECTURES: '89'
         with:
           projectPath: frontend
-          args: --target x86_64-pc-windows-msvc --bundles nsis ${{ steps.portability.outputs.args }}
+          args: --target x86_64-pc-windows-msvc --bundles nsis --features cuda ${{ steps.portability.outputs.args }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Conclave {0}', github.ref_name) || '' }}
-          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". Update by running the new setup over the old one.'
-          releaseDraft: false
+          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 runtime — see CUDA_SETUP.md in the repo (without it Whisper runs on CPU). Update by running the new setup over the old one.'
+          releaseDraft: true
           includeUpdaterJson: false
+
+      - name: Verify CUDA DLLs are delay-loaded, not hard imports
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/meetily.exe"
+          $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $imports = & $dumpbin /imports $exe | Out-String
+          $split = $imports.IndexOf("Section contains the following delay load imports")
+          if ($split -lt 0) { Write-Error "no delay-load import section in $exe"; exit 1 }
+          $normal = $imports.Substring(0, $split); $delayed = $imports.Substring($split)
+          foreach ($dll in "cudart64_12.dll", "cublas64_12.dll", "cublasLt64_12.dll") {
+            if ($normal -match [regex]::Escape($dll)) { Write-Error "$dll is a normal import (app would fail to start without CUDA)"; exit 1 }
+            if ($delayed -notmatch [regex]::Escape($dll)) { Write-Error "$dll missing from delay-load imports"; exit 1 }
+          }
+          Write-Host "OK: CUDA runtime DLLs are delay-loaded"
+
+      - name: Smoke test - app starts without CUDA on PATH
+        shell: pwsh
+        run: |
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'CUDA' }) -join ';'
+          $env:CUDA_PATH = $null
+          $p = Start-Process -FilePath "target/x86_64-pc-windows-msvc/release/meetily.exe" -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) {
+            $code = $p.ExitCode
+            # 0xC0000135 STATUS_DLL_NOT_FOUND, 0xC06D007E delay-load module not found
+            if ($code -eq -1073741515 -or $code -eq -1066598274) { Write-Error "exe failed to start without CUDA (exit $code)"; exit 1 }
+            Write-Warning "exe exited early with code $code (not a CUDA DLL failure; runner has no audio/GPU)"
+          } else {
+            Stop-Process -Id $p.Id -Force
+            Write-Host "OK: app stayed up 20s without CUDA on PATH"
+          }
+
+      - name: Publish release (only after the checks above pass)
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
 
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4

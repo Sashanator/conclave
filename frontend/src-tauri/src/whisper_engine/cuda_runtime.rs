@@ -63,7 +63,7 @@ mod tests {
     }
 
     #[test]
-    fn toolkit_absent_reports_all_three() {
+    fn toolkit_or_driver_absent_reports_all() {
         assert_eq!(missing_from(|_| false), CUDA_RUNTIME_DLLS.to_vec());
     }
 

@@ -579,7 +579,8 @@ pub async fn get_whisper_backend_status() -> WhisperBackendStatus {
     use super::acceleration::{backend_label, WhisperCompiledBackend};
     let compiled = WhisperCompiledBackend::current();
     let missing = super::cuda_runtime::missing_cuda_runtime_dlls();
-    let gpu_name = if compiled == WhisperCompiledBackend::Cuda { nvidia_gpu_name() } else { None };
+    // Skip nvidia-smi when the runtime is missing: a hung nvidia-smi must not block the note or toast.
+    let gpu_name = if compiled == WhisperCompiledBackend::Cuda && missing.is_empty() { nvidia_gpu_name() } else { None };
     WhisperBackendStatus {
         label: backend_label(compiled, missing, gpu_name.as_deref()),
         cuda_runtime_missing: compiled == WhisperCompiledBackend::Cuda && !missing.is_empty(),

@@ -21,6 +21,9 @@ import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
 
+// Module-level so the CUDA warning is shown once per app session, not on every remount of Home.
+let cudaToastChecked = false;
+
 export default function Home() {
   // Local page state (not moved to contexts)
   const [isRecording, setIsRecordingState] = useState(false);
@@ -63,6 +66,8 @@ export default function Home() {
 
   // Warn once at startup when a CUDA build cannot find its runtime and Whisper falls back to CPU
   useEffect(() => {
+    if (cudaToastChecked) return;
+    cudaToastChecked = true;
     invoke<{ label: string; cuda_runtime_missing: boolean }>('get_whisper_backend_status')
       .then((s) => {
         if (s.cuda_runtime_missing) {

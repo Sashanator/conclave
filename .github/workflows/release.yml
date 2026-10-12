@@ -46,7 +46,7 @@ jobs:
         with:
           cuda: '12.8.0'
           method: network
-          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+          sub-packages: '["nvcc", "cudart", "thrust", "cublas", "cublas_dev", "visual_studio_integration"]'
 
       - name: Stage cudart64_12.dll for bundling
         shell: pwsh
@@ -68,7 +68,8 @@ jobs:
           $configPath = (Join-Path $env:RUNNER_TEMP "tauri.windows-portable.conf.json").Replace('\', '/')
           @{
             build = @{ beforeBundleCommand = @{ script = "node .github/verify-portable-ggml.cjs $buildDirectory"; cwd = $env:GITHUB_WORKSPACE } }
-            bundle = @{ resources = @{ "binaries/cuda/cudart64_12.dll" = "cudart64_12.dll" } }
+            # Every resource listed: Tauri may merge this --config over tauri.conf.json or tauri.windows.conf.json.
+            bundle = @{ resources = @{ "templates" = "templates"; "binaries/onnxruntime" = "."; "binaries/cuda/cudart64_12.dll" = "cudart64_12.dll" } }
           } |
             ConvertTo-Json -Depth 4 | Set-Content -Path $configPath -Encoding utf8
           "args=--config `"$configPath`"" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
@@ -102,6 +103,16 @@ jobs:
         with:
           path: frontend/src-tauri/binaries/onnxruntime
           key: ${{ runner.os }}-onnxruntime-x86_64-pc-windows-msvc-${{ hashFiles('frontend/src-tauri/build/onnxruntime.rs') }}
+
+      - name: Refuse to overwrite an already-published release
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if draft=$(gh release view "$GITHUB_REF_NAME" --json isDraft -q .isDraft 2>/dev/null); then
+            if [ "$draft" = "false" ]; then echo "::error::Release $GITHUB_REF_NAME is already published; tag a new version instead"; exit 1; fi
+          fi
 
       - name: Build installer (draft release on tag)
         uses: tauri-apps/tauri-action@v0

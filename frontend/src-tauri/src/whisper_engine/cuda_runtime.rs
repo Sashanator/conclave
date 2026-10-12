@@ -1,6 +1,6 @@
 //! cudart64_12.dll is bundled with the app. cublas and cublasLt come from the user's CUDA 12 toolkit,
-//! and nvcuda.dll is the NVIDIA driver; build.rs delay-loads cublas64_12.dll and nvcuda.dll. Probing
-//! these here lets a PC without them run Whisper on the CPU instead of failing to start.
+//! and nvcuda.dll is the NVIDIA driver; build.rs delay-loads cublas64_12.dll, cublasLt64_12.dll and
+//! nvcuda.dll. Probing these here lets a PC without them run Whisper on the CPU instead of failing to start.
 
 use std::sync::OnceLock;
 

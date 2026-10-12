@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship v0.2.0, a release that runs Whisper on the user's NVIDIA GPU via CUDA 12. The CUDA DLLs come from the user's installed toolkit and are not bundled. If the toolkit is missing, the app still starts, transcribes on the CPU, and says why. A one-line backend note in Settings shows which device Whisper uses.
+**Goal:** Ship v0.2.0, a release that runs Whisper on the user's NVIDIA GPU via CUDA 12. Only `cudart64_12.dll` (about 0.5 MB) is bundled; cuBLAS comes from the user's CUDA 12 toolkit. If the toolkit is missing, the app still starts, transcribes on the CPU, and says why. A one-line backend note in Settings shows which device Whisper uses.
 
 **Architecture:**
 - The release build adds `--features cuda`, compiled for sm_89 only.
-- `build.rs` makes the linker **delay-load** the three CUDA runtime DLLs, so Windows no longer refuses to start the exe when they're missing.
+- `build.rs` makes the linker **delay-load** cuBLAS (`cublas64_12.dll`, `cublasLt64_12.dll`) and the NVIDIA driver (`nvcuda.dll`); cudart is bundled because nvcc's static initialisers call it before `main`, so Windows no longer refuses to start the exe when they're missing.
 - At runtime, `whisper_engine/cuda_runtime.rs` probes the DLLs with `LoadLibraryW`, and the acceleration decision sets `use_gpu = false` when any is missing.
 - A Tauri command reports the decision to the settings UI and to a startup toast.
 - The release workflow checks the delay-load table with `dumpbin` and starts the exe without CUDA on `PATH` before it publishes anything. Releases are created as drafts and published only after that smoke test passes.

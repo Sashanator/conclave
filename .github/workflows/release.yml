@@ -15,7 +15,8 @@ concurrency:
 jobs:
   windows:
     name: Build Windows installer
-    runs-on: windows-latest
+    # windows-latest is VS 2026, which nvcc 12.8's host_config.h rejects; pin to VS 2022.
+    runs-on: windows-2022
     timeout-minutes: 150
     steps:
       - uses: actions/checkout@v4
@@ -40,6 +41,22 @@ jobs:
         with:
           targets: x86_64-pc-windows-msvc
 
+      - name: Install CUDA 12.8 toolkit (build only; the installer does not bundle CUDA DLLs)
+        uses: Jimver/cuda-toolkit@v0.2.36
+        with:
+          cuda: '12.8.0'
+          method: network
+          sub-packages: '["nvcc", "cudart", "cublas", "cublas_dev", "visual_studio_integration"]'
+
+      - name: Stage cudart64_12.dll for bundling
+        shell: pwsh
+        run: |
+          if (-not $env:CUDA_PATH) { Write-Error "CUDA_PATH is not set"; exit 1 }
+          $src = "$env:CUDA_PATH\bin\cudart64_12.dll"
+          if (-not (Test-Path -LiteralPath $src)) { Write-Error "cudart64_12.dll not found at $src"; exit 1 }
+          New-Item -ItemType Directory -Force -Path "frontend/src-tauri/binaries/cuda" | Out-Null
+          Copy-Item -LiteralPath $src -Destination "frontend/src-tauri/binaries/cuda/cudart64_12.dll" -Force -ErrorAction Stop
+
       - name: Configure portable Windows native build
         id: portability
         shell: pwsh
@@ -49,14 +66,18 @@ jobs:
           "RUSTFLAGS=-C target-cpu=x86-64-v2" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
           $buildDirectory = "target/x86_64-pc-windows-msvc/release"
           $configPath = (Join-Path $env:RUNNER_TEMP "tauri.windows-portable.conf.json").Replace('\', '/')
-          @{ build = @{ beforeBundleCommand = @{ script = "node .github/verify-portable-ggml.cjs $buildDirectory"; cwd = $env:GITHUB_WORKSPACE } } } |
+          @{
+            build = @{ beforeBundleCommand = @{ script = "node .github/verify-portable-ggml.cjs $buildDirectory"; cwd = $env:GITHUB_WORKSPACE } }
+            bundle = @{ resources = @{ "binaries/cuda/cudart64_12.dll" = "cudart64_12.dll" } }
+          } |
             ConvertTo-Json -Depth 4 | Set-Content -Path $configPath -Encoding utf8
           "args=--config `"$configPath`"" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
 
       - uses: swatinem/rust-cache@v2
         with:
           workspaces: ". -> target"
-          key: release-cpu-v1
+          key: release-cuda-v1
+          cache-on-failure: true
 
       - name: Install frontend dependencies
         working-directory: frontend
@@ -82,20 +103,70 @@ jobs:
           path: frontend/src-tauri/binaries/onnxruntime
           key: ${{ runner.os }}-onnxruntime-x86_64-pc-windows-msvc-${{ hashFiles('frontend/src-tauri/build/onnxruntime.rs') }}
 
-      - name: Build installer (and publish release on tag)
+      - name: Build installer (draft release on tag)
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CMAKE_CUDA_ARCHITECTURES: '89'
         with:
           projectPath: frontend
-          args: --target x86_64-pc-windows-msvc --bundles nsis ${{ steps.portability.outputs.args }}
+          args: --target x86_64-pc-windows-msvc --bundles nsis --features cuda ${{ steps.portability.outputs.args }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Conclave {0}', github.ref_name) || '' }}
-          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". Update by running the new setup over the old one.'
-          releaseDraft: false
+          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 runtime — see CUDA_SETUP.md in the repo (without it Whisper runs on CPU). Update by running the new setup over the old one.'
+          releaseDraft: true
           includeUpdaterJson: false
 
+      - name: Verify CUDA DLLs are delay-loaded, not hard imports
+        shell: pwsh
+        run: |
+          $exe = "target/x86_64-pc-windows-msvc/release/meetily.exe"
+          $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $imports = & $dumpbin /imports $exe | Out-String
+          $split = $imports.IndexOf("Section contains the following delay load imports")
+          if ($split -lt 0) { Write-Error "no delay-load import section in $exe"; exit 1 }
+          $normal = $imports.Substring(0, $split); $delayed = $imports.Substring($split)
+          # dumpbin prints one DLL name per line: match whole lines so cublas64_12.dll never matches cublasLt64_12.dll
+          function Test-Import($section, $dll) { $section -match ('(?im)^\s*' + [regex]::Escape($dll) + '\s*$') }
+          # cudart64_12.dll may be a normal import: it ships next to the exe.
+          if (-not (Test-Import $delayed "cublas64_12.dll")) { Write-Error "cublas64_12.dll missing from delay-load imports"; exit 1 }
+          foreach ($dll in "cublas64_12.dll", "cublasLt64_12.dll", "nvcuda.dll") {
+            if (Test-Import $normal $dll) { Write-Error "$dll is a normal import (app would fail to start without CUDA)"; exit 1 }
+          }
+          Write-Host "OK: cuBLAS and the driver are delay-loaded"
+
+      - name: Smoke test - app starts without CUDA on PATH
+        shell: pwsh
+        run: |
+          # Simulate the installed layout: cudart sits next to the exe.
+          $exe = "target/x86_64-pc-windows-msvc/release/meetily.exe"
+          Copy-Item -LiteralPath "frontend/src-tauri/binaries/cuda/cudart64_12.dll" -Destination (Join-Path (Split-Path $exe) "cudart64_12.dll") -Force -ErrorAction Stop
+          # Missing DLLs exit instead of showing a modal dialog; child processes inherit the error mode.
+          Add-Type -Namespace Win32 -Name ErrorMode -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint uMode);'
+          [Win32.ErrorMode]::SetErrorMode(0x8001) | Out-Null  # SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
+          $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'CUDA' }) -join ';'
+          $env:CUDA_PATH = $null
+          $p = Start-Process -FilePath $exe -PassThru
+          Start-Sleep -Seconds 20
+          if ($p.HasExited) {
+            # Any exit within 20 s fails: a CUDA DLL problem is one cause, but so is any other startup crash.
+            $code = $p.ExitCode
+            $why = if ($code -eq -1073741515) { " (STATUS_DLL_NOT_FOUND)" } elseif ($code -eq -1066598274) { " (delay-load DLL not found)" } else { "" }
+            Write-Error ("app exited within 20 s without CUDA on PATH: exit code {0} (0x{1:X8}){2}" -f $code, $code, $why)
+            exit 1
+          }
+          Stop-Process -Id $p.Id -Force
+          Write-Host "OK: app stayed up 20s without CUDA on PATH"
+
+      - name: Publish release (only after the checks above pass)
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: gh release edit "$GITHUB_REF_NAME" --draft=false
+
       - name: Upload installer artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: conclave-windows-x64-setup

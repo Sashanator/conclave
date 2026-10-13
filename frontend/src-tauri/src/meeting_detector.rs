@@ -1,5 +1,6 @@
 //! App side of meeting detection (spec §5): the Off/Ask/Auto setting, the status Settings shows, and what each
 //! detector action does. The detection loop lives in `crates/meeting-detector`.
+use crate::audio::recording_commands::FollowError;
 use crate::banner::{self, BannerKind};
 use meeting_detector::classify::{Action, Mode};
 use meeting_detector::runner::Host;
@@ -123,7 +124,11 @@ fn apply<R: Runtime>(app: &AppHandle<R>, action: Action) {
                     Ok(()) => {
                         let _ = handle.emit("mic-following", serde_json::json!({ "device": device, "app": call.label() }));
                     }
-                    Err(e) => {
+                    // The recording ended or was replaced: a warning now would describe a recording that is gone.
+                    Err(FollowError::SessionGone) => {
+                        log::info!("Mic following: the recording ended before the switch to {device}");
+                    }
+                    Err(FollowError::Failed(e)) => {
                         log::warn!("Mic following: cannot switch to {device}: {e}");
                         // A warning after a Stop would describe a recording that no longer exists.
                         if crate::audio::recording_commands::is_recording().await {

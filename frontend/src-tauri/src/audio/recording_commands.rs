@@ -1457,33 +1457,54 @@ fn spawn_device_event_processor<R: Runtime>(
     });
 }
 
+/// Why `follow_mic` did not switch.
+#[derive(Debug)]
+pub enum FollowError {
+    /// The recording the follow was for has ended or been replaced. Nothing is shown for it.
+    SessionGone,
+    /// The sentence shown to the user. The recording keeps a microphone.
+    Failed(String),
+}
+
 /// Meeting detection's mic following (spec §5.2): move the live recording to the call app's capture device.
 /// Ok(()) when switched or already on that device. On failure the recording keeps a microphone: the previous
-/// one is restored, and the Err text is the sentence shown to the user.
-pub async fn follow_mic(device_name: String) -> Result<(), String> {
+/// one is restored, and `Failed` carries the sentence shown to the user.
+pub async fn follow_mic(device_name: String) -> Result<(), FollowError> {
     let session = RECORDING_MANAGER
         .lock()
         .unwrap()
         .as_ref()
         .map(|m| m.get_state().clone())
-        .ok_or_else(|| "Not recording".to_string())?;
+        .ok_or(FollowError::SessionGone)?;
     // session_live locks RECORDING_MANAGER: call it only after the guard above is dropped.
     if !session_live(&session) {
-        return Err("Not recording".to_string());
+        return Err(FollowError::SessionGone);
     }
     if session.get_microphone_device().is_some_and(|d| d.name == device_name) {
         return Ok(());
     }
     // Exact name only: a device the OS does not list under this name (e.g. "(unknown device)") is refused
     // before the live stream is touched.
-    let listed = super::list_audio_devices().await.map_err(|e| e.to_string())?;
+    let listed = match super::list_audio_devices().await {
+        Ok(listed) => listed,
+        Err(e) => {
+            warn!("[FOLLOW_MIC] Couldn't list audio devices: {}", e);
+            return Err(FollowError::Failed(
+                "Couldn't list microphones. Recording continues on the current microphone.".to_string(),
+            ));
+        }
+    };
     if !listed.iter().any(|d| d.device_type == super::DeviceType::Input && d.name == device_name) {
-        return Err(format!("{device_name} is not available. Recording continues on the current microphone."));
+        return Err(FollowError::Failed(format!(
+            "{device_name} is not available. Recording continues on the current microphone."
+        )));
     }
     let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
     while MIC_SWAP_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         if tokio::time::Instant::now() >= deadline {
-            return Err("Another microphone switch is still running. Recording continues on the current microphone.".to_string());
+            return Err(FollowError::Failed(
+                "Another microphone switch is still running. Recording continues on the current microphone.".to_string(),
+            ));
         }
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
@@ -1497,10 +1518,12 @@ pub async fn follow_mic(device_name: String) -> Result<(), String> {
 
     // The swap we waited for may have moved the mic or ended the recording.
     if !session_live(&session) {
-        return Err("Not recording".to_string());
+        return Err(FollowError::SessionGone);
     }
     let Some(old_name) = session.get_microphone_device().map(|d| d.name.clone()) else {
-        return Err(format!("Recording has no microphone to switch from. Not switching to {device_name}."));
+        return Err(FollowError::Failed(format!(
+            "Recording has no microphone to switch from. Not switching to {device_name}."
+        )));
     };
     if old_name == device_name {
         return Ok(());
@@ -1521,17 +1544,22 @@ pub async fn follow_mic(device_name: String) -> Result<(), String> {
         return Ok(());
     };
     if !session_live(&session) {
-        return Err(e);
+        warn!("[FOLLOW_MIC] Switch to '{}' failed after the recording ended: {}", device_name, e);
+        return Err(FollowError::SessionGone);
     }
     // Both attempts failed on a live recording: put the previous microphone back so it keeps recording.
     match do_mic_swap(&old_name, &session).await {
         Ok(()) => {
             warn!("[FOLLOW_MIC] Switch to '{}' failed ({}); restored '{}'", device_name, e, old_name);
-            Err(format!("Couldn't switch to {device_name}. Recording continues on the current microphone."))
+            Err(FollowError::Failed(format!(
+                "Couldn't switch to {device_name}. Recording continues on the current microphone."
+            )))
         }
         Err(re) => {
             error!("[FOLLOW_MIC] Switch to '{}' failed ({}) and restoring '{}' failed: {}", device_name, e, old_name, re);
-            Err(format!("Couldn't switch to {device_name}, and the previous microphone could not be restored."))
+            Err(FollowError::Failed(format!(
+                "Couldn't switch to {device_name}, and the previous microphone could not be restored."
+            )))
         }
     }
 }

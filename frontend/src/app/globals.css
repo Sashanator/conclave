@@ -166,18 +166,18 @@
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb {
-    background: #d1d5db;
+    background: hsl(var(--border));
     border-radius: 3px;
   }
 
   .custom-scrollbar::-webkit-scrollbar-thumb:hover {
-    background: #9ca3af;
+    background: hsl(var(--muted-foreground));
   }
 
   /* Firefox scrollbar */
   .custom-scrollbar {
     scrollbar-width: thin;
-    scrollbar-color: #d1d5db transparent;
+    scrollbar-color: hsl(var(--border)) transparent;
   }
 
   /* BlockNote Editor - Override fixed dimensions for responsive layout */

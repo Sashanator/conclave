@@ -75,7 +75,7 @@ export default function Home() {
             duration: 10000,
             action: {
               label: 'Open guide',
-              onClick: () => invoke('open_external_url', { url: 'https://github.com/Sashanator/conclave/blob/v0.2.0/CUDA_SETUP.md' })
+              onClick: () => invoke('open_external_url', { url: 'https://github.com/Sashanator/conclave/blob/main/CUDA_SETUP.md' })
             }
           });
         }

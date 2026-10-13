@@ -6,14 +6,6 @@ const SRC = join(import.meta.dir, '..', 'src');
 
 // Files not yet moved to theme tokens. Tasks 7-9 of the Phase 2 plan remove their files; Task 9 leaves this empty.
 const PENDING = new Set<string>([
-  'components/EmptyStateSummary.tsx',
-  'components/MeetingDetails/TranscriptButtonGroup.tsx',
-  'components/MeetingDetails/TranscriptPanel.tsx',
-  'components/PermissionWarning.tsx',
-  'components/RecordingStatusBar.tsx',
-  'components/molecules/form-components/form-input-item.tsx',
-  'components/molecules/form-components/form-select-item.tsx',
-  'components/onboarding/OnboardingContainer.tsx',
   'components/onboarding/shared/PermissionRow.tsx',
   'components/onboarding/shared/ProgressIndicator.tsx',
   'components/onboarding/shared/StatusIndicator.tsx',

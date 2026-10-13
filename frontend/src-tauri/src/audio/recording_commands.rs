@@ -1390,8 +1390,9 @@ fn spawn_device_event_processor<R: Runtime>(
 }
 
 /// Meeting detection's mic following (spec §5.2): move the live recording to the call app's capture device.
-/// Ok(()) when switched or already on that device.
-pub async fn follow_mic<R: Runtime>(app: AppHandle<R>, device_name: String) -> Result<(), String> {
+/// Ok(()) when switched or already on that device. On failure the recording keeps a microphone: the previous
+/// one is restored, and the Err text is the sentence shown to the user.
+pub async fn follow_mic(device_name: String) -> Result<(), String> {
     let session = RECORDING_MANAGER
         .lock()
         .unwrap()
@@ -1405,8 +1406,18 @@ pub async fn follow_mic<R: Runtime>(app: AppHandle<R>, device_name: String) -> R
     if session.get_microphone_device().is_some_and(|d| d.name == device_name) {
         return Ok(());
     }
-    if MIC_SWAP_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        return Err("Another microphone switch is in progress".to_string());
+    // Exact name only: a device the OS does not list under this name (e.g. "(unknown device)") is refused
+    // before the live stream is touched.
+    let listed = super::list_audio_devices().await.map_err(|e| e.to_string())?;
+    if !listed.iter().any(|d| d.device_type == super::DeviceType::Input && d.name == device_name) {
+        return Err(format!("{device_name} is not available. Recording continues on the current microphone."));
+    }
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    while MIC_SWAP_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if tokio::time::Instant::now() >= deadline {
+            return Err("Another microphone switch is still running. Recording continues on the current microphone.".to_string());
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
     struct SwapGuard;
     impl Drop for SwapGuard {
@@ -1415,7 +1426,46 @@ pub async fn follow_mic<R: Runtime>(app: AppHandle<R>, device_name: String) -> R
         }
     }
     let _guard = SwapGuard;
-    perform_mic_hot_swap_task(device_name, &session, app).await
+
+    // The swap we waited for may have moved the mic or ended the recording.
+    if !session_live(&session) {
+        return Err("Not recording".to_string());
+    }
+    let Some(old_name) = session.get_microphone_device().map(|d| d.name.clone()) else {
+        return Err(format!("Recording has no microphone to switch from. Not switching to {device_name}."));
+    };
+    if old_name == device_name {
+        return Ok(());
+    }
+
+    let first = do_mic_swap(&device_name, &session).await;
+    let result = match first {
+        Ok(()) => Ok(()),
+        Err(e) if session_live(&session) => {
+            warn!("[FOLLOW_MIC] Switch to '{}' failed: {} — retrying in 500ms", device_name, e);
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            do_mic_swap(&device_name, &session).await
+        }
+        Err(e) => Err(e),
+    };
+    let Err(e) = result else {
+        info!("[FOLLOW_MIC] Mic switched to '{}'", device_name);
+        return Ok(());
+    };
+    if !session_live(&session) {
+        return Err(e);
+    }
+    // Both attempts failed on a live recording: put the previous microphone back so it keeps recording.
+    match do_mic_swap(&old_name, &session).await {
+        Ok(()) => {
+            warn!("[FOLLOW_MIC] Switch to '{}' failed ({}); restored '{}'", device_name, e, old_name);
+            Err(format!("Couldn't switch to {device_name}. Recording continues on the current microphone."))
+        }
+        Err(re) => {
+            error!("[FOLLOW_MIC] Switch to '{}' failed ({}) and restoring '{}' failed: {}", device_name, e, old_name, re);
+            Err(format!("Couldn't switch to {device_name}, and the previous microphone could not be restored."))
+        }
+    }
 }
 
 /// Disconnect fallback: swap the active mic to the system default input

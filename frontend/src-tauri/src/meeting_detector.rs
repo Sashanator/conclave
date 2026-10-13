@@ -113,15 +113,16 @@ fn apply<R: Runtime>(app: &AppHandle<R>, action: Action) {
         Action::FollowMic { app: call, device } => {
             let handle = app.clone();
             tauri::async_runtime::spawn(async move {
-                match crate::audio::recording_commands::follow_mic(handle.clone(), device.clone()).await {
+                match crate::audio::recording_commands::follow_mic(device.clone()).await {
                     Ok(()) => {
                         let _ = handle.emit("mic-following", serde_json::json!({ "device": device, "app": call.label() }));
                     }
                     Err(e) => {
                         log::warn!("Mic following: cannot switch to {device}: {e}");
-                        let _ = handle.emit("mic-following-warning", serde_json::json!({
-                            "message": format!("Couldn't switch to {device}, the microphone {} is using. Recording continues on the current microphone.", call.label())
-                        }));
+                        // A warning after a Stop would describe a recording that no longer exists.
+                        if crate::audio::recording_commands::is_recording().await {
+                            let _ = handle.emit("mic-following-warning", serde_json::json!({ "message": e }));
+                        }
                     }
                 }
             });

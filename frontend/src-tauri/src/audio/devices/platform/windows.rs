@@ -3,6 +3,7 @@ use cpal::traits::{DeviceTrait, HostTrait};
 use log::{debug, info, warn};
 
 use crate::audio::devices::configuration::{AudioDevice, DeviceType};
+use super::pick_device_index;
 
 /// Configure Windows audio devices using WASAPI
 pub fn configure_windows_audio(host: &cpal::Host) -> Result<Vec<AudioDevice>> {
@@ -111,11 +112,14 @@ pub fn get_windows_device(audio_device: &AudioDevice) -> Result<(cpal::Device, c
 
     match audio_device.device_type {
         DeviceType::Input => {
-            for device in wasapi_host.input_devices()? {
+            let inputs: Vec<cpal::Device> = wasapi_host.input_devices()?.collect();
+            let names: Vec<String> = inputs.iter().map(|d| d.name().unwrap_or_default()).collect();
+            let chosen = pick_device_index(&names, base_name);
+            for (index, device) in inputs.into_iter().enumerate() {
                 if let Ok(name) = device.name() {
                     info!("Checking input device: {}", name);
-                    // Check if the device name contains our base name
-                    if name == base_name || name.contains(base_name) {
+                    // Exact name first, so "Microphone (X)" is not taken for "Headset Microphone (X)"
+                    if Some(index) == chosen {
                         // info!("Found matching input device: {}", name);
 
                         // Try to get default input config with better error logging

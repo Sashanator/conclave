@@ -190,6 +190,15 @@ If A fails, the stop rule changes to "the meeting window closed" before implemen
   - On the Windows runner: the consent-store reader parses fake entries written to a test key under `HKCU\Software\ConclaveTest\...`, covering packaged and non-packaged entries, in-use and released.
 - **User's PC:** real Zoom, Meet and Teams calls in Ask and Auto mode, including mute, leave, a mic switch mid-call, and a browser call with the call tab inactive.
 
+### 5.6 Dark theme (added 2026-10-13 at the user's request)
+
+The app has no dark theme yet. Tailwind is set to `darkMode: ['class']`, but `globals.css` defines only `:root` colours, and about 600 class usages hard-code light colours (`bg-white`, `text-gray-*` and so on).
+
+- **Setting:** Settings → General → Theme, with **System** (the default, follows Windows' app mode), **Light** and **Dark**. The choice is stored with the other preferences.
+- **Mechanism:** shadcn-style colour tokens in `globals.css`, for both `:root` and `.dark`, plus the `dark` class on `<html>`. Hard-coded colour classes are replaced by tokens (`bg-background`, `text-muted-foreground` and so on) rather than adding `dark:` variants one by one. The BlockNote editor and toasts follow the same theme.
+- **Scope:** every screen, including onboarding, settings, meeting notes, the recording bar and the Ask-mode banner (§5.1). There is no flash of the light theme at startup.
+- **Tests:** a unit test for the theme resolution (system/light/dark → class). The user checks every screen in both themes on their PC.
+
 ## 6. Error handling summary
 
 | Failure | Behaviour |

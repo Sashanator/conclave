@@ -10,6 +10,7 @@ import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { BetaSettings } from '@/components/BetaSettings';
+import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { useConfig } from '@/contexts/ConfigContext';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
 
@@ -40,7 +41,7 @@ export default function SettingsPage() {
           console.log('Loaded saved transcript config:', config);
           setTranscriptModelConfig({
             provider: config.provider || 'localWhisper',
-            model: config.model || 'large-v3',
+            model: config.model || MODEL_DEFAULTS.localWhisper,
             apiKey: config.apiKey || null
           });
         }

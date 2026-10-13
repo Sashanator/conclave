@@ -133,7 +133,7 @@ jobs:
         run: |
           $exe = "target/x86_64-pc-windows-msvc/release/Conclave.exe"
           if (-not (Test-Path $exe)) { Write-Error "Expected $exe (mainBinaryName); found: $(Get-ChildItem target/x86_64-pc-windows-msvc/release/*.exe | Select-Object -ExpandProperty Name)"; exit 1 }
-          $dumpbin =& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
           $imports = & $dumpbin /imports $exe | Out-String
           $split = $imports.IndexOf("Section contains the following delay load imports")
           if ($split -lt 0) { Write-Error "no delay-load import section in $exe"; exit 1 }

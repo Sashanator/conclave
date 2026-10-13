@@ -1157,14 +1157,19 @@ fn validate_external_url(raw: &str) -> Result<url::Url, String> {
     if url.scheme() != "https" || url.host_str().map_or(true, str::is_empty) {
         return Err("Only https links can be opened".to_string());
     }
-    // explorer.exe splits its command line on these; none of the app's links need them.
-    if url.as_str().contains([',', ';', '=']) {
-        return Err("Refusing to open a URL with reserved characters".to_string());
+    // Allow-list on the serialized URL: explorer.exe splits fields on , ; = and the Windows
+    // quoting needs no " or \ in the URL.
+    if !url
+        .as_str()
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+%".contains(c))
+    {
+        return Err("Refusing to open a URL with disallowed characters".to_string());
     }
     Ok(url)
 }
 
-// Quoted as one field: explorer.exe must not split the URL on commas. A serialized url::Url never contains '"'.
+// Quoted as one field so explorer.exe does not split it; validate_external_url guarantees the URL has no '"'.
 #[cfg(windows)]
 fn spawn_opener(url: &url::Url) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
@@ -1428,13 +1433,10 @@ mod external_url_tests {
     }
 
     #[test]
-    fn keeps_cmd_metacharacters_inside_the_single_url_argument() {
-        // Legal in a URL; harmless once no shell is involved.
-        let url = validate_external_url("https://example.com/a&b|c").unwrap();
+    fn keeps_ampersand_inside_the_single_url_argument() {
+        // Legal in a URL and harmless once no shell is involved; '|' is refused by the allow-list.
+        let url = validate_external_url("https://example.com/a&b").unwrap();
         assert_eq!(url.host_str(), Some("example.com"));
-        // The Windows opener wraps the URL in quotes, so a serialized URL must never contain one.
-        let quoted = validate_external_url("https://example.com/a\"b").unwrap();
-        assert!(!quoted.as_str().contains('"'));
     }
 
     #[test]
@@ -1452,6 +1454,10 @@ mod external_url_tests {
             "https://example.com/,/root,C:/Windows",
             "https://example.com/a;b",
             "https://example.com/?a=b",
+            "https://a\"b.com/",
+            "https://a.com/#x\\",
+            "https://a.com/x^y",
+            "https://example.com/a&b|c",
         ] {
             assert!(validate_external_url(bad).is_err(), "accepted {bad:?}");
         }

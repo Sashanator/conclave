@@ -7,7 +7,7 @@ use anyhow::Result;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
+    atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc, Mutex,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -103,27 +103,24 @@ static STOP_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
 /// Set from the entry of every start command until it returns. The meeting detector and the banner check it, so an
 /// automatic start can't land on a recording that is still loading.
-static START_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+/// Counts the start commands in flight. Nested starts (start_recording -> ...) and overlapping ones each count.
+static START_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
 
 pub fn start_in_flight() -> bool {
-    START_IN_FLIGHT.load(Ordering::SeqCst)
+    START_IN_FLIGHT.load(Ordering::SeqCst) > 0
 }
 
-/// Holds `START_IN_FLIGHT` for one start command. A nested start (start_recording -> ...) finds the flag set and
-/// leaves it to the outer call, so only the guard that set it clears it.
-struct StartInFlightGuard {
-    owned: bool,
-}
+/// Counts one start command in `START_IN_FLIGHT` from its entry until it returns or unwinds.
+struct StartInFlightGuard;
 impl StartInFlightGuard {
     fn claim() -> Self {
-        Self { owned: START_IN_FLIGHT.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() }
+        START_IN_FLIGHT.fetch_add(1, Ordering::SeqCst);
+        StartInFlightGuard
     }
 }
 impl Drop for StartInFlightGuard {
     fn drop(&mut self) {
-        if self.owned {
-            START_IN_FLIGHT.store(false, Ordering::SeqCst);
-        }
+        START_IN_FLIGHT.fetch_sub(1, Ordering::SeqCst);
     }
 }
 
@@ -1806,14 +1803,17 @@ mod tests {
     use super::*;
 
     #[test]
-    fn nested_start_calls_leave_the_flag_to_the_outer_call() {
+    fn start_guards_count_nested_and_overlapping_starts() {
         let outer = StartInFlightGuard::claim();
         {
             let _inner = StartInFlightGuard::claim();
             assert!(start_in_flight());
         }
         assert!(start_in_flight(), "the inner return must not clear the outer call's flag");
+        let overlapping = StartInFlightGuard::claim();
         drop(outer);
+        assert!(start_in_flight(), "an overlapping start is still loading");
+        drop(overlapping);
         assert!(!start_in_flight());
     }
 

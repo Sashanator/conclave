@@ -187,10 +187,14 @@ export function DownloadProgressStep() {
           status: 'completed',
           progress: 100,
         }));
-      } else if (
-        !actuallyAvailable &&
-        (parakeetState.status === 'error' || parakeetState.status === 'cancelled')
-      ) {
+      } else if (!actuallyAvailable) {
+        // Stop on any state: a 'completed' card whose file is gone must not reach onboarding.
+        setParakeetDownloaded(false);
+        setParakeetState((prev) => ({
+          ...prev,
+          status: 'error',
+          error: 'Model file missing. Please download the transcription engine.',
+        }));
         toast.error('Transcription engine required', {
           description: 'Please retry the download before continuing.',
         });

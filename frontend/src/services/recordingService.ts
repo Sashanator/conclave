@@ -240,6 +240,24 @@ export class RecordingService {
       callback(event.payload);
     });
   }
+
+  /**
+   * Listen for mic-following event (the recording switched to the call app's mic)
+   */
+  async onMicFollowing(callback: (payload: { device: string; app: string }) => void): Promise<UnlistenFn> {
+    return listen<{ device: string; app: string }>('mic-following', (event) => {
+      callback(event.payload);
+    });
+  }
+
+  /**
+   * Listen for mic-following-warning event (following failed; the recording keeps its current mic)
+   */
+  async onMicFollowingWarning(callback: (payload: { message: string }) => void): Promise<UnlistenFn> {
+    return listen<{ message: string }>('mic-following-warning', (event) => {
+      callback(event.payload);
+    });
+  }
 }
 
 // Export singleton instance

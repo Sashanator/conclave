@@ -14,6 +14,12 @@ describe('mic following line', () => {
     expect(micLine(s, 'Shure MV7')).toBe('🎙 Realtek Mic');
   });
 
+  test('a switch to the device already being followed keeps the following label', () => {
+    let s = reduceMicFollowing(initialMicFollowing, { type: 'following', device: 'Maono DM40', app: 'Zoom' });
+    s = reduceMicFollowing(s, { type: 'switched', device: 'Maono DM40' });
+    expect(micLine(s, 'Shure MV7')).toBe('🎙 Maono DM40 (following Zoom)');
+  });
+
   test('warning is kept until a successful follow or a new recording', () => {
     let s = reduceMicFollowing(initialMicFollowing, { type: 'warning', message: 'Couldn’t tell' });
     expect(s.warning).toBe('Couldn’t tell');

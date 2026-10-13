@@ -147,6 +147,8 @@ pub struct Detector {
     follow_target: Option<String>,
     /// FollowMic actions sent for `follow_target` while the recording was not on it.
     follow_attempts: u8,
+    /// When the last FollowMic was sent. A retry waits `STOP_GRACE_MS` so a switch still running is not raced.
+    follow_last_ms: u64,
     /// The previous step was Off: turning detection back on mid-recording attaches again.
     was_off: bool,
     warned: bool,
@@ -265,9 +267,11 @@ impl Detector {
                     // A new target. The device may be listed only after it is plugged in, so retries follow.
                     self.follow_target = Some(device.clone());
                     self.follow_attempts = 1;
+                    self.follow_last_ms = s.now_ms;
                     vec![Action::FollowMic { app: att.app, device }]
-                } else if self.follow_attempts < 3 {
+                } else if self.follow_attempts < 3 && s.now_ms.saturating_sub(self.follow_last_ms) >= STOP_GRACE_MS {
                     self.follow_attempts += 1;
+                    self.follow_last_ms = s.now_ms;
                     vec![Action::FollowMic { app: att.app, device }]
                 } else {
                     Vec::new()
@@ -564,6 +568,21 @@ mod tests {
         assert!(d.step(&s).is_empty(), "the recording already records from Mic A");
         let s = with_sessions(snap(3000, Mode::Ask, true, vec![zoom()]), &[]);
         assert!(d.step(&s).is_empty(), "the target was reached: a device missing later is not a never-found warning");
+    }
+
+    #[test]
+    fn follow_retries_wait_between_attempts() {
+        let mut d = recording_attached_to_zoom();
+        let on_b = |now_ms| {
+            with_current_mic(with_sessions(snap(now_ms, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic A")]), "Mic B")
+        };
+        assert_eq!(d.step(&on_b(2000)), vec![Action::FollowMic { app: CallApp::Zoom, device: "Mic A".into() }]);
+        assert!(d.step(&on_b(3000)).is_empty(), "the first switch may still be running: no retry after 1 s");
+        assert_eq!(
+            d.step(&on_b(7000)),
+            vec![Action::FollowMic { app: CallApp::Zoom, device: "Mic A".into() }],
+            "retry 5 s after the first"
+        );
     }
 
     #[test]

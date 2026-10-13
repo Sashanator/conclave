@@ -953,16 +953,14 @@ impl WhisperEngine {
         Ok(active_download)
     }
 
-    /// Removes what a failed or cancelled download left behind. The model path is included
-    /// because a failed or cancelled attempt has always left the model Missing.
-    async fn remove_download_files(part_path: &PathBuf, model_path: &PathBuf) {
-        for path in [part_path, model_path] {
-            if path.exists() {
-                if let Err(e) = fs::remove_file(path).await {
-                    log::warn!("Failed to clean up download file {}: {}", path.display(), e);
-                } else {
-                    log::info!("Cleaned up download file: {}", path.display());
-                }
+    /// Removes the partial download. Never touches the final model file: a previously working
+    /// model must survive a failed, cancelled or unpublished download.
+    async fn remove_download_files(part_path: &PathBuf) {
+        if part_path.exists() {
+            if let Err(e) = fs::remove_file(part_path).await {
+                log::warn!("Failed to clean up download file {}: {}", part_path.display(), e);
+            } else {
+                log::info!("Cleaned up download file: {}", part_path.display());
             }
         }
     }
@@ -987,7 +985,7 @@ impl WhisperEngine {
             active_download.completion.send_replace(true);
             if result.is_ok() {
                 // Never report success for a file that was not published.
-                Self::remove_download_files(part_path, model_path).await;
+                Self::remove_download_files(part_path).await;
                 return Err(anyhow!("Download owner was lost before the model was published"));
             }
             return result;
@@ -1024,7 +1022,7 @@ impl WhisperEngine {
         }
 
         if result.is_err() && !active_download.cancellation.is_cancelled() {
-            Self::remove_download_files(part_path, model_path).await;
+            Self::remove_download_files(part_path).await;
         }
 
         let (released_active_owner, cancellation_won) = {
@@ -1038,7 +1036,7 @@ impl WhisperEngine {
                         if result.is_ok() {
                             if let Err(e) = fs::rename(part_path, model_path).await {
                                 result = Err(anyhow!("Failed to publish downloaded model file: {}", e));
-                                Self::remove_download_files(part_path, model_path).await;
+                                Self::remove_download_files(part_path).await;
                             }
                         }
                         active_downloads.remove(model_name);
@@ -1049,7 +1047,7 @@ impl WhisperEngine {
                     log::warn!("Download owner for {} was no longer active during finalization", model_name);
                     if result.is_ok() {
                         result = Err(anyhow!("Download owner was lost before the model was published"));
-                        Self::remove_download_files(part_path, model_path).await;
+                        Self::remove_download_files(part_path).await;
                     }
                     (false, active_download.cancellation.is_cancelled())
                 }
@@ -1058,7 +1056,7 @@ impl WhisperEngine {
 
         if cancellation_won {
             result = Err(DownloadCancelled.into());
-            Self::remove_download_files(part_path, model_path).await;
+            Self::remove_download_files(part_path).await;
 
             let removed = {
                 let mut active_downloads = self.active_downloads.lock().await;
@@ -1817,7 +1815,9 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
         let model_path = dir.path().join("ggml-tiny.bin");
-        std::fs::write(&model_path, vec![0_u8; 2 * 1024 * 1024]).unwrap();
+        let part_path = dir.path().join("ggml-tiny.bin.part");
+        write_valid_model(&model_path);
+        engine.discover_models().await.unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
 
@@ -1838,9 +1838,21 @@ mod tests {
         server.await.unwrap();
 
         assert!(!engine.active_downloads.lock().await.contains_key("tiny"));
-        assert!(!model_path.exists());
+        assert!(model_path.exists(), "a failed re-download must keep the existing model");
+        assert!(!part_path.exists());
         let models = engine.discover_models().await.unwrap();
-        assert!(matches!(tiny_model(&models).status, ModelStatus::Missing));
+        assert!(matches!(tiny_model(&models).status, ModelStatus::Available));
+    }
+
+    fn write_valid_model(path: &PathBuf) {
+        // Valid header and at least 90% of the catalogued size, as discover_models expects.
+        std::fs::write(path, b"ggml\0\0\0\0").unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(path)
+            .unwrap()
+            .set_len(68 * 1024 * 1024)
+            .unwrap();
     }
 
     async fn partial_body_http_server(
@@ -1917,6 +1929,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancelled_redownload_keeps_existing_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Arc::new(WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap());
+        let model_path = dir.path().join("ggml-tiny.bin");
+        let part_path = dir.path().join("ggml-tiny.bin.part");
+        write_valid_model(&model_path);
+        engine.discover_models().await.unwrap();
+        let (url, release, server) = partial_body_http_server(100, &[7_u8; 50]).await;
+
+        let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel::<u8>();
+        let download_engine = Arc::clone(&engine);
+        let download = tokio::spawn(async move {
+            download_engine
+                .download_model_from_url(
+                    "tiny",
+                    &url,
+                    Some(Box::new(move |progress| {
+                        let _ = progress_tx.send(progress);
+                    })),
+                )
+                .await
+        });
+
+        timeout(Duration::from_secs(5), async {
+            while let Some(progress) = progress_rx.recv().await {
+                if progress == 50 {
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("first half of the body should be written");
+        assert!(part_path.exists());
+
+        engine.cancel_download("tiny").await.unwrap();
+        let _ = release.send(());
+        assert!(is_download_cancelled(
+            &timeout(Duration::from_secs(5), download).await.unwrap().unwrap().unwrap_err()
+        ));
+        server.await.unwrap();
+
+        assert!(model_path.exists(), "a cancelled re-download must keep the existing model");
+        assert!(!part_path.exists());
+    }
+
+    #[tokio::test]
     async fn discover_models_ignores_part_files() {
         let dir = tempfile::tempdir().unwrap();
         let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
@@ -1972,5 +2030,32 @@ mod tests {
             tiny_model(&engine.discover_models().await.unwrap()).status,
             ModelStatus::Missing
         ));
+    }
+
+    #[tokio::test]
+    async fn failed_redownload_with_a_part_file_keeps_existing_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
+        let model_path = dir.path().join("ggml-tiny.bin");
+        let part_path = dir.path().join("ggml-tiny.bin.part");
+        write_valid_model(&model_path);
+        std::fs::write(&part_path, b"ggml\0\0\0\0").unwrap();
+
+        engine.discover_models().await.unwrap();
+        let active_download = engine.reserve_active_download("tiny").await.unwrap();
+        engine
+            .finish_download(
+                "tiny",
+                &active_download,
+                &part_path,
+                &model_path,
+                Err(anyhow!("Failed to read chunk: connection reset")),
+            )
+            .await
+            .unwrap_err();
+
+        assert!(model_path.exists(), "a failed re-download must keep the existing model");
+        assert!(!part_path.exists());
+        assert!(!engine.active_downloads.lock().await.contains_key("tiny"));
     }
 }

@@ -55,6 +55,15 @@ pub struct Detected {
     pub certain: bool,
 }
 
+/// Google Meet tabs read "Meet - <code>" or name Google Meet; a bare "Meet" also matches "Meetup" and "Meeting notes".
+fn is_meet_title(t: &str) -> bool {
+    t.starts_with("Meet - ")
+        || t.starts_with("Meet – ")
+        || t.starts_with("Meet — ")
+        || t.contains("Google Meet")
+        || t.contains("meet.google.com")
+}
+
 /// Classifies one consent-store entry. `titles` are the browser's window titles (ignored for other apps).
 /// Anything that is not a call app (Conclave itself, OBS, Notion…) gives `None`.
 pub fn classify(user: &MicUser, titles: &[String]) -> Option<Detected> {
@@ -74,7 +83,7 @@ pub fn classify(user: &MicUser, titles: &[String]) -> Option<Detected> {
         // Teams first: Teams meeting titles ("Meeting with … | Microsoft Teams") also contain "Meet".
         if titles.iter().any(|t| t.contains("Microsoft Teams")) {
             (CallApp::Teams, true, user.app.as_str())
-        } else if titles.iter().any(|t| t.contains("Meet")) {
+        } else if titles.iter().any(|t| is_meet_title(t)) {
             (CallApp::Meet, true, user.app.as_str())
         } else {
             (CallApp::Browser, false, user.app.as_str())
@@ -129,6 +138,8 @@ pub struct Detector {
     was_recording: bool,
     followed: Option<String>,
     warned: bool,
+    /// Set by a Stop until the recording ends: a call rejoined while the save runs is offered afterwards.
+    stopping: bool,
 }
 
 impl Detector {
@@ -154,6 +165,9 @@ impl Detector {
 
         let started = s.recording && !self.was_recording;
         self.was_recording = s.recording;
+        if !s.recording {
+            self.stopping = false;
+        }
         if s.mode == Mode::Off || !s.recording {
             self.detach();
         }
@@ -162,12 +176,18 @@ impl Detector {
         }
 
         if s.recording {
+            // The save after an auto-stop still counts as recording: nothing is seen until it ends.
+            if self.stopping {
+                return Vec::new();
+            }
             // A manual start during a detected call attaches too (spec §5.1, Stop).
             if started {
+                // An uncertain browser is kept only when no certain call is in use.
                 self.attached = self
                     .offered
                     .as_ref()
                     .and_then(|p| s.in_use.iter().find(|d| &d.path == p))
+                    .filter(|d| d.certain || !s.in_use.iter().any(|x| x.certain))
                     .or_else(|| s.in_use.iter().find(|d| d.certain))
                     .cloned();
             }
@@ -202,6 +222,7 @@ impl Detector {
             let since = *self.released_at.get_or_insert(s.now_ms);
             if s.now_ms.saturating_sub(since) >= STOP_GRACE_MS {
                 self.detach();
+                self.stopping = true;
                 return vec![Action::Stop { app: att.app }];
             }
             return Vec::new();
@@ -285,6 +306,23 @@ mod tests {
         assert_eq!((meet.app, meet.certain, meet.exe.as_str()), (CallApp::Meet, true, "chrome.exe"));
         let teams = classify(&chrome, &["Meeting with Anna | Microsoft Teams".into()]).unwrap();
         assert_eq!(teams.app, CallApp::Teams, "Teams wins over the 'Meet' in 'Meeting'");
+        for title in [
+            "Meet – abc-defg-hij - Google Chrome",
+            "Meet — abc-defg-hij - Google Chrome",
+            "Google Meet - Google Chrome",
+            "meet.google.com/abc-defg-hij - Google Chrome",
+        ] {
+            assert_eq!(classify(&chrome, &[title.into()]).unwrap().app, CallApp::Meet, "{title}");
+        }
+    }
+
+    #[test]
+    fn browser_titles_that_only_mention_meet_are_uncertain() {
+        let chrome = user("chrome.exe", r"C:\Chrome\chrome.exe", false);
+        for title in ["Meeting notes - Google Docs - Google Chrome", "Meetup - Google Chrome"] {
+            let d = classify(&chrome, &[title.into()]).unwrap();
+            assert_eq!((d.app, d.certain), (CallApp::Browser, false), "{title}");
+        }
     }
 
     #[test]
@@ -397,6 +435,34 @@ mod tests {
         d.step(&snap(0, Mode::Ask, false, vec![browser()]));
         d.step(&snap(1000, Mode::Ask, true, vec![browser()]));
         assert_eq!(d.attached(), Some(&browser()), "Record on its banner: attached");
+    }
+
+    #[test]
+    fn manual_start_prefers_a_certain_call_over_an_offered_browser() {
+        let mut d = Detector::new();
+        d.step(&snap(0, Mode::Ask, false, vec![browser()]));
+        d.step(&snap(1000, Mode::Ask, true, vec![browser(), zoom()]));
+        assert_eq!(d.attached(), Some(&zoom()), "the browser would stop the recording when it releases the mic");
+    }
+
+    #[test]
+    fn rejoin_after_auto_stop_is_offered_once_the_save_finishes() {
+        let mut d = recording_attached_to_zoom();
+        d.step(&snap(2000, Mode::Ask, true, vec![]));
+        assert_eq!(d.step(&snap(7000, Mode::Ask, true, vec![])), vec![Action::Stop { app: CallApp::Zoom }]);
+        assert!(d.step(&snap(20_000, Mode::Ask, true, vec![zoom()])).is_empty(), "rejoined while the save runs");
+        assert!(d.step(&snap(40_000, Mode::Ask, true, vec![zoom()])).is_empty(), "still saving");
+        assert_eq!(
+            d.step(&snap(41_000, Mode::Ask, false, vec![zoom()])),
+            vec![Action::Prompt { app: CallApp::Zoom, certain: true }]
+        );
+    }
+
+    #[test]
+    fn manual_stop_during_a_call_is_not_offered_again() {
+        let mut d = recording_attached_to_zoom();
+        assert!(d.step(&snap(2000, Mode::Ask, true, vec![zoom()])).is_empty());
+        assert!(d.step(&snap(3000, Mode::Ask, false, vec![zoom()])).is_empty(), "manual stop: no prompt");
     }
 
     #[test]

@@ -128,7 +128,7 @@ Setting: **Auto-detect meetings: Off / Ask (default) / Auto-record.**
 |---|---|---|
 | `Zoom.exe` | Zoom | yes |
 | New Teams (packaged app `MSTeams_*`) or `ms-teams.exe` | Teams | yes |
-| Browser (`chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`) with a window title containing "Meet" or "Microsoft Teams" | Meet / Teams | yes |
+| Browser (`chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`) with a window title starting with "Meet -" / "Meet –" or containing "Google Meet" or "Microsoft Teams" | Meet / Teams | yes |
 | Browser with no matching title | "Browser is using the microphone" | no |
 | Conclave itself | ignored | — |
 

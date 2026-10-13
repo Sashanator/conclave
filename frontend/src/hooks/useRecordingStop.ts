@@ -12,6 +12,7 @@ import {
   applyPinnedSummaryLanguageToMeeting,
   detectAndCacheSummaryLanguage,
 } from '@/lib/summary-language-preferences';
+import { endStop, tryBeginStop } from '@/lib/recording-stop-gate';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -68,9 +69,6 @@ export function useRecordingStop(
 
   const router = useRouter();
 
-  // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously)
-  const stopInProgressRef = useRef(false);
-
   // Promise to track recording-stopped event data (fixes race condition with recording-stop-complete)
   const recordingStoppedDataRef = useRef<Promise<void> | null>(null);
 
@@ -118,17 +116,17 @@ export function useRecordingStop(
 
   // Main recording stop handler
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {
+    // Guard: one save at a time across every instance (UI and tray stops both reach here). A refused call
+    // returns before it touches the post-processing flag, which only the owner clears.
+    if (!tryBeginStop()) {
+      return;
+    }
     // Keeps meeting detection from starting a recording over this save (cleared in finally).
     invoke('set_recording_post_processing', { active: true }).catch(() => {});
     if (recordingStoppedDataRef.current) {
-      await recordingStoppedDataRef.current;
+      // A failed data write must not leave the gate held: the save reads sessionStorage either way.
+      await recordingStoppedDataRef.current.catch((error) => console.error('Recording-stopped data unavailable:', error));
     }
-
-    // Guard: prevent duplicate/concurrent stop calls
-    if (stopInProgressRef.current) {
-      return;
-    }
-    stopInProgressRef.current = true;
 
     // Set status to STOPPING immediately
     setStatus(RecordingStatus.STOPPING);
@@ -366,7 +364,7 @@ export function useRecordingStop(
       setIsRecordingDisabled(false);
     } finally {
       // Always reset the guard flag when done
-      stopInProgressRef.current = false;
+      endStop();
       invoke('set_recording_post_processing', { active: false }).catch(() => {});
     }
   }, [

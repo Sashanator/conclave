@@ -97,6 +97,27 @@ impl Drop for StoppingGuard {
     }
 }
 
+/// Set from the entry of a `stop_recording` call until it returns. Its `compare_exchange` is the single-flight
+/// gate: the tray stop and the UI Stop can both arrive, and the second must not run the tail again.
+static STOP_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+/// Clears `STOP_IN_FLIGHT` when the stop that claimed it returns or unwinds.
+struct StopInFlightGuard;
+impl StopInFlightGuard {
+    /// `None` while another stop is in flight.
+    fn claim() -> Option<Self> {
+        STOP_IN_FLIGHT
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()
+            .map(|_| StopInFlightGuard)
+    }
+}
+impl Drop for StopInFlightGuard {
+    fn drop(&mut self) {
+        STOP_IN_FLIGHT.store(false, Ordering::SeqCst);
+    }
+}
+
 /// Shared start-path finalize. Both start commands MUST call this so a new
 /// start path can't silently ship with a per-session flag left unreset (e.g.
 /// the mic-recovery budget already exhausted).
@@ -683,6 +704,11 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
 pub async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
+    // Before anything else: a second stop must not touch the post-processing flag or run the tail again.
+    let Some(_stop_guard) = StopInFlightGuard::claim() else {
+        info!("Stop already in progress, ignoring this one");
+        return Ok(());
+    };
     // Set before the stop clears IS_RECORDING, so a detector start can't land in the gap; the frontend clears it
     // after the save. Only a real stop claims it: a no-op stop would otherwise leave it set with no save to clear it.
     let claimed = IS_RECORDING.load(Ordering::SeqCst);
@@ -1694,5 +1720,19 @@ async fn trigger_mic_fallback_to_default<R: Runtime>(
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_second_stop_is_refused_until_the_first_returns() {
+        let first = StopInFlightGuard::claim();
+        assert!(first.is_some());
+        assert!(StopInFlightGuard::claim().is_none(), "refused while the first stop runs");
+        drop(first);
+        assert!(StopInFlightGuard::claim().is_some(), "accepted once the first has returned");
     }
 }

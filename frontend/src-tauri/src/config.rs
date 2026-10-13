@@ -11,6 +11,13 @@ pub const DEFAULT_WHISPER_MODEL: &str = "large-v3-turbo";
 /// This is the quantized version optimized for speed.
 pub const DEFAULT_PARAKEET_MODEL: &str = "parakeet-tdt-0.6b-v3-int8";
 
+/// Default transcription provider for a new install (no saved transcript config).
+pub const DEFAULT_TRANSCRIPT_PROVIDER: &str = "localWhisper";
+
+/// Default summary provider and model for a new install. No API key is stored until the user adds one.
+pub const DEFAULT_SUMMARY_PROVIDER: &str = "claude";
+pub const DEFAULT_SUMMARY_MODEL: &str = "claude-haiku-5-5";
+
 /// Whisper model catalog with metadata for all supported models.
 /// Used by both WhisperEngine::discover_models() and discover_models_standalone().
 ///
@@ -34,3 +41,14 @@ pub const WHISPER_MODEL_CATALOG: &[(&str, &str, u32, &str, &str, &str)] = &[
     ("large-v3-turbo-q5_0", "ggml-large-v3-turbo-q5_0.bin", 547, "High", "Medium", "Quantized large model, best balance"),
     ("large-v3-q5_0", "ggml-large-v3-q5_0.bin", 1031, "High", "Slow", "Quantized large model, high accuracy"),
 ];
+
+#[cfg(test)]
+mod default_tests {
+    use super::*;
+
+    #[test]
+    fn default_transcription_is_a_catalogued_whisper_model() {
+        assert_eq!(DEFAULT_TRANSCRIPT_PROVIDER, "localWhisper");
+        assert!(WHISPER_MODEL_CATALOG.iter().any(|m| m.0 == DEFAULT_WHISPER_MODEL));
+    }
+}

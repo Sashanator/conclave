@@ -634,8 +634,8 @@ pub async fn api_get_transcript_config<R: Runtime>(
         Ok(None) => {
             log_info!("No transcript config found, returning default.");
             Ok(Some(TranscriptConfig {
-                provider: "parakeet".to_string(),
-                model: crate::config::DEFAULT_PARAKEET_MODEL.to_string(),
+                provider: crate::config::DEFAULT_TRANSCRIPT_PROVIDER.to_string(),
+                model: crate::config::DEFAULT_WHISPER_MODEL.to_string(),
                 api_key: None,
             }))
         }
@@ -1145,23 +1145,76 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
     }
 }
 
+/// Only https links leave the app; the webview is not trusted to choose schemes or shells.
+fn validate_external_url(raw: &str) -> Result<url::Url, String> {
+    if raw.is_empty()
+        || raw.trim() != raw
+        || raw.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err("Refusing to open a malformed URL".to_string());
+    }
+    let url = url::Url::parse(raw).map_err(|e| format!("Invalid URL: {e}"))?;
+    if url.scheme() != "https" || url.host_str().map_or(true, str::is_empty) {
+        return Err("Only https links can be opened".to_string());
+    }
+    // Defence in depth: the opener does no command-line parsing, so this only keeps the URL to
+    // the RFC 3986 character set.
+    if !url
+        .as_str()
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c))
+    {
+        return Err("Refusing to open a URL with disallowed characters".to_string());
+    }
+    Ok(url)
+}
+
+// ShellExecute hands the URL to the registered https handler, with no command-line parsing.
+#[cfg(windows)]
+fn spawn_opener(url: &url::Url) -> std::io::Result<()> {
+    use windows::core::{w, HSTRING};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // SAFETY: all pointers are valid for the call; the HSTRING outlives it.
+    let code = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(url.as_str()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = code.0 as usize;
+    if code <= 32 {
+        return Err(std::io::Error::other(format!(
+            "ShellExecuteW failed with code {code}"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_opener(url: &url::Url) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .arg(url.as_str())
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn spawn_opener(url: &url::Url) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(url.as_str())
+        .spawn()
+        .map(|_| ())
+}
+
 #[tauri::command]
 pub async fn open_external_url(url: String) -> Result<(), String> {
-    use std::process::Command;
-
-    let result = if cfg!(target_os = "windows") {
-        Command::new("cmd").args(&["/C", "start", &url]).output()
-    } else if cfg!(target_os = "macos") {
-        Command::new("open").arg(&url).output()
-    } else {
-        // Linux and other Unix-like systems
-        Command::new("xdg-open").arg(&url).output()
-    };
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("Failed to open URL: {}", e)),
-    }
+    let url = validate_external_url(&url)?;
+    spawn_opener(&url).map_err(|e| format!("Failed to open URL: {}", e))
 }
 
 // ===== CUSTOM OPENAI API COMMANDS =====
@@ -1378,6 +1431,61 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
             } else {
                 Err(format!("Connection failed: {}", e))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn accepts_https_urls_used_by_the_app() {
+        assert!(validate_external_url("https://ollama.com/download").is_ok());
+        assert!(validate_external_url(
+            "https://github.com/Sashanator/conclave/blob/main/CUDA_SETUP.md"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn accepts_rfc3986_delimiters_in_query_and_path() {
+        for good in [
+            "https://example.com/?a=b",
+            "https://example.com/a;b",
+            "https://example.com/,x",
+            "https://example.com/,/root,C:/Windows",
+            "https://example.com/?tab=readme",
+        ] {
+            assert!(validate_external_url(good).is_ok(), "refused {good:?}");
+        }
+    }
+
+    #[test]
+    fn keeps_ampersand_inside_the_single_url_argument() {
+        // Legal in a URL and harmless once no shell is involved; '|' is refused by the allow-list.
+        let url = validate_external_url("https://example.com/a&b").unwrap();
+        assert_eq!(url.host_str(), Some("example.com"));
+    }
+
+    #[test]
+    fn rejects_non_https_and_malformed_input() {
+        for bad in [
+            "http://example.com",
+            "file:///C:/Windows/System32/calc.exe",
+            "javascript:alert(1)",
+            "ms-settings:privacy",
+            "https://",
+            "",
+            " https://example.com",
+            "https://example.com\n",
+            "https://exa mple.com",
+            "https://a\"b.com/",
+            "https://a.com/#x\\",
+            "https://a.com/x^y",
+            "https://example.com/a&b|c",
+        ] {
+            assert!(validate_external_url(bad).is_err(), "accepted {bad:?}");
         }
     }
 }

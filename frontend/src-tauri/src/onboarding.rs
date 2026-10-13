@@ -5,6 +5,7 @@ use log::{info, warn, error};
 use anyhow::Result;
 
 use crate::state::AppState;
+use crate::config::{DEFAULT_SUMMARY_MODEL, DEFAULT_SUMMARY_PROVIDER, DEFAULT_TRANSCRIPT_PROVIDER, DEFAULT_WHISPER_MODEL};
 use crate::database::repositories::setting::SettingsRepository;
 
 
@@ -19,8 +20,9 @@ pub struct OnboardingStatus {
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default)]
 pub struct ModelStatus {
+    // Stored name kept for compatibility with existing onboarding-status.json; means the transcription model.
     pub parakeet: String,  // "downloaded" | "not_downloaded" | "downloading"
-    pub summary: String,   // Generic field for summary model (Qwen 3.5 or legacy Gemma variants)
+    pub summary: String,   // Unused since v0.2.1 (no local summary model); kept for stored-status compatibility
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_summary_model: Option<String>,
 }
@@ -167,40 +169,44 @@ pub async fn reset_onboarding_status_cmd<R: Runtime>(
         .map_err(|e| format!("Failed to reset onboarding status: {}", e))
 }
 
+/// Saves first-run defaults without overwriting anything the user already configured.
+pub(crate) async fn save_onboarding_defaults(pool: &sqlx::SqlitePool) -> Result<(), sqlx::Error> {
+    SettingsRepository::save_transcript_config(
+        pool,
+        DEFAULT_TRANSCRIPT_PROVIDER,
+        DEFAULT_WHISPER_MODEL,
+    )
+    .await?;
+    info!("Saved transcription defaults: provider={}, model={}", DEFAULT_TRANSCRIPT_PROVIDER, DEFAULT_WHISPER_MODEL);
+
+    if SettingsRepository::get_model_config(pool).await?.is_none() {
+        SettingsRepository::save_model_config(
+            pool,
+            DEFAULT_SUMMARY_PROVIDER,
+            DEFAULT_SUMMARY_MODEL,
+            DEFAULT_WHISPER_MODEL,
+            None,
+        )
+        .await?;
+        info!("Saved default summary config: provider={}, model={}", DEFAULT_SUMMARY_PROVIDER, DEFAULT_SUMMARY_MODEL);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn complete_onboarding<R: Runtime>(
     app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
-    model: String,
 ) -> Result<(), String> {
-    info!("Completing onboarding with builtin-ai model: {}", model);
+    info!("Completing onboarding");
 
-    // Step 1: Save model configuration to SQLite database FIRST
-    let pool = state.db_manager.pool();
-
-    // Onboarding always uses builtin-ai (local LLM)
-    if let Err(e) = SettingsRepository::save_model_config(
-        pool,
-        "builtin-ai",
-        &model,
-        "large-v3",
-        None,
-    ).await {
-        error!("Failed to save builtin-ai model config: {}", e);
-        return Err(format!("Failed to save builtin-ai model config: {}", e));
-    }
-    info!("Saved builtin-ai model config: model={}", model);
-
-    // Save transcription model config (parakeet provider) - always parakeet
-    if let Err(e) = SettingsRepository::save_transcript_config(
-        pool,
-        "parakeet",
-        crate::config::DEFAULT_PARAKEET_MODEL,
-    ).await {
-        error!("Failed to save transcription model config: {}", e);
-        return Err(format!("Failed to save transcription model config: {}", e));
-    }
-    info!("Saved transcription model config: provider=parakeet, model={}", crate::config::DEFAULT_PARAKEET_MODEL);
+    // Step 1: Save defaults to SQLite FIRST
+    save_onboarding_defaults(state.db_manager.pool())
+        .await
+        .map_err(|e| {
+            error!("Failed to save onboarding defaults: {}", e);
+            format!("Failed to save onboarding defaults: {}", e)
+        })?;
 
     // Step 2: Only NOW mark onboarding as complete (after DB operations succeed)
     let mut status = load_onboarding_status(&app)
@@ -209,21 +215,59 @@ pub async fn complete_onboarding<R: Runtime>(
 
     status.completed = true;
     status.current_step = 4; // Max step (4 on macOS with permissions, 3 on other platforms)
+    // Stored field name kept for compatibility; it means the transcription model.
     status.model_status.parakeet = "downloaded".to_string();
-    status.model_status.summary = "downloaded".to_string();
-    status.model_status.selected_summary_model = Some(model.clone());
+    status.model_status.summary = "not_used".to_string();
+    status.model_status.selected_summary_model = None;
 
     save_onboarding_status(&app, &status)
         .await
         .map_err(|e| format!("Failed to save completed onboarding status: {}", e))?;
 
-    info!("Onboarding completed successfully with model: {}", model);
+    info!("Onboarding completed successfully");
     Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    async fn test_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn empty_db_gets_local_whisper_and_claude_haiku() {
+        let pool = test_pool().await;
+        save_onboarding_defaults(&pool).await.unwrap();
+
+        let transcript = SettingsRepository::get_transcript_config(&pool).await.unwrap().unwrap();
+        assert_eq!(transcript.provider, "localWhisper");
+        assert_eq!(transcript.model, "large-v3-turbo");
+
+        let model = SettingsRepository::get_model_config(&pool).await.unwrap().unwrap();
+        assert_eq!(model.provider, "claude");
+        assert_eq!(model.model, "claude-haiku-5-5");
+    }
+
+    #[tokio::test]
+    async fn saved_summary_config_and_api_key_are_kept() {
+        let pool = test_pool().await;
+        SettingsRepository::save_model_config(&pool, "openai", "gpt-x", "large-v3", None).await.unwrap();
+        SettingsRepository::save_api_key(&pool, "claude", "sk-test").await.unwrap();
+
+        save_onboarding_defaults(&pool).await.unwrap();
+
+        let model = SettingsRepository::get_model_config(&pool).await.unwrap().unwrap();
+        assert_eq!(model.provider, "openai");
+        assert_eq!(model.model, "gpt-x");
+        assert_eq!(
+            SettingsRepository::get_api_key(&pool, "claude").await.unwrap().as_deref(),
+            Some("sk-test")
+        );
+    }
 
     #[test]
     fn onboarding_status_deserializes_without_selected_summary_model() {

@@ -1,6 +1,7 @@
 {
     "$schema": "../node_modules/@tauri-apps/cli/config.schema.json",
     "productName": "Conclave",
+    "mainBinaryName": "Conclave",
     "version": "0.4.1",
     "identifier": "com.conclave.app",
     "build": {

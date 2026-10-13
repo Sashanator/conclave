@@ -132,9 +132,9 @@ Setting: **Auto-detect meetings: Off / Ask (default) / Auto-record.**
 | Browser with no matching title | "Browser is using the microphone" | no |
 | Conclave itself | ignored | — |
 
-- **Ask mode:** a Windows notification such as "Zoom meeting detected. Click to record". Clicking it brings Conclave's window forward with the meeting title pre-filled and a Record button. A meeting that was dismissed or ignored is not prompted again until its app releases the mic.
+- **Ask mode:** Conclave's own banner at the **top centre of the primary monitor**, like Notion AI Meeting Notes, not a Windows notification: "Zoom meeting detected" with **Record** and **Dismiss** buttons. It is a small, borderless, always-on-top Tauri window that does not take keyboard focus from the call and hides itself after about 15 seconds. **Record** starts recording with the meeting title pre-filled, without bringing the main window forward. A meeting that was dismissed or ignored is not prompted again until its app releases the mic.
 - **Auto-record mode:** recording starts at once for certain detections. An uncertain detection always prompts, as in Ask mode.
-- **Stop:** when a recording has a detected call app attached, recording stops **5 seconds after that app releases the mic**. The grace period covers headset switches. This applies however the recording was started, including manually during a detected call. The usual Meetily flow (save, transcribe, summarize) then runs, and a notification says "\<App\> meeting ended. Notes are being generated."
+- **Stop:** when a recording has a detected call app attached, recording stops **5 seconds after that app releases the mic**. The grace period covers headset switches. This applies however the recording was started, including manually during a detected call. The usual Meetily flow (save, transcribe, summarize) then runs, and the same banner says "\<App\> meeting ended. Notes are being generated."
 - Muting in the call app does not release the mic, so it does not stop the recording. Pre-flight check A (§5.4) verifies this.
 - A recording with no call app ever attached (for example, recording a video) is never stopped automatically.
 - **While a recording is active, new detections are ignored.** Overlapping calls are not handled.
@@ -181,7 +181,7 @@ The user runs it in about 10 minutes during the Phase 0 checkpoint session:
 - **C.** Audio-session listing shows the call app on the correct capture device, and the device changes when the user switches mic in the app.
 - **D.** Meetily's notifications support click-to-open on Windows.
 
-If A fails, the stop rule changes to "the meeting window closed" before implementation continues. If B fails, the 5-second re-read becomes the main mechanism. If D fails, Ask mode brings the Conclave window to the front with the prompt instead of using a clickable notification. Any change goes back to the user before implementation continues.
+If A fails, the stop rule changes to "the meeting window closed" before implementation continues. If B fails, the 5-second re-read becomes the main mechanism. D failed on 2026-10-13 (clicking a Windows notification does nothing), so Ask mode uses Conclave's own top-centre banner (see Ask mode above), as the user chose. Any change goes back to the user before implementation continues.
 
 ### 5.5 Tests
 
@@ -189,6 +189,15 @@ If A fails, the stop rule changes to "the meeting window closed" before implemen
   - `classify.rs` cases: Zoom; packaged Teams; a browser with a Meet title; a browser with a Teams title; a browser with no match (uncertain → prompt even in Auto); Conclave ignored; Off/Ask/Auto decisions; no repeat prompt after dismissal; stop exactly after 5 seconds of release; a release shorter than 5 seconds does not stop; a recording without an attached app never auto-stops; detections are ignored while recording; mic following turns off after a manual pick.
   - On the Windows runner: the consent-store reader parses fake entries written to a test key under `HKCU\Software\ConclaveTest\...`, covering packaged and non-packaged entries, in-use and released.
 - **User's PC:** real Zoom, Meet and Teams calls in Ask and Auto mode, including mute, leave, a mic switch mid-call, and a browser call with the call tab inactive.
+
+### 5.6 Dark theme (added 2026-10-13 at the user's request)
+
+The app has no dark theme yet. Tailwind is set to `darkMode: ['class']`, but `globals.css` defines only `:root` colours, and about 600 class usages hard-code light colours (`bg-white`, `text-gray-*` and so on).
+
+- **Setting:** Settings → General → Theme, with **System** (the default, follows Windows' app mode), **Light** and **Dark**. The choice is stored with the other preferences.
+- **Mechanism:** shadcn-style colour tokens in `globals.css`, for both `:root` and `.dark`, plus the `dark` class on `<html>`. Hard-coded colour classes are replaced by tokens (`bg-background`, `text-muted-foreground` and so on) rather than adding `dark:` variants one by one. The BlockNote editor and toasts follow the same theme.
+- **Scope:** every screen, including onboarding, settings, meeting notes, the recording bar and the Ask-mode banner (§5.1). There is no flash of the light theme at startup.
+- **Tests:** a unit test for the theme resolution (system/light/dark → class). The user checks every screen in both themes on their PC.
 
 ## 6. Error handling summary
 

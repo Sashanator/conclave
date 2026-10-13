@@ -10,6 +10,7 @@ import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SettingTabs } from '../SettingTabs';
 import { TranscriptModelProps } from '@/components/TranscriptSettings';
 import { invoke } from '@tauri-apps/api/core';
+import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -71,8 +72,8 @@ const Sidebar: React.FC = () => {
     ollamaEndpoint: null
   });
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
-    provider: 'parakeet',
-    model: 'parakeet-tdt-0.6b-v3-int8',
+    provider: 'localWhisper',
+    model: MODEL_DEFAULTS.localWhisper,
   });
   const [settingsSaveSuccess, setSettingsSaveSuccess] = useState<boolean | null>(null);
 

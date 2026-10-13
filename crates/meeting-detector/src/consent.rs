@@ -11,6 +11,8 @@ const BROWSERS: [&str; 4] = ["chrome.exe", "msedge.exe", "firefox.exe", "brave.e
 pub struct MicUser {
     /// Lowercase exe file name (desktop apps) or package family name (packaged apps).
     pub app: String,
+    /// Full exe path (desktop apps) or package family name (packaged apps). Tells apps with the same exe name apart.
+    pub path: String,
     pub packaged: bool,
     pub in_use: bool,
 }
@@ -19,6 +21,11 @@ pub struct MicUser {
 pub fn app_name_from_key(key: &str, packaged: bool) -> String {
     let name = if packaged { key } else { key.rsplit('#').next().unwrap_or(key) };
     name.to_lowercase()
+}
+
+/// Full exe path for NonPackaged keys (`C:#dir#app.exe` → `C:\dir\app.exe`); the family name for packaged apps.
+pub fn path_from_key(key: &str, packaged: bool) -> String {
+    if packaged { key.to_string() } else { key.replace('#', "\\") }
 }
 
 /// FILETIME stamps: in use while the last start is newer than the last stop (stop == 0 means never stopped).
@@ -43,6 +50,27 @@ mod tests {
     #[test]
     fn packaged_key_is_lowercased_family_name() {
         assert_eq!(app_name_from_key("MSTeams_8wekyb3d8bbwe", true), "msteams_8wekyb3d8bbwe");
+    }
+
+    #[test]
+    fn nonpackaged_key_decodes_to_full_path() {
+        assert_eq!(
+            path_from_key(r"C:#Program Files#Zoom#bin#Zoom.exe", false),
+            r"C:\Program Files\Zoom\bin\Zoom.exe"
+        );
+    }
+
+    #[test]
+    fn same_exe_name_in_two_folders_gives_two_paths() {
+        let a = path_from_key(r"C:#Users#me#AppData#Local#meetily#meetily.exe", false);
+        let b = path_from_key(r"C:#Program Files#Conclave#meetily.exe", false);
+        assert_ne!(a, b);
+        assert_eq!(app_name_from_key(r"C:#Program Files#Conclave#meetily.exe", false), "meetily.exe");
+    }
+
+    #[test]
+    fn packaged_key_path_is_the_family_name() {
+        assert_eq!(path_from_key("Microsoft.Teams_8wekyb3d8bbwe", true), "Microsoft.Teams_8wekyb3d8bbwe");
     }
 
     #[test]

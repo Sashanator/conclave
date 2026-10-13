@@ -6,6 +6,7 @@ import { SelectedDevices } from '@/components/DeviceSelection';
 import { configService, ModelConfig } from '@/services/configService';
 import { invoke } from '@tauri-apps/api/core';
 import { BetaFeatures, BetaFeatureKey, loadBetaFeatures, saveBetaFeatures } from '@/types/betaFeatures';
+import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 
 export interface OllamaModel {
   name: string;
@@ -98,10 +99,11 @@ const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
   // Model configuration state
+  // Initial state only (until loaded from the DB); matches the Rust DEFAULT_SUMMARY_* constants
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
-    provider: 'ollama',
-    model: 'llama3.2:latest',
-    whisperModel: 'large-v3',
+    provider: 'claude',
+    model: 'claude-haiku-5-5',
+    whisperModel: 'large-v3-turbo',
     ollamaEndpoint: null
   });
   const [isModelConfigLoading, setIsModelConfigLoading] = useState(true);
@@ -109,8 +111,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
 
   // Transcript model configuration state
   const [transcriptModelConfig, setTranscriptModelConfig] = useState<TranscriptModelProps>({
-    provider: 'parakeet',
-    model: 'parakeet-tdt-0.6b-v3-int8',
+    provider: 'localWhisper',
+    model: MODEL_DEFAULTS.localWhisper,
     apiKey: null
   });
 
@@ -160,9 +162,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const [isAutoSummary, setisAutoSummary] = useState<boolean>(() => {
     if (typeof window !== 'undefined') {
       const saved = localStorage.getItem('isAutoSummary');
-      return saved !== null ? saved === 'true' : false
+      return saved !== null ? saved === 'true' : true
     }
-    return false;
+    return true;
   });
 
   // Beta features state (localStorage)
@@ -201,8 +203,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         if (config) {
           console.log('[ConfigContext] Loaded saved transcript config:', config);
           setTranscriptModelConfig({
-            provider: config.provider || 'parakeet',
-            model: config.model || 'parakeet-tdt-0.6b-v3-int8',
+            provider: config.provider || 'localWhisper',
+            model: config.model || MODEL_DEFAULTS.localWhisper,
             apiKey: config.apiKey || null
           });
         }
@@ -368,7 +370,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   // Calculate model options based on available models
   const modelOptions: Record<ModelConfig['provider'], string[]> = {
     ollama: models.map(model => model.name),
-    claude: ['claude-3-5-sonnet-latest'],
+    claude: ['claude-haiku-5-5', 'claude-sonnet-5-5', 'claude-opus-5-5', 'claude-fable-5-1'],
     groq: ['llama-3.3-70b-versatile'],
     openrouter: [],
     openai: ['gpt-4', 'gpt-4-turbo', 'gpt-3.5-turbo'],

@@ -124,14 +124,15 @@ jobs:
           args: --target x86_64-pc-windows-msvc --bundles nsis --features cuda ${{ steps.portability.outputs.args }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Conclave {0}', github.ref_name) || '' }}
-          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 toolkit (cuBLAS) — see CUDA_SETUP.md in the repo; without it Whisper runs on CPU. Update by running the new setup over the old one.'
+          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 toolkit (cuBLAS) — see CUDA_SETUP.md in the repo; without it Whisper runs on CPU. To update: quit Conclave from the tray icon (right-click → Quit), uninstall the old version in Windows Settings → Apps and leave ''delete app data'' unticked (meetings, settings and models are kept), then run this setup. Summaries use your own cloud LLM key: Settings → Summary (default Claude Haiku 5.5).'
           releaseDraft: true
           includeUpdaterJson: false
 
       - name: Verify CUDA DLLs are delay-loaded, not hard imports
         shell: pwsh
         run: |
-          $exe = "target/x86_64-pc-windows-msvc/release/meetily.exe"
+          $exe = "target/x86_64-pc-windows-msvc/release/Conclave.exe"
+          if (-not (Test-Path $exe)) { Write-Error "Expected $exe (mainBinaryName); found: $(Get-ChildItem target/x86_64-pc-windows-msvc/release/*.exe | Select-Object -ExpandProperty Name)"; exit 1 }
           $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
           $imports = & $dumpbin /imports $exe | Out-String
           $split = $imports.IndexOf("Section contains the following delay load imports")
@@ -150,7 +151,8 @@ jobs:
         shell: pwsh
         run: |
           # Simulate the installed layout: cudart sits next to the exe.
-          $exe = "target/x86_64-pc-windows-msvc/release/meetily.exe"
+          $exe = "target/x86_64-pc-windows-msvc/release/Conclave.exe"
+          if (-not (Test-Path $exe)) { Write-Error "Expected $exe (mainBinaryName); found: $(Get-ChildItem target/x86_64-pc-windows-msvc/release/*.exe | Select-Object -ExpandProperty Name)"; exit 1 }
           Copy-Item -LiteralPath "frontend/src-tauri/binaries/cuda/cudart64_12.dll" -Destination (Join-Path (Split-Path $exe) "cudart64_12.dll") -Force -ErrorAction Stop
           # Missing DLLs exit instead of showing a modal dialog; child processes inherit the error mode.
           Add-Type -Namespace Win32 -Name ErrorMode -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint uMode);'

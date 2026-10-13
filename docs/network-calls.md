@@ -8,7 +8,7 @@ Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src` (exclud
 
 | Host | Where (file:line) | Purpose | Decision |
 |---|---|---|---|
-| huggingface.co | `src-tauri/src/whisper_engine/whisper_engine.rs:1077-1088` (download via `Client::builder` at `:1143`); `src-tauri/src/parakeet_engine/parakeet_engine.rs:136` (Parakeet v2 base URL); `src-tauri/src/summary/summary_engine/models.rs:172,185,198,211,342,355,369,383` (GGUF summary models, downloaded by `model_manager.rs:473`); `src/lib/parakeet.ts:78` (comment only) | Whisper, Parakeet v2 and local summary model downloads | Allowed (model host) |
+| huggingface.co | `src-tauri/src/whisper_engine/whisper_engine.rs:1104-1115` (download via `Client::builder` at `:1172`); `src-tauri/src/parakeet_engine/parakeet_engine.rs:136` (Parakeet v2 base URL); `src-tauri/src/summary/summary_engine/models.rs:172,185,198,211,342,355,369,383` (GGUF summary models, downloaded by `model_manager.rs:473`); `src/lib/parakeet.ts:78` (comment only) | Whisper, Parakeet v2 and local summary model downloads | Allowed (model host) |
 | meetily.towardsgeneralintelligence.com | `src-tauri/src/parakeet_engine/parakeet_engine.rs:127` (Parakeet v3 base URL, used at `:865-912`) | Parakeet v3 model download; contacted only when the user downloads a Parakeet model | Allowed — Meetily-owned, reported to user |
 | api.anthropic.com | `src-tauri/src/anthropic/anthropic.rs:103` (model list, `:100`); `src-tauri/src/summary/llm_client.rs:345` (messages, POST at `:398`/`:457`) | User-configured LLM summaries | Allowed (user-configured) |
 | api.openai.com | `src-tauri/src/openai/openai.rs:130` (`:127`); `src-tauri/src/summary/llm_client.rs:303` | User-configured LLM summaries | Allowed (user-configured) |
@@ -44,9 +44,9 @@ These are the request sites, with the base URL each one builds from.
 | `src-tauri/src/ollama/ollama.rs:162,281,440` (`Client::new`) with `{base_url}/api/tags` (`:164`), `/api/pull` (`:283`), `/api/delete` (`:442`) | Ollama endpoint (default localhost:11434) | Allowed (localhost Ollama) |
 | `src-tauri/src/ollama/metadata.rs:144` (`Client::new`), `{base_url}/api/show` (`:146`) | Ollama endpoint | Allowed (localhost Ollama) |
 | `src-tauri/src/api/api.rs:247-250` (`make_api_request`), called by `api.rs:401`, `:421`, `:455`; `:1085`, `:1127` (`/docs`) | `APP_SERVER_URL` (localhost:5167) plus endpoint | Reported to user (unreachable from the UI) |
-| `src-tauri/src/api/api.rs:1292` (`{endpoint}/chat/completions`, `Client::builder` at `:1306`) | User's custom OpenAI endpoint (test connection) | Allowed (user-configured) |
+| `src-tauri/src/api/api.rs:1345` (`{endpoint}/chat/completions`, `Client::builder` at `:1359`) | User's custom OpenAI endpoint (test connection) | Allowed (user-configured) |
 | `src-tauri/src/summary/summary_engine/model_manager.rs:473` (`Client::builder`) | GGUF URLs from `models.rs` | Allowed (model host) |
-| `src-tauri/src/whisper_engine/whisper_engine.rs:1076` (`model_url` match), client at `:1143`, user agent `Conclave/<version>` at `:1144` | Hugging Face URLs (`:1077-1088`) | Allowed (model host) |
+| `src-tauri/src/whisper_engine/whisper_engine.rs:1103` (`model_url` match), client at `:1172`, user agent `Conclave/<version>` at `:1173` | Hugging Face URLs (`:1104-1115`) | Allowed (model host) |
 | `src-tauri/src/parakeet_engine/parakeet_engine.rs:865` (`Client::builder`), `{base_url}/{filename}` at `:912`, `get(file_url)` at `:699` | Parakeet v2 or v3 base URL (`:127`, `:136`) | Allowed (model host; v3 is Meetily-owned, see Hosts) |
 | `src-tauri/src/anthropic/anthropic.rs:100`, `groq.rs:95`, `openai.rs:127`, `openrouter.rs:43` | Provider model-list URLs (table above) | Allowed (user-configured) |
 | `src/components/ModelSettingsModal.tsx:739,1236` (`invoke('open_external_url')`) | `https://ollama.com/download` | Allowed (see above) |

@@ -69,6 +69,7 @@ export function DownloadProgressStep() {
     }));
 
     try {
+      await invoke('whisper_init');
       await invoke('whisper_download_model', { modelName: ONBOARDING_WHISPER_MODEL });
       // Progress events will update state
     } catch (error) {

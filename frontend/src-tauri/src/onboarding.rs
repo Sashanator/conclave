@@ -22,7 +22,7 @@ pub struct OnboardingStatus {
 pub struct ModelStatus {
     // Stored name kept for compatibility with existing onboarding-status.json; means the transcription model.
     pub parakeet: String,  // "downloaded" | "not_downloaded" | "downloading"
-    pub summary: String,   // Generic field for summary model (Qwen 3.5 or legacy Gemma variants)
+    pub summary: String,   // Unused since v0.2.1 (no local summary model); kept for stored-status compatibility
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selected_summary_model: Option<String>,
 }

@@ -18,7 +18,6 @@
                 "height": 700,
                 "resizable": true,
                 "fullscreen": false,
-                "theme": "Light",
                 "decorations": true
             }
         ],
@@ -61,6 +60,7 @@
                         "core:menu:default",
                         "core:tray:default",
                         "core:window:allow-set-title",
+                        "core:window:allow-set-theme",
                         "store:default",
                         "notification:default",
                         "notification:allow-is-permission-granted",

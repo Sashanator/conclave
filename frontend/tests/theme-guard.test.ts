@@ -6,14 +6,6 @@ const SRC = join(import.meta.dir, '..', 'src');
 
 // Files not yet moved to theme tokens. Tasks 7-9 of the Phase 2 plan remove their files; Task 9 leaves this empty.
 const PENDING = new Set<string>([
-  'components/AISummary/Block.tsx',
-  'components/AISummary/Section.tsx',
-  'components/AISummary/index.tsx',
-  'components/BluetoothPlaybackWarning.tsx',
-  'components/ConfirmationModel/confirmation-modal.tsx',
-  'components/DatabaseImport/HomebrewDatabaseDetector.tsx',
-  'components/DatabaseImport/LegacyDatabaseImport.tsx',
-  'components/EditableTitle.tsx',
   'components/EmptyStateSummary.tsx',
   'components/ImportAudio/ImportAudioDialog.tsx',
   'components/Info.tsx',
@@ -37,7 +29,6 @@ const PENDING = new Set<string>([
   'components/onboarding/steps/PermissionsStep.tsx',
   'components/onboarding/steps/SetupOverviewStep.tsx',
   'components/onboarding/steps/WelcomeStep.tsx',
-  'components/ui/button.tsx',
 ]);
 
 // Neutral colours must be tokens (bg-background, text-muted-foreground, border-border…), never hard-coded.

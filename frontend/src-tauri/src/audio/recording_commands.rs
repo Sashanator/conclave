@@ -127,20 +127,26 @@ impl Drop for StartInFlightGuard {
     }
 }
 
-/// Clears `STOP_IN_FLIGHT` when the stop that claimed it returns or unwinds.
-struct StopInFlightGuard;
+/// Clears its stop flag when the stop that claimed it returns or unwinds.
+struct StopInFlightGuard(&'static AtomicBool);
 impl StopInFlightGuard {
-    /// `None` while another stop is in flight.
-    fn claim() -> Option<Self> {
-        STOP_IN_FLIGHT
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+    /// `None` while another stop holds `flag`.
+    fn claim(flag: &'static AtomicBool) -> Option<Self> {
+        flag.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
             .ok()
-            .map(|_| StopInFlightGuard)
+            .map(|_| StopInFlightGuard(flag))
     }
 }
 impl Drop for StopInFlightGuard {
     fn drop(&mut self) {
-        STOP_IN_FLIGHT.store(false, Ordering::SeqCst);
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
+/// Returns once `flag` is clear. Holds no lock while it waits.
+async fn wait_until_clear(flag: &AtomicBool) {
+    while flag.load(Ordering::SeqCst) {
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
     }
 }
 
@@ -735,8 +741,10 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
 pub async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
     // Before anything else: a second stop must not touch the post-processing flag or run the tail again.
-    let Some(_stop_guard) = StopInFlightGuard::claim() else {
-        info!("Stop already in progress, ignoring this one");
+    let Some(_stop_guard) = StopInFlightGuard::claim(&STOP_IN_FLIGHT) else {
+        // A stop is already running: wait for it, so this caller's post-processing starts after recording-stopped.
+        info!("Stop already in progress, waiting for it to finish");
+        wait_until_clear(&STOP_IN_FLIGHT).await;
         return Ok(());
     };
     // Set before the stop clears IS_RECORDING, so a detector start can't land in the gap; the frontend clears it
@@ -1809,12 +1817,22 @@ mod tests {
         assert!(!start_in_flight());
     }
 
-    #[test]
-    fn a_second_stop_is_refused_until_the_first_returns() {
-        let first = StopInFlightGuard::claim();
-        assert!(first.is_some());
-        assert!(StopInFlightGuard::claim().is_none(), "refused while the first stop runs");
+    static TEST_STOP: AtomicBool = AtomicBool::new(false);
+
+    #[tokio::test]
+    async fn a_refused_stop_returns_only_after_the_running_stop_releases() {
+        let first = StopInFlightGuard::claim(&TEST_STOP).expect("the first stop claims the gate");
+        let refused = tokio::spawn(async {
+            assert!(StopInFlightGuard::claim(&TEST_STOP).is_none(), "refused while the first stop runs");
+            wait_until_clear(&TEST_STOP).await;
+        });
+        tokio::time::sleep(tokio::time::Duration::from_millis(300)).await;
+        assert!(!refused.is_finished(), "the refused stop waits for the running one");
         drop(first);
-        assert!(StopInFlightGuard::claim().is_some(), "accepted once the first has returned");
+        tokio::time::timeout(tokio::time::Duration::from_secs(5), refused)
+            .await
+            .expect("returns once the first stop releases")
+            .unwrap();
+        assert!(StopInFlightGuard::claim(&TEST_STOP).is_some(), "a later stop is accepted");
     }
 }

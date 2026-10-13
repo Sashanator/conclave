@@ -124,7 +124,7 @@ jobs:
           args: --target x86_64-pc-windows-msvc --bundles nsis --features cuda ${{ steps.portability.outputs.args }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Conclave {0}', github.ref_name) || '' }}
-          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 toolkit (cuBLAS) — see CUDA_SETUP.md in the repo; without it Whisper runs on CPU. Update by running the new setup over the old one.'
+          releaseBody: 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 toolkit (cuBLAS) — see CUDA_SETUP.md in the repo; without it Whisper runs on CPU. To update: quit Conclave from the tray icon (right-click → Quit), uninstall the old version in Windows Settings → Apps and leave ''delete app data'' unticked (meetings, settings and models are kept), then run this setup. Summaries use your own cloud LLM key: Settings → Summary (default Claude Haiku 5.5).'
           releaseDraft: true
           includeUpdaterJson: false
 

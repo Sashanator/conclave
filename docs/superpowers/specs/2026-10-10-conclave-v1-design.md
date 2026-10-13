@@ -128,7 +128,7 @@ Setting: **Auto-detect meetings: Off / Ask (default) / Auto-record.**
 |---|---|---|
 | `Zoom.exe` | Zoom | yes |
 | New Teams (packaged app `MSTeams_*`) or `ms-teams.exe` | Teams | yes |
-| Browser (`chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`) with a window title containing "Meet" or "Microsoft Teams" | Meet / Teams | yes |
+| Browser (`chrome.exe`, `msedge.exe`, `firefox.exe`, `brave.exe`) with a window title starting with "Meet -" / "Meet –" or containing "Google Meet" or "Microsoft Teams" | Meet / Teams | yes |
 | Browser with no matching title | "Browser is using the microphone" | no |
 | Conclave itself | ignored | — |
 
@@ -159,8 +159,9 @@ Setting: **Auto-detect meetings: Off / Ask (default) / Auto-record.**
 - **Units.** The detector lives in its own small library crate, `crates/meeting-detector/`, a new member of the root Cargo workspace. It builds and tests quickly, without the Tauri app or whisper.cpp.
   - `crates/meeting-detector/src/classify.rs`: pure functions with no Windows calls. Input is a snapshot (mic users, including the executable or package name, and the relevant window titles) plus the previous state. Output is the detection or end events and the start/stop/prompt decisions, including the 5-second grace rule.
   - `crates/meeting-detector/src/windows.rs`: a thin Windows layer. It reads the consent store (with the registry root as a parameter, for tests), waits for change notifications, reads window titles, and lists audio sessions per capture device. It uses the `windows` crate.
+  - `crates/meeting-detector/src/runner.rs`: the watch loop (wait, read, classify, step) behind a small `Host` trait, so all Windows code type-checks without the app (ruling 2026-10-13).
   - `crates/meeting-detector/src/bin/conclave-probe.rs`: the diagnostic tool from §5.4.
-  - `frontend/src-tauri/src/meeting_detector.rs`: the app side. It runs the watcher thread, holds the setting, and wires events to Meetily's existing recording commands, notification manager and hot-swap path.
+  - `frontend/src-tauri/src/meeting_detector.rs`: the app side: holds the setting, implements `Host`, and wires actions to the existing recording paths, the banner and the hot-swap path.
 - The detector is compiled and active only on Windows. On other targets it is a no-op.
 
 ### 5.4 Pre-flight checks (built at the end of Phase 0, run at the Phase 0 checkpoint)
@@ -186,7 +187,7 @@ If A fails, the stop rule changes to "the meeting window closed" before implemen
 ### 5.5 Tests
 
 - **CI (`cargo test`):**
-  - `classify.rs` cases: Zoom; packaged Teams; a browser with a Meet title; a browser with a Teams title; a browser with no match (uncertain → prompt even in Auto); Conclave ignored; Off/Ask/Auto decisions; no repeat prompt after dismissal; stop exactly after 5 seconds of release; a release shorter than 5 seconds does not stop; a recording without an attached app never auto-stops; detections are ignored while recording; mic following turns off after a manual pick.
+  - `classify.rs` cases: Zoom; packaged Teams; a browser with a Meet title; a browser with a Teams title; a browser with no match (uncertain → prompt even in Auto); Conclave ignored; Off/Ask/Auto decisions; no repeat prompt after dismissal; stop exactly after 5 seconds of release; a release shorter than 5 seconds does not stop; a recording without an attached app never auto-stops; detections are ignored while recording; mic following turns off after a manual pick. (The manual-pick case has no trigger: the mic picker is disabled while recording.)
   - On the Windows runner: the consent-store reader parses fake entries written to a test key under `HKCU\Software\ConclaveTest\...`, covering packaged and non-packaged entries, in-use and released.
 - **User's PC:** real Zoom, Meet and Teams calls in Ask and Auto mode, including mute, leave, a mic switch mid-call, and a browser call with the call tab inactive.
 

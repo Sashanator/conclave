@@ -7,7 +7,7 @@ use anyhow::Result;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -37,6 +37,14 @@ pub use super::transcription::TranscriptUpdate;
 
 // Simple recording state tracking
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
+/// Counts recordings started (bumped with `IS_RECORDING` going true). The meeting detector compares it across
+/// its steps: a stop and a new start can both fall between two of them while the flag reads true the whole time.
+static RECORDINGS_STARTED: AtomicU64 = AtomicU64::new(0);
+
+/// See `RECORDINGS_STARTED`.
+pub fn recordings_started() -> u64 {
+    RECORDINGS_STARTED.load(Ordering::SeqCst)
+}
 
 /// True for the whole `stop_recording` tail (manager taken -> `recording-stopped`
 /// emitted). `IS_RECORDING` must stay true through the tail — the frontend polls
@@ -95,6 +103,7 @@ impl Drop for StoppingGuard {
 fn finalize_recording_start() {
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
+    RECORDINGS_STARTED.fetch_add(1, Ordering::SeqCst);
     MIC_FALLBACK_FAILED_ATTEMPTS.store(0, Ordering::SeqCst); // fresh mic-recovery budget per session
     reset_speech_detected_flag(); // reset speech-detected emit latch for the new session
 }
@@ -673,7 +682,21 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 }
 
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
-pub async fn stop_recording<R: Runtime>(
+pub async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
+    // Set before the stop clears IS_RECORDING, so a detector start can't land in the gap; the frontend clears it
+    // after the save. Only a real stop claims it: a no-op stop would otherwise leave it set with no save to clear it.
+    let claimed = IS_RECORDING.load(Ordering::SeqCst);
+    if claimed {
+        crate::meeting_detector::set_recording_post_processing(true);
+    }
+    let result = stop_recording_inner(app, args).await;
+    if claimed && result.is_err() {
+        crate::meeting_detector::set_recording_post_processing(false);
+    }
+    result
+}
+
+async fn stop_recording_inner<R: Runtime>(
     app: AppHandle<R>,
     _args: RecordingArgs,
 ) -> Result<(), String> {
@@ -943,6 +966,8 @@ pub async fn stop_recording<R: Runtime>(
         (None, None)
     };
 
+    // Refresh the saving flag: the stop tail can outlast its 10-minute expiry.
+    crate::meeting_detector::set_recording_post_processing(true);
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
@@ -1362,6 +1387,85 @@ fn spawn_device_event_processor<R: Runtime>(
         }
         info!("[DEVICE_EVENTS] Background event processor stopped (channel closed)");
     });
+}
+
+/// Meeting detection's mic following (spec §5.2): move the live recording to the call app's capture device.
+/// Ok(()) when switched or already on that device. On failure the recording keeps a microphone: the previous
+/// one is restored, and the Err text is the sentence shown to the user.
+pub async fn follow_mic(device_name: String) -> Result<(), String> {
+    let session = RECORDING_MANAGER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.get_state().clone())
+        .ok_or_else(|| "Not recording".to_string())?;
+    // session_live locks RECORDING_MANAGER: call it only after the guard above is dropped.
+    if !session_live(&session) {
+        return Err("Not recording".to_string());
+    }
+    if session.get_microphone_device().is_some_and(|d| d.name == device_name) {
+        return Ok(());
+    }
+    // Exact name only: a device the OS does not list under this name (e.g. "(unknown device)") is refused
+    // before the live stream is touched.
+    let listed = super::list_audio_devices().await.map_err(|e| e.to_string())?;
+    if !listed.iter().any(|d| d.device_type == super::DeviceType::Input && d.name == device_name) {
+        return Err(format!("{device_name} is not available. Recording continues on the current microphone."));
+    }
+    let deadline = tokio::time::Instant::now() + tokio::time::Duration::from_secs(10);
+    while MIC_SWAP_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        if tokio::time::Instant::now() >= deadline {
+            return Err("Another microphone switch is still running. Recording continues on the current microphone.".to_string());
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    struct SwapGuard;
+    impl Drop for SwapGuard {
+        fn drop(&mut self) {
+            MIC_SWAP_IN_PROGRESS.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = SwapGuard;
+
+    // The swap we waited for may have moved the mic or ended the recording.
+    if !session_live(&session) {
+        return Err("Not recording".to_string());
+    }
+    let Some(old_name) = session.get_microphone_device().map(|d| d.name.clone()) else {
+        return Err(format!("Recording has no microphone to switch from. Not switching to {device_name}."));
+    };
+    if old_name == device_name {
+        return Ok(());
+    }
+
+    let first = do_mic_swap(&device_name, &session).await;
+    let result = match first {
+        Ok(()) => Ok(()),
+        Err(e) if session_live(&session) => {
+            warn!("[FOLLOW_MIC] Switch to '{}' failed: {} — retrying in 500ms", device_name, e);
+            tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+            do_mic_swap(&device_name, &session).await
+        }
+        Err(e) => Err(e),
+    };
+    let Err(e) = result else {
+        info!("[FOLLOW_MIC] Mic switched to '{}'", device_name);
+        return Ok(());
+    };
+    if !session_live(&session) {
+        return Err(e);
+    }
+    // Both attempts failed on a live recording: put the previous microphone back so it keeps recording.
+    match do_mic_swap(&old_name, &session).await {
+        Ok(()) => {
+            warn!("[FOLLOW_MIC] Switch to '{}' failed ({}); restored '{}'", device_name, e, old_name);
+            Err(format!("Couldn't switch to {device_name}. Recording continues on the current microphone."))
+        }
+        Err(re) => {
+            error!("[FOLLOW_MIC] Switch to '{}' failed ({}) and restoring '{}' failed: {}", device_name, e, old_name, re);
+            Err(format!("Couldn't switch to {device_name}, and the previous microphone could not be restored."))
+        }
+    }
 }
 
 /// Disconnect fallback: swap the active mic to the system default input

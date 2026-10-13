@@ -20,9 +20,16 @@ pub struct RecordingPreferences {
     pub preferred_mic_device: Option<String>,
     #[serde(default)]
     pub preferred_system_device: Option<String>,
+    /// Meeting auto-detection: "off", "ask" (default) or "auto" (spec §5.1).
+    #[serde(default = "default_meeting_detection")]
+    pub meeting_detection: String,
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
+}
+
+fn default_meeting_detection() -> String {
+    "ask".to_string()
 }
 
 impl Default for RecordingPreferences {
@@ -33,6 +40,7 @@ impl Default for RecordingPreferences {
             file_format: "mp4".to_string(),
             preferred_mic_device: None,
             preferred_system_device: None,
+            meeting_detection: default_meeting_detection(),
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }
@@ -161,6 +169,8 @@ pub async fn save_recording_preferences<R: Runtime>(
         .map_err(|e| anyhow::anyhow!("Failed to save store to disk: {}", e))?;
 
     info!("Successfully persisted recording preferences to disk");
+    // Right after the save: a later failure (e.g. the folder) must not leave the live mode stale.
+    crate::meeting_detector::set_mode(&preferences.meeting_detection);
 
     // Save backend preference to global config
     #[cfg(target_os = "macos")]
@@ -385,3 +395,17 @@ pub async fn get_audio_backend_info() -> Result<Vec<BackendInfo>, String> {
     }
 }
 
+#[cfg(test)]
+mod meeting_detection_pref_tests {
+    use super::*;
+
+    #[test]
+    fn v021_file_without_the_field_loads_as_ask_and_keeps_devices() {
+        let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4",
+            "preferred_mic_device":"Shure MV7","preferred_system_device":"Speakers"}"#;
+        let p: RecordingPreferences = serde_json::from_str(json).unwrap();
+        assert_eq!(p.meeting_detection, "ask");
+        assert_eq!(p.preferred_mic_device.as_deref(), Some("Shure MV7"));
+        assert_eq!(p.preferred_system_device.as_deref(), Some("Speakers"));
+    }
+}

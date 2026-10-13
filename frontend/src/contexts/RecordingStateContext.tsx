@@ -1,8 +1,9 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import { recordingService } from '@/services/recordingService';
 import { toast } from 'sonner';
+import { initialMicFollowing, reduceMicFollowing, type MicFollowingState } from '@/lib/mic-following';
 
 /**
  * Recording state synchronized with backend
@@ -46,6 +47,9 @@ interface RecordingStateContextType extends RecordingState {
   isProcessing: boolean;
   isSaving: boolean;
   isStartingRecording: boolean;
+
+  // Mic following (meeting detection); kept here so start-time events are never missed
+  micFollowing: MicFollowingState;
 }
 
 const RecordingStateContext = createContext<RecordingStateContextType | null>(null);
@@ -70,6 +74,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
   });
 
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const [micFollowing, dispatchMicFollowing] = useReducer(reduceMicFollowing, initialMicFollowing);
 
   // NEW: Status setter with logging
   const setStatus = useCallback((status: RecordingStatus, message?: string) => {
@@ -155,6 +160,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         // Recording starting (startup in progress)
         const unlistenStarting = await recordingService.onRecordingStarting(() => {
           console.log('[RecordingStateContext] Recording starting event');
+          dispatchMicFollowing({ type: 'reset' });
           setState(prev => prev.status === RecordingStatus.RECORDING
             ? prev
             : { ...prev, status: RecordingStatus.STARTING, statusMessage: 'Starting recording...' });
@@ -261,6 +267,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
       try {
         const fnSwitched = await recordingService.onMicDeviceSwitched(({ device_name }) => {
           console.log('[RecordingStateContext] mic-device-switched →', device_name);
+          dispatchMicFollowing({ type: 'switched', device: device_name });
           // Fires for both cases: a mic that disconnects mid-recording, and a
           // selected mic that wasn't available at start (backend fell back to
           // the default). Copy is worded to be accurate for both.
@@ -329,6 +336,33 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
   }, []);
 
   /**
+   * Mic following (meeting detection): the mic the recording moved to, and the warning when that fails.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    const unsubscribers: (() => void)[] = [];
+    const register = (subscribe: Promise<() => void>) => {
+      subscribe.then(
+        (unlisten) => {
+          if (cancelled) unlisten();
+          else unsubscribers.push(unlisten);
+        },
+        (e) => console.error('[RecordingStateContext] Failed to listen for mic following:', e)
+      );
+    };
+
+    register(recordingService.onMicFollowing(({ device, app }) =>
+      dispatchMicFollowing({ type: 'following', device, app })));
+    register(recordingService.onMicFollowingWarning(({ message }) =>
+      dispatchMicFollowing({ type: 'warning', message })));
+
+    return () => {
+      cancelled = true;
+      unsubscribers.forEach(unlisten => unlisten());
+    };
+  }, []);
+
+  /**
    * Initial sync on mount - CRITICAL for fixing refresh desync bug
    * If backend is recording but UI state is false, this will correct it
    */
@@ -345,7 +379,8 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     isProcessing: state.status === RecordingStatus.PROCESSING_TRANSCRIPTS,
     isSaving: state.status === RecordingStatus.SAVING,
     isStartingRecording: state.status === RecordingStatus.STARTING,
-  }), [state, setStatus]);
+    micFollowing,
+  }), [state, setStatus, micFollowing]);
 
   return (
     <RecordingStateContext.Provider value={contextValue}>

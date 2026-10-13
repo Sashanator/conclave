@@ -121,6 +121,8 @@ pub struct Snapshot {
     pub now_ms: u64,
     pub mode: Mode,
     pub recording: bool,
+    /// Increments each time a recording starts; lets the detector see a stop and a new start that both happen between two steps.
+    pub recording_id: u64,
     /// Call apps using the mic now (the output of `classify`).
     pub in_use: Vec<Detected>,
     /// Active capture sessions, read only while recording; `None` when not read.
@@ -136,6 +138,7 @@ pub struct Detector {
     attached: Option<Detected>,
     released_at: Option<u64>,
     was_recording: bool,
+    last_recording_id: u64,
     followed: Option<String>,
     warned: bool,
     /// Set by a Stop until the recording ends: a call rejoined while the save runs is offered afterwards.
@@ -163,12 +166,13 @@ impl Detector {
             self.offered = None;
         }
 
-        let started = s.recording && !self.was_recording;
+        let started = s.recording && (!self.was_recording || s.recording_id != self.last_recording_id);
         self.was_recording = s.recording;
-        if !s.recording {
+        self.last_recording_id = s.recording_id;
+        if started || !s.recording {
             self.stopping = false;
         }
-        if s.mode == Mode::Off || !s.recording {
+        if started || s.mode == Mode::Off || !s.recording {
             self.detach();
         }
         if s.mode == Mode::Off {
@@ -268,7 +272,12 @@ mod tests {
     }
 
     fn snap(now_ms: u64, mode: Mode, recording: bool, in_use: Vec<Detected>) -> Snapshot {
-        Snapshot { now_ms, mode, recording, in_use, sessions: None }
+        Snapshot { now_ms, mode, recording, recording_id: 0, in_use, sessions: None }
+    }
+
+    fn with_id(mut s: Snapshot, recording_id: u64) -> Snapshot {
+        s.recording_id = recording_id;
+        s
     }
 
     fn with_sessions(mut s: Snapshot, sessions: &[(&str, &str)]) -> Snapshot {
@@ -514,5 +523,25 @@ mod tests {
         d.step(&snap(9000, Mode::Ask, true, vec![]));
         assert_eq!(d.attached(), None);
         assert!(d.step(&snap(20_000, Mode::Ask, true, vec![])).is_empty());
+    }
+
+    #[test]
+    fn new_recording_between_steps_attaches_and_clears_stopping() {
+        let mut d = Detector::new();
+        d.step(&snap(0, Mode::Ask, false, vec![zoom()]));
+        d.step(&with_id(snap(1000, Mode::Ask, true, vec![zoom()]), 1));
+        assert_eq!(d.attached(), Some(&zoom()));
+
+        d.step(&with_id(snap(2000, Mode::Ask, true, vec![]), 1));
+        assert_eq!(d.step(&with_id(snap(7000, Mode::Ask, true, vec![]), 1)), vec![Action::Stop { app: CallApp::Zoom }]);
+        assert!(d.stopping, "the save after the stop is running");
+
+        // A new recording began since the last step: still recording, new id, Zoom in use again.
+        assert!(d.step(&with_id(snap(8000, Mode::Ask, true, vec![zoom()]), 2)).is_empty());
+        assert!(!d.stopping, "the new recording starts clean");
+        assert_eq!(d.attached(), Some(&zoom()), "the new recording attaches to Zoom");
+
+        assert!(d.step(&with_id(snap(9000, Mode::Ask, true, vec![]), 2)).is_empty());
+        assert_eq!(d.step(&with_id(snap(14_000, Mode::Ask, true, vec![]), 2)), vec![Action::Stop { app: CallApp::Zoom }]);
     }
 }

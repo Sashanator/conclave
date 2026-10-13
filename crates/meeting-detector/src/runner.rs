@@ -11,6 +11,8 @@ pub trait Host: Send + 'static {
     fn recording_id(&self) -> u64;
     /// The previous meeting is still being saved (see `Snapshot::busy`).
     fn is_busy(&self) -> bool;
+    /// The recording's current microphone name, if known. Only asked while recording.
+    fn current_mic(&self) -> Option<String>;
     fn apply(&self, action: Action);
     /// `Some(reason)` while detection cannot run; `None` once it runs.
     fn set_error(&self, reason: Option<String>);
@@ -140,6 +142,7 @@ fn pass<H: Host>(
     } else {
         None
     };
+    let current_mic = if recording { host.current_mic() } else { None };
     let snapshot = Snapshot {
         now_ms: t0.elapsed().as_millis() as u64,
         mode: host.mode(),
@@ -147,6 +150,7 @@ fn pass<H: Host>(
         recording_id: host.recording_id(),
         in_use,
         sessions,
+        current_mic,
         busy: host.is_busy(),
     };
     for action in detector.step(&snapshot) {
@@ -178,6 +182,9 @@ mod tests {
         }
         fn is_busy(&self) -> bool {
             false
+        }
+        fn current_mic(&self) -> Option<String> {
+            None
         }
         fn apply(&self, action: Action) {
             let _ = self.0.send(action);

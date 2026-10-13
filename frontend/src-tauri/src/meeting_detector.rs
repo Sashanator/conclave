@@ -89,6 +89,10 @@ impl<R: Runtime> Host for AppHost<R> {
         post_processing()
     }
 
+    fn current_mic(&self) -> Option<String> {
+        crate::audio::recording_commands::current_mic_name()
+    }
+
     fn apply(&self, action: Action) {
         apply(&self.app, action)
     }

@@ -1085,6 +1085,13 @@ pub fn is_recording_now() -> bool {
     IS_RECORDING.load(Ordering::SeqCst)
 }
 
+/// The live recording's microphone name, for meeting detection. Brief lock; a poisoned lock is still read.
+pub fn current_mic_name() -> Option<String> {
+    let guard = RECORDING_MANAGER.lock().unwrap_or_else(|e| e.into_inner());
+    let name = guard.as_ref()?.get_state().get_microphone_device().map(|d| d.name.clone());
+    name
+}
+
 /// Get recording statistics
 pub async fn get_transcription_status() -> TranscriptionStatus {
     TranscriptionStatus {

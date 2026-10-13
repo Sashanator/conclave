@@ -127,6 +127,8 @@ pub struct Snapshot {
     pub in_use: Vec<Detected>,
     /// Active capture sessions, read only while recording; `None` when not read.
     pub sessions: Option<Vec<CaptureUse>>,
+    /// The recording's current microphone name, if known.
+    pub current_mic: Option<String>,
     /// The previous meeting is still being saved: offer and start nothing until it finishes.
     pub busy: bool,
 }
@@ -141,7 +143,10 @@ pub struct Detector {
     released_at: Option<u64>,
     was_recording: bool,
     last_recording_id: u64,
-    followed: Option<String>,
+    /// The device the attached app's audio should be on: set once a follow was sent or the recording reached it.
+    follow_target: Option<String>,
+    /// FollowMic actions sent for `follow_target` while the recording was not on it.
+    follow_attempts: u8,
     warned: bool,
     /// Set by a Stop until the recording ends: a call rejoined while the save runs is offered afterwards.
     stopping: bool,
@@ -222,7 +227,8 @@ impl Detector {
     fn detach(&mut self) {
         self.attached = None;
         self.released_at = None;
-        self.followed = None;
+        self.follow_target = None;
+        self.follow_attempts = 0;
         self.warned = false;
     }
 
@@ -245,14 +251,26 @@ impl Detector {
         devices.sort_unstable();
         devices.dedup();
         match devices.as_slice() {
-            [one] if self.followed.as_deref() != Some(*one) => {
-                self.followed = Some(one.to_string());
-                self.warned = false;
-                vec![Action::FollowMic { app: att.app, device: one.to_string() }]
+            [one] => {
+                let device = one.to_string();
+                if s.current_mic.as_deref() == Some(*one) {
+                    self.follow_target = Some(device);
+                    self.follow_attempts = 0;
+                    Vec::new()
+                } else if self.follow_target.as_deref() != Some(*one) {
+                    // A new target. The device may be listed only after it is plugged in, so retries follow.
+                    self.follow_target = Some(device.clone());
+                    self.follow_attempts = 1;
+                    vec![Action::FollowMic { app: att.app, device }]
+                } else if self.follow_attempts < 3 {
+                    self.follow_attempts += 1;
+                    vec![Action::FollowMic { app: att.app, device }]
+                } else {
+                    Vec::new()
+                }
             }
-            [_] => Vec::new(),
-            // No session or several: keep the current mic, and warn once if the device was never found.
-            _ if self.followed.is_none() && !self.warned => {
+            // No session or several: keep the current mic, and warn once if no device was ever found.
+            _ if self.follow_target.is_none() && !self.warned => {
                 self.warned = true;
                 vec![Action::MicUnknown { app: att.app }]
             }
@@ -278,7 +296,7 @@ mod tests {
     }
 
     fn snap(now_ms: u64, mode: Mode, recording: bool, in_use: Vec<Detected>) -> Snapshot {
-        Snapshot { now_ms, mode, recording, recording_id: 0, in_use, sessions: None, busy: false }
+        Snapshot { now_ms, mode, recording, recording_id: 0, in_use, sessions: None, current_mic: None, busy: false }
     }
 
     fn with_id(mut s: Snapshot, recording_id: u64) -> Snapshot {
@@ -288,6 +306,11 @@ mod tests {
 
     fn with_busy(mut s: Snapshot, busy: bool) -> Snapshot {
         s.busy = busy;
+        s
+    }
+
+    fn with_current_mic(mut s: Snapshot, mic: &str) -> Snapshot {
+        s.current_mic = Some(mic.to_string());
         s
     }
 
@@ -508,12 +531,45 @@ mod tests {
         let mut d = recording_attached_to_zoom();
         let s = with_sessions(snap(2000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic A"), ("chrome.exe", "Mic B")]);
         assert_eq!(d.step(&s), vec![Action::FollowMic { app: CallApp::Zoom, device: "Mic A".into() }]);
-        let s = with_sessions(snap(3000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic A")]);
-        assert!(d.step(&s).is_empty(), "same device: no repeat");
-        let s = with_sessions(snap(4000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic C")]);
+        let s = with_current_mic(with_sessions(snap(3000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic A")]), "Mic A");
+        assert!(d.step(&s).is_empty(), "already on that mic: no repeat");
+        let s = with_current_mic(with_sessions(snap(4000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic C")]), "Mic A");
         assert_eq!(d.step(&s), vec![Action::FollowMic { app: CallApp::Zoom, device: "Mic C".into() }]);
-        let s = with_sessions(snap(5000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic C"), ("zoom.exe", "Mic D")]);
+        let s = with_current_mic(
+            with_sessions(snap(5000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic C"), ("zoom.exe", "Mic D")]),
+            "Mic A",
+        );
         assert!(d.step(&s).is_empty(), "ambiguous after a follow: keep quietly");
+    }
+
+    #[test]
+    fn no_follow_when_already_on_that_mic() {
+        let mut d = recording_attached_to_zoom();
+        let s = with_current_mic(with_sessions(snap(2000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic A")]), "Mic A");
+        assert!(d.step(&s).is_empty(), "the recording already records from Mic A");
+        let s = with_sessions(snap(3000, Mode::Ask, true, vec![zoom()]), &[]);
+        assert!(d.step(&s).is_empty(), "the target was reached: a device missing later is not a never-found warning");
+    }
+
+    #[test]
+    fn follow_retries_until_the_mic_matches_then_stops_at_three() {
+        let mut d = recording_attached_to_zoom();
+        let on = |now_ms, current: &str| {
+            with_current_mic(with_sessions(snap(now_ms, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic A")]), current)
+        };
+        let follow_a = || Action::FollowMic { app: CallApp::Zoom, device: "Mic A".into() };
+        assert_eq!(d.step(&on(2000, "Mic B")), vec![follow_a()], "first attempt");
+        assert_eq!(d.step(&on(7000, "Mic B")), vec![follow_a()], "retry 2: the device may have just appeared");
+        assert_eq!(d.step(&on(12000, "Mic B")), vec![follow_a()], "retry 3");
+        assert!(d.step(&on(17000, "Mic B")).is_empty(), "gives up after three attempts");
+        assert!(d.step(&on(22000, "Mic B")).is_empty());
+        assert!(d.step(&on(27000, "Mic A")).is_empty(), "the recording reaches Mic A on a later pass");
+        let c = with_current_mic(with_sessions(snap(32000, Mode::Ask, true, vec![zoom()]), &[("zoom.exe", "Mic C")]), "Mic A");
+        assert_eq!(
+            d.step(&c),
+            vec![Action::FollowMic { app: CallApp::Zoom, device: "Mic C".into() }],
+            "a new target starts over"
+        );
     }
 
     #[test]

@@ -5,15 +5,7 @@ import { join, relative } from 'node:path';
 const SRC = join(import.meta.dir, '..', 'src');
 
 // Files not yet moved to theme tokens. Tasks 7-9 of the Phase 2 plan remove their files; Task 9 leaves this empty.
-const PENDING = new Set<string>([
-  'components/onboarding/shared/PermissionRow.tsx',
-  'components/onboarding/shared/ProgressIndicator.tsx',
-  'components/onboarding/shared/StatusIndicator.tsx',
-  'components/onboarding/steps/DownloadProgressStep.tsx',
-  'components/onboarding/steps/PermissionsStep.tsx',
-  'components/onboarding/steps/SetupOverviewStep.tsx',
-  'components/onboarding/steps/WelcomeStep.tsx',
-]);
+const PENDING = new Set<string>([]);
 
 // Neutral colours must be tokens (bg-background, text-muted-foreground, border-border…), never hard-coded.
 const NEUTRAL =

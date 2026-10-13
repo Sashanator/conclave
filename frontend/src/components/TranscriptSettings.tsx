@@ -202,7 +202,7 @@ export function TranscriptSettings({ transcriptModelConfig, setTranscriptModelCo
                                 {isApiKeyLocked && (
                                     <div
                                         onClick={handleInputClick}
-                                        className="absolute inset-0 flex items-center justify-center bg-muted bg-opacity-50 rounded-md cursor-not-allowed"
+                                        className="absolute inset-0 flex items-center justify-center bg-muted/50 rounded-md cursor-not-allowed"
                                     />
                                 )}
                                 <div className="absolute inset-y-0 right-0 pr-1 flex items-center">

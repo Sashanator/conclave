@@ -1145,23 +1145,41 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
     }
 }
 
+/// Only https links leave the app; the webview is not trusted to choose schemes or shells.
+fn validate_external_url(raw: &str) -> Result<url::Url, String> {
+    if raw.is_empty()
+        || raw.trim() != raw
+        || raw.chars().any(|c| c.is_control() || c.is_whitespace())
+    {
+        return Err("Refusing to open a malformed URL".to_string());
+    }
+    let url = url::Url::parse(raw).map_err(|e| format!("Invalid URL: {e}"))?;
+    if url.scheme() != "https" || url.host_str().map_or(true, str::is_empty) {
+        return Err("Only https links can be opened".to_string());
+    }
+    Ok(url)
+}
+
 #[tauri::command]
 pub async fn open_external_url(url: String) -> Result<(), String> {
     use std::process::Command;
 
+    let url = validate_external_url(&url)?;
+    // explorer.exe hands the URL to the default browser without cmd.exe parsing it.
     let result = if cfg!(target_os = "windows") {
-        Command::new("cmd").args(&["/C", "start", &url]).output()
+        Command::new("explorer.exe")
+            .arg(url.as_str())
+            .spawn()
+            .map(|_| ())
     } else if cfg!(target_os = "macos") {
-        Command::new("open").arg(&url).output()
+        Command::new("open").arg(url.as_str()).spawn().map(|_| ())
     } else {
-        // Linux and other Unix-like systems
-        Command::new("xdg-open").arg(&url).output()
+        Command::new("xdg-open")
+            .arg(url.as_str())
+            .spawn()
+            .map(|_| ())
     };
-
-    match result {
-        Ok(_) => Ok(()),
-        Err(e) => Err(format!("Failed to open URL: {}", e)),
-    }
+    result.map_err(|e| format!("Failed to open URL: {}", e))
 }
 
 // ===== CUSTOM OPENAI API COMMANDS =====
@@ -1378,6 +1396,44 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
             } else {
                 Err(format!("Connection failed: {}", e))
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod external_url_tests {
+    use super::validate_external_url;
+
+    #[test]
+    fn accepts_https_urls_used_by_the_app() {
+        assert!(validate_external_url("https://ollama.com/download").is_ok());
+        assert!(validate_external_url(
+            "https://github.com/Sashanator/conclave/blob/main/CUDA_SETUP.md"
+        )
+        .is_ok());
+    }
+
+    #[test]
+    fn keeps_cmd_metacharacters_inside_the_single_url_argument() {
+        // Legal in a URL; harmless once no shell is involved.
+        let url = validate_external_url("https://example.com/a&b|c").unwrap();
+        assert_eq!(url.host_str(), Some("example.com"));
+    }
+
+    #[test]
+    fn rejects_non_https_and_malformed_input() {
+        for bad in [
+            "http://example.com",
+            "file:///C:/Windows/System32/calc.exe",
+            "javascript:alert(1)",
+            "ms-settings:privacy",
+            "https://",
+            "",
+            " https://example.com",
+            "https://example.com\n",
+            "https://exa mple.com",
+        ] {
+            assert!(validate_external_url(bad).is_err(), "accepted {bad:?}");
         }
     }
 }

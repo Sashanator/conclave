@@ -29,6 +29,17 @@ function readStored(): ThemePreference {
 
 const systemQuery = () => window.matchMedia('(prefers-color-scheme: dark)');
 
+// The native title bar follows the choice; null = follow Windows. Outside Tauri (a plain browser, tests)
+// there is no window, and getCurrentWindow() throws synchronously, so skip it there.
+function syncWindowTheme(pref: ThemePreference) {
+  if (!('__TAURI_INTERNALS__' in window)) return;
+  try {
+    getCurrentWindow().setTheme(pref === 'system' ? null : pref).catch(() => {});
+  } catch {
+    // Tauri present but the window API unavailable: the in-page theme still applies.
+  }
+}
+
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   // Lazy initialisers read the same values the <head> script used, so the first client render matches the page.
   const [preference, setPref] = useState<ThemePreference>(() => (typeof window === 'undefined' ? 'system' : readStored()));
@@ -55,8 +66,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   }, [resolved]);
 
   useEffect(() => {
-    // The native title bar follows too; null = follow Windows.
-    getCurrentWindow().setTheme(preference === 'system' ? null : preference).catch(() => {});
+    syncWindowTheme(preference);
   }, [preference]);
 
   const setPreference = useCallback((pref: ThemePreference) => {

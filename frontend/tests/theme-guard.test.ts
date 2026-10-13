@@ -73,7 +73,9 @@ const PENDING = new Set<string>([
 
 // Neutral colours must be tokens (bg-background, text-muted-foreground, border-border…), never hard-coded.
 const NEUTRAL =
-  /(?<!dark:)\b(?:bg-white|(?:bg|text|border|divide|ring|ring-offset|placeholder|from|via|to|fill|stroke|outline)-(?:gray|slate|zinc|neutral|stone)-\d{2,3})\b/;
+  /(?<!dark:)\b(?:bg-white|ring-offset-white|border-[trblxyse]-white|border-[trblxyse]-(?:gray|slate|zinc|neutral|stone)-\d{2,3}|(?:bg|text|border|divide|ring|ring-offset|placeholder|from|via|to|fill|stroke|outline)-(?:gray|slate|zinc|neutral|stone)-\d{2,3})\b/;
+// SVG strokes and fills hard-coded to Tailwind greys (stroke="#e5e7eb").
+const HEX_GREY = /\b(?:stroke|fill)="#(?:e5e7eb|d1d5db|9ca3af|6b7280|4b5563|374151|1f2937|f3f4f6|f9fafb)"/i;
 // Light tints of a hue need a dark: partner on the same line (e.g. bg-blue-50 dark:bg-blue-950/40).
 const HUES = 'red|orange|amber|yellow|lime|green|emerald|teal|cyan|sky|blue|indigo|violet|purple|fuchsia|pink|rose';
 const TINT = new RegExp(`(?<!dark:)\\b(?:bg-(?:${HUES})-(?:50|100|200)|text-(?:${HUES})-(?:700|800|900)|border-(?:${HUES})-(?:100|200|300))\\b`);
@@ -89,7 +91,7 @@ function sourceFiles(dir: string): string[] {
 function offenders(file: string): string[] {
   return readFileSync(file, 'utf8')
     .split('\n')
-    .flatMap((line, i) => (NEUTRAL.test(line) || (TINT.test(line) && !line.includes('dark:')) ? [`${i + 1}: ${line.trim()}`] : []));
+    .flatMap((line, i) => (NEUTRAL.test(line) || HEX_GREY.test(line) || (TINT.test(line) && !line.includes('dark:')) ? [`${i + 1}: ${line.trim()}`] : []));
 }
 
 describe('theme guard', () => {

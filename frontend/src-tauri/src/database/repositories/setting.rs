@@ -194,11 +194,14 @@ impl SettingsRepository {
         let query = format!(
             r#"
             INSERT INTO transcript_settings (id, provider, model, "{}")
-            VALUES ('1', 'parakeet', '{}', $1)
+            VALUES ('1', '{}', '{}', $1)
             ON CONFLICT(id) DO UPDATE SET
                 "{}" = $1
             "#,
-            api_key_column, crate::config::DEFAULT_PARAKEET_MODEL, api_key_column
+            api_key_column,
+            crate::config::DEFAULT_TRANSCRIPT_PROVIDER,
+            crate::config::DEFAULT_WHISPER_MODEL,
+            api_key_column
         );
         sqlx::query(&query).bind(api_key).execute(pool).await?;
 
@@ -344,5 +347,54 @@ impl SettingsRepository {
         .await?;
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod default_transcript_tests {
+    use super::*;
+    use crate::config::{DEFAULT_TRANSCRIPT_PROVIDER, DEFAULT_WHISPER_MODEL};
+
+    async fn test_pool() -> SqlitePool {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        sqlx::query(
+            "CREATE TABLE transcript_settings (
+                id TEXT PRIMARY KEY,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                whisperApiKey TEXT,
+                deepgramApiKey TEXT,
+                elevenLabsApiKey TEXT,
+                groqApiKey TEXT,
+                openaiApiKey TEXT
+            )",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn api_key_upsert_on_empty_db_creates_whisper_default() {
+        let pool = test_pool().await;
+        SettingsRepository::save_transcript_api_key(&pool, "groq", "k").await.unwrap();
+
+        let config = SettingsRepository::get_transcript_config(&pool).await.unwrap().unwrap();
+        assert_eq!(config.provider, DEFAULT_TRANSCRIPT_PROVIDER);
+        assert_eq!(config.model, DEFAULT_WHISPER_MODEL);
+    }
+
+    #[tokio::test]
+    async fn api_key_upsert_keeps_saved_provider() {
+        let pool = test_pool().await;
+        SettingsRepository::save_transcript_config(&pool, "parakeet", "parakeet-tdt-0.6b-v3-int8")
+            .await
+            .unwrap();
+        SettingsRepository::save_transcript_api_key(&pool, "localWhisper", "k").await.unwrap();
+
+        let config = SettingsRepository::get_transcript_config(&pool).await.unwrap().unwrap();
+        assert_eq!(config.provider, "parakeet");
+        assert_eq!(config.model, "parakeet-tdt-0.6b-v3-int8");
     }
 }

@@ -37,7 +37,6 @@ interface OnboardingContextType {
   parakeetProgress: number;
   parakeetProgressInfo: ParakeetProgressInfo;
   databaseExists: boolean;
-  isBackgroundDownloading: boolean;
   // Permissions
   permissions: OnboardingPermissions;
   permissionsSkipped: boolean;
@@ -69,7 +68,6 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     speedMbps: 0,
   });
   const [databaseExists, setDatabaseExists] = useState(false);
-  const [isBackgroundDownloading, setIsBackgroundDownloading] = useState(false);
 
   // Permissions state
   const [permissions, setPermissions] = useState<OnboardingPermissions>({
@@ -241,9 +239,6 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         setParakeetDownloaded(verifiedStatus.parakeetDownloaded);
 
         console.log('[OnboardingContext] Verified status:', verifiedStatus);
-
-        // Check if any downloads are active to restore isBackgroundDownloading state
-        await checkActiveDownloads();
       }
     } catch (error) {
       console.error('[OnboardingContext] Failed to load onboarding status:', error);
@@ -340,30 +335,13 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     if (parakeetDownloaded) return;
 
     try {
-      setIsBackgroundDownloading(true);
       await invoke('whisper_init');
       console.log('[OnboardingContext] Starting transcription model download:', ONBOARDING_WHISPER_MODEL);
       invoke('whisper_download_model', { modelName: ONBOARDING_WHISPER_MODEL })
         .catch(err => console.error('[OnboardingContext] Transcription model download failed:', err));
     } catch (error) {
       console.error('[OnboardingContext] Failed to start background downloads:', error);
-      setIsBackgroundDownloading(false);
       throw error;
-    }
-  };
-
-  // Check if any models are currently downloading (for re-entry)
-  const checkActiveDownloads = async () => {
-    try {
-      const models = await invoke<any[]>('whisper_get_available_models');
-      const isDownloading = models.some(m => m.name === ONBOARDING_WHISPER_MODEL && m.status && (typeof m.status === 'object' ? 'Downloading' in m.status : m.status === 'Downloading'));
-
-      if (isDownloading) {
-        console.log('[OnboardingContext] Detected active background downloads on mount');
-        setIsBackgroundDownloading(true);
-      }
-    } catch (error) {
-      console.warn('[OnboardingContext] Failed to check active downloads:', error);
     }
   };
 
@@ -412,7 +390,6 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         parakeetProgress,
         parakeetProgressInfo,
         databaseExists,
-        isBackgroundDownloading,
         permissions,
         permissionsSkipped,
         goToStep,

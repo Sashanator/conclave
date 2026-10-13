@@ -55,9 +55,11 @@ pub fn post_processing() -> bool {
     is_fresh(*POST_PROCESSING_SINCE.lock().unwrap_or_else(|e| e.into_inner()), Instant::now())
 }
 
-/// True while a recording runs or its save is still going: nothing may start or reload the page then.
+/// True while a recording runs, starts or its save is still going: nothing may start or reload the page then.
 pub async fn busy() -> bool {
-    crate::audio::recording_commands::is_recording().await || post_processing()
+    crate::audio::recording_commands::is_recording().await
+        || crate::audio::recording_commands::start_in_flight()
+        || post_processing()
 }
 
 /// `None` while detection runs; otherwise the reason it doesn't, shown in Settings.

@@ -101,6 +101,32 @@ impl Drop for StoppingGuard {
 /// gate: the tray stop and the UI Stop can both arrive, and the second must not run the tail again.
 static STOP_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
 
+/// Set from the entry of every start command until it returns. The meeting detector and the banner check it, so an
+/// automatic start can't land on a recording that is still loading.
+static START_IN_FLIGHT: AtomicBool = AtomicBool::new(false);
+
+pub fn start_in_flight() -> bool {
+    START_IN_FLIGHT.load(Ordering::SeqCst)
+}
+
+/// Holds `START_IN_FLIGHT` for one start command. A nested start (start_recording -> ...) finds the flag set and
+/// leaves it to the outer call, so only the guard that set it clears it.
+struct StartInFlightGuard {
+    owned: bool,
+}
+impl StartInFlightGuard {
+    fn claim() -> Self {
+        Self { owned: START_IN_FLIGHT.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_ok() }
+    }
+}
+impl Drop for StartInFlightGuard {
+    fn drop(&mut self) {
+        if self.owned {
+            START_IN_FLIGHT.store(false, Ordering::SeqCst);
+        }
+    }
+}
+
 /// Clears `STOP_IN_FLIGHT` when the stop that claimed it returns or unwinds.
 struct StopInFlightGuard;
 impl StopInFlightGuard {
@@ -330,6 +356,7 @@ async fn prepare_audio_for_recording(
 
 /// Start recording with default devices
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let _start_guard = StartInFlightGuard::claim();
     start_recording_with_meeting_name(app, None).await
 }
 
@@ -338,6 +365,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     app: AppHandle<R>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
+    let _start_guard = StartInFlightGuard::claim();
     info!(
         "Starting recording with default devices, meeting: {:?}",
         meeting_name
@@ -518,6 +546,7 @@ pub async fn start_recording_with_devices<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
 ) -> Result<(), String> {
+    let _start_guard = StartInFlightGuard::claim();
     start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
 }
 
@@ -528,6 +557,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
+    let _start_guard = StartInFlightGuard::claim();
     info!(
         "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
         mic_device_name, system_device_name, meeting_name
@@ -1047,6 +1077,11 @@ async fn stop_recording_inner<R: Runtime>(
 
 /// Check if recording is active
 pub async fn is_recording() -> bool {
+    is_recording_now()
+}
+
+/// Sync form of `is_recording`, for callers that can't await.
+pub fn is_recording_now() -> bool {
     IS_RECORDING.load(Ordering::SeqCst)
 }
 
@@ -1726,6 +1761,18 @@ async fn trigger_mic_fallback_to_default<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn nested_start_calls_leave_the_flag_to_the_outer_call() {
+        let outer = StartInFlightGuard::claim();
+        {
+            let _inner = StartInFlightGuard::claim();
+            assert!(start_in_flight());
+        }
+        assert!(start_in_flight(), "the inner return must not clear the outer call's flag");
+        drop(outer);
+        assert!(!start_in_flight());
+    }
 
     #[test]
     fn a_second_stop_is_refused_until_the_first_returns() {

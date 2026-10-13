@@ -28,7 +28,7 @@ export function ModelDownloadProgress({ status, modelName, onCancel }: ModelDown
       </div>
       
       <div className="relative">
-        <div className="w-full bg-blue-200 dark:bg-blue-950/40 rounded-full h-2">
+        <div className="w-full bg-blue-200 dark:bg-blue-900/60 rounded-full h-2">
           <div 
             className="bg-blue-600 h-2 rounded-full transition-all duration-300 ease-out"
             style={{ width: `${Math.min(progress, 100)}%` }}

@@ -28,15 +28,16 @@ fn main() {
 
     let mut prev: HashMap<String, bool> = HashMap::new();
     let mut prev_sessions: Option<BTreeSet<String>> = None;
-    // Logs changes since the last call. Apps already using the mic at startup show as START; nothing is printed for STOP.
+    // Logs changes since the last call, keyed by full path so two exes with one name stay separate. Apps already using the mic at startup show as START.
     let mut poll = |via: &str| {
         match read_mic_users(CONSENT_PATH) {
             Ok(users) => {
                 for u in users {
-                    let was = prev.insert(u.app.clone(), u.in_use).unwrap_or(false);
+                    let was = prev.insert(u.path.clone(), u.in_use).unwrap_or(false);
                     if u.in_use != was {
                         let kind = if u.packaged { "packaged" } else { "desktop" };
-                        log(format!("MIC {} {} ({kind}) via={via}", if u.in_use { "START" } else { "STOP " }, u.app));
+                        let state = if u.in_use { "START" } else { "STOP " };
+                        log(format!("MIC {state} {} ({}) ({kind}) via={via}", u.app, u.path));
                         if u.in_use && is_browser(&u.app) {
                             for t in window_titles_for(&u.app) {
                                 log(format!("    window title: {t}"));

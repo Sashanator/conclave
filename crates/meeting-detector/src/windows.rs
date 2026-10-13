@@ -1,5 +1,5 @@
 //! Thin Win32 layer: consent-store reads, change notifications, window titles, capture sessions.
-use crate::consent::{app_name_from_key, is_in_use, MicUser};
+use crate::consent::{app_name_from_key, is_in_use, path_from_key, MicUser};
 use std::cell::Cell;
 use std::io;
 use windows::core::{Interface, BOOL, PCWSTR, PWSTR};
@@ -24,7 +24,12 @@ fn entry(key: &RegKey, name: &str, packaged: bool) -> Option<MicUser> {
     let sub = key.open_subkey(name).ok()?;
     let start: u64 = sub.get_value("LastUsedTimeStart").unwrap_or(0);
     let stop: u64 = sub.get_value("LastUsedTimeStop").unwrap_or(0);
-    Some(MicUser { app: app_name_from_key(name, packaged), packaged, in_use: is_in_use(start, stop) })
+    Some(MicUser {
+        app: app_name_from_key(name, packaged),
+        path: path_from_key(name, packaged),
+        packaged,
+        in_use: is_in_use(start, stop),
+    })
 }
 
 /// Reads every app recorded under `HKCU\<path>` (packaged subkeys + `NonPackaged\*`).
@@ -256,9 +261,24 @@ mod tests {
         let mut users = read_mic_users(&path).unwrap();
         users.sort_by(|a, b| a.app.cmp(&b.app));
         assert_eq!(users, vec![
-            MicUser { app: "chrome.exe".into(), packaged: false, in_use: true },
-            MicUser { app: "msteams_8wekyb3d8bbwe".into(), packaged: true, in_use: true },
-            MicUser { app: "zoom.exe".into(), packaged: false, in_use: false },
+            MicUser {
+                app: "chrome.exe".into(),
+                path: r"C:\Program Files\Google\Chrome\Application\chrome.exe".into(),
+                packaged: false,
+                in_use: true,
+            },
+            MicUser {
+                app: "msteams_8wekyb3d8bbwe".into(),
+                path: "MSTeams_8wekyb3d8bbwe".into(),
+                packaged: true,
+                in_use: true,
+            },
+            MicUser {
+                app: "zoom.exe".into(),
+                path: r"C:\Program Files\Zoom\bin\Zoom.exe".into(),
+                packaged: false,
+                in_use: false,
+            },
         ]);
     }
 

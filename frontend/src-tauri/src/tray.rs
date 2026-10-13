@@ -101,16 +101,23 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
                 }
             }
         } else {
-            // Immediately show starting state
-            set_tray_state(&app_clone, RecordingState::Starting);
-
             log::info!("Emitting start recording event from tray");
-            if let Some(window) = app_clone.get_webview_window("main") {
-                let _ = window.eval("sessionStorage.setItem('autoStartRecording', 'true')"); // Set the flag to start recording automatically
-                let _ = window.eval("window.location.assign('/')");
-            }
+            request_recording_start(&app_clone, None);
         }
     });
+}
+
+/// Starts recording through the main webview's normal start path (model check, recording notice), without
+/// bringing the window forward. `title_prefix` (a call app name) goes in front of the generated meeting title.
+pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Option<&str>) {
+    set_tray_state(app, RecordingState::Starting);
+    if let Some(window) = app.get_webview_window("main") {
+        // JSON-encode so the prefix is always a safe JS string literal.
+        let prefix = serde_json::to_string(title_prefix.unwrap_or("")).unwrap_or_else(|_| "\"\"".to_string());
+        let _ = window.eval(&format!(
+            "sessionStorage.setItem('autoStartTitlePrefix', {prefix}); sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/')"
+        ));
+    }
 }
 
 fn pause_recording_handler<R: Runtime>(app: &AppHandle<R>) {

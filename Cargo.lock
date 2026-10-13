@@ -3512,6 +3512,7 @@ dependencies = [
  "infer 0.15.0",
  "lazy_static",
  "log",
+ "meeting-detector",
  "memory-stats",
  "ndarray",
  "nnnoiseless",

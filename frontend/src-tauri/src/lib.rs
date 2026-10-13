@@ -37,6 +37,7 @@ pub(crate) use perf_trace;
 // Declare audio module
 pub mod api;
 pub mod audio;
+pub mod banner;
 pub mod config;
 pub mod console_utils;
 pub mod database;
@@ -610,6 +611,8 @@ pub fn run() {
             stop_recording,
             is_recording,
             get_transcription_status,
+            banner::get_meeting_banner,
+            banner::meeting_banner_action,
             read_audio_file,
             save_transcript,
             whisper_engine::commands::whisper_init,

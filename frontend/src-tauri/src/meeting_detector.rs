@@ -6,7 +6,7 @@ use meeting_detector::runner::Host;
 use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 
 /// Ask until the saved preference loads.
 static MODE: AtomicU8 = AtomicU8::new(1);
@@ -110,8 +110,27 @@ fn apply<R: Runtime>(app: &AppHandle<R>, action: Action) {
             tauri::async_runtime::spawn(async move { crate::tray::stop_recording_and_save(&handle).await });
             banner::show(app, BannerKind::Ended { call });
         }
-        // Mic following arrives in Task 6.
-        Action::FollowMic { .. } | Action::MicUnknown { .. } => {}
+        Action::FollowMic { app: call, device } => {
+            let handle = app.clone();
+            tauri::async_runtime::spawn(async move {
+                match crate::audio::recording_commands::follow_mic(handle.clone(), device.clone()).await {
+                    Ok(()) => {
+                        let _ = handle.emit("mic-following", serde_json::json!({ "device": device, "app": call.label() }));
+                    }
+                    Err(e) => {
+                        log::warn!("Mic following: cannot switch to {device}: {e}");
+                        let _ = handle.emit("mic-following-warning", serde_json::json!({
+                            "message": format!("Couldn't switch to {device}, the microphone {} is using. Recording continues on the current microphone.", call.label())
+                        }));
+                    }
+                }
+            });
+        }
+        Action::MicUnknown { app: call } => {
+            let _ = app.emit("mic-following-warning", serde_json::json!({
+                "message": format!("Couldn't tell which microphone {} is using. Recording continues on the current microphone.", call.label())
+            }));
+        }
     }
 }
 

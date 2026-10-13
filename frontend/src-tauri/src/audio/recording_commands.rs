@@ -1389,6 +1389,35 @@ fn spawn_device_event_processor<R: Runtime>(
     });
 }
 
+/// Meeting detection's mic following (spec §5.2): move the live recording to the call app's capture device.
+/// Ok(()) when switched or already on that device.
+pub async fn follow_mic<R: Runtime>(app: AppHandle<R>, device_name: String) -> Result<(), String> {
+    let session = RECORDING_MANAGER
+        .lock()
+        .unwrap()
+        .as_ref()
+        .map(|m| m.get_state().clone())
+        .ok_or_else(|| "Not recording".to_string())?;
+    // session_live locks RECORDING_MANAGER: call it only after the guard above is dropped.
+    if !session_live(&session) {
+        return Err("Not recording".to_string());
+    }
+    if session.get_microphone_device().is_some_and(|d| d.name == device_name) {
+        return Ok(());
+    }
+    if MIC_SWAP_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        return Err("Another microphone switch is in progress".to_string());
+    }
+    struct SwapGuard;
+    impl Drop for SwapGuard {
+        fn drop(&mut self) {
+            MIC_SWAP_IN_PROGRESS.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = SwapGuard;
+    perform_mic_hot_swap_task(device_name, &session, app).await
+}
+
 /// Disconnect fallback: swap the active mic to the system default input
 /// device. Triggered from the background device event processor after the
 /// device monitor's polling threshold (3 × 2s) fires `DeviceDisconnected`

@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/RecordingControls';
+import { MicFollowingLine } from '@/components/MicFollowingLine';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -241,7 +242,7 @@ export default function Home() {
                   marginLeft: sidebarCollapsed ? '4rem' : '16rem'
                 }}
               >
-                <div className="w-2/3 max-w-[750px] flex justify-center">
+                <div className="w-2/3 max-w-[750px] flex flex-col items-center">
                   <div className="bg-white rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}
@@ -259,6 +260,11 @@ export default function Home() {
                       meetingName={meetingTitle}
                     />
                   </div>
+                  {recordingState.isRecording && (
+                    <div className="mt-2 flex justify-center">
+                      <MicFollowingLine selectedMic={selectedDevices?.micDevice ?? null} />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

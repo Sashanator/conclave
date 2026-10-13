@@ -101,9 +101,11 @@ The last task of Phase 0 is the `conclave-probe` diagnostic tool (§5.4).
 - `release.yml` installs the CUDA 12 toolkit on the runner and builds with `--features cuda`.
 - `CMAKE_CUDA_ARCHITECTURES=89` compiles only for the RTX 40 series, which keeps build time and minutes down.
 - The CUDA build output (the whisper.cpp / ggml objects) is cached between release runs.
-- The CUDA runtime DLLs (`cudart64_12.dll`, `cublas64_12.dll`, `cublasLt64_12.dll`) are **bundled in the installer**. This adds an estimated 500–700 MB, and nothing else needs to be installed on the PC. They are added as Tauri bundle resources next to the executable.
+- **The big CUDA libraries are not bundled** (user decision, 2026-10-12): `cublas64_12.dll` and `cublasLt64_12.dll` (about 600 MB) come from the user's CUDA 12.x toolkit (`CUDA_SETUP.md`), found through `PATH`. Only `cudart64_12.dll` (about 0.5 MB) ships next to the exe. This was a controller ruling on 2026-10-12, after the Task 3 review found that nvcc-generated static initialisers call cudart before `main`, so cudart can't be optional. The installer stays at about 100 MB. CI minutes are unchanged, because the toolkit is still needed to compile.
+- CI and the PC must use the same CUDA **major** version (12.x). The workflow pins the toolkit to 12.8 and builds on `windows-2022`, because nvcc 12.8 rejects the VS 2026 compiler on `windows-latest`.
+- **A missing CUDA toolkit or NVIDIA driver must not be a cryptic crash.** `cublas64_12.dll`, `cublasLt64_12.dll` and `nvcuda.dll` (the driver) are **delay-loaded**. At startup, `LoadLibraryW` checks `cublas64_12.dll`, `cublasLt64_12.dll` and `nvcuda.dll`. If any is missing, Whisper gets `use_gpu = false` and the user sees "CUDA 12 runtime not found — see CUDA_SETUP.md". The release workflow's start-without-CUDA smoke test checks this before publishing.
 - The Vulkan build is removed from releases. `ci.yml` stays CPU-only.
-- If CUDA fails to start at runtime, for example because of an old driver, whisper.cpp falls back to the CPU and the app keeps working.
+- If CUDA fails to start at runtime for another reason (an old driver, for example), whisper.cpp falls back to the CPU and the app keeps working.
 
 ### 4.2 Backend note
 
@@ -114,7 +116,7 @@ The last task of Phase 0 is the `conclave-probe` diagnostic tool (§5.4).
 ### 4.3 Tests
 
 - **CI:** a unit test asserts that a build with the `cuda` feature reports the CUDA compiled backend, and that a CPU build reports CPU. The release job fails if the CUDA build fails.
-- **User's PC:** the backend note shows CUDA, and the Task Manager "Cuda" graph is active while transcribing. `large-v3-turbo` keeps up with a live call.
+- **User's PC:** the backend note shows CUDA, and the Task Manager "Cuda" graph is active while transcribing. `large-v3-turbo` keeps up with a live call. Temporarily removing `%CUDA_PATH%\bin` from `PATH` gives the clear message plus CPU transcription, not a crash.
 
 ## 5. Phase 2: Meeting auto-detection
 
@@ -195,7 +197,7 @@ If A fails, the stop rule changes to "the meeting window closed" before implemen
 | Consent store unreadable | Auto-detect turns off. Settings shows the reason. Manual recording works. |
 | Windows mic privacy blocks desktop apps | Meetily's existing permission check and message |
 | Call app's mic unknown, or the switch fails | Keep the current mic and show a warning on the recording screen |
-| CUDA unavailable at runtime | CPU fallback. The backend note shows CPU. |
+| CUDA unavailable at runtime (runtime DLLs missing, or an old driver) | CPU fallback with a message pointing to `CUDA_SETUP.md`. The backend note shows CPU. |
 | LLM summary fails | Meetily as-is: the transcript is saved and the summary can be retried |
 | Crash mid-recording | Meetily as-is: the incremental saver keeps the recorded data |
 

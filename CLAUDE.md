@@ -17,3 +17,5 @@ At each completed implementation task, before asking for my review:
 - Code review: the `reviewer` agent with `model: "opus"` (Opus 5.5), `effort: "medium"`.
 - Codex pass for hard or dangerous changes (security or credentials, data persistence or deletion, concurrency or restart, untrusted input): tell the reviewer to run Codex as
   `codex review -c model="gpt-6.1-sol" -c model_reasoning_effort="medium" -c sandbox_mode='"danger-full-access"' -`.
+- Third reviewer for whole-branch reviews only (at the end of a phase): Antigravity CLI with Gemini 3.8 Flash High, run read-only:
+  `agy -p "<review prompt>" --model gemini-3.8-flash-high --mode plan --dangerously-skip-permissions --print-timeout 1800s`. Verify its findings like Codex findings.

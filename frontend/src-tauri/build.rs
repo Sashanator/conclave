@@ -21,6 +21,20 @@ fn main() {
     ffmpeg::ensure_ffmpeg_binary();
     onnxruntime::ensure_onnxruntime_runtime();
 
+    // cudart64_12.dll is bundled: nvcc's static initialisers call it before main, so it cannot be delay-loaded.
+    // cublas64_12.dll and cublasLt64_12.dll come from the user's CUDA 12 toolkit and nvcuda.dll is the NVIDIA
+    // driver: delay-load all three so a PC without them can still start the app; whisper_engine/cuda_runtime.rs
+    // then picks CPU. A cublasLt import the linker drops only triggers LNK4199 (a warning), so listing it is safe.
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows")
+        && std::env::var("CARGO_CFG_TARGET_ENV").as_deref() == Ok("msvc")
+        && std::env::var("CARGO_FEATURE_CUDA").is_ok()
+    {
+        for dll in ["cublas64_12.dll", "cublasLt64_12.dll", "nvcuda.dll"] {
+            println!("cargo:rustc-link-arg=/DELAYLOAD:{dll}");
+        }
+        println!("cargo:rustc-link-lib=delayimp");
+    }
+
     tauri_build::build()
 }
 

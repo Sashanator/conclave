@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useEffect } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/RecordingControls';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
@@ -19,6 +20,9 @@ import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
 import { useRouter } from 'next/navigation';
+
+// Module-level so the CUDA warning is shown once per app session, not on every remount of Home.
+let cudaToastChecked = false;
 
 export default function Home() {
   // Local page state (not moved to contexts)
@@ -59,6 +63,25 @@ export default function Home() {
   } = useTranscriptRecovery();
 
   const router = useRouter();
+
+  // Warn once at startup when a CUDA build cannot find its runtime and Whisper falls back to CPU
+  useEffect(() => {
+    if (cudaToastChecked) return;
+    cudaToastChecked = true;
+    invoke<{ label: string; cuda_runtime_missing: boolean }>('get_whisper_backend_status')
+      .then((s) => {
+        if (s.cuda_runtime_missing) {
+          toast.warning('CUDA 12 runtime not found — Whisper runs on CPU. See CUDA_SETUP.md', {
+            duration: 10000,
+            action: {
+              label: 'Open guide',
+              onClick: () => invoke('open_external_url', { url: 'https://github.com/Sashanator/conclave/blob/v0.2.0/CUDA_SETUP.md' })
+            }
+          });
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   // Startup recovery check
   useEffect(() => {

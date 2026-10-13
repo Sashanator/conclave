@@ -566,3 +566,43 @@ pub async fn open_models_folder() -> Result<(), String> {
     log::info!("Opened models folder: {}", folder_path);
     Ok(())
 }
+
+#[derive(serde::Serialize)]
+pub struct WhisperBackendStatus {
+    pub label: String,
+    pub cuda_runtime_missing: bool,
+}
+
+/// Async so the one-time nvidia-smi call never blocks the UI thread.
+#[tauri::command]
+pub async fn get_whisper_backend_status() -> WhisperBackendStatus {
+    use super::acceleration::{backend_label, WhisperCompiledBackend};
+    let compiled = WhisperCompiledBackend::current();
+    let missing = super::cuda_runtime::missing_cuda_runtime_dlls();
+    // Skip nvidia-smi when the runtime is missing: a hung nvidia-smi must not block the note or toast.
+    let gpu_name = if compiled == WhisperCompiledBackend::Cuda && missing.is_empty() { nvidia_gpu_name() } else { None };
+    WhisperBackendStatus {
+        label: backend_label(compiled, missing, gpu_name.as_deref()),
+        cuda_runtime_missing: compiled == WhisperCompiledBackend::Cuda && !missing.is_empty(),
+    }
+}
+
+fn nvidia_gpu_name() -> Option<String> {
+    static NAME: std::sync::OnceLock<Option<String>> = std::sync::OnceLock::new();
+    NAME.get_or_init(|| {
+        let mut cmd = std::process::Command::new("nvidia-smi");
+        cmd.args(["--query-gpu=name", "--format=csv,noheader"]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flash
+        }
+        let out = cmd.output().ok().filter(|o| o.status.success())?;
+        String::from_utf8_lossy(&out.stdout)
+            .lines()
+            .next()
+            .map(|line| line.trim().to_string())
+            .filter(|name| !name.is_empty())
+    })
+    .clone()
+}

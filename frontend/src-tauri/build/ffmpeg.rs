@@ -69,7 +69,7 @@ fn download_and_extract_ffmpeg(
     println!("cargo:warning=🌐 Fetching FFmpeg download URL for {}", target);
 
     // Get platform-specific download URL
-    let url = get_ffmpeg_url_for_target(target)?;
+    let (url, expected_sha256) = get_ffmpeg_url_for_target(target)?;
 
     println!("cargo:warning=⬇️  Downloading from: {}", url);
 
@@ -103,6 +103,16 @@ fn download_and_extract_ffmpeg(
         let content = response.bytes()
             .map_err(|e| format!("Failed to read response: {}", e))?;
 
+        // The archive host is a third-party repo, so a replaced file must fail the build
+        use sha2::{Digest, Sha256};
+        let actual_sha256 = format!("{:x}", Sha256::digest(&content));
+        if actual_sha256 != expected_sha256 {
+            return Err(format!(
+                "FFmpeg archive has SHA-256 {}, expected {}",
+                actual_sha256, expected_sha256
+            ));
+        }
+
         file.write_all(&content)
             .map_err(|e| format!("Failed to write archive: {}", e))?;
     }
@@ -121,33 +131,38 @@ fn download_and_extract_ffmpeg(
     Ok(())
 }
 
-/// Get FFmpeg download URL for specific target triple
-fn get_ffmpeg_url_for_target(target: &str) -> Result<String, String> {
+/// Get FFmpeg download URL and archive SHA-256 for specific target triple
+fn get_ffmpeg_url_for_target(target: &str) -> Result<(String, &'static str), String> {
     // Platform-specific URLs
-    let url = if target.contains("windows") {
+    let (url, sha256) = if target.contains("windows") {
         // Windows
-        "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-8.0.1-essentials_build.zip"
+        ("https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-8.0.1-essentials_build.zip",
+         "e2aaeaa0fdbc397d4794828086424d4aaa2102cef1fb6874f6ffd29c0b88b673")
     } else if target.contains("apple") {
         if target.contains("aarch64") {
             // Apple Silicon (M1/M2/M3)
-            "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg80arm.zip"
+            ("https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg80arm.zip",
+         "0d4efcaf6a098430a708e0af694a84792938921fa126162787ae98c6151d7a95")
         } else {
             // Intel Mac
-            "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-8.0.1.zip"
+            ("https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-8.0.1.zip",
+         "470e482f6e290eac92984ac12b2d67bad425b1e5269fd75fb6a3536c16e824e4")
         }
     } else if target.contains("linux") {
         if target.contains("aarch64") || target.contains("arm") {
             // Linux ARM64
-            "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-release-arm64-static.tar.xz"
+            ("https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-release-arm64-static.tar.xz",
+         "f4149bb2b0784e30e99bdda85471c9b5930d3402014e934a5098b41d0f7201b1")
         } else {
             // Linux x86_64
-            "https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-release-amd64-static.tar.xz"
+            ("https://github.com/Zackriya-Solutions/ffmpeg-binaries/releases/download/0.0.1/ffmpeg-release-amd64-static.tar.xz",
+         "abda8d77ce8309141f83ab8edf0596834087c52467f6badf376a6a2a4c87cf67")
         }
     } else {
         return Err(format!("Unsupported target platform: {}", target));
     };
 
-    Ok(url.to_string())
+    Ok((url.to_string(), sha256))
 }
 
 /// Extract FFmpeg binary from downloaded archive (handles ZIP and TAR.XZ)

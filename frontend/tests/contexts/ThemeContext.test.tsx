@@ -1,16 +1,8 @@
-import { afterAll, describe, expect, mock, test } from 'bun:test';
+import { describe, expect, mock, test } from 'bun:test';
 import { act, create } from 'react-test-renderer';
 
-// bun's mock.module is process-global: a sibling test that mocks @tauri-apps/api/core breaks the real window module.
-// Stub the window module with the outside-Tauri throw, and restore the original afterwards.
+// No restore: importing the real window module can fail when a sibling test leaves core mocked, and no other test imports it.
 const outsideTauri = () => { throw new TypeError("Cannot read properties of undefined (reading 'metadata')"); };
-let originalWindow: Record<string, unknown>;
-try {
-  originalWindow = { ...await import('@tauri-apps/api/window') };
-} catch {
-  originalWindow = { getCurrentWindow: outsideTauri };
-}
-afterAll(() => mock.module('@tauri-apps/api/window', () => originalWindow));
 mock.module('@tauri-apps/api/window', () => ({ getCurrentWindow: outsideTauri }));
 const { ThemeProvider } = await import('../../src/contexts/ThemeContext');
 

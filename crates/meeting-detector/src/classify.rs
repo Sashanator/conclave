@@ -147,6 +147,8 @@ pub struct Detector {
     follow_target: Option<String>,
     /// FollowMic actions sent for `follow_target` while the recording was not on it.
     follow_attempts: u8,
+    /// The previous step was Off: turning detection back on mid-recording attaches again.
+    was_off: bool,
     warned: bool,
     /// Set by a Stop until the recording ends: a call rejoined while the save runs is offered afterwards.
     stopping: bool,
@@ -174,6 +176,8 @@ impl Detector {
         }
 
         let started = s.recording && (!self.was_recording || s.recording_id != self.last_recording_id);
+        let back_on = self.was_off && s.mode != Mode::Off;
+        self.was_off = s.mode == Mode::Off;
         self.was_recording = s.recording;
         self.last_recording_id = s.recording_id;
         if started || !s.recording {
@@ -191,8 +195,8 @@ impl Detector {
             if self.stopping {
                 return Vec::new();
             }
-            // A manual start during a detected call attaches too (spec §5.1, Stop).
-            if started {
+            // A manual start during a detected call attaches too (spec §5.1, Stop), and so does Off -> on mid-recording.
+            if started || back_on {
                 // An uncertain browser is kept only when no certain call is in use.
                 self.attached = self
                     .offered
@@ -460,6 +464,17 @@ mod tests {
         for t in (2000..3_600_000).step_by(5000) {
             assert!(d.step(&snap(t, Mode::Ask, true, vec![zoom()])).is_empty(), "muted Zoom keeps the mic");
         }
+    }
+
+    #[test]
+    fn off_and_back_on_mid_recording_reattaches() {
+        let mut d = recording_attached_to_zoom();
+        assert!(d.step(&snap(2000, Mode::Off, true, vec![zoom()])).is_empty());
+        assert_eq!(d.attached(), None, "Off detaches");
+        assert!(d.step(&snap(3000, Mode::Ask, true, vec![zoom()])).is_empty());
+        assert_eq!(d.attached(), Some(&zoom()), "back on while recording: attached as a fresh start would be");
+        assert!(d.step(&snap(4000, Mode::Ask, true, vec![])).is_empty(), "release starts the grace");
+        assert_eq!(d.step(&snap(9000, Mode::Ask, true, vec![])), vec![Action::Stop { app: CallApp::Zoom }]);
     }
 
     #[test]

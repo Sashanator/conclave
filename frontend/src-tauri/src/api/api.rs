@@ -1157,26 +1157,42 @@ fn validate_external_url(raw: &str) -> Result<url::Url, String> {
     if url.scheme() != "https" || url.host_str().map_or(true, str::is_empty) {
         return Err("Only https links can be opened".to_string());
     }
-    // Allow-list on the serialized URL: explorer.exe splits fields on , ; = and the Windows
-    // quoting needs no " or \ in the URL.
+    // Defence in depth: the opener does no command-line parsing, so this only keeps the URL to
+    // the RFC 3986 character set.
     if !url
         .as_str()
         .chars()
-        .all(|c| c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+%".contains(c))
+        .all(|c| c.is_ascii_alphanumeric() || "-._~:/?#[]@!$&'()*+,;=%".contains(c))
     {
         return Err("Refusing to open a URL with disallowed characters".to_string());
     }
     Ok(url)
 }
 
-// Quoted as one field so explorer.exe does not split it; validate_external_url guarantees the URL has no '"'.
+// ShellExecute hands the URL to the registered https handler, with no command-line parsing.
 #[cfg(windows)]
 fn spawn_opener(url: &url::Url) -> std::io::Result<()> {
-    use std::os::windows::process::CommandExt;
-    std::process::Command::new("explorer.exe")
-        .raw_arg(format!("\"{}\"", url.as_str()))
-        .spawn()
-        .map(|_| ())
+    use windows::core::{w, HSTRING};
+    use windows::Win32::UI::Shell::ShellExecuteW;
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // SAFETY: all pointers are valid for the call; the HSTRING outlives it.
+    let code = unsafe {
+        ShellExecuteW(
+            None,
+            w!("open"),
+            &HSTRING::from(url.as_str()),
+            None,
+            None,
+            SW_SHOWNORMAL,
+        )
+    };
+    let code = code.0 as usize;
+    if code <= 32 {
+        return Err(std::io::Error::other(format!(
+            "ShellExecuteW failed with code {code}"
+        )));
+    }
+    Ok(())
 }
 
 #[cfg(target_os = "macos")]
@@ -1433,6 +1449,19 @@ mod external_url_tests {
     }
 
     #[test]
+    fn accepts_rfc3986_delimiters_in_query_and_path() {
+        for good in [
+            "https://example.com/?a=b",
+            "https://example.com/a;b",
+            "https://example.com/,x",
+            "https://example.com/,/root,C:/Windows",
+            "https://example.com/?tab=readme",
+        ] {
+            assert!(validate_external_url(good).is_ok(), "refused {good:?}");
+        }
+    }
+
+    #[test]
     fn keeps_ampersand_inside_the_single_url_argument() {
         // Legal in a URL and harmless once no shell is involved; '|' is refused by the allow-list.
         let url = validate_external_url("https://example.com/a&b").unwrap();
@@ -1451,9 +1480,6 @@ mod external_url_tests {
             " https://example.com",
             "https://example.com\n",
             "https://exa mple.com",
-            "https://example.com/,/root,C:/Windows",
-            "https://example.com/a;b",
-            "https://example.com/?a=b",
             "https://a\"b.com/",
             "https://a.com/#x\\",
             "https://a.com/x^y",

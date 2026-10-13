@@ -71,7 +71,13 @@ export default function Home() {
     invoke<{ label: string; cuda_runtime_missing: boolean }>('get_whisper_backend_status')
       .then((s) => {
         if (s.cuda_runtime_missing) {
-          toast.warning('CUDA 12 runtime not found — Whisper runs on CPU. See CUDA_SETUP.md', { duration: 10000 });
+          toast.warning('CUDA 12 runtime not found — Whisper runs on CPU. See CUDA_SETUP.md', {
+            duration: 10000,
+            action: {
+              label: 'Open guide',
+              onClick: () => invoke('open_external_url', { url: 'https://github.com/Sashanator/conclave/blob/v0.2.0/CUDA_SETUP.md' })
+            }
+          });
         }
       })
       .catch(() => {});

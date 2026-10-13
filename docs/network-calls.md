@@ -17,6 +17,7 @@ Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src` (exclud
 | localhost:11434 (Ollama, default; the user can set another endpoint) | `src-tauri/src/ollama/metadata.rs:145`; `src-tauri/src/ollama/ollama.rs:163,282,441`; `src-tauri/src/summary/llm_client.rs:317`; `src/components/ModelSettingsModal.tsx:1149,1203` | Local Ollama: tags, pull, delete, show, chat | Allowed (localhost Ollama) |
 | localhost:11434 test fixtures | `src-tauri/src/summary/service.rs:798-990` (inside `mod tests`, from `:689`) | Cache-key test values, not requests | Not a call |
 | ollama.com | `src/components/ModelSettingsModal.tsx:739,1236` (`open_external_url`, opens the user's browser) | "Download Ollama" link | Allowed (Ollama download page; user-initiated, see Reported to user) |
+| github.com/Sashanator/conclave | `src/app/page.tsx:78` (`open_external_url`, opens the user's browser) | "Open guide" button on the CUDA-missing warning, opens `CUDA_SETUP.md` | Allowed (own repo; user-initiated) |
 | localhost:8000 | `src-tauri/src/summary/mod.rs:16` (doc comment); `src/components/ModelSettingsModal.tsx:956` (placeholder) | Example for the user-configured OpenAI-compatible endpoint | Allowed (user-configured) |
 | x.yy.zz:11434 | `src/components/ModelSettingsModal.tsx:1134` | Example text only | Not a call |
 | custom.example | `src-tauri/src/summary/service.rs:991` (inside `mod tests`) | Cache-key test value | Not a call |
@@ -60,7 +61,7 @@ These run while the installer is built, not when Conclave runs. They are not in 
 
 | Host | Where (file:line) | Purpose | Decision |
 |---|---|---|---|
-| github.com/Zackriya-Solutions/ffmpeg-binaries | `src-tauri/build/ffmpeg.rs:129-144` | ffmpeg archive bundled as `externalBin` in the installer | Allowed — Meetily-owned, reported to user (kept for Phase 0) |
+| github.com/Zackriya-Solutions/ffmpeg-binaries | `src-tauri/build/ffmpeg.rs:134-166` | ffmpeg archive bundled as `externalBin` in the installer | Allowed — Meetily-owned, reported to user; archive pinned by SHA-256 |
 | github.com/microsoft/onnxruntime | `src-tauri/build/onnxruntime.rs:14` | ONNX Runtime 1.22.0 Windows archive (`build.rs`) | Allowed (build-time only) |
 | fonts.googleapis.com (via `next/font/google`) | `src/app/layout.tsx:4` | Source Sans 3 font, fetched by Next.js at build time and self-hosted | Allowed (build-time only) |
 

@@ -53,6 +53,15 @@ fn top_centre(monitor_x: i32, monitor_y: i32, monitor_width: u32, scale: f64) ->
     (x + (w - WIDTH) / 2.0, y + TOP_MARGIN)
 }
 
+/// Makes `kind` the current banner and returns its id. The id is allocated under the lock, so two calls never
+/// share one and `CURRENT` always holds the later banner.
+fn begin(kind: BannerKind) -> u64 {
+    let mut current = CURRENT.lock().unwrap();
+    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    *current = Some((id, kind));
+    id
+}
+
 /// Removes and returns the banner's content if `label` is still the current banner.
 fn take_if_current(label: &str) -> Option<BannerKind> {
     let id = id_from_label(label)?;
@@ -76,8 +85,7 @@ fn close_all<R: Runtime>(app: &AppHandle<R>) {
 
 /// Shows a banner, replacing any banner already on screen. Never takes keyboard focus from the call app.
 pub fn show<R: Runtime>(app: &AppHandle<R>, kind: BannerKind) {
-    let id = NEXT_ID.fetch_add(1, Ordering::Relaxed);
-    *CURRENT.lock().unwrap() = Some((id, kind));
+    let id = begin(kind);
     close_all(app);
 
     let label = label_for(id);
@@ -103,10 +111,10 @@ pub fn show<R: Runtime>(app: &AppHandle<R>, kind: BannerKind) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(AUTO_HIDE).await;
-        if take_if_current(&label).is_some() {
-            if let Some(w) = app.get_webview_window(&label) {
-                let _ = w.close();
-            }
+        // Clears CURRENT only if this banner is still current. The window closes either way, so it cannot outlive the timer.
+        take_if_current(&label);
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.close();
         }
     });
 }
@@ -131,7 +139,12 @@ pub async fn meeting_banner_action<R: Runtime>(
     let _ = window.close();
     if action == "record" {
         if let Some(BannerKind::Detected { call, .. }) = kind {
-            crate::tray::request_recording_start(&app, Some(call.label()));
+            // Starting again would reload the main webview mid-recording and queue a recording nobody asked for.
+            if crate::is_recording().await {
+                log::info!("Meeting banner: Record ignored, a recording is already active");
+            } else {
+                crate::tray::request_recording_start(&app, Some(call.label()));
+            }
         }
     }
     Ok(())
@@ -157,8 +170,24 @@ mod tests {
         assert_eq!(top_centre(-1920, 0, 1920, 1.0), (-1190.0, 16.0));
     }
 
+    /// `CURRENT` is one static shared by the tests below, so they take turns.
+    fn current_lock() -> std::sync::MutexGuard<'static, ()> {
+        static TURNS: Mutex<()> = Mutex::new(());
+        TURNS.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    #[test]
+    fn begin_gives_distinct_ids_and_current_holds_the_later() {
+        let _turn = current_lock();
+        let first = begin(BannerKind::Ended { call: CallApp::Zoom });
+        let second = begin(BannerKind::Ended { call: CallApp::Meet });
+        assert_ne!(first, second);
+        assert_eq!(CURRENT.lock().unwrap().map(|(id, _)| id), Some(second));
+    }
+
     #[test]
     fn only_the_current_banner_can_act() {
+        let _turn = current_lock();
         *CURRENT.lock().unwrap() = Some((7, BannerKind::Ended { call: CallApp::Zoom }));
         assert_eq!(take_if_current(&label_for(6)), None, "stale banner");
         assert_eq!(take_if_current(&label_for(7)), Some(BannerKind::Ended { call: CallApp::Zoom }));

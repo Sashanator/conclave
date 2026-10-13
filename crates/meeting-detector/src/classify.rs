@@ -127,6 +127,8 @@ pub struct Snapshot {
     pub in_use: Vec<Detected>,
     /// Active capture sessions, read only while recording; `None` when not read.
     pub sessions: Option<Vec<CaptureUse>>,
+    /// The previous meeting is still being saved: offer and start nothing until it finishes.
+    pub busy: bool,
 }
 
 #[derive(Debug, Default)]
@@ -198,6 +200,10 @@ impl Detector {
             // New detections are ignored while recording, and not offered once it ends.
             self.seen.extend(s.in_use.iter().map(|d| d.path.clone()));
             return self.while_recording(s);
+        }
+
+        if s.busy {
+            return Vec::new();
         }
 
         // Offer at most one app per step, certain ones first; the rest count as seen.
@@ -272,11 +278,16 @@ mod tests {
     }
 
     fn snap(now_ms: u64, mode: Mode, recording: bool, in_use: Vec<Detected>) -> Snapshot {
-        Snapshot { now_ms, mode, recording, recording_id: 0, in_use, sessions: None }
+        Snapshot { now_ms, mode, recording, recording_id: 0, in_use, sessions: None, busy: false }
     }
 
     fn with_id(mut s: Snapshot, recording_id: u64) -> Snapshot {
         s.recording_id = recording_id;
+        s
+    }
+
+    fn with_busy(mut s: Snapshot, busy: bool) -> Snapshot {
+        s.busy = busy;
         s
     }
 
@@ -523,6 +534,30 @@ mod tests {
         d.step(&snap(9000, Mode::Ask, true, vec![]));
         assert_eq!(d.attached(), None);
         assert!(d.step(&snap(20_000, Mode::Ask, true, vec![])).is_empty());
+    }
+
+    #[test]
+    fn busy_holds_offers_until_the_save_finishes() {
+        let mut d = Detector::new();
+        d.step(&snap(0, Mode::Ask, false, vec![]));
+        assert!(d.step(&with_busy(snap(1000, Mode::Ask, false, vec![zoom()]), true)).is_empty());
+        assert_eq!(
+            d.step(&snap(2000, Mode::Ask, false, vec![zoom()])),
+            vec![Action::Prompt { app: CallApp::Zoom, certain: true }],
+            "held back during the save, offered once it finishes"
+        );
+    }
+
+    #[test]
+    fn busy_after_auto_stop_then_offer() {
+        let mut d = recording_attached_to_zoom();
+        d.step(&snap(2000, Mode::Ask, true, vec![]));
+        assert_eq!(d.step(&snap(7000, Mode::Ask, true, vec![])), vec![Action::Stop { app: CallApp::Zoom }]);
+        assert!(d.step(&with_busy(snap(8000, Mode::Ask, false, vec![zoom()]), true)).is_empty());
+        assert_eq!(
+            d.step(&snap(9000, Mode::Ask, false, vec![zoom()])),
+            vec![Action::Prompt { app: CallApp::Zoom, certain: true }]
+        );
     }
 
     #[test]

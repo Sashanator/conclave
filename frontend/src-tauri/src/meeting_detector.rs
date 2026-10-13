@@ -76,11 +76,15 @@ impl<R: Runtime> Host for AppHost<R> {
     }
 
     fn is_recording(&self) -> bool {
-        tauri::async_runtime::block_on(crate::audio::recording_commands::is_recording()) || post_processing()
+        tauri::async_runtime::block_on(crate::audio::recording_commands::is_recording())
     }
 
     fn recording_id(&self) -> u64 {
         crate::audio::recording_commands::recordings_started()
+    }
+
+    fn is_busy(&self) -> bool {
+        post_processing()
     }
 
     fn apply(&self, action: Action) {

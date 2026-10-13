@@ -682,7 +682,21 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 }
 
 /// Stop recording with optimized graceful shutdown ensuring NO transcript chunks are lost
-pub async fn stop_recording<R: Runtime>(
+pub async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> Result<(), String> {
+    // Set before the stop clears IS_RECORDING, so a detector start can't land in the gap; the frontend clears it
+    // after the save. Only a real stop claims it: a no-op stop would otherwise leave it set with no save to clear it.
+    let claimed = IS_RECORDING.load(Ordering::SeqCst);
+    if claimed {
+        crate::meeting_detector::set_recording_post_processing(true);
+    }
+    let result = stop_recording_inner(app, args).await;
+    if claimed && result.is_err() {
+        crate::meeting_detector::set_recording_post_processing(false);
+    }
+    result
+}
+
+async fn stop_recording_inner<R: Runtime>(
     app: AppHandle<R>,
     _args: RecordingArgs,
 ) -> Result<(), String> {

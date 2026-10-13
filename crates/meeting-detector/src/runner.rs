@@ -9,6 +9,8 @@ pub trait Host: Send + 'static {
     fn is_recording(&self) -> bool;
     /// Number of recordings started so far (any counter that increments per start).
     fn recording_id(&self) -> u64;
+    /// The previous meeting is still being saved (see `Snapshot::busy`).
+    fn is_busy(&self) -> bool;
     fn apply(&self, action: Action);
     /// `Some(reason)` while detection cannot run; `None` once it runs.
     fn set_error(&self, reason: Option<String>);
@@ -145,6 +147,7 @@ fn pass<H: Host>(
         recording_id: host.recording_id(),
         in_use,
         sessions,
+        busy: host.is_busy(),
     };
     for action in detector.step(&snapshot) {
         host.apply(action);
@@ -172,6 +175,9 @@ mod tests {
         }
         fn recording_id(&self) -> u64 {
             0
+        }
+        fn is_busy(&self) -> bool {
+            false
         }
         fn apply(&self, action: Action) {
             let _ = self.0.send(action);

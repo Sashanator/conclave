@@ -169,6 +169,8 @@ pub async fn save_recording_preferences<R: Runtime>(
         .map_err(|e| anyhow::anyhow!("Failed to save store to disk: {}", e))?;
 
     info!("Successfully persisted recording preferences to disk");
+    // Right after the save: a later failure (e.g. the folder) must not leave the live mode stale.
+    crate::meeting_detector::set_mode(&preferences.meeting_detection);
 
     // Save backend preference to global config
     #[cfg(target_os = "macos")]
@@ -202,9 +204,7 @@ pub async fn set_recording_preferences<R: Runtime>(
 ) -> Result<(), String> {
     save_recording_preferences(&app, &preferences)
         .await
-        .map_err(|e| format!("Failed to save recording preferences: {}", e))?;
-    crate::meeting_detector::set_mode(&preferences.meeting_detection);
-    Ok(())
+        .map_err(|e| format!("Failed to save recording preferences: {}", e))
 }
 
 #[tauri::command]

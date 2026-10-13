@@ -7,7 +7,7 @@ use anyhow::Result;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
@@ -37,6 +37,14 @@ pub use super::transcription::TranscriptUpdate;
 
 // Simple recording state tracking
 static IS_RECORDING: AtomicBool = AtomicBool::new(false);
+/// Counts recordings started (bumped with `IS_RECORDING` going true). The meeting detector compares it across
+/// its steps: a stop and a new start can both fall between two of them while the flag reads true the whole time.
+static RECORDINGS_STARTED: AtomicU64 = AtomicU64::new(0);
+
+/// See `RECORDINGS_STARTED`.
+pub fn recordings_started() -> u64 {
+    RECORDINGS_STARTED.load(Ordering::SeqCst)
+}
 
 /// True for the whole `stop_recording` tail (manager taken -> `recording-stopped`
 /// emitted). `IS_RECORDING` must stay true through the tail — the frontend polls
@@ -95,6 +103,7 @@ impl Drop for StoppingGuard {
 fn finalize_recording_start() {
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
     IS_RECORDING.store(true, Ordering::SeqCst);
+    RECORDINGS_STARTED.fetch_add(1, Ordering::SeqCst);
     MIC_FALLBACK_FAILED_ATTEMPTS.store(0, Ordering::SeqCst); // fresh mic-recovery budget per session
     reset_speech_detected_flag(); // reset speech-detected emit latch for the new session
 }

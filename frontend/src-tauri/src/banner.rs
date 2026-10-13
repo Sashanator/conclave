@@ -140,7 +140,7 @@ pub async fn meeting_banner_action<R: Runtime>(
     if action == "record" {
         if let Some(BannerKind::Detected { call, .. }) = kind {
             // Starting again would reload the main webview mid-recording and queue a recording nobody asked for.
-            if crate::is_recording().await {
+            if crate::meeting_detector::busy().await {
                 log::info!("Meeting banner: Record ignored, a recording is already active");
             } else {
                 crate::tray::request_recording_start(&app, Some(call.label()));

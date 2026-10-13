@@ -70,6 +70,10 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 /// Starts recording through the main webview's normal start path (model check, recording notice), without
 /// bringing the window forward. `title_prefix` (a call app name) goes in front of the generated meeting title.
 pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Option<&str>) {
+    if crate::meeting_detector::post_processing() {
+        log::info!("Start ignored: previous meeting still saving");
+        return;
+    }
     set_tray_state(app, RecordingState::Starting);
     if let Some(window) = app.get_webview_window("main") {
         // JSON-encode so the prefix is always a safe JS string literal.

@@ -616,6 +616,7 @@ pub fn run() {
             banner::get_meeting_banner,
             banner::meeting_banner_action,
             meeting_detector::get_meeting_detection_status,
+            meeting_detector::set_recording_post_processing,
             read_audio_file,
             save_transcript,
             whisper_engine::commands::whisper_init,

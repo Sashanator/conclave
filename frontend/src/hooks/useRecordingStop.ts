@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -117,6 +118,8 @@ export function useRecordingStop(
 
   // Main recording stop handler
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {
+    // Keeps meeting detection from starting a recording over this save (cleared in finally).
+    invoke('set_recording_post_processing', { active: true }).catch(() => {});
     if (recordingStoppedDataRef.current) {
       await recordingStoppedDataRef.current;
     }
@@ -364,6 +367,7 @@ export function useRecordingStop(
     } finally {
       // Always reset the guard flag when done
       stopInProgressRef.current = false;
+      invoke('set_recording_post_processing', { active: false }).catch(() => {});
     }
   }, [
     setIsRecording,

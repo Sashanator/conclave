@@ -3,15 +3,19 @@
 use crate::banner::{self, BannerKind};
 use meeting_detector::classify::{Action, Mode};
 use meeting_detector::runner::Host;
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Listener, Runtime};
+use std::time::{Duration, Instant};
+use tauri::{AppHandle, Runtime};
 
 /// Ask until the saved preference loads.
 static MODE: AtomicU8 = AtomicU8::new(1);
 static ERROR: Mutex<Option<String>> = Mutex::new(None);
-/// Counts starts so the detector can tell two recordings apart: a stop and a new start can both fall between two of its steps.
-static RECORDINGS_STARTED: AtomicU64 = AtomicU64::new(0);
+/// Set while the frontend saves the meeting that just stopped (`handleRecordingStop`). Stopping clears IS_RECORDING
+/// before that save finishes, so a start in between would reload the page and lose the save.
+static POST_PROCESSING_SINCE: Mutex<Option<Instant>> = Mutex::new(None);
+/// Expiry: a crashed or reloaded frontend can never block detection forever.
+const POST_PROCESSING_MAX: Duration = Duration::from_secs(600);
 
 fn encode(m: Mode) -> u8 {
     match m {
@@ -38,6 +42,24 @@ pub fn mode() -> Mode {
     decode(MODE.load(Ordering::Relaxed))
 }
 
+#[tauri::command]
+pub fn set_recording_post_processing(active: bool) {
+    *POST_PROCESSING_SINCE.lock().unwrap_or_else(|e| e.into_inner()) = active.then(Instant::now);
+}
+
+fn is_fresh(since: Option<Instant>, now: Instant) -> bool {
+    since.is_some_and(|t| now.saturating_duration_since(t) < POST_PROCESSING_MAX)
+}
+
+pub fn post_processing() -> bool {
+    is_fresh(*POST_PROCESSING_SINCE.lock().unwrap_or_else(|e| e.into_inner()), Instant::now())
+}
+
+/// True while a recording runs or its save is still going: nothing may start or reload the page then.
+pub async fn busy() -> bool {
+    crate::audio::recording_commands::is_recording().await || post_processing()
+}
+
 /// `None` while detection runs; otherwise the reason it doesn't, shown in Settings.
 #[tauri::command]
 pub fn get_meeting_detection_status() -> Option<String> {
@@ -54,11 +76,11 @@ impl<R: Runtime> Host for AppHost<R> {
     }
 
     fn is_recording(&self) -> bool {
-        tauri::async_runtime::block_on(crate::audio::recording_commands::is_recording())
+        tauri::async_runtime::block_on(crate::audio::recording_commands::is_recording()) || post_processing()
     }
 
     fn recording_id(&self) -> u64 {
-        RECORDINGS_STARTED.load(Ordering::Relaxed)
+        crate::audio::recording_commands::recordings_started()
     }
 
     fn apply(&self, action: Action) {
@@ -91,9 +113,6 @@ fn apply<R: Runtime>(app: &AppHandle<R>, action: Action) {
 
 /// Loads the saved mode, then starts the detector thread.
 pub fn start<R: Runtime>(app: &AppHandle<R>) {
-    app.listen_any("recording-started", |_| {
-        RECORDINGS_STARTED.fetch_add(1, Ordering::Relaxed);
-    });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         match crate::audio::recording_preferences::load_recording_preferences(&app).await {
@@ -109,6 +128,23 @@ pub fn start<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn post_processing_flag_follows_the_command() {
+        set_recording_post_processing(true);
+        assert!(post_processing());
+        set_recording_post_processing(false);
+        assert!(!post_processing());
+    }
+
+    #[test]
+    fn post_processing_is_busy_until_it_expires() {
+        let t = Instant::now();
+        assert!(!is_fresh(None, t));
+        assert!(is_fresh(Some(t), t));
+        assert!(is_fresh(Some(t), t + Duration::from_secs(599)));
+        assert!(!is_fresh(Some(t), t + Duration::from_secs(601)), "a stale flag must not block forever");
+    }
 
     #[test]
     fn stored_mode_round_trips_and_unknown_is_ask() {

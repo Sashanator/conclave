@@ -104,6 +104,11 @@ function AppShell({
       })
   }, [])
 
+  // A reloaded page has lost any save it was running, so the post-processing flag must not survive the reload.
+  useEffect(() => {
+    invoke('set_recording_post_processing', { active: false }).catch(() => {})
+  }, [])
+
   // Disable context menu in production
   useEffect(() => {
     if (process.env.NODE_ENV === 'production') {

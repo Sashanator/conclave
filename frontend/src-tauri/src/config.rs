@@ -14,6 +14,10 @@ pub const DEFAULT_PARAKEET_MODEL: &str = "parakeet-tdt-0.6b-v3-int8";
 /// Default transcription provider for a new install (no saved transcript config).
 pub const DEFAULT_TRANSCRIPT_PROVIDER: &str = "localWhisper";
 
+/// Default summary provider and model for a new install. No API key is stored until the user adds one.
+pub const DEFAULT_SUMMARY_PROVIDER: &str = "claude";
+pub const DEFAULT_SUMMARY_MODEL: &str = "claude-haiku-5-5";
+
 /// Whisper model catalog with metadata for all supported models.
 /// Used by both WhisperEngine::discover_models() and discover_models_standalone().
 ///

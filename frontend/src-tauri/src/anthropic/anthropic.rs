@@ -37,7 +37,7 @@ static MODELS_CACHE: RwLock<Option<CacheEntry>> = RwLock::new(None);
 /// Cache TTL in seconds
 const CACHE_TTL_SECS: u64 = 300;
 
-/// Fallback models when API fetch fails. Keep in sync with CLAUDE_FALLBACK_MODELS in ModelSettingsModal.tsx
+/// Fallback models when API fetch fails. Keep in sync with CLAUDE_FALLBACK_MODELS in ModelSettingsModal.tsx and the Claude list in ConfigContext.tsx
 const FALLBACK_MODELS: &[(&str, &str)] = &[
     ("claude-haiku-5-5", "Claude Haiku 5.5"),
     ("claude-sonnet-5-5", "Claude Sonnet 5.5"),

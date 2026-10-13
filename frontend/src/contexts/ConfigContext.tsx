@@ -99,10 +99,11 @@ const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
 
 export function ConfigProvider({ children }: { children: ReactNode }) {
   // Model configuration state
+  // Initial state only (until loaded from the DB); matches the Rust DEFAULT_SUMMARY_* constants
   const [modelConfig, setModelConfig] = useState<ModelConfig>({
-    provider: 'ollama',
-    model: 'llama3.2:latest',
-    whisperModel: 'large-v3',
+    provider: 'claude',
+    model: 'claude-haiku-5-5',
+    whisperModel: 'large-v3-turbo',
     ollamaEndpoint: null
   });
   const [isModelConfigLoading, setIsModelConfigLoading] = useState(true);

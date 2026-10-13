@@ -131,8 +131,9 @@ jobs:
       - name: Verify CUDA DLLs are delay-loaded, not hard imports
         shell: pwsh
         run: |
-          $exe = "target/x86_64-pc-windows-msvc/release/meetily.exe"
-          $dumpbin = & "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
+          $exe = "target/x86_64-pc-windows-msvc/release/Conclave.exe"
+          if (-not (Test-Path $exe)) { Write-Error "Expected $exe (mainBinaryName); found: $(Get-ChildItem target/x86_64-pc-windows-msvc/release/*.exe | Select-Object -ExpandProperty Name)"; exit 1 }
+          $dumpbin =& "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -find "VC\Tools\MSVC\**\bin\Hostx64\x64\dumpbin.exe" | Select-Object -First 1
           $imports = & $dumpbin /imports $exe | Out-String
           $split = $imports.IndexOf("Section contains the following delay load imports")
           if ($split -lt 0) { Write-Error "no delay-load import section in $exe"; exit 1 }
@@ -150,7 +151,8 @@ jobs:
         shell: pwsh
         run: |
           # Simulate the installed layout: cudart sits next to the exe.
-          $exe = "target/x86_64-pc-windows-msvc/release/meetily.exe"
+          $exe = "target/x86_64-pc-windows-msvc/release/Conclave.exe"
+          if (-not (Test-Path $exe)) { Write-Error "Expected $exe (mainBinaryName); found: $(Get-ChildItem target/x86_64-pc-windows-msvc/release/*.exe | Select-Object -ExpandProperty Name)"; exit 1 }
           Copy-Item -LiteralPath "frontend/src-tauri/binaries/cuda/cudart64_12.dll" -Destination (Join-Path (Split-Path $exe) "cudart64_12.dll") -Force -ErrorAction Stop
           # Missing DLLs exit instead of showing a modal dialog; child processes inherit the error mode.
           Add-Type -Namespace Win32 -Name ErrorMode -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint uMode);'

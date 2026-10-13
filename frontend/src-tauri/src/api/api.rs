@@ -1157,29 +1157,43 @@ fn validate_external_url(raw: &str) -> Result<url::Url, String> {
     if url.scheme() != "https" || url.host_str().map_or(true, str::is_empty) {
         return Err("Only https links can be opened".to_string());
     }
+    // explorer.exe splits its command line on these; none of the app's links need them.
+    if url.as_str().contains([',', ';', '=']) {
+        return Err("Refusing to open a URL with reserved characters".to_string());
+    }
     Ok(url)
+}
+
+// Quoted as one field: explorer.exe must not split the URL on commas. A serialized url::Url never contains '"'.
+#[cfg(windows)]
+fn spawn_opener(url: &url::Url) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
+    std::process::Command::new("explorer.exe")
+        .raw_arg(format!("\"{}\"", url.as_str()))
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(target_os = "macos")]
+fn spawn_opener(url: &url::Url) -> std::io::Result<()> {
+    std::process::Command::new("open")
+        .arg(url.as_str())
+        .spawn()
+        .map(|_| ())
+}
+
+#[cfg(not(any(windows, target_os = "macos")))]
+fn spawn_opener(url: &url::Url) -> std::io::Result<()> {
+    std::process::Command::new("xdg-open")
+        .arg(url.as_str())
+        .spawn()
+        .map(|_| ())
 }
 
 #[tauri::command]
 pub async fn open_external_url(url: String) -> Result<(), String> {
-    use std::process::Command;
-
     let url = validate_external_url(&url)?;
-    // explorer.exe hands the URL to the default browser without cmd.exe parsing it.
-    let result = if cfg!(target_os = "windows") {
-        Command::new("explorer.exe")
-            .arg(url.as_str())
-            .spawn()
-            .map(|_| ())
-    } else if cfg!(target_os = "macos") {
-        Command::new("open").arg(url.as_str()).spawn().map(|_| ())
-    } else {
-        Command::new("xdg-open")
-            .arg(url.as_str())
-            .spawn()
-            .map(|_| ())
-    };
-    result.map_err(|e| format!("Failed to open URL: {}", e))
+    spawn_opener(&url).map_err(|e| format!("Failed to open URL: {}", e))
 }
 
 // ===== CUSTOM OPENAI API COMMANDS =====
@@ -1418,6 +1432,9 @@ mod external_url_tests {
         // Legal in a URL; harmless once no shell is involved.
         let url = validate_external_url("https://example.com/a&b|c").unwrap();
         assert_eq!(url.host_str(), Some("example.com"));
+        // The Windows opener wraps the URL in quotes, so a serialized URL must never contain one.
+        let quoted = validate_external_url("https://example.com/a\"b").unwrap();
+        assert!(!quoted.as_str().contains('"'));
     }
 
     #[test]
@@ -1432,6 +1449,9 @@ mod external_url_tests {
             " https://example.com",
             "https://example.com\n",
             "https://exa mple.com",
+            "https://example.com/,/root,C:/Windows",
+            "https://example.com/a;b",
+            "https://example.com/?a=b",
         ] {
             assert!(validate_external_url(bad).is_err(), "accepted {bad:?}");
         }

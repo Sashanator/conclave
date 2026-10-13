@@ -966,6 +966,8 @@ async fn stop_recording_inner<R: Runtime>(
         (None, None)
     };
 
+    // Refresh the saving flag: the stop tail can outlast its 10-minute expiry.
+    crate::meeting_detector::set_recording_post_processing(true);
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);

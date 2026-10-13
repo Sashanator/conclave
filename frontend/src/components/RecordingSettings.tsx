@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { Switch } from '@/components/ui/switch';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { FolderOpen } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
@@ -13,7 +14,14 @@ export interface RecordingPreferences {
   file_format: string;
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
+  meeting_detection: 'off' | 'ask' | 'auto';
 }
+
+const DETECTION_OPTIONS = [
+  { value: 'off', label: 'Off' },
+  { value: 'ask', label: 'Ask (show a banner)' },
+  { value: 'auto', label: 'Auto-record' },
+] as const;
 
 interface RecordingSettingsProps {
   onSave?: (preferences: RecordingPreferences) => void;
@@ -25,8 +33,10 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     auto_save: true,
     file_format: 'mp4',
     preferred_mic_device: null,
-    preferred_system_device: null
+    preferred_system_device: null,
+    meeting_detection: 'ask'
   });
+  const [detectionStatus, setDetectionStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
@@ -54,6 +64,13 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     };
 
     loadPreferences();
+  }, []);
+
+  // Null while meeting detection runs; otherwise why it doesn't
+  useEffect(() => {
+    invoke<string | null>('get_meeting_detection_status')
+      .then(setDetectionStatus)
+      .catch((error) => console.error('Failed to load meeting detection status:', error));
   }, []);
 
   // Load recording notification preference
@@ -91,6 +108,23 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     setSelectedDevices(devices);
     await savePreferences(newPreferences);
 
+  };
+
+  const handleDetectionChange = async (value: string) => {
+    const previous = preferences.meeting_detection;
+    const meeting_detection = value as RecordingPreferences['meeting_detection'];
+    setPreferences({ ...preferences, meeting_detection });
+    try {
+      await invoke('set_recording_preferences', { preferences: { ...preferences, meeting_detection } });
+      const label = DETECTION_OPTIONS.find((o) => o.value === meeting_detection)?.label;
+      toast.success(`Meeting detection: ${label}`);
+    } catch (error) {
+      console.error('Failed to save meeting detection:', error);
+      setPreferences((prev) => ({ ...prev, meeting_detection: previous }));
+      toast.error('Failed to save meeting detection', {
+        description: error instanceof Error ? error.message : String(error)
+      });
+    }
   };
 
   const handleOpenFolder = async () => {
@@ -219,6 +253,31 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
           checked={showRecordingNotification}
           onCheckedChange={handleNotificationToggle}
         />
+      </div>
+
+      {/* Meeting Detection */}
+      <div className="p-4 border rounded-lg">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <div className="font-medium">Meeting Detection</div>
+            <div className="text-sm text-muted-foreground">
+              Detects Zoom, Google Meet and Microsoft Teams calls. Recording stops 5 seconds after you leave the call.
+            </div>
+          </div>
+          <Select value={preferences.meeting_detection} onValueChange={handleDetectionChange}>
+            <SelectTrigger className="w-56" aria-label="Meeting detection">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {DETECTION_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        {detectionStatus && (
+          <p className="text-sm text-amber-700 dark:text-amber-400 mt-2">{detectionStatus}</p>
+        )}
       </div>
 
       {/* Device Preferences */}

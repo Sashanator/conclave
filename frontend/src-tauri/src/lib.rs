@@ -47,6 +47,7 @@ pub mod onboarding;
 pub mod openai;
 pub mod anthropic;
 pub mod groq;
+pub mod meeting_detector;
 pub mod openrouter;
 pub mod parakeet_engine;
 pub mod state;
@@ -507,6 +508,7 @@ pub fn run() {
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
+            meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
             log::info!("Initializing notification system...");
@@ -613,6 +615,7 @@ pub fn run() {
             get_transcription_status,
             banner::get_meeting_banner,
             banner::meeting_banner_action,
+            meeting_detector::get_meeting_detection_status,
             read_audio_file,
             save_transcript,
             whisper_engine::commands::whisper_init,

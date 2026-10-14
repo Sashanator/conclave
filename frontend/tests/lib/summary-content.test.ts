@@ -38,6 +38,17 @@ describe('summary content validation', () => {
     expect(m).toMatchObject({ templateId: 'one_to_one', templateName: 'One-to-One', templateSource: 'auto', summaryLanguage: 'ru', languageFallback: false });
   });
 
+  test('an unknown template_source drops only that field', () => {
+    const m = readSummaryMetadata({
+      markdown: 'x', template_id: 'one_to_one', template_name: 'One-to-One',
+      template_source: 'weird', summary_language: 'ru', language_fallback: true,
+    });
+    expect(m).toMatchObject({
+      templateId: 'one_to_one', templateName: 'One-to-One', templateSource: null,
+      summaryLanguage: 'ru', languageFallback: true,
+    });
+  });
+
   test('readSummaryMetadata tolerates old results', () => {
     const m = readSummaryMetadata({ markdown: 'x', normalization_fallback: true });
     expect(m).toMatchObject({ templateId: null, templateSource: null, languageFallback: false });

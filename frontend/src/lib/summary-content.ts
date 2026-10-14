@@ -68,7 +68,7 @@ const SummaryMetadata = z.object({
   normalization_fallback: z.boolean().optional(),
   template_id: z.string().optional(),
   template_name: z.string().optional(),
-  template_source: z.enum(['manual', 'keyword', 'auto', 'fallback']).optional(),
+  template_source: z.enum(['manual', 'keyword', 'auto', 'fallback']).optional().catch(undefined),
   summary_language: z.string().optional(),
   language_fallback: z.boolean().optional(),
 }).passthrough();

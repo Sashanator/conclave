@@ -1,86 +1,24 @@
-# Meeting Summary Templates
+# Summary templates
 
-This directory contains template definitions for meeting summary generation.
+This folder holds the summary templates shipped with Conclave: the seven meeting templates and `standard_meeting`.
 
-## Available Templates
+On the first start of v0.4.0 the app copies these files once into `%APPDATA%\Conclave\templates` and writes a marker file, `.seeded-v1`, there. It never copies them again, so a template you delete stays deleted. To change a template, edit it in Settings → Templates; the copies in `%APPDATA%\Conclave\templates` are the ones the app uses.
 
-### 1. `daily_standup.json`
-Time-boxed daily updates template designed for engineering/product teams.
+`standard_meeting` is the fallback. It cannot be deleted, and if its file is missing or invalid the built-in copy is used.
 
-**Sections:**
-- Date
-- Attendees
-- Yesterday (completed work)
-- Today (planned work)
-- Blockers
-- Notes
+## Template fields
 
-### 2. `standard_meeting.json`
-General-purpose meeting notes template focusing on key outcomes and actions.
+One JSON file per template. The file name without `.json` is the template id; ids never change after creation.
 
-**Sections:**
-- Summary
-- Key Decisions
-- Action Items
-- Discussion Highlights
+| Field | Type | Meaning |
+|---|---|---|
+| `name` | string, required | Display name |
+| `description` | string, optional (was required) | Kept for old files; the editor does not show it |
+| `use_when` | string, optional | One line for auto-pick, e.g. "1-on-1 with my HoD Rasulov about work tasks" |
+| `title_keywords` | string[], optional | Case-insensitive substrings matched against the meeting title |
+| `language` | string, optional | BCP-47 code (`ru`, `en`, `de`, …). Absent or `"auto"` means the meeting's language |
+| `context` | string, optional | Free text, sent as written |
+| `sections` | array, required, ≥1 | `{title, instruction, format?, item_format?}`; `format` becomes optional (default `paragraph`) and the editor does not show it |
+| `style` | string, optional | Free text, sent as written |
 
-## Template Structure
-
-Each template JSON file follows this schema:
-
-```json
-{
-  "name": "Template Name",
-  "description": "Brief description of the template's purpose",
-  "sections": [
-    {
-      "title": "Section Title",
-      "instruction": "Instructions for the LLM on what to extract/include",
-      "format": "paragraph|list|string",
-      "item_format": "Optional: Markdown table format for list items"
-    }
-  ]
-}
-```
-
-## Custom Templates
-
-Users can add custom templates to the application data directory:
-
-- **macOS**: `~/Library/Application Support/Meetily/templates/`
-- **Windows**: `%APPDATA%\Meetily\templates\`
-- **Linux**: `~/.config/Meetily/templates/`
-
-Custom templates override built-in templates with the same filename.
-
-## Template Fields
-
-### Root Level
-- `name` (required): Display name for the template
-- `description` (required): Brief explanation of the template's use case
-- `sections` (required): Array of section definitions
-
-### Section Object
-- `title` (required): Section heading text
-- `instruction` (required): LLM guidance for this section
-- `format` (required): One of `"paragraph"`, `"list"`, or `"string"`
-- `item_format` (optional): Markdown formatting hint for list items (e.g., table structure)
-- `example_item_format` (optional): Alternative formatting hint
-
-## Usage in Code
-
-Templates are loaded using the `templates` module:
-
-```rust
-use crate::summary::templates;
-
-// Get a specific template
-let template = templates::get_template("daily_standup")?;
-
-// List available templates
-let available = templates::list_templates();
-
-// Validate custom template JSON
-let custom_json = std::fs::read_to_string("custom.json")?;
-let validated = templates::validate_template(&custom_json)?;
-```
+Validation: non-empty name, at least one section, every section has a non-empty title and instruction, `language` is `auto` or a code Conclave knows, and `format` (when present) is one of `paragraph`, `list`, `string`. A file that fails validation is skipped and reported once in Settings → Templates.

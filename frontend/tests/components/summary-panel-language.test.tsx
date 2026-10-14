@@ -1,6 +1,6 @@
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { forwardRef, type ReactNode } from 'react';
-import { act, create, type ReactTestRenderer } from 'react-test-renderer';
+import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingSummary, Transcript } from '../../src/types';
 
 const originals = {
@@ -102,6 +102,10 @@ async function renderPanel(aiSummary: MeetingSummary | null) {
   await flush();
 }
 
+function languageButton(): ReactTestInstance {
+  return renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Set summary language')[0];
+}
+
 async function chooseLanguage(code: string | null) {
   await act(async () => {
     picker.onChange?.(code);
@@ -149,6 +153,30 @@ describe('summary panel language change', () => {
     await chooseLanguage('de');
     consoleError.mockRestore();
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  test('the language picker is disabled until the stored language has loaded', async () => {
+    let finishLoad: (stored: { language: string | null; storage: 'metadata' }) => void = () => {};
+    readLanguage.mockImplementation(() => new Promise((resolve) => {
+      finishLoad = resolve;
+    }));
+    await renderPanel(summary);
+    expect(languageButton().props.disabled).toBe(true);
+    await act(async () => {
+      finishLoad({ language: 'en', storage: 'metadata' });
+    });
+    await flush();
+    expect(languageButton().props.disabled).toBe(false);
+  });
+
+  test('the language picker is enabled once a failed language load has finished', async () => {
+    const consoleError = spyOn(console, 'error').mockImplementation(() => {});
+    readLanguage.mockImplementation(async () => {
+      throw new Error('unreadable');
+    });
+    await renderPanel(summary);
+    consoleError.mockRestore();
+    expect(languageButton().props.disabled).toBe(false);
   });
 
   test('rapid switching regenerates once for the final choice', async () => {

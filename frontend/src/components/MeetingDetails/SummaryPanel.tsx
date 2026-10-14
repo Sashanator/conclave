@@ -91,6 +91,8 @@ export function SummaryPanel({
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
   const [langPickerOpen, setLangPickerOpen] = useState(false);
+  // The picker stays disabled until the stored language has loaded, so a change is compared with the real value.
+  const [languageLoaded, setLanguageLoaded] = useState(false);
   const languageLoadVersionRef = useRef(0);
   const activeMeetingIdRef = useRef(meeting.id);
   const languageSaveVersionRef = useRef(0);
@@ -120,6 +122,7 @@ export function SummaryPanel({
     let cancelled = false;
     const loadVersion = languageLoadVersionRef.current + 1;
     languageLoadVersionRef.current = loadVersion;
+    setLanguageLoaded(false);
 
     const loadSummaryLanguage = async () => {
       try {
@@ -128,6 +131,7 @@ export function SummaryPanel({
           setSummaryLang(stored.language);
           setSummaryLangStorage(stored.storage);
           persistedLanguageRef.current = stored.language;
+          setLanguageLoaded(true);
         }
       } catch (err) {
         console.error('Failed to load summary language:', err);
@@ -137,6 +141,7 @@ export function SummaryPanel({
         if (!cancelled && languageLoadVersionRef.current === loadVersion) {
           setSummaryLang(null);
           persistedLanguageRef.current = null;
+          setLanguageLoaded(true);
         }
       }
     };
@@ -236,6 +241,7 @@ export function SummaryPanel({
           <Button
             variant="outline"
             size="sm"
+            disabled={!languageLoaded}
             title={`Summary language: ${effectiveLangLabel}${isLocalFallbackLanguage ? ' (saved on this device)' : ''}`}
             aria-label="Set summary language"
           >

@@ -22,7 +22,7 @@
 - Auto-pick: temperature 0, first 4,000 characters of the transcript, 30 s timeout, unknown answer → `standard_meeting` with source `fallback`.
 - Language fallback: English with `language_fallback: true`, shown as "Language: couldn't detect, using English".
 - Spec §5.2 step 4 (Whisper-reported language) is dropped: transcript segments do not store Whisper's language (checked 2026-10-14).
-- The pinned summary language is removed everywhere; the localStorage key `summaryLanguageDefault` is deleted on startup.
+- The pinned summary language stays exactly as it is (the user unpins it manually). Do not change, clear or remove pinned-language code or storage.
 - Theme values: `system | light | dark | conclave`. Conclave sets both `dark` and `theme-conclave` on `<html>`; the native window theme is `dark`. Body text contrast ≥ 4.5:1.
 - Never commit `.claude/settings.json` or anything under `.superpowers/`. Stage files by name; never `git commit -a`.
 - Commit messages end with `Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`.
@@ -52,7 +52,7 @@
 | `frontend/src-tauri/src/summary/template_choice.rs` (new) | Template choice order + auto-pick prompt/answer parsing | 4 |
 | `frontend/src-tauri/src/summary/metadata.rs` | `summary_template` / `summary_template_source` fields in meeting `metadata.json` | 4 |
 | `frontend/src/hooks/meeting-details/useTemplates.ts`, `useSummaryGeneration.ts`, `components/MeetingDetails/*` | Meeting view: auto label, manual pick regenerates, language flag | 5 |
-| `frontend/src/lib/summary-language-preferences.ts`, `hooks/useRecentLanguages.ts`, `components/SummaryLanguageSettings.tsx` | Remove pinned language | 5 |
+| `frontend/src/components/SummaryLanguageSettings.tsx` | Helper text explains the language order | 5 |
 | `frontend/src/components/TemplateSettings.tsx` (new), `frontend/src/lib/template-draft.ts` (new), `app/settings/page.tsx` | Settings → Templates editor | 6 |
 | `frontend/src/lib/theme.ts`, `contexts/ThemeContext.tsx`, `components/PreferenceSettings.tsx`, `app/globals.css`, `tailwind.config.js`, `components/RecordingControls.tsx` | Conclave theme | 7 |
 | `docs/network-calls.md`, `frontend/src-tauri/templates/README.md`, `.github/workflows/release.yml` | Docs and release notes | 8 |
@@ -1173,12 +1173,12 @@ git commit -m "feat(summary): pick the template by hand, stored choice, title ke
 
 ---
 
-### Task 5: Meeting view and removal of the pinned language
+### Task 5: Meeting view
 
 **Files:**
 - Modify: `frontend/src/hooks/meeting-details/useTemplates.ts`, `frontend/src/hooks/meeting-details/useSummaryGeneration.ts`, `frontend/src/app/meeting-details/page-content.tsx`, `frontend/src/components/MeetingDetails/SummaryPanel.tsx`, `frontend/src/components/MeetingDetails/SummaryGeneratorButtonGroup.tsx`, `frontend/src/lib/summary-content.ts`, `frontend/src/types/index.ts`
-- Modify (pin removal): `frontend/src/lib/summary-language-preferences.ts`, `frontend/src/hooks/useRecentLanguages.ts`, `frontend/src/components/SummaryLanguageSettings.tsx`, `frontend/src/hooks/useRecordingStop.ts`, `frontend/src/hooks/useImportAudio.ts`, `frontend/src/hooks/useTranscriptRecovery.ts`, `frontend/src/app/layout.tsx`
-- Test: `frontend/tests/lib/summary-content.test.ts`, `frontend/tests/lib/summary-language-preferences.test.js`
+- Modify: `frontend/src/components/SummaryLanguageSettings.tsx` (helper text only)
+- Test: `frontend/tests/lib/summary-content.test.ts`
 
 **Interfaces:**
 - Consumes: Task 2 `api_list_templates` shape; Task 4 `api_process_transcript(templateId: string | null)` and result JSON fields `template_id`, `template_name`, `template_source`, `summary_language`, `language_fallback`.
@@ -1186,7 +1186,6 @@ git commit -m "feat(summary): pick the template by hand, stored choice, title ke
   - `readSummaryMetadata(value)` returns `{ meetingName, reasoningStripped, templateId: string | null, templateName: string | null, templateSource: 'manual' | 'keyword' | 'auto' | 'fallback' | null, summaryLanguage: string | null, languageFallback: boolean }`.
   - `useTemplates()` returns `{ availableTemplates: Array<{ id: string; name: string }>, selectedTemplate: string | null, handleTemplateSelection(id: string, name: string): void }` — `null` means "let Conclave choose".
   - `useSummaryGeneration` exposes `handleRegenerateSummary(templateId?: string)`.
-  - `clearLegacyPinnedSummaryLanguage(): void` in `summary-language-preferences.ts`.
 
 - [ ] **Step 1: Failing tests**
 
@@ -1207,39 +1206,15 @@ test('readSummaryMetadata tolerates old results', () => {
 });
 ```
 
-`tests/lib/summary-language-preferences.test.js` — delete the tests for `readPinnedSummaryLanguageDefault`, `writePinnedSummaryLanguageDefault` and `applyPinnedSummaryLanguageToMeeting`; add:
-
-```js
-test('clearLegacyPinnedSummaryLanguage removes the old pinned default', () => {
-  localStorage.setItem('summaryLanguageDefault', 'en');
-  clearLegacyPinnedSummaryLanguage();
-  expect(localStorage.getItem('summaryLanguageDefault')).toBeNull();
-});
-```
-
-Run: `cd frontend && bun test tests/lib/summary-content.test.ts tests/lib/summary-language-preferences.test.js` → fail.
+Run: `cd frontend && bun test tests/lib/summary-content.test.ts` → fail.
 
 - [ ] **Step 2: `summary-content.ts`**
 
 Extend the zod `SummaryMetadata` with `template_id`, `template_name`, `summary_language` (`z.string().optional()`), `template_source` (`z.enum(['manual','keyword','auto','fallback']).optional()`), `language_fallback` (`z.boolean().optional()`); keep `normalization_fallback` optional but stop returning it. Return the new object (nulls when absent). Update `types/index.ts` summary metadata type the same way (drop `normalization_fallback`).
 
-- [ ] **Step 3: Remove the pinned language**
+- [ ] **Step 3: Explain the language order**
 
-- `summary-language-preferences.ts`: delete `SUMMARY_LANGUAGE_DEFAULT_KEY` usage in `readPinnedSummaryLanguageDefault`, `writePinnedSummaryLanguageDefault`, `applyPinnedSummaryLanguageToMeeting`; add:
-
-```ts
-/** The pinned default language was removed in v0.4.0 (Auto is the only default); drop any stored value. */
-export function clearLegacyPinnedSummaryLanguage(): void {
-  if (typeof window === 'undefined') return;
-  try { window.localStorage.removeItem(SUMMARY_LANGUAGE_DEFAULT_KEY); } catch { /* storage blocked: nothing to clear */ }
-}
-```
-
-- `useRecordingStop.ts`: remove the `applyPinnedSummaryLanguageToMeeting` import and call; always run `detectAndCacheSummaryLanguage` (the `shouldDetectSummaryLanguage` flag becomes unnecessary — call it directly inside the existing try/catch).
-- `useImportAudio.ts`, `useTranscriptRecovery.ts`: remove the pinned-language blocks and imports.
-- `useRecentLanguages.ts`: remove `pinned`, `setPinned` and the pinned storage helpers; return `{ recents, addRecent, removeRecent }`.
-- `SummaryLanguageSettings.tsx`: remove the pin buttons (`Pin` icon), the "Default: …" line and the pin copy; the helper text becomes: "Summaries are written in the meeting's language: the language you pick for a meeting, else the template's language, else the language detected in the transcript. These are quick-switch options in the summary generator." Fix any other `pinned` consumer (`grep -rn "pinned\|setPinned" frontend/src`).
-- `app/layout.tsx`: call `clearLegacyPinnedSummaryLanguage()` inside the existing mount effect that resets the post-processing flag.
+Do not touch pinned-language code (`readPinnedSummaryLanguageDefault`, `applyPinnedSummaryLanguageToMeeting`, `useRecentLanguages`, the pin buttons) or its storage. In `SummaryLanguageSettings.tsx` only add one muted line under the existing helper text: "Summaries are written in the meeting's language: the language set for the meeting (a pinned language is set on new meetings), else the template's language, else the language detected in the transcript."
 
 - [ ] **Step 4: Language resolution moves to Rust**
 
@@ -1257,7 +1232,7 @@ async function readChosenSummaryLanguage(meetingId: string): Promise<string | nu
 }
 ```
 
-Remove the cached-detected and detect-now steps and the "Bilingual transcript detected" toast (Rust reads the cached detected language and detects from text itself). Remove the `normalizationFallback` toast branch (keep the success toast). When `metadata.languageFallback` is true, show `toast.warning("Language: couldn't detect, using English", { description: 'Pick the summary language for this meeting and regenerate.' })` instead of the success toast.
+Remove the cached-detected and detect-now steps and the "Bilingual transcript detected" toast (Rust reads the cached detected language and detects from text itself). The detection that runs when a meeting is saved (`useRecordingStop.ts`) stays as it is. Remove the `normalizationFallback` toast branch (keep the success toast). When `metadata.languageFallback` is true, show `toast.warning("Language: couldn't detect, using English", { description: 'Pick the summary language for this meeting and regenerate.' })` instead of the success toast.
 
 - [ ] **Step 5: Template choice in the meeting view**
 
@@ -1268,13 +1243,13 @@ Remove the cached-detected and detect-now steps and the "Bilingual transcript de
 
 - [ ] **Step 6: Run checks**
 
-Run: `cd frontend && pnpm exec tsc --noEmit && bun test` → pass. `grep -rn "applyPinnedSummaryLanguageToMeeting\|readPinnedSummaryLanguageDefault\|normalizationFallback" frontend/src` → no output.
+Run: `cd frontend && pnpm exec tsc --noEmit && bun test` → pass. `grep -rn "normalizationFallback" frontend/src` → no output. `git diff --stat` shows no change to `summary-language-preferences.ts`, `useRecentLanguages.ts`, `useRecordingStop.ts`, `useImportAudio.ts`, `useTranscriptRecovery.ts` or `layout.tsx`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add frontend/src frontend/tests
-git commit -m "feat(meeting): show the auto-picked template, regenerate on a manual pick, flag the language fallback; remove the pinned language"
+git commit -m "feat(meeting): show the auto-picked template, regenerate on a manual pick, flag the language fallback"
 ```
 
 ---

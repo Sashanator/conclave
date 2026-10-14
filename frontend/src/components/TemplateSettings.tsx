@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type MutableRefObject, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { ArrowDown, ArrowUp, Copy, Plus, Trash2 } from 'lucide-react';
@@ -11,6 +11,7 @@ import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { LANGUAGE_OPTIONS } from '@/lib/summary-languages';
+import { setUnsavedChanges } from '@/lib/unsaved-guard';
 import {
   draftFromTemplate, emptyDraft, templateFromDraft, validateDraft,
   type TemplateDraft, type TemplateJson,
@@ -34,12 +35,7 @@ function Field({ id, label, hint, children }: { id: string; label: string; hint?
   );
 }
 
-interface TemplateSettingsProps {
-  /** Set to true while the draft has unsaved edits, so the Settings page can ask before leaving the tab. */
-  dirtyRef: MutableRefObject<boolean>;
-}
-
-export function TemplateSettings({ dirtyRef }: TemplateSettingsProps) {
+export function TemplateSettings() {
   const [listing, setListing] = useState<TemplateListing>({ templates: [], errors: [] });
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TemplateDraft | null>(null);
@@ -49,10 +45,11 @@ export function TemplateSettings({ dirtyRef }: TemplateSettingsProps) {
   const dirty = draft !== null && JSON.stringify(draft) !== savedJson;
   const problem = draft ? validateDraft(draft) : null;
 
+  // Lets navigation elsewhere in the app confirm before discarding this draft
   useEffect(() => {
-    dirtyRef.current = dirty;
-    return () => { dirtyRef.current = false; };
-  }, [dirty, dirtyRef]);
+    setUnsavedChanges(dirty);
+    return () => setUnsavedChanges(false);
+  }, [dirty]);
 
   useEffect(() => {
     if (!dirty) return;

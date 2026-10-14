@@ -10,6 +10,7 @@ import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { TemplateSettings } from '@/components/TemplateSettings';
+import { confirmLeave } from '@/lib/unsaved-guard';
 import { BetaSettings } from '@/components/BetaSettings';
 import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -33,11 +34,8 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('general');
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
-  // Set by the Templates tab while its draft has unsaved edits
-  const templatesDirtyRef = useRef(false);
-  const canLeaveTemplates = () => !templatesDirtyRef.current || window.confirm('Discard unsaved changes?');
   const changeTab = (tab: string) => {
-    if (canLeaveTemplates()) setActiveTab(tab);
+    if (confirmLeave()) setActiveTab(tab);
   };
 
   // Load saved transcript configuration on mount
@@ -78,7 +76,7 @@ export default function SettingsPage() {
         <div className="max-w-6xl mx-auto px-8 py-6">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => canLeaveTemplates() && router.back()}
+              onClick={() => confirmLeave() && router.back()}
               className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -134,7 +132,7 @@ export default function SettingsPage() {
               <SummaryModelSettings />
             </TabsContent>
             <TabsContent value="templates">
-              <TemplateSettings dirtyRef={templatesDirtyRef} />
+              <TemplateSettings />
             </TabsContent>
             <TabsContent value="beta" className="mt-6">
               <BetaSettings />

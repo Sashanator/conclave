@@ -209,6 +209,9 @@ export function useRecordingStart(
           console.log('Auto-starting recording from navigation...');
           setIsAutoStarting(true);
           sessionStorage.removeItem('autoStartRecording'); // Clear the flag
+          // Set by meeting detection (tray.rs request_recording_start): the call app's name, e.g. "Zoom".
+          const titlePrefix = sessionStorage.getItem('autoStartTitlePrefix');
+          sessionStorage.removeItem('autoStartTitlePrefix');
 
           // Check the selected transcription model before starting.
           const modelReady = await checkModelReady();
@@ -234,7 +237,7 @@ export function useRecordingStart(
           // Start the actual backend recording
           try {
             // Generate meeting title
-            const generatedMeetingTitle = generateMeetingTitle();
+            const generatedMeetingTitle = titlePrefix ? `${titlePrefix} ${generateMeetingTitle()}` : generateMeetingTitle();
 
             // Set STARTING status before initiating backend recording
             setStatus(RecordingStatus.STARTING, 'Initializing recording...');

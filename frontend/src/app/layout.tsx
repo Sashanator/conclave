@@ -23,6 +23,9 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
+import { usePathname } from 'next/navigation'
+import { ThemeProvider, useTheme } from '@/contexts/ThemeContext'
+import { THEME_INIT_SCRIPT } from '@/lib/theme'
 
 
 const sourceSans3 = Source_Sans_3({
@@ -59,9 +62,14 @@ function ConditionalImportDialog({
   );
 }
 
+function ThemedToaster() {
+  const { resolved } = useTheme();
+  return <Toaster theme={resolved} position="bottom-center" richColors closeButton />;
+}
+
 // export { metadata } from './metadata'
 
-export default function RootLayout({
+function AppShell({
   children,
 }: {
   children: React.ReactNode
@@ -94,6 +102,11 @@ export default function RootLayout({
         setShowOnboarding(true)
         setOnboardingCompleted(false)
       })
+  }, [])
+
+  // A reloaded page has lost any save it was running, so the post-processing flag must not survive the reload.
+  useEffect(() => {
+    invoke('set_recording_post_processing', { active: false }).catch(() => {})
   }, [])
 
   // Disable context menu in production
@@ -229,8 +242,7 @@ export default function RootLayout({
   }
 
   return (
-    <html lang="en">
-      <body className={`${sourceSans3.variable} font-sans antialiased`}>
+    <>
           <RecordingStateProvider>
             <TranscriptProvider>
               <ConfigProvider>
@@ -270,7 +282,26 @@ export default function RootLayout({
             </TranscriptProvider>
           </RecordingStateProvider>
 
-        <Toaster position="bottom-center" richColors closeButton />
+        <ThemedToaster />
+    </>
+  )
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  // The meeting banner window (spec §5.1) loads /banner. It must not mount the app's providers: a second
+  // RecordingPostProcessingProvider would save every meeting twice.
+  const isBanner = usePathname()?.startsWith('/banner') ?? false;
+  return (
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
+      </head>
+      <body className={`${sourceSans3.variable} font-sans antialiased`}>
+        <ThemeProvider>{isBanner ? children : <AppShell>{children}</AppShell>}</ThemeProvider>
       </body>
     </html>
   )

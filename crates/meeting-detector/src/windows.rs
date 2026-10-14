@@ -20,11 +20,20 @@ use windows::Win32::UI::WindowsAndMessaging::{EnumWindows, GetWindowTextW, GetWi
 use winreg::enums::HKEY_CURRENT_USER;
 use winreg::RegKey;
 
-fn entry(key: &RegKey, name: &str, packaged: bool) -> Option<MicUser> {
-    let sub = key.open_subkey(name).ok()?;
-    let start: u64 = sub.get_value("LastUsedTimeStart").unwrap_or(0);
-    let stop: u64 = sub.get_value("LastUsedTimeStop").unwrap_or(0);
-    Some(MicUser {
+/// A missing stamp is 0 (never used). Any other read error fails the caller's read.
+fn stamp(sub: &RegKey, name: &str) -> io::Result<u64> {
+    match sub.get_value(name) {
+        Ok(v) => Ok(v),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e),
+    }
+}
+
+fn entry(key: &RegKey, name: &str, packaged: bool) -> io::Result<MicUser> {
+    let sub = key.open_subkey(name)?;
+    let start = stamp(&sub, "LastUsedTimeStart")?;
+    let stop = stamp(&sub, "LastUsedTimeStop")?;
+    Ok(MicUser {
         app: app_name_from_key(name, packaged),
         path: path_from_key(name, packaged),
         packaged,
@@ -32,18 +41,20 @@ fn entry(key: &RegKey, name: &str, packaged: bool) -> Option<MicUser> {
     })
 }
 
-/// Reads every app recorded under `HKCU\<path>` (packaged subkeys + `NonPackaged\*`).
+/// Reads every app recorded under `HKCU\<path>` (packaged subkeys + `NonPackaged\*`). Any failure fails the whole
+/// read: a partial read could look like a release and stop a recording.
 pub fn read_mic_users(path: &str) -> io::Result<Vec<MicUser>> {
     let root = RegKey::predef(HKEY_CURRENT_USER).open_subkey(path)?;
     let mut users = Vec::new();
-    for name in root.enum_keys().filter_map(Result::ok) {
+    for name in root.enum_keys() {
+        let name = name?;
         if name.eq_ignore_ascii_case("NonPackaged") {
-            // An unreadable NonPackaged key must not hide the packaged entries.
-            if let Ok(np) = root.open_subkey(&name) {
-                users.extend(np.enum_keys().filter_map(Result::ok).filter_map(|n| entry(&np, &n, false)));
+            let np = root.open_subkey(&name)?;
+            for n in np.enum_keys() {
+                users.push(entry(&np, &n?, false)?);
             }
-        } else if let Some(u) = entry(&root, &name, true) {
-            users.push(u);
+        } else {
+            users.push(entry(&root, &name, true)?);
         }
     }
     Ok(users)
@@ -280,6 +291,24 @@ mod tests {
                 in_use: false,
             },
         ]);
+    }
+
+    #[test]
+    fn a_stamp_of_the_wrong_type_fails_the_whole_read() {
+        let (_guard, key, path) = test_store("badtype");
+        set(&key, r"NonPackaged\C:#Zoom.exe", 100, 0);
+        let (teams, _) = key.create_subkey("MSTeams_8wekyb3d8bbwe").unwrap();
+        teams.set_value("LastUsedTimeStart", &"100").unwrap(); // REG_SZ, not REG_QWORD
+        assert!(read_mic_users(&path).is_err(), "a partial read must not look like a release");
+    }
+
+    #[test]
+    fn an_entry_without_values_reads_as_not_in_use() {
+        let (_guard, key, path) = test_store("novalues");
+        key.create_subkey("MSTeams_8wekyb3d8bbwe").unwrap();
+        let users = read_mic_users(&path).unwrap();
+        assert_eq!(users.len(), 1);
+        assert!(!users[0].in_use);
     }
 
     #[test]

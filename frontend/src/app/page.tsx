@@ -3,6 +3,7 @@
 import { useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { RecordingControls } from '@/components/RecordingControls';
+import { MicFollowingLine } from '@/components/MicFollowingLine';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
@@ -206,7 +207,7 @@ export default function Home() {
   const isProcessingStop = status === RecordingStatus.PROCESSING_TRANSCRIPTS || isProcessing;
 
   return (
-    <div className="flex flex-col h-screen bg-gray-50">
+    <div className="flex flex-col h-screen bg-muted/50">
       {/* All Modals supported*/}
       <SettingsModals
         modals={modals}
@@ -241,8 +242,8 @@ export default function Home() {
                   marginLeft: sidebarCollapsed ? '4rem' : '16rem'
                 }}
               >
-                <div className="w-2/3 max-w-[750px] flex justify-center">
-                  <div className="bg-white rounded-full shadow-lg flex items-center">
+                <div className="w-2/3 max-w-[750px] flex justify-center relative">
+                  <div className="bg-card rounded-full shadow-lg flex items-center">
                     <RecordingControls
                       isRecording={recordingState.isRecording}
                       onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
@@ -259,6 +260,11 @@ export default function Home() {
                       meetingName={meetingTitle}
                     />
                   </div>
+                  {recordingState.isRecording && (
+                    <div className="absolute top-full mt-2 left-0 right-0 flex justify-center">
+                      <MicFollowingLine selectedMic={selectedDevices?.micDevice ?? null} />
+                    </div>
+                  )}
                 </div>
               </div>
             </div>

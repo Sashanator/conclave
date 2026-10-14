@@ -22,7 +22,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
 |---|---|
 | `frontend/` | Next.js 14 + React 18 UI (pnpm), with Bun tests in `frontend/tests/` |
 | `frontend/src-tauri/` | Tauri 2 Rust core (crate `meetily`, lib `app_lib`): audio capture, Whisper/Parakeet, storage, summaries |
-| `crates/meeting-detector/` | Windows meeting detection (mic consent store, change notifications, capture sessions) and the `conclave-probe` diagnostic binary |
+| `crates/meeting-detector/` | Windows meeting detection: pure rules (`classify.rs`), the watch loop (`runner.rs`), the Win32 layer (`windows.rs`), and the `conclave-probe` diagnostic binary. |
 | `llama-helper/` | Sidecar for the local LLM (bundled; not used for summaries in v1) |
 | `scripts/` | `check-no-phone-home.sh` (CI guard), `set-version.mjs` (release version stamp) |
 | `.github/workflows/` | `ci.yml` (PR checks), `release.yml` (installer on `v*` tags) |

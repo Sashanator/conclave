@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { listen } from '@tauri-apps/api/event';
+import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -11,6 +12,7 @@ import {
   applyPinnedSummaryLanguageToMeeting,
   detectAndCacheSummaryLanguage,
 } from '@/lib/summary-language-preferences';
+import { endStop, tryBeginStop } from '@/lib/recording-stop-gate';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -28,7 +30,7 @@ interface UseRecordingStopReturn {
  * Handles the complex stop sequence: transcription wait → buffer flush → SQLite save → navigation.
  *
  * Features:
- * - Transcription completion polling (60s max, 500ms interval)
+ * - Transcription completion polling (60s max, 500ms interval; saves what it has after that)
  * - Transcript buffer flush coordination
  * - SQLite meeting save with folder_path from sessionStorage
  * - Auto-navigation to meeting details
@@ -66,9 +68,6 @@ export function useRecordingStop(
   } = useSidebar();
 
   const router = useRouter();
-
-  // Guard to prevent duplicate/concurrent stop calls (e.g., from UI and tray simultaneously)
-  const stopInProgressRef = useRef(false);
 
   // Promise to track recording-stopped event data (fixes race condition with recording-stop-complete)
   const recordingStoppedDataRef = useRef<Promise<void> | null>(null);
@@ -117,15 +116,17 @@ export function useRecordingStop(
 
   // Main recording stop handler
   const handleRecordingStop = useCallback(async (isCallApi: boolean) => {
-    if (recordingStoppedDataRef.current) {
-      await recordingStoppedDataRef.current;
-    }
-
-    // Guard: prevent duplicate/concurrent stop calls
-    if (stopInProgressRef.current) {
+    // Guard: one save at a time across every instance (UI and tray stops both reach here). A refused call
+    // returns before it touches the post-processing flag, which only the owner clears.
+    if (!tryBeginStop()) {
       return;
     }
-    stopInProgressRef.current = true;
+    // Keeps meeting detection from starting a recording over this save (cleared in finally).
+    invoke('set_recording_post_processing', { active: true }).catch(() => {});
+    if (recordingStoppedDataRef.current) {
+      // A failed data write must not leave the gate held: the save reads sessionStorage either way.
+      await recordingStoppedDataRef.current.catch((error) => console.error('Recording-stopped data unavailable:', error));
+    }
 
     // Set status to STOPPING immediately
     setStatus(RecordingStatus.STOPPING);
@@ -197,8 +198,9 @@ export function useRecordingStop(
       console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
       unlistenComplete();
 
-      if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
-        console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
+      if (!transcriptionComplete) {
+        // Save what we have anyway: skipping the save here used to lose the whole meeting.
+        console.warn('⏰ Transcription not confirmed complete after', elapsedTime, 'ms; saving what is transcribed so far');
       } else {
         console.log('✅ Transcription completed after', elapsedTime, 'ms');
         // Wait longer for any late transcript segments (increased from 1s to 4s)
@@ -231,7 +233,7 @@ export function useRecordingStop(
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
       // This ensures user sees all transcripts streaming in before database save
-      if (isCallApi && transcriptionComplete == true) {
+      if (isCallApi) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
@@ -261,6 +263,11 @@ export function useRecordingStop(
           if (!meetingId) {
             console.error('No meeting_id in response:', responseData);
             throw new Error('No meeting ID received from save operation');
+          }
+          if (!transcriptionComplete) {
+            toast.warning('Saved before transcription finished', {
+              description: 'The last part of the transcript may be missing.',
+            });
           }
 
           let shouldDetectSummaryLanguage = false;
@@ -363,7 +370,8 @@ export function useRecordingStop(
       setIsRecordingDisabled(false);
     } finally {
       // Always reset the guard flag when done
-      stopInProgressRef.current = false;
+      endStop();
+      invoke('set_recording_post_processing', { active: false }).catch(() => {});
     }
   }, [
     setIsRecording,

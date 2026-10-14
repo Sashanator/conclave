@@ -68,14 +68,30 @@ export function TemplateSettings() {
     return res;
   };
 
-  const open = async (id: string) => {
+  // Save, duplicate, delete and open run one at a time. While one runs, the editor and list are disabled.
+  const runExclusive = async (task: () => Promise<void>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      await task();
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const load = async (id: string) => {
     const view = ++viewRef.current;
     const d = draftFromTemplate(await invoke<TemplateJson>('api_get_template', { templateId: id }));
     if (viewRef.current !== view) return;
+    // A save started on the previous view must not land in the template that just loaded.
+    viewRef.current += 1;
     setCurrentId(id);
     setDraft(d);
     setSavedJson(JSON.stringify(d));
   };
+  const open = (id: string) => runExclusive(() => load(id));
 
   useEffect(() => {
     refresh()
@@ -111,19 +127,7 @@ export function TemplateSettings() {
   const deleteSection = (i: number) => setDraft((d) => d && { ...d, sections: d.sections.filter((_, j) => j !== i) });
   const addSection = () => setDraft((d) => d && { ...d, sections: [...d.sections, { title: '', instruction: '' }] });
 
-  // Save, duplicate and delete run one at a time, so a repeated click cannot create or delete twice.
-  const runExclusive = async (task: () => Promise<void>) => {
-    if (busyRef.current) return;
-    busyRef.current = true;
-    setBusy(true);
-    try {
-      await task();
-    } finally {
-      busyRef.current = false;
-      setBusy(false);
-    }
-  };
-
+  // A repeated click cannot create or delete twice.
   const save = () => runExclusive(async () => {
     if (!draft) return;
     const view = viewRef.current;
@@ -146,7 +150,7 @@ export function TemplateSettings() {
       const copy = { ...draft, name: `${draft.name.trim()} (copy)` };
       const id = await invoke<string>('api_save_template', { templateId: null, template: templateFromDraft(copy) });
       await refresh();
-      await open(id);
+      await load(id);
     } catch (err) {
       toast.error('Could not duplicate the template', { description: String(err) });
     }
@@ -160,7 +164,7 @@ export function TemplateSettings() {
       toast.success('Template deleted');
       const res = await refresh();
       if (res.templates[0]) {
-        await open(res.templates[0].id);
+        await load(res.templates[0].id);
       } else {
         viewRef.current += 1;
         setCurrentId(null);

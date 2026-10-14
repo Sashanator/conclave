@@ -31,9 +31,20 @@ const template = {
   sections: [{ title: 'Notes', instruction: 'Write notes' }], style: '',
 };
 let pendingSave: { resolve: (id: string) => void } | null = null;
+let holdBeta = false;
+let releaseBeta: (() => void) | null = null;
 const invoke = mock(async (command: string, _args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'api_list_templates') return listing;
-  if (command === 'api_get_template') return template;
+  if (command === 'api_get_template') {
+    const id = _args?.templateId;
+    const body = id === 'beta' ? { ...template, name: 'Beta' } : template;
+    if (id === 'beta' && holdBeta) {
+      return new Promise((resolve) => {
+        releaseBeta = () => resolve(body);
+      });
+    }
+    return body;
+  }
   if (command === 'api_save_template') {
     return new Promise<string>((resolve) => {
       pendingSave = { resolve };
@@ -86,6 +97,8 @@ describe('template editor busy state', () => {
   beforeEach(async () => {
     invoke.mockClear();
     pendingSave = null;
+    holdBeta = false;
+    releaseBeta = null;
     renderer?.unmount();
     renderer = null;
     await act(async () => {
@@ -126,7 +139,7 @@ describe('template editor busy state', () => {
     expect(renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Beta')[0].props.disabled).toBe(false);
   });
 
-  test('a save response is ignored after the editor has moved to another template', async () => {
+  test('a list click during a save is ignored, so the save response lands in the editor it came from', async () => {
     const confirm = spyOn(window, 'confirm').mockImplementation(() => true);
     await act(async () => {
       button('New template').props.onClick();
@@ -141,12 +154,45 @@ describe('template editor busy state', () => {
       renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Beta')[0].props.onClick();
     });
     await flush();
+    expect(invoke.mock.calls.some(([command, args]) => command === 'api_get_template' && args?.templateId === 'beta')).toBe(false);
     await act(async () => {
       pendingSave?.resolve('fresh');
     });
     await flush();
+    expect(field('tpl-name', 'input').props.value).toBe('Fresh');
+    confirm.mockRestore();
+  });
+
+  test('Save clicked while another template is loading does not write into the loaded template', async () => {
+    holdBeta = true;
+    await act(async () => {
+      renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Beta')[0].props.onClick();
+    });
+    await flush();
+    expect(button('Save').props.disabled).toBe(true);
+
+    await act(async () => {
+      button('Save').props.onClick();
+    });
+    expect(invoke.mock.calls.filter(([command]) => command === 'api_save_template').length).toBe(0);
+
+    await act(async () => {
+      releaseBeta?.();
+    });
+    await flush();
     const selected = renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-current'] === 'true').map(text);
     expect(selected).toEqual(['Beta']);
-    confirm.mockRestore();
+    expect(button('Save').props.disabled).toBe(false);
+
+    await act(async () => {
+      button('Save').props.onClick();
+    });
+    const saves = invoke.mock.calls.filter(([command]) => command === 'api_save_template');
+    expect(saves.length).toBe(1);
+    expect(saves[0][1]).toEqual({ templateId: 'beta', template: expect.anything() });
+    await act(async () => {
+      pendingSave?.resolve('beta');
+    });
+    await flush();
   });
 });

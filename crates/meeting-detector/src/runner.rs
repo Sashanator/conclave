@@ -66,10 +66,14 @@ fn run<H: Host>(path: &str, host: H) {
     let mut last_error: Option<Option<String>> = None;
     let mut report = |err: Option<String>| {
         if last_error.as_ref() != Some(&err) {
-            host.set_error(err.clone());
-            last_error = Some(err);
+            // A panicking host must not end the detector thread; the next change retries.
+            if catch_unwind(AssertUnwindSafe(|| host.set_error(err.clone()))).is_ok() {
+                last_error = Some(err);
+            }
         }
     };
+    // A failing watcher stays reported even while reads succeed, so the status doesn't flip every pass.
+    let mut watch_error: Option<String> = None;
 
     let mut watcher = loop {
         match ChangeWatcher::open(path) {
@@ -84,7 +88,7 @@ fn run<H: Host>(path: &str, host: H) {
     loop {
         let stepped = match catch_unwind(AssertUnwindSafe(|| pass(path, &host, t0, &mut detector, &mut titles))) {
             Ok(Ok(())) => {
-                report(None);
+                report(watch_error.clone());
                 true
             }
             // Skip the step: an unreadable store must not look like "every app released the mic" (no false stop).
@@ -102,12 +106,18 @@ fn run<H: Host>(path: &str, host: H) {
             Some(d) if stepped => d.saturating_sub(now).clamp(1, SAFETY_REREAD_MS),
             _ => SAFETY_REREAD_MS,
         };
-        if let Err(e) = watcher.wait(wait as u32) {
-            report(Some(format!("Cannot watch Windows' microphone usage record: {e}")));
-            std::thread::sleep(Duration::from_millis(wait));
-            // Keep the old watcher if the key cannot be re-opened; the next wait fails and retries.
-            if let Ok(w) = ChangeWatcher::open(path) {
-                watcher = w;
+        let waited = Instant::now();
+        match watcher.wait(wait as u32) {
+            Ok(_) => watch_error = None,
+            Err(e) => {
+                watch_error = Some(format!("Cannot watch Windows' microphone usage record: {e}"));
+                report(watch_error.clone());
+                // Sleep only what is left of this wait, so a late failure doesn't double it.
+                std::thread::sleep(Duration::from_millis(wait).saturating_sub(waited.elapsed()));
+                // Keep the old watcher if the key cannot be re-opened; the next wait fails and retries.
+                if let Ok(w) = ChangeWatcher::open(path) {
+                    watcher = w;
+                }
             }
         }
     }

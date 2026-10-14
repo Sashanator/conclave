@@ -31,6 +31,9 @@ module.exports = {
   				foreground: 'hsl(var(--secondary-foreground))'
   			},
   			tertiary: '#64748b',
+  			// Tailwind blue follows --blue-* so the Conclave theme can swap it for violet (white text stays AA).
+  			blue: Object.fromEntries([50, 100, 200, 300, 400, 500, 600, 700, 800, 900, 950]
+  				.map(n => [n, `rgb(var(--blue-${n}) / <alpha-value>)`])),
   			card: {
   				DEFAULT: 'hsl(var(--card))',
   				foreground: 'hsl(var(--card-foreground))'

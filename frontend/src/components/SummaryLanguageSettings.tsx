@@ -21,9 +21,12 @@ export function SummaryLanguageSettings() {
         <Globe size={18} className="text-muted-foreground" />
         <h3 className="text-lg font-semibold text-foreground">Summary Language</h3>
       </div>
-      <p className="text-sm text-muted-foreground mb-4">
+      <p className="text-sm text-muted-foreground mb-2">
         Pin one language as the default for new meetings. Unpinned languages remain as
         quick-switch options in the summary generator. Auto uses the dominant transcript language.
+      </p>
+      <p className="text-xs text-muted-foreground mb-4">
+        Summaries are written in the meeting&apos;s language: the language set for the meeting (a pinned language is set on new meetings), else the template&apos;s language, else the language detected in the transcript.
       </p>
 
       <div className="flex flex-wrap items-center gap-2">

@@ -80,7 +80,11 @@ export interface SummaryDataResponse {
   markdown?: string;
   summary_json?: BlockNoteBlock[];
   reasoning_stripped?: boolean;
-  normalization_fallback?: boolean;
+  template_id?: string;
+  template_name?: string;
+  template_source?: 'manual' | 'keyword' | 'auto' | 'fallback';
+  summary_language?: string;
+  language_fallback?: boolean;
   // Legacy format fields
   MeetingName?: string;
   _section_order?: string[];

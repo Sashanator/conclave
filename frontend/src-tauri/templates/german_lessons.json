@@ -1,0 +1,30 @@
+{
+  "name": "German Lessons",
+  "use_when": "a private German lesson with my teacher; German speaking practice with Russian explanations.",
+  "title_keywords": [
+    "German",
+    "Deutsch",
+    "немецк"
+  ],
+  "language": "ru",
+  "context": "These are notes for a 1-hour private German lesson with my teacher.\nThe conversation switches between German and Russian. German is the target language for speaking practice. Russian is used only to clarify, translate or explain.\nThe transcript is automatic, has no speaker labels and may contain recognition errors, especially in German. Work out from the content who is speaking (me, the learner, or the teacher), and correct obvious recognition errors.\nCreate notes for language learning and revision, not meeting minutes. Focus on what helps me study after the lesson.",
+  "sections": [
+    {
+      "title": "Lesson overview",
+      "instruction": "Briefly summarize what we practiced: the main speaking topics, grammar themes and vocabulary areas. Keep it short and practical."
+    },
+    {
+      "title": "New vocabulary and useful phrases",
+      "instruction": "The most useful new German words, expressions and sentence patterns from the lesson. For each: the German word or phrase (with the article and plural for nouns), a short Russian meaning, and, if helpful, one short German example sentence. Prioritize what is useful for speaking; skip low-value or repetitive items."
+    },
+    {
+      "title": "Mistakes, corrections, and grammar",
+      "instruction": "My most important mistakes: what I said (approximately), the corrected German version, and a short Russian explanation of why. Then the main grammar points explained in the lesson, summarized clearly and simply. Focus on the most useful corrections and rules, not every small detail."
+    },
+    {
+      "title": "Homework and next lesson",
+      "instruction": "Homework, revision tasks, vocabulary to repeat, grammar to practice, and speaking topics for the next lesson. End with a short checklist: what I did well; what to revise before the next lesson."
+    }
+  ],
+  "style": "- Clear headings and bullet points; concise, structured, useful for revision.\n- German-learning content over small talk.\n- German examples stay in German; Russian only for short translations and explanations.\n- If the transcript is unclear, prefer educational usefulness over literal transcription.\n- Do not make the notes too long."
+}

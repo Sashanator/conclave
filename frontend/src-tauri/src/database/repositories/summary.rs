@@ -40,7 +40,14 @@ impl SummaryProcessesRepository {
             return Ok(false);
         }
 
-        let result_json = serde_json::to_string(summary);
+        let existing: Option<String> =
+            sqlx::query_scalar("SELECT result FROM summary_processes WHERE meeting_id = ?")
+                .bind(meeting_id)
+                .fetch_optional(&mut *transaction)
+                .await?
+                .flatten();
+        let merged = carry_summary_metadata(existing.as_deref(), summary.clone());
+        let result_json = serde_json::to_string(&merged);
         if result_json.is_err() {
             error!("Can't convert the json to string for saving to Database");
             transaction.rollback().await?;
@@ -215,10 +222,86 @@ impl SummaryProcessesRepository {
     }
 }
 
+/// Keys written by summary generation. An edit sends only the summary body, so these
+/// are copied from the stored result when the edit does not set them.
+const CARRIED_SUMMARY_KEYS: [&str; 6] = [
+    "template_id",
+    "template_name",
+    "template_source",
+    "summary_language",
+    "language_fallback",
+    "reasoning_stripped",
+];
+
+fn carry_summary_metadata(old_result: Option<&str>, mut new: Value) -> Value {
+    let Some(old) = old_result.and_then(|raw| serde_json::from_str::<Value>(raw).ok()) else {
+        return new;
+    };
+    if let (Some(old), Some(new_object)) = (old.as_object(), new.as_object_mut()) {
+        for key in CARRIED_SUMMARY_KEYS {
+            if let Some(value) = old.get(key).filter(|_| !new_object.contains_key(key)) {
+                new_object.insert(key.to_string(), value.clone());
+            }
+        }
+    }
+    new
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    fn generated_metadata() -> Value {
+        json!({
+            "markdown": "old body",
+            "template_id": "german_lessons",
+            "template_name": "German lessons",
+            "template_source": "auto",
+            "summary_language": "de",
+            "language_fallback": true,
+            "reasoning_stripped": true
+        })
+    }
+
+    #[test]
+    fn carry_summary_metadata_copies_missing_keys() {
+        let old = generated_metadata().to_string();
+        let merged = carry_summary_metadata(Some(&old), json!({"markdown": "edited"}));
+        assert_eq!(merged["markdown"], "edited");
+        assert_eq!(merged["template_id"], "german_lessons");
+        assert_eq!(merged["template_name"], "German lessons");
+        assert_eq!(merged["template_source"], "auto");
+        assert_eq!(merged["summary_language"], "de");
+        assert_eq!(merged["language_fallback"], true);
+        assert_eq!(merged["reasoning_stripped"], true);
+    }
+
+    #[test]
+    fn carry_summary_metadata_keeps_keys_the_edit_sets() {
+        let old = generated_metadata().to_string();
+        let merged = carry_summary_metadata(
+            Some(&old),
+            json!({"markdown": "edited", "template_id": "standard_meeting", "language_fallback": false}),
+        );
+        assert_eq!(merged["template_id"], "standard_meeting");
+        assert_eq!(merged["language_fallback"], false);
+        assert_eq!(merged["template_name"], "German lessons");
+    }
+
+    #[test]
+    fn carry_summary_metadata_leaves_old_row_without_keys_unchanged() {
+        let old = json!({"markdown": "old body"}).to_string();
+        let new = json!({"markdown": "edited"});
+        assert_eq!(carry_summary_metadata(Some(&old), new.clone()), new);
+        assert_eq!(carry_summary_metadata(None, new.clone()), new);
+    }
+
+    #[test]
+    fn carry_summary_metadata_ignores_invalid_old_json() {
+        let new = json!({"markdown": "edited"});
+        assert_eq!(carry_summary_metadata(Some("not json {"), new.clone()), new);
+    }
 
     async fn test_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();

@@ -20,6 +20,7 @@ import {
   SummaryLanguageStorage,
 } from '@/lib/summary-language-preferences';
 import { hasVisibleSummaryContent } from '@/lib/summary-content';
+import { shouldRegenerate } from '@/lib/regenerate-guard';
 
 interface SummaryPanelProps {
   meeting: {
@@ -48,8 +49,10 @@ interface SummaryPanelProps {
   summaryError: string | null;
   onRegenerateSummary: () => Promise<void>;
   getSummaryStatusMessage: (status: 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error') => string;
-  availableTemplates: Array<{ id: string, name: string, description: string }>;
-  selectedTemplate: string;
+  availableTemplates: Array<{ id: string, name: string }>;
+  selectedTemplate: string | null;
+  currentTemplate: { id: string, name: string, source: string | null } | null;
+  languageFallback: boolean;
   onTemplateSelect: (templateId: string, templateName: string) => void;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
@@ -80,6 +83,8 @@ export function SummaryPanel({
   getSummaryStatusMessage,
   availableTemplates,
   selectedTemplate,
+  currentTemplate,
+  languageFallback,
   onTemplateSelect,
   isModelConfigLoading = false,
   onOpenModelSettings,
@@ -87,10 +92,16 @@ export function SummaryPanel({
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
   const [langPickerOpen, setLangPickerOpen] = useState(false);
+  // The picker stays disabled until the stored language has loaded, so a change is compared with the real value.
+  const [languageLoaded, setLanguageLoaded] = useState(false);
   const languageLoadVersionRef = useRef(0);
   const activeMeetingIdRef = useRef(meeting.id);
   const languageSaveVersionRef = useRef(0);
   const languageSaveLoopRunningRef = useRef(false);
+  // Last language the user saved as current; a change from it regenerates the summary.
+  const persistedLanguageRef = useRef<string | null>(null);
+  const summaryExistsRef = useRef(false);
+  const summaryDirtyRef = useRef(false);
   const latestLanguageSaveRequestRef = useRef<{
     version: number;
     meetingId: string;
@@ -113,6 +124,7 @@ export function SummaryPanel({
     let cancelled = false;
     const loadVersion = languageLoadVersionRef.current + 1;
     languageLoadVersionRef.current = loadVersion;
+    setLanguageLoaded(false);
 
     const loadSummaryLanguage = async () => {
       try {
@@ -120,13 +132,19 @@ export function SummaryPanel({
         if (!cancelled && languageLoadVersionRef.current === loadVersion) {
           setSummaryLang(stored.language);
           setSummaryLangStorage(stored.storage);
+          persistedLanguageRef.current = stored.language;
+          setLanguageLoaded(true);
         }
       } catch (err) {
         console.error('Failed to load summary language:', err);
         toast.warning('Could not load saved summary language', {
           description: 'Using Auto until meeting metadata can be read.',
         });
-        if (!cancelled && languageLoadVersionRef.current === loadVersion) setSummaryLang(null);
+        if (!cancelled && languageLoadVersionRef.current === loadVersion) {
+          setSummaryLang(null);
+          persistedLanguageRef.current = null;
+          setLanguageLoaded(true);
+        }
       }
     };
 
@@ -162,6 +180,11 @@ export function SummaryPanel({
             }
             if (request.language) {
               addRecent(request.language);
+            }
+            const changed = saved.language !== persistedLanguageRef.current;
+            persistedLanguageRef.current = saved.language;
+            if (changed && summaryExistsRef.current && shouldRegenerate(summaryDirtyRef.current)) {
+              void onRegenerateSummary();
             }
             return;
           }
@@ -211,33 +234,43 @@ export function SummaryPanel({
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
   const hasSummary = hasVisibleSummaryContent(aiSummary);
+  summaryExistsRef.current = hasSummary;
+  summaryDirtyRef.current = isSummaryDirty;
 
   const languageSlot = (
-    <Popover open={langPickerOpen} onOpenChange={setLangPickerOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          title={`Summary language: ${effectiveLangLabel}${isLocalFallbackLanguage ? ' (saved on this device)' : ''}`}
-          aria-label="Set summary language"
+    <>
+      <Popover open={langPickerOpen} onOpenChange={setLangPickerOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            disabled={!languageLoaded}
+            title={`Summary language: ${effectiveLangLabel}${isLocalFallbackLanguage ? ' (saved on this device)' : ''}`}
+            aria-label="Set summary language"
+          >
+            <Languages size={18} />
+            <span className="hidden @[40rem]:inline">{effectiveLangLabel}</span>
+            <ChevronDown size={14} className="text-muted-foreground" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          className="w-auto p-0 border-0 shadow-none bg-transparent"
         >
-          <Languages size={18} />
-          <span className="hidden @[40rem]:inline">{effectiveLangLabel}</span>
-          <ChevronDown size={14} className="text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        className="w-auto p-0 border-0 shadow-none bg-transparent"
-      >
-        <LanguagePickerPopover
-          value={summaryLang}
-          onChange={handleLangChange}
-          onClose={() => setLangPickerOpen(false)}
-          autoSubtitle={autoSubtitle}
-        />
-      </PopoverContent>
-    </Popover>
+          <LanguagePickerPopover
+            value={summaryLang}
+            onChange={handleLangChange}
+            onClose={() => setLangPickerOpen(false)}
+            autoSubtitle={autoSubtitle}
+          />
+        </PopoverContent>
+      </Popover>
+      {languageFallback && (
+        <span className="text-xs text-muted-foreground self-center whitespace-nowrap">
+          Language: couldn&apos;t detect, using English
+        </span>
+      )}
+    </>
   );
 
   return (
@@ -256,6 +289,7 @@ export function SummaryPanel({
               summaryStatus={summaryStatus}
               availableTemplates={availableTemplates}
               selectedTemplate={selectedTemplate}
+              currentTemplate={currentTemplate}
               onTemplateSelect={onTemplateSelect}
               hasTranscripts={transcripts.length > 0}
               hasSummary={hasSummary}

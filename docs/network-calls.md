@@ -51,6 +51,8 @@ These are the request sites, with the base URL each one builds from.
 | `src-tauri/src/anthropic/anthropic.rs:100`, `groq.rs:95`, `openai.rs:127`, `openrouter.rs:43` | Provider model-list URLs (table above) | Allowed (user-configured) |
 | `src/components/ModelSettingsModal.tsx:739,1236` (`invoke('open_external_url')`) | `https://ollama.com/download` | Allowed (see above) |
 
+Auto-pick of a summary template: one short request to the same provider before the summary (first 4,000 characters of the transcript plus template names and "Use when" lines).
+
 Test-only clients (`reqwest::Client::new()` at `llm_client.rs:698,784,860`, `whisper_engine.rs:1601,1641,1796`, `parakeet_engine.rs:1341`) talk only to local mock servers in `mod tests`.
 
 No `fetch(` calls reach the network in `frontend/src` (the only match is `refetch`).

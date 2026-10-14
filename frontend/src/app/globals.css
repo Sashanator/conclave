@@ -103,6 +103,17 @@
     --chart-3: 197 37% 24%;
     --chart-4: 43 74% 66%;
     --chart-5: 27 87% 67%;
+    --blue-50: 239 246 255;
+    --blue-100: 219 234 254;
+    --blue-200: 191 219 254;
+    --blue-300: 147 197 253;
+    --blue-400: 96 165 250;
+    --blue-500: 59 130 246;
+    --blue-600: 37 99 235;
+    --blue-700: 29 78 216;
+    --blue-800: 30 64 175;
+    --blue-900: 30 58 138;
+    --blue-950: 23 37 84;
   }
 
   .dark {
@@ -130,6 +141,47 @@
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
+  }
+
+  .theme-conclave {
+    --background: 235 45% 9%;
+    --foreground: 40 30% 94%;
+    --card: 235 40% 12%;
+    --card-foreground: 40 30% 94%;
+    --popover: 235 40% 12%;
+    --popover-foreground: 40 30% 94%;
+    --primary: 43 90% 58%;
+    --primary-foreground: 235 45% 9%;
+    --secondary: 235 30% 18%;
+    --secondary-foreground: 40 30% 94%;
+    --muted: 235 30% 18%;
+    --muted-foreground: 230 20% 70%;
+    --accent: 235 30% 18%;
+    --accent-foreground: 40 30% 94%;
+    --destructive: 0 70% 50%;
+    --destructive-foreground: 0 0% 98%;
+    --border: 235 30% 22%;
+    --input: 235 30% 22%;
+    --ring: 43 90% 58%;
+    --blue-50: 245 243 255;
+    --blue-100: 237 233 254;
+    --blue-200: 221 214 254;
+    --blue-300: 196 181 253;
+    --blue-400: 167 139 250;
+    --blue-500: 139 92 246;
+    --blue-600: 124 58 237;
+    --blue-700: 109 40 217;
+    --blue-800: 91 33 182;
+    --blue-900: 76 29 149;
+    --blue-950: 46 16 101;
+  }
+
+  .theme-conclave .record-button {
+    background-image: linear-gradient(135deg, rgb(34 211 238), rgb(139 92 246));
+  }
+
+  .theme-conclave .record-button:hover {
+    background-image: linear-gradient(135deg, rgb(103 232 249), rgb(167 139 250));
   }
 }
 

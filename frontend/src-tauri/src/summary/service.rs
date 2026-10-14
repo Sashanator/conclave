@@ -1,20 +1,27 @@
 use crate::database::repositories::{
     meeting::MeetingsRepository, setting::SettingsRepository, summary::SummaryProcessesRepository,
 };
-use crate::summary::llm_client::LLMProvider;
+use crate::summary::llm_client::{generate_summary, LLMProvider};
+use crate::summary::language_choice::{resolve_summary_language, LanguageChoice};
 use crate::summary::language_detection::detect_summary_language;
-use crate::summary::metadata::read_detected_summary_language_from_metadata;
+use crate::summary::metadata::{
+    read_detected_summary_language_from_metadata, read_template_choice_from_metadata,
+    write_template_choice_to_metadata,
+};
 use crate::summary::processor::{
     clean_llm_markdown_detailed, extract_meeting_name_from_markdown, generate_meeting_summary,
-    language_name_from_code, require_visible_markdown,
+    require_visible_markdown,
 };
-use crate::summary::templates::{self, Template};
+use crate::summary::template_choice::{
+    auto_pick_answer_id, auto_pick_prompts, choice_to_store, choose_without_model, Choice,
+    TemplateSource,
+};
+use crate::summary::templates;
 use crate::ollama::metadata::ModelMetadataCache;
 use chrono::{DateTime, Utc};
-use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -57,156 +64,29 @@ fn strip_title_if_present(markdown: &str) -> String {
     }
 }
 
-const ENGLISH_CACHE_FIELD: &str = "english_cache";
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct SummaryCacheSource {
-    transcript_fingerprint: String,
-    custom_prompt_fingerprint: String,
-    template_id: String,
-    template_fingerprint: String,
-    token_threshold: usize,
-    model_provider: String,
-    model_name: String,
-    ollama_endpoint: Option<String>,
-    custom_openai_endpoint: Option<String>,
-    max_tokens: Option<u32>,
-    temperature: Option<f32>,
-    top_p: Option<f32>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-struct EnglishSummaryCache {
-    markdown: String,
-    source: SummaryCacheSource,
-    output_language: Option<String>,
-}
-
-fn stable_text_fingerprint(text: &str) -> String {
-    const FNV_OFFSET: u64 = 0xcbf29ce484222325;
-    const FNV_PRIME: u64 = 0x100000001b3;
-
-    let mut hash = FNV_OFFSET;
-    for byte in text.as_bytes() {
-        hash ^= *byte as u64;
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-    format!("{:016x}:{}", hash, text.len())
-}
-
-#[allow(clippy::too_many_arguments)]
-fn build_summary_cache_source(
-    text: &str,
-    custom_prompt: &str,
-    template_id: &str,
-    template_fingerprint: &str,
-    token_threshold: usize,
-    model_provider: &str,
-    model_name: &str,
-    ollama_endpoint: Option<&str>,
-    custom_openai_endpoint: Option<&str>,
-    max_tokens: Option<u32>,
-    temperature: Option<f32>,
-    top_p: Option<f32>,
-) -> SummaryCacheSource {
-    SummaryCacheSource {
-        transcript_fingerprint: stable_text_fingerprint(text),
-        custom_prompt_fingerprint: stable_text_fingerprint(custom_prompt),
-        template_id: template_id.to_string(),
-        template_fingerprint: template_fingerprint.to_string(),
-        token_threshold,
-        model_provider: model_provider.to_string(),
-        model_name: model_name.to_string(),
-        ollama_endpoint: ollama_endpoint.map(str::to_string),
-        custom_openai_endpoint: custom_openai_endpoint.map(str::to_string),
-        max_tokens,
-        temperature,
-        top_p,
-    }
-}
-
-fn template_cache_fingerprint(template: &Template) -> String {
-    let rendered_template = format!(
-        "{}\n---SECTION-INSTRUCTIONS---\n{}",
-        template.to_markdown_structure(),
-        template.to_section_instructions()
-    );
-    stable_text_fingerprint(&rendered_template)
-}
-
-fn normalise_summary_language_for_cache(summary_language: Option<&str>) -> Option<String> {
-    language_name_from_code(summary_language?.trim()).map(str::to_string)
-}
-
 fn build_summary_result_json(
     final_markdown: &str,
-    english_markdown: &str,
-    source: SummaryCacheSource,
-    output_language: Option<&str>,
     reasoning_stripped: bool,
-    normalization_fallback: bool,
+    language: &LanguageChoice,
+    template_id: &str,
+    template_name: &str,
+    template_source: TemplateSource,
 ) -> Result<serde_json::Value, String> {
-    let cleaned_final = clean_llm_markdown_detailed(final_markdown);
-    require_visible_markdown("Final summary", &cleaned_final)?;
-    let markdown = strip_title_if_present(&cleaned_final.markdown);
+    let cleaned = clean_llm_markdown_detailed(final_markdown);
+    require_visible_markdown("Final summary", &cleaned)?;
+    let markdown = strip_title_if_present(&cleaned.markdown);
     if markdown.trim().is_empty() {
         return Err("Final summary contains no visible content after title removal".to_string());
     }
-
-    let cleaned_english = clean_llm_markdown_detailed(english_markdown);
-    require_visible_markdown("English summary", &cleaned_english)?;
-
     Ok(serde_json::json!({
         "markdown": markdown,
-        ENGLISH_CACHE_FIELD: EnglishSummaryCache {
-            markdown: cleaned_english.markdown,
-            source,
-            output_language: normalise_summary_language_for_cache(output_language),
-        },
-        "reasoning_stripped": reasoning_stripped
-            || cleaned_final.reasoning_stripped
-            || cleaned_english.reasoning_stripped,
-        "normalization_fallback": normalization_fallback,
+        "reasoning_stripped": reasoning_stripped || cleaned.reasoning_stripped,
+        "summary_language": language.code,
+        "language_fallback": language.fallback,
+        "template_id": template_id,
+        "template_name": template_name,
+        "template_source": template_source,
     }))
-}
-
-/// Parses a `summary_processes.result` JSON blob and extracts a cached English
-/// summary only when it was produced from exactly the same source inputs and
-/// the user is switching to a different non-English target language.
-fn extract_cached_english_markdown(
-    raw: &str,
-    expected_source: &SummaryCacheSource,
-    requested_language: Option<&str>,
-) -> Result<Option<String>, serde_json::Error> {
-    let requested_language = match normalise_summary_language_for_cache(requested_language) {
-        Some(language) if language != "English" => language,
-        _ => return Ok(None),
-    };
-
-    let value: serde_json::Value = serde_json::from_str(raw)?;
-    let Some(cache_value) = value.get(ENGLISH_CACHE_FIELD) else {
-        return Ok(None);
-    };
-
-    let cache: EnglishSummaryCache = match serde_json::from_value(cache_value.clone()) {
-        Ok(cache) => cache,
-        Err(_) => return Ok(None),
-    };
-
-    if cache.source != *expected_source {
-        return Ok(None);
-    }
-
-    if cache.output_language.as_deref() == Some(requested_language.as_str()) {
-        return Ok(None);
-    }
-
-    let markdown = cache.markdown.trim();
-    if markdown.is_empty() {
-        Ok(None)
-    } else {
-        Ok(Some(cache.markdown))
-    }
 }
 
 /// Summary service - handles all summary generation logic
@@ -305,11 +185,11 @@ impl SummaryService {
         let detection = detect_summary_language(&transcript_texts);
         match &detection.language {
             Some(language) => {
-                info!("Detected transcript summary language for normalization: {}", language);
+                info!("Detected transcript summary language: {}", language);
             }
             None => {
                 info!(
-                    "Transcript summary language unknown for normalization: {:?}",
+                    "Transcript summary language unknown: {:?}",
                     detection.reason
                 );
             }
@@ -330,7 +210,7 @@ impl SummaryService {
     /// * `model_provider` - LLM provider name (e.g., "ollama", "openai")
     /// * `model_name` - Specific model (e.g., "gpt-4", "llama3.2:latest")
     /// * `custom_prompt` - Optional user-provided context
-    /// * `template_id` - Template identifier (e.g., "daily_standup", "standard_meeting")
+    /// * `manual_template_id` - Template the user picked for this run; None lets Conclave choose
     pub async fn process_transcript_background<R: tauri::Runtime>(
         _app: AppHandle<R>,
         pool: SqlitePool,
@@ -341,7 +221,7 @@ impl SummaryService {
         model_provider: String,
         model_name: String,
         custom_prompt: String,
-        template_id: String,
+        manual_template_id: Option<String>,
         summary_language: Option<String>,
     ) {
         let start_time = Instant::now();
@@ -491,59 +371,68 @@ impl SummaryService {
             info!("📝 Detected transcript summary language: {}", code);
         }
 
-        let template = match templates::get_template(&template_id) {
-            Ok(template) => template,
-            Err(e) => {
-                let err_msg = format!("Failed to load template '{}': {}", template_id, e);
-                Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
-                return;
-            }
-        };
-        let template_fingerprint = template_cache_fingerprint(&template);
-
-        let cache_source = build_summary_cache_source(
-            &text,
-            &custom_prompt,
-            &template_id,
-            &template_fingerprint,
-            token_threshold,
-            &model_provider,
-            &model_name,
-            ollama_endpoint.as_deref(),
-            custom_openai_endpoint.as_deref(),
-            custom_openai_max_tokens,
-            custom_openai_temperature,
-            custom_openai_top_p,
-        );
-
-        let cached_english = match SummaryProcessesRepository::get_summary_data(&pool, &meeting_id).await {
-            Err(e) => {
-                warn!(
-                    "Failed to load prior summary row for cache lookup (meeting_id={}): {}. Falling back to full pass-1 generation.",
-                    meeting_id, e
-                );
-                None
-            }
-            Ok(None) => None,
-            Ok(Some(process)) => process.result.and_then(|raw| {
-                match extract_cached_english_markdown(
-                    &raw,
-                    &cache_source,
-                    summary_language.as_deref(),
-                ) {
-                    Ok(opt) => opt,
-                    Err(e) => {
-                        warn!(
-                            "Cached summary result for meeting_id={} is not valid JSON ({}); ignoring cache.",
-                            meeting_id, e
-                        );
-                        None
+        let client = reqwest::Client::new();
+        let meeting = MeetingsRepository::get_meeting_metadata(&pool, &meeting_id).await.ok().flatten();
+        let title = meeting.as_ref().map(|m| m.title.clone()).unwrap_or_default();
+        let folder = meeting.and_then(|m| m.folder_path).filter(|p| !p.trim().is_empty()).map(PathBuf::from);
+        let stored = folder.as_deref().and_then(|f| read_template_choice_from_metadata(f).ok().flatten());
+        let listing = templates::list_templates();
+        let (template_id, source) = match choose_without_model(manual_template_id.as_deref(), stored, &title, &listing.templates) {
+            Choice::Decided(id, source) => (id, source),
+            Choice::AskModel => {
+                let (system, user) = auto_pick_prompts(&text, &listing.templates);
+                let answer = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    generate_summary(&client, &provider, &model_name, &final_api_key, &system, &user,
+                        ollama_endpoint.as_deref(), custom_openai_endpoint.as_deref(), custom_openai_max_tokens,
+                        Some(0.0), custom_openai_top_p, app_data_dir.as_ref(), Some(&cancellation_token)),
+                ).await;
+                match answer {
+                    Ok(Ok(c)) => match auto_pick_answer_id(&c.content, &listing.templates) {
+                        Some(id) => (id, TemplateSource::Auto),
+                        None => {
+                            warn!("Auto-pick answer is not a template id: {:?}", c.content);
+                            (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
+                        }
+                    },
+                    Ok(Err(e)) => {
+                        warn!("Auto-pick failed: {}", e);
+                        (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
+                    }
+                    Err(_) => {
+                        warn!("Auto-pick timed out");
+                        (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
                     }
                 }
-            }),
+            }
         };
+        let (template_id, source, template) = match templates::get_template(&template_id) {
+            Ok(template) => (template_id, source, template),
+            Err(e) => {
+                warn!("Template '{}' unusable ({}); using Standard", template_id, e);
+                let standard = templates::get_template(templates::STANDARD_TEMPLATE_ID)
+                    .expect("standard template has an embedded fallback");
+                (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback, standard)
+            }
+        };
+        if cancellation_token.is_cancelled() {
+            Self::update_process_cancelled(&pool, &meeting_id, started_at).await;
+            Self::cleanup_cancellation_token(&meeting_id, started_at);
+            return;
+        }
+        if let Some(f) = folder.as_deref().filter(|_| choice_to_store(source, cancellation_token.is_cancelled())) {
+            if let Err(e) = write_template_choice_to_metadata(f, Some((&template_id, source))) {
+                warn!("Could not store the template choice: {}", e);
+            }
+        }
 
-        let client = reqwest::Client::new();
+        let language = resolve_summary_language(
+            summary_language.as_deref(),
+            template.fixed_language(),
+            detected_summary_language.as_deref(),
+        );
+        info!("📝 Summary language: {} ({}){}", language.name, language.code, if language.fallback { ", fallback" } else { "" });
+
         let result = generate_meeting_summary(
             &client,
             &provider,
@@ -551,8 +440,8 @@ impl SummaryService {
             &final_api_key,
             &text,
             &custom_prompt,
-            &template_id,
             &template,
+            language.name,
             token_threshold,
             ollama_endpoint.as_deref(),
             custom_openai_endpoint.as_deref(),
@@ -561,9 +450,6 @@ impl SummaryService {
             custom_openai_top_p,
             app_data_dir.as_ref(),
             Some(&cancellation_token),
-            summary_language.as_deref(),
-            detected_summary_language.as_deref(),
-            cached_english.as_deref(),
         )
         .await;
 
@@ -577,11 +463,11 @@ impl SummaryService {
                 );
                 let result_json = match build_summary_result_json(
                     &generated.final_markdown,
-                    &generated.english_markdown,
-                    cache_source,
-                    summary_language.as_deref(),
                     generated.reasoning_stripped,
-                    generated.normalization_fallback,
+                    &language,
+                    &template_id,
+                    &template.name,
+                    source,
                 ) {
                     Ok(result) => result,
                     Err(error) => {
@@ -623,20 +509,7 @@ impl SummaryService {
                 }
             }
             Err(error) if cancellation_token.is_cancelled() => {
-                match SummaryProcessesRepository::update_process_cancelled(
-                    &pool,
-                    &meeting_id,
-                    started_at,
-                )
-                .await
-                {
-                    Ok(false) => warn!("Skipped stale summary cancellation for meeting_id: {}", meeting_id),
-                    Ok(true) => info!("Summary generation was cancelled for meeting_id: {}", meeting_id),
-                    Err(db_error) => error!(
-                        "Failed to update DB status to cancelled for {}: {}",
-                        meeting_id, db_error
-                    ),
-                }
+                Self::update_process_cancelled(&pool, &meeting_id, started_at).await;
             }
             Err(error) => {
                 Self::update_process_failed(&pool, &meeting_id, started_at, &error).await;
@@ -654,6 +527,17 @@ impl SummaryService {
     ) {
         Self::update_process_failed(pool, meeting_id, started_at, error_msg).await;
         Self::cleanup_cancellation_token(meeting_id, started_at);
+    }
+
+    async fn update_process_cancelled(pool: &SqlitePool, meeting_id: &str, started_at: DateTime<Utc>) {
+        match SummaryProcessesRepository::update_process_cancelled(pool, meeting_id, started_at).await {
+            Ok(false) => warn!("Skipped stale summary cancellation for meeting_id: {}", meeting_id),
+            Ok(true) => info!("Summary generation was cancelled for meeting_id: {}", meeting_id),
+            Err(db_error) => error!(
+                "Failed to update DB status to cancelled for {}: {}",
+                meeting_id, db_error
+            ),
+        }
     }
 
     async fn update_process_failed(
@@ -785,326 +669,58 @@ mod tests {
         );
     }
 
-    fn sample_cache_source() -> SummaryCacheSource {
-        let template_fingerprint = stable_text_fingerprint("standard template prompt");
-        build_summary_cache_source(
-            "transcript body",
-            "custom prompt",
-            "standard_meeting",
-            &template_fingerprint,
-            3700,
-            "ollama",
-            "gemma3:1b",
-            Some("http://localhost:11434"),
-            None,
-            None,
-            None,
-            None,
-        )
+    fn english_choice(fallback: bool) -> LanguageChoice {
+        LanguageChoice { code: "en".into(), name: "English", fallback }
     }
 
-    fn test_template(section_title: &str) -> Template {
-        Template {
-            name: "Test".to_string(),
-            description: "Test template".to_string(),
-            sections: vec![crate::summary::templates::TemplateSection {
-                title: section_title.to_string(),
-                instruction: "Summarize this section".to_string(),
-                format: "paragraph".to_string(),
-                item_format: None,
-                example_item_format: None,
-            }],
-        }
+    fn result_json(markdown: &str, reasoning_stripped: bool, language: &LanguageChoice) -> Result<serde_json::Value, String> {
+        build_summary_result_json(markdown, reasoning_stripped, language, "standard_meeting", "Standard Meeting Notes", TemplateSource::Fallback)
     }
 
     #[test]
-    fn test_template_cache_fingerprint_changes_with_rendered_template() {
-        assert_ne!(
-            template_cache_fingerprint(&test_template("Summary")),
-            template_cache_fingerprint(&test_template("Decisions"))
-        );
-    }
-
-    #[test]
-    fn test_legacy_english_markdown_field_is_cache_miss() {
-        let raw = serde_json::json!({
-            "markdown": "translated",
-            "english_markdown": "# Old English\nBody"
-        })
-        .to_string();
-
-        assert_eq!(
-            extract_cached_english_markdown(&raw, &sample_cache_source(), Some("de")).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn test_matching_source_changed_translation_target_reuses_cache() {
-        let source = sample_cache_source();
-        let raw = build_summary_result_json(
-            "# Reunion\n## Points\nBonjour",
-            "# Meeting\n## Points\nHello",
-            source.clone(),
-            Some("fr"),
-            false,
-            false,
-        )
-        .unwrap()
-        .to_string();
-
-        assert_eq!(
-            extract_cached_english_markdown(&raw, &source, Some("de")).unwrap(),
-            Some("# Meeting\n## Points\nHello".to_string())
-        );
-    }
-
-    #[test]
-    fn test_same_language_regeneration_rejects_cache() {
-        let source = sample_cache_source();
-        let raw = build_summary_result_json(
-            "# Reunion\n## Points\nBonjour",
-            "# Meeting\n## Points\nHello",
-            source.clone(),
-            Some("fr"),
-            false,
-            false,
-        )
-        .unwrap()
-        .to_string();
-
-        assert_eq!(
-            extract_cached_english_markdown(&raw, &source, Some("fr")).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn test_changed_summary_inputs_reject_cache() {
-        let source = sample_cache_source();
-        let template_fingerprint = source.template_fingerprint.clone();
-        let raw = build_summary_result_json(
-            "# Reunion\n## Points\nBonjour",
-            "# Meeting\n## Points\nHello",
-            source,
-            Some("fr"),
-            false,
-            false,
-        )
-        .unwrap()
-        .to_string();
-
-        let changed_sources = [
-            build_summary_cache_source(
-                "changed transcript",
-                "custom prompt",
-                "standard_meeting",
-                &template_fingerprint,
-                3700,
-                "ollama",
-                "gemma3:1b",
-                Some("http://localhost:11434"),
-                None,
-                None,
-                None,
-                None,
-            ),
-            build_summary_cache_source(
-                "transcript body",
-                "changed prompt",
-                "standard_meeting",
-                &template_fingerprint,
-                3700,
-                "ollama",
-                "gemma3:1b",
-                Some("http://localhost:11434"),
-                None,
-                None,
-                None,
-                None,
-            ),
-            build_summary_cache_source(
-                "transcript body",
-                "custom prompt",
-                "daily_standup",
-                &template_fingerprint,
-                3700,
-                "ollama",
-                "gemma3:1b",
-                Some("http://localhost:11434"),
-                None,
-                None,
-                None,
-                None,
-            ),
-            build_summary_cache_source(
-                "transcript body",
-                "custom prompt",
-                "standard_meeting",
-                &template_fingerprint,
-                3700,
-                "openai",
-                "gemma3:1b",
-                Some("http://localhost:11434"),
-                None,
-                None,
-                None,
-                None,
-            ),
-            build_summary_cache_source(
-                "transcript body",
-                "custom prompt",
-                "standard_meeting",
-                &template_fingerprint,
-                3700,
-                "ollama",
-                "qwen2.5:3b",
-                Some("http://localhost:11434"),
-                None,
-                None,
-                None,
-                None,
-            ),
-            build_summary_cache_source(
-                "transcript body",
-                "custom prompt",
-                "standard_meeting",
-                &template_fingerprint,
-                3700,
-                "ollama",
-                "gemma3:1b",
-                Some("http://localhost:11500"),
-                None,
-                None,
-                None,
-                None,
-            ),
-            build_summary_cache_source(
-                "transcript body",
-                "custom prompt",
-                "standard_meeting",
-                &template_fingerprint,
-                3700,
-                "ollama",
-                "gemma3:1b",
-                Some("http://localhost:11434"),
-                Some("https://custom.example/v1"),
-                Some(2048),
-                Some(0.2),
-                Some(0.9),
-            ),
-        ];
-
-        for changed_source in changed_sources {
-            assert_eq!(
-                extract_cached_english_markdown(&raw, &changed_source, Some("de")).unwrap(),
-                None
-            );
-        }
-    }
-
-    #[test]
-    fn test_changed_template_content_rejects_cache() {
-        let source = sample_cache_source();
-        let raw = build_summary_result_json(
-            "# Reunion\n## Points\nBonjour",
-            "# Meeting\n## Points\nHello",
-            source.clone(),
-            Some("fr"),
-            false,
-            false,
-        )
-        .unwrap()
-        .to_string();
-
-        let changed_template = SummaryCacheSource {
-            template_fingerprint: stable_text_fingerprint("changed template prompt"),
-            ..source
-        };
-
-        assert_eq!(
-            extract_cached_english_markdown(&raw, &changed_template, Some("de")).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn test_changed_token_threshold_rejects_cache() {
-        let source = sample_cache_source();
-        let raw = build_summary_result_json(
-            "# Reunion\n## Points\nBonjour",
-            "# Meeting\n## Points\nHello",
-            source.clone(),
-            Some("fr"),
-            false,
-            false,
-        )
-        .unwrap()
-        .to_string();
-
-        let changed_threshold = SummaryCacheSource {
-            token_threshold: 8192,
-            ..source
-        };
-
-        assert_eq!(
-            extract_cached_english_markdown(&raw, &changed_threshold, Some("de")).unwrap(),
-            None
-        );
-    }
-
-    #[test]
-    fn test_result_json_strips_display_markdown_but_keeps_cache_title() {
-        let result = build_summary_result_json(
-            "# Translated Title\n## Decisions\nDone",
-            "# English Title\n## Decisions\nDone",
-            sample_cache_source(),
-            Some("fr"),
-            false,
-            false,
-        )
-        .unwrap();
+    fn test_result_json_strips_display_markdown_title() {
+        let result = result_json("# Translated Title\n## Decisions\nDone", false, &english_choice(false)).unwrap();
 
         assert_eq!(result["markdown"], "## Decisions\nDone");
-        assert_eq!(
-            result["english_cache"]["markdown"],
-            "# English Title\n## Decisions\nDone"
-        );
     }
 
     #[test]
     fn result_json_rejects_title_only_display_markdown() {
         assert_eq!(
-            build_summary_result_json(
-                "# Title",
-                "# Title",
-                sample_cache_source(),
-                None,
-                false,
-                false,
-            ),
+            result_json("# Title", false, &english_choice(false)),
             Err("Final summary contains no visible content after title removal".to_string())
         );
     }
 
     #[test]
     fn result_json_never_persists_reasoning_text() {
-        let result = build_summary_result_json(
-            "# Title\nVisible",
-            "# Title\nVisible",
-            sample_cache_source(),
-            None,
-            true,
-            false,
-        )
-        .unwrap();
+        let result = result_json("# Title\nVisible", true, &english_choice(false)).unwrap();
         assert_eq!(result["reasoning_stripped"], true);
         assert!(result.get("reasoning").is_none());
     }
 
     #[test]
-    fn test_extract_cached_english_from_malformed_json_errors() {
-        let raw = r#"{ not valid json"#;
-        assert!(extract_cached_english_markdown(raw, &sample_cache_source(), Some("de")).is_err());
+    fn result_json_carries_language_and_fallback_flag() {
+        let lang = LanguageChoice { code: "en".into(), name: "English", fallback: true };
+        let v = result_json("# Title\n\nBody", false, &lang).unwrap();
+        assert_eq!(v["summary_language"], "en");
+        assert_eq!(v["language_fallback"], true);
+        assert!(v.get("english_cache").is_none() && v.get("normalization_fallback").is_none());
+    }
+
+    #[test]
+    fn result_json_carries_template_id_name_and_source() {
+        let v = build_summary_result_json(
+            "# Title\n\nBody",
+            false,
+            &english_choice(false),
+            "german_lessons",
+            "German Lessons",
+            TemplateSource::Keyword,
+        )
+        .unwrap();
+        assert_eq!(v["template_id"], "german_lessons");
+        assert_eq!(v["template_name"], "German Lessons");
+        assert_eq!(v["template_source"], "keyword");
     }
 }

@@ -5,9 +5,12 @@ use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use super::processor::language_name_from_code;
+use super::template_choice::TemplateSource;
 
 const SUMMARY_LANGUAGE_FIELD: &str = "summary_language";
 const DETECTED_SUMMARY_LANGUAGE_FIELD: &str = "detected_summary_language";
+const TEMPLATE_FIELD: &str = "summary_template";
+const TEMPLATE_SOURCE_FIELD: &str = "summary_template_source";
 const METADATA_FILE: &str = "metadata.json";
 const METADATA_TEMP_FILE_PREFIX: &str = ".metadata.json.";
 static METADATA_WRITE_LOCK: Lazy<Mutex<()>> = Lazy::new(|| Mutex::new(()));
@@ -36,7 +39,32 @@ pub(crate) fn write_detected_summary_language_to_metadata(
     write_language_field_to_metadata(folder, DETECTED_SUMMARY_LANGUAGE_FIELD, summary_language)
 }
 
-fn read_language_field_from_metadata(folder: &Path, field: &str) -> Result<Option<String>> {
+/// The template chosen for the meeting; None unless both fields are present and the source parses.
+pub(crate) fn read_template_choice_from_metadata(
+    folder: &Path,
+) -> Result<Option<(String, TemplateSource)>> {
+    let Some(value) = read_metadata_value(folder)? else {
+        return Ok(None);
+    };
+    let id = value.get(TEMPLATE_FIELD).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty());
+    let source = value
+        .get(TEMPLATE_SOURCE_FIELD)
+        .and_then(|s| serde_json::from_value::<TemplateSource>(s.clone()).ok());
+    Ok(id.zip(source).map(|(id, source)| (id.to_string(), source)))
+}
+
+pub(crate) fn write_template_choice_to_metadata(
+    folder: &Path,
+    choice: Option<(&str, TemplateSource)>,
+) -> Result<()> {
+    let (id, source) = match choice {
+        Some((id, source)) => (Some(Value::String(id.to_string())), Some(serde_json::json!(source))),
+        None => (None, None),
+    };
+    write_metadata_fields(folder, &[(TEMPLATE_FIELD, id), (TEMPLATE_SOURCE_FIELD, source)])
+}
+
+fn read_metadata_value(folder: &Path) -> Result<Option<Value>> {
     let metadata_path = metadata_path(folder);
     if !metadata_path.exists() {
         return Ok(None);
@@ -44,7 +72,13 @@ fn read_language_field_from_metadata(folder: &Path, field: &str) -> Result<Optio
 
     let raw = std::fs::read_to_string(&metadata_path)
         .with_context(|| format!("Failed to read {}", metadata_path.display()))?;
-    let value = parse_metadata_json(&raw)?;
+    parse_metadata_json(&raw).map(Some)
+}
+
+fn read_language_field_from_metadata(folder: &Path, field: &str) -> Result<Option<String>> {
+    let Some(value) = read_metadata_value(folder)? else {
+        return Ok(None);
+    };
 
     let Some(language) = value.get(field) else {
         return Ok(None);
@@ -61,30 +95,31 @@ fn write_language_field_to_metadata(
     field: &str,
     summary_language: Option<&str>,
 ) -> Result<()> {
+    let normalised = summary_language.map(normalise_supported_summary_language).transpose()?;
+    write_metadata_fields(folder, &[(field, normalised.map(Value::String))])
+}
+
+/// Sets each field to its value, or removes it for None, in one locked read-modify-write.
+fn write_metadata_fields(folder: &Path, fields: &[(&str, Option<Value>)]) -> Result<()> {
     let _guard = METADATA_WRITE_LOCK.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let metadata_path = metadata_path(folder);
     let temp_path = metadata_temp_path(folder);
 
-    let mut value = if metadata_path.exists() {
-        let raw = std::fs::read_to_string(&metadata_path)
-            .with_context(|| format!("Failed to read {}", metadata_path.display()))?;
-        parse_metadata_json(&raw)?
-    } else {
-        Value::Object(serde_json::Map::new())
-    };
+    let mut value = read_metadata_value(folder)?.unwrap_or_else(|| Value::Object(serde_json::Map::new()));
 
     if !value.is_object() {
         bail!("Failed to parse metadata.json: root value must be a JSON object");
     }
 
     let object = value.as_object_mut().expect("metadata value checked as object");
-    match summary_language {
-        Some(code) => {
-            let normalised = normalise_supported_summary_language(code)?;
-            object.insert(field.to_string(), Value::String(normalised));
-        }
-        None => {
-            object.remove(field);
+    for (field, field_value) in fields {
+        match field_value {
+            Some(v) => {
+                object.insert(field.to_string(), v.clone());
+            }
+            None => {
+                object.remove(*field);
+            }
         }
     }
 
@@ -293,5 +328,45 @@ mod tests {
         let err = read_summary_language_from_metadata(dir.path()).unwrap_err();
 
         assert!(err.to_string().contains("Failed to parse metadata.json"));
+    }
+
+    #[test]
+    fn template_choice_round_trips_and_keeps_summary_language() {
+        let dir = tempfile::tempdir().unwrap();
+        write_summary_language_to_metadata(dir.path(), Some("fr")).unwrap();
+
+        write_template_choice_to_metadata(dir.path(), Some(("german_lessons", TemplateSource::Auto))).unwrap();
+
+        assert_eq!(
+            read_template_choice_from_metadata(dir.path()).unwrap(),
+            Some(("german_lessons".to_string(), TemplateSource::Auto))
+        );
+        assert_eq!(read_summary_language_from_metadata(dir.path()).unwrap(), Some("fr".to_string()));
+    }
+
+    #[test]
+    fn template_choice_none_removes_both_fields() {
+        let dir = tempfile::tempdir().unwrap();
+        write_template_choice_to_metadata(dir.path(), Some(("standard_meeting", TemplateSource::Manual))).unwrap();
+
+        write_template_choice_to_metadata(dir.path(), None).unwrap();
+
+        let raw = std::fs::read_to_string(dir.path().join("metadata.json")).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&raw).unwrap();
+        assert!(parsed.get("summary_template").is_none());
+        assert!(parsed.get("summary_template_source").is_none());
+        assert_eq!(read_template_choice_from_metadata(dir.path()).unwrap(), None);
+    }
+
+    #[test]
+    fn template_choice_with_unknown_source_reads_as_none() {
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("metadata.json"),
+            json!({ "summary_template": "standard_meeting", "summary_template_source": "weird" }).to_string(),
+        )
+        .unwrap();
+
+        assert_eq!(read_template_choice_from_metadata(dir.path()).unwrap(), None);
     }
 }

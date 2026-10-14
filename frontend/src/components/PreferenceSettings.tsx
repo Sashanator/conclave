@@ -129,6 +129,7 @@ export function PreferenceSettings() {
               <SelectItem value="system">System (follows Windows)</SelectItem>
               <SelectItem value="light">Light</SelectItem>
               <SelectItem value="dark">Dark</SelectItem>
+              <SelectItem value="conclave">Conclave</SelectItem>
             </SelectContent>
           </Select>
         </div>

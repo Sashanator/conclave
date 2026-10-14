@@ -335,7 +335,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                 <>
                   <button
                     onClick={handleStartRecording}
-                    className="w-10 h-10 flex items-center justify-center bg-red-500 rounded-full text-white hover:bg-red-600 transition-colors"
+                    className="w-10 h-10 flex items-center justify-center bg-red-500 rounded-full text-white hover:bg-red-600 record-button transition-colors"
                   >
                     <Mic size={16} />
                   </button>
@@ -377,7 +377,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                             handleStartRecording();
                           }}
                           disabled={isStarting || isProcessing || isRecordingDisabled || isValidatingModel || isStartingRecording}
-                          className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing || isValidatingModel || isStartingRecording ? 'bg-muted-foreground/60' : 'bg-red-500 hover:bg-red-600'
+                          className={`w-12 h-12 flex items-center justify-center ${isStarting || isProcessing || isValidatingModel || isStartingRecording ? 'bg-muted-foreground/60' : 'bg-red-500 hover:bg-red-600 record-button'
                             } rounded-full text-white transition-colors relative`}
                         >
                           {isValidatingModel || isStartingRecording ? (

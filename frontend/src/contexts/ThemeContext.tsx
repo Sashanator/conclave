@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from 'react';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import {
-  applyResolvedTheme, parseThemePreference, resolveTheme, THEME_STORAGE_KEY,
+  applyResolvedTheme, parseThemePreference, resolveTheme, THEME_STORAGE_KEY, windowThemeFor,
   type ResolvedTheme, type ThemePreference,
 } from '@/lib/theme';
 
@@ -34,7 +34,7 @@ const systemQuery = () => window.matchMedia('(prefers-color-scheme: dark)');
 function syncWindowTheme(pref: ThemePreference) {
   if (!('__TAURI_INTERNALS__' in window)) return;
   try {
-    getCurrentWindow().setTheme(pref === 'system' ? null : pref).catch(() => {});
+    getCurrentWindow().setTheme(windowThemeFor(pref)).catch(() => {});
   } catch {
     // Tauri present but the window API unavailable: the in-page theme still applies.
   }

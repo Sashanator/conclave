@@ -64,7 +64,7 @@ function ConditionalImportDialog({
 
 function ThemedToaster() {
   const { resolved } = useTheme();
-  return <Toaster theme={resolved} position="bottom-center" richColors closeButton />;
+  return <Toaster theme={resolved === 'light' ? 'light' : 'dark'} position="bottom-center" richColors closeButton />;
 }
 
 // export { metadata } from './metadata'

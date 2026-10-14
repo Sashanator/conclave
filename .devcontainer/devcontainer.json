@@ -47,7 +47,10 @@
   "containerEnv": {
     "NODE_OPTIONS": "--max-old-space-size=4096",
     "CLAUDE_CONFIG_DIR": "/home/node/.claude",
-    "POWERLEVEL9K_DISABLE_GITSTATUS": "true"
+    "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
+    // Local builds use half the cores so the VM stays responsive (CI is unaffected).
+    "CARGO_BUILD_JOBS": "4",
+    "CMAKE_BUILD_PARALLEL_LEVEL": "4"
   },
   "customizations": {
     "vscode": {

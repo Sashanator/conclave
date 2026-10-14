@@ -17,6 +17,7 @@ import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
+import { readSummaryMetadata } from '@/lib/summary-content';
 
 export default function PageContent({
   meeting,
@@ -127,6 +128,11 @@ export default function PageContent({
     setAiSummary: meetingData.setAiSummary,
     onOpenModelSettings: handleOpenModelSettings,
   });
+
+  const summaryMetadata = readSummaryMetadata(meetingData.aiSummary);
+  const currentTemplate = summaryMetadata.templateId && summaryMetadata.templateName
+    ? { id: summaryMetadata.templateId, name: summaryMetadata.templateName, source: summaryMetadata.templateSource }
+    : null;
 
   const copyOperations = useCopyOperations({
     meeting,
@@ -240,7 +246,12 @@ export default function PageContent({
               getSummaryStatusMessage={summaryGeneration.getSummaryStatusMessage}
               availableTemplates={templates.availableTemplates}
               selectedTemplate={templates.selectedTemplate}
-              onTemplateSelect={templates.handleTemplateSelection}
+              currentTemplate={currentTemplate}
+              languageFallback={summaryMetadata.languageFallback}
+              onTemplateSelect={(id, name) => {
+                templates.handleTemplateSelection(id, name);
+                void summaryGeneration.handleRegenerateSummary(id);
+              }}
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={handleRegisterModalOpen}
             />

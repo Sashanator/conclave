@@ -66,21 +66,25 @@ const SummaryMetadata = z.object({
   MeetingName: z.string().optional(),
   reasoning_stripped: z.boolean().optional(),
   normalization_fallback: z.boolean().optional(),
+  template_id: z.string().optional(),
+  template_name: z.string().optional(),
+  template_source: z.enum(['manual', 'keyword', 'auto', 'fallback']).optional(),
+  summary_language: z.string().optional(),
+  language_fallback: z.boolean().optional(),
 }).passthrough();
 
 export function readSummaryMetadata(value: unknown) {
   const parsed = SummaryMetadata.safeParse(value);
-  return parsed.success
-    ? {
-        meetingName: parsed.data.MeetingName ?? null,
-        reasoningStripped: parsed.data.reasoning_stripped === true,
-        normalizationFallback: parsed.data.normalization_fallback === true,
-      }
-    : {
-        meetingName: null,
-        reasoningStripped: false,
-        normalizationFallback: false,
-      };
+  const data = parsed.success ? parsed.data : null;
+  return {
+    meetingName: data?.MeetingName ?? null,
+    reasoningStripped: data?.reasoning_stripped === true,
+    templateId: data?.template_id ?? null,
+    templateName: data?.template_name ?? null,
+    templateSource: data?.template_source ?? null,
+    summaryLanguage: data?.summary_language ?? null,
+    languageFallback: data?.language_fallback === true,
+  };
 }
 
 export function parseSummaryContent(value: unknown): MeetingSummary | null {

@@ -48,8 +48,10 @@ interface SummaryPanelProps {
   summaryError: string | null;
   onRegenerateSummary: () => Promise<void>;
   getSummaryStatusMessage: (status: 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error') => string;
-  availableTemplates: Array<{ id: string, name: string, description: string }>;
-  selectedTemplate: string;
+  availableTemplates: Array<{ id: string, name: string }>;
+  selectedTemplate: string | null;
+  currentTemplate: { id: string, name: string, source: string | null } | null;
+  languageFallback: boolean;
   onTemplateSelect: (templateId: string, templateName: string) => void;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
@@ -80,6 +82,8 @@ export function SummaryPanel({
   getSummaryStatusMessage,
   availableTemplates,
   selectedTemplate,
+  currentTemplate,
+  languageFallback,
   onTemplateSelect,
   isModelConfigLoading = false,
   onOpenModelSettings,
@@ -213,31 +217,38 @@ export function SummaryPanel({
   const hasSummary = hasVisibleSummaryContent(aiSummary);
 
   const languageSlot = (
-    <Popover open={langPickerOpen} onOpenChange={setLangPickerOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          variant="outline"
-          size="sm"
-          title={`Summary language: ${effectiveLangLabel}${isLocalFallbackLanguage ? ' (saved on this device)' : ''}`}
-          aria-label="Set summary language"
+    <>
+      <Popover open={langPickerOpen} onOpenChange={setLangPickerOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            variant="outline"
+            size="sm"
+            title={`Summary language: ${effectiveLangLabel}${isLocalFallbackLanguage ? ' (saved on this device)' : ''}`}
+            aria-label="Set summary language"
+          >
+            <Languages size={18} />
+            <span className="hidden @[40rem]:inline">{effectiveLangLabel}</span>
+            <ChevronDown size={14} className="text-muted-foreground" />
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent
+          align="end"
+          className="w-auto p-0 border-0 shadow-none bg-transparent"
         >
-          <Languages size={18} />
-          <span className="hidden @[40rem]:inline">{effectiveLangLabel}</span>
-          <ChevronDown size={14} className="text-muted-foreground" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent
-        align="end"
-        className="w-auto p-0 border-0 shadow-none bg-transparent"
-      >
-        <LanguagePickerPopover
-          value={summaryLang}
-          onChange={handleLangChange}
-          onClose={() => setLangPickerOpen(false)}
-          autoSubtitle={autoSubtitle}
-        />
-      </PopoverContent>
-    </Popover>
+          <LanguagePickerPopover
+            value={summaryLang}
+            onChange={handleLangChange}
+            onClose={() => setLangPickerOpen(false)}
+            autoSubtitle={autoSubtitle}
+          />
+        </PopoverContent>
+      </Popover>
+      {languageFallback && (
+        <span className="text-xs text-muted-foreground self-center whitespace-nowrap">
+          Language: couldn&apos;t detect, using English
+        </span>
+      )}
+    </>
   );
 
   return (
@@ -256,6 +267,7 @@ export function SummaryPanel({
               summaryStatus={summaryStatus}
               availableTemplates={availableTemplates}
               selectedTemplate={selectedTemplate}
+              currentTemplate={currentTemplate}
               onTemplateSelect={onTemplateSelect}
               hasTranscripts={transcripts.length > 0}
               hasSummary={hasSummary}

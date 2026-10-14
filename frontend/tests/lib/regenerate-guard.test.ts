@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { REGENERATE_DISCARD_PROMPT, shouldRegenerate } from '../../src/lib/regenerate-guard';
+import { pickTemplateIfAllowed, REGENERATE_DISCARD_PROMPT, shouldRegenerate } from '../../src/lib/regenerate-guard';
 
 describe('shouldRegenerate', () => {
   test('regenerates without asking when the summary has no unsaved edits', () => {
@@ -21,5 +21,30 @@ describe('shouldRegenerate', () => {
 
   test('uses the exact confirmation text', () => {
     expect(REGENERATE_DISCARD_PROMPT).toBe('Regenerating replaces your unsaved edits to these notes. Continue?');
+  });
+});
+
+describe('pickTemplateIfAllowed', () => {
+  test('picks and regenerates without asking when there are no unsaved edits', () => {
+    const calls: string[] = [];
+    pickTemplateIfAllowed(false, () => calls.push('pick'), () => calls.push('regenerate'), () => {
+      throw new Error('should not ask');
+    });
+    expect(calls).toEqual(['pick', 'regenerate']);
+  });
+
+  test('asks first; on Yes it picks, then regenerates', () => {
+    const calls: string[] = [];
+    pickTemplateIfAllowed(true, () => calls.push('pick'), () => calls.push('regenerate'), (message) => {
+      calls.push(`ask:${message}`);
+      return true;
+    });
+    expect(calls).toEqual([`ask:${REGENERATE_DISCARD_PROMPT}`, 'pick', 'regenerate']);
+  });
+
+  test('on No it neither picks nor regenerates', () => {
+    const calls: string[] = [];
+    pickTemplateIfAllowed(true, () => calls.push('pick'), () => calls.push('regenerate'), () => false);
+    expect(calls).toEqual([]);
   });
 });

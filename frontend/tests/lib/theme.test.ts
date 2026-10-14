@@ -69,6 +69,7 @@ describe('theme', () => {
   });
 
   test('the window title bar is dark for conclave', () => {
+    expect(windowThemeFor('dark')).toBe('dark');
     expect(windowThemeFor('conclave')).toBe('dark');
     expect(windowThemeFor('system')).toBeNull();
     expect(windowThemeFor('light')).toBe('light');

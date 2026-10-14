@@ -18,7 +18,7 @@ import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
 import { readSummaryMetadata } from '@/lib/summary-content';
-import { shouldRegenerate } from '@/lib/regenerate-guard';
+import { pickTemplateIfAllowed } from '@/lib/regenerate-guard';
 
 export default function PageContent({
   meeting,
@@ -249,11 +249,13 @@ export default function PageContent({
               selectedTemplate={templates.selectedTemplate}
               currentTemplate={currentTemplate}
               languageFallback={summaryMetadata.languageFallback}
-              onTemplateSelect={(id, name) => {
-                if (!shouldRegenerate(meetingData.isSummaryDirty)) return;
-                templates.handleTemplateSelection(id, name);
-                void summaryGeneration.handleRegenerateSummary(id);
-              }}
+              onTemplateSelect={(id, name) =>
+                pickTemplateIfAllowed(
+                  meetingData.isSummaryDirty,
+                  () => templates.handleTemplateSelection(id, name),
+                  () => summaryGeneration.handleRegenerateSummary(id),
+                )
+              }
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={handleRegisterModalOpen}
             />

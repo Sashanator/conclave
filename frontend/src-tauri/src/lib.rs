@@ -584,14 +584,11 @@ pub fn run() {
             })
             .expect("Failed to initialize database");
 
-            // Initialize bundled templates directory for dynamic template discovery
-            log::info!("Initializing bundled templates directory...");
-            if let Ok(resource_path) = _app.handle().path().resource_dir() {
-                let templates_dir = resource_path.join("templates");
-                log::info!("Setting bundled templates directory to: {:?}", templates_dir);
-                summary::templates::set_bundled_templates_dir(templates_dir);
-            } else {
-                log::warn!("Failed to resolve resource directory for templates");
+            // Copy the shipped templates into the user's templates folder once; deleted ones stay deleted.
+            match summary::templates::seed_templates() {
+                Ok(true) => log::info!("Seeded default summary templates"),
+                Ok(false) => {}
+                Err(e) => log::warn!("Could not seed summary templates (Standard still works): {e}"),
             }
 
             Ok(())
@@ -730,8 +727,9 @@ pub fn run() {
             summary::commands::api_cancel_summary,
             // Template commands
             summary::template_commands::api_list_templates,
-            summary::template_commands::api_get_template_details,
-            summary::template_commands::api_validate_template,
+            summary::template_commands::api_get_template,
+            summary::template_commands::api_save_template,
+            summary::template_commands::api_delete_template,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
             summary::summary_engine::commands::builtin_ai_get_model_info,

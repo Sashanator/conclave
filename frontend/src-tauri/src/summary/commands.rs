@@ -12,6 +12,7 @@ use crate::summary::language_detection::{
 };
 use crate::summary::processor::{clean_llm_markdown_detailed, contains_reasoning_marker};
 use crate::summary::service::SummaryService;
+use crate::summary::templates;
 use log::{error as log_error, info as log_info, warn as log_warn};
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
@@ -484,7 +485,7 @@ pub async fn api_process_transcript<R: Runtime>(
 
     let pool = state.db_manager.pool().clone();
     let final_prompt = custom_prompt.unwrap_or_else(|| "".to_string());
-    let final_template_id = template_id.unwrap_or_else(|| "daily_standup".to_string());
+    let final_template_id = template_id.unwrap_or_else(|| templates::STANDARD_TEMPLATE_ID.to_string());
 
     // Normalise empty / whitespace-only to None so "" and null behave identically
     let summary_language = summary_language.and_then(|s| {

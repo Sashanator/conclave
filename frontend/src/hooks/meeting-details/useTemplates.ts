@@ -14,13 +14,9 @@ export function useTemplates() {
   useEffect(() => {
     const fetchTemplates = async () => {
       try {
-        const templates = await invokeTauri('api_list_templates') as Array<{
-          id: string;
-          name: string;
-          description: string;
-        }>;
-        console.log('Available templates:', templates);
-        setAvailableTemplates(templates);
+        const res = await invokeTauri<{ templates: Array<{ id: string; name: string }>; errors: string[] }>('api_list_templates');
+        console.log('Available templates:', res.templates);
+        setAvailableTemplates(res.templates.map(t => ({ ...t, description: '' })));
       } catch (error) {
         console.error('Failed to fetch templates:', error);
       }

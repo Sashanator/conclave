@@ -13,7 +13,7 @@ use crate::summary::processor::{
     require_visible_markdown,
 };
 use crate::summary::template_choice::{
-    auto_pick_prompts, choice_to_store, choose_without_model, parse_auto_pick_answer, Choice,
+    auto_pick_answer_id, auto_pick_prompts, choice_to_store, choose_without_model, Choice,
     TemplateSource,
 };
 use crate::summary::templates;
@@ -388,7 +388,7 @@ impl SummaryService {
                         Some(0.0), custom_openai_top_p, app_data_dir.as_ref(), Some(&cancellation_token)),
                 ).await;
                 match answer {
-                    Ok(Ok(c)) => match parse_auto_pick_answer(&c.content, &listing.templates) {
+                    Ok(Ok(c)) => match auto_pick_answer_id(&c.content, &listing.templates) {
                         Some(id) => (id, TemplateSource::Auto),
                         None => {
                             warn!("Auto-pick answer is not a template id: {:?}", c.content);

@@ -1,4 +1,5 @@
-use crate::summary::templates::TemplateEntry;
+use crate::summary::processor::clean_llm_markdown_detailed;
+use crate::summary::templates::{TemplateEntry, STANDARD_TEMPLATE_ID};
 use serde::{Deserialize, Serialize};
 
 const AUTO_PICK_TRANSCRIPT_CHARS: usize = 4_000;
@@ -56,9 +57,19 @@ pub(crate) fn auto_pick_prompts(transcript: &str, templates: &[TemplateEntry]) -
     (system, user)
 }
 
+/// Reads the model's answer the way summaries are read: `<think>` blocks and fences are removed first.
+pub(crate) fn auto_pick_answer_id(raw: &str, templates: &[TemplateEntry]) -> Option<String> {
+    parse_auto_pick_answer(&clean_llm_markdown_detailed(raw).markdown, templates)
+}
+
+/// Exact id after trimming quotes, backticks, bold markers, whitespace and a trailing period. Standard is always allowed.
 pub(crate) fn parse_auto_pick_answer(answer: &str, templates: &[TemplateEntry]) -> Option<String> {
-    let id = answer.trim().trim_matches(|c| c == '`' || c == '"' || c == '\'').trim().trim_end_matches('.');
-    candidates(templates).find(|(e, _)| e.id == id).map(|(e, _)| e.id.clone())
+    let id = answer.trim_matches(|c: char| c.is_whitespace() || matches!(c, '`' | '"' | '\'' | '*' | '.'));
+    candidates(templates)
+        .map(|(e, _)| e)
+        .chain(templates.iter().filter(|e| e.id == STANDARD_TEMPLATE_ID))
+        .find(|e| e.id == id)
+        .map(|e| e.id.clone())
 }
 
 #[cfg(test)]
@@ -121,9 +132,25 @@ mod tests {
     }
 
     #[test]
+    fn standard_is_a_valid_answer_even_without_use_when() {
+        let t = vec![entry("standard_meeting", "Standard Meeting Notes", &[], None), entry("no_hint", "No hint", &[], None)];
+        assert_eq!(parse_auto_pick_answer("standard_meeting", &t).as_deref(), Some("standard_meeting"));
+        assert_eq!(parse_auto_pick_answer("no_hint", &t), None);
+    }
+
+    #[test]
+    fn reasoning_is_removed_before_the_answer_is_read() {
+        let t = all();
+        assert_eq!(auto_pick_answer_id("<think>x</think>german_lessons", &t).as_deref(), Some("german_lessons"));
+        assert_eq!(auto_pick_answer_id("<think>german_lessons or 1-2-1?</think>\n**german_lessons**", &t).as_deref(), Some("german_lessons"));
+        assert_eq!(auto_pick_answer_id("<think>german_lessons</think>", &t), None);
+    }
+
+    #[test]
     fn answers_are_parsed_strictly() {
         let t = all();
-        for ok in ["german_lessons", " german_lessons\n", "`german_lessons`", "\"german_lessons\"", "german_lessons."] {
+        for ok in ["german_lessons", " german_lessons\n", "`german_lessons`", "\"german_lessons\"", "german_lessons.",
+                   "**german_lessons**", "`german_lessons`.", "**german_lessons.**"] {
             assert_eq!(parse_auto_pick_answer(ok, &t).as_deref(), Some("german_lessons"), "{ok:?}");
         }
         for bad in ["", "German Lessons", "Template: german_lessons", "no_hint", "german_lessons or standard_meeting"] {

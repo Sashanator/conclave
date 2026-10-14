@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { ArrowDown, ArrowUp, Copy, Plus, Trash2 } from 'lucide-react';
@@ -41,6 +41,10 @@ export function TemplateSettings() {
   const [draft, setDraft] = useState<TemplateDraft | null>(null);
   const [savedJson, setSavedJson] = useState('');
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const busyRef = useRef(false);
+  // Bumped whenever the editor switches to another template; a response for an older view is ignored.
+  const viewRef = useRef(0);
 
   const dirty = draft !== null && JSON.stringify(draft) !== savedJson;
   const problem = draft ? validateDraft(draft) : null;
@@ -65,7 +69,9 @@ export function TemplateSettings() {
   };
 
   const open = async (id: string) => {
+    const view = ++viewRef.current;
     const d = draftFromTemplate(await invoke<TemplateJson>('api_get_template', { templateId: id }));
+    if (viewRef.current !== view) return;
     setCurrentId(id);
     setDraft(d);
     setSavedJson(JSON.stringify(d));
@@ -85,6 +91,7 @@ export function TemplateSettings() {
 
   const startNew = () => {
     if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+    viewRef.current += 1;
     const d = emptyDraft();
     setCurrentId(null);
     setDraft(d);
@@ -104,20 +111,36 @@ export function TemplateSettings() {
   const deleteSection = (i: number) => setDraft((d) => d && { ...d, sections: d.sections.filter((_, j) => j !== i) });
   const addSection = () => setDraft((d) => d && { ...d, sections: [...d.sections, { title: '', instruction: '' }] });
 
-  const save = async () => {
+  // Save, duplicate and delete run one at a time, so a repeated click cannot create or delete twice.
+  const runExclusive = async (task: () => Promise<void>) => {
+    if (busyRef.current) return;
+    busyRef.current = true;
+    setBusy(true);
+    try {
+      await task();
+    } finally {
+      busyRef.current = false;
+      setBusy(false);
+    }
+  };
+
+  const save = () => runExclusive(async () => {
     if (!draft) return;
+    const view = viewRef.current;
     try {
       const id = await invoke<string>('api_save_template', { templateId: currentId, template: templateFromDraft(draft) });
-      setCurrentId(id);
-      setSavedJson(JSON.stringify(draft));
+      if (viewRef.current === view) {
+        setCurrentId(id);
+        setSavedJson(JSON.stringify(draft));
+      }
       toast.success('Template saved');
       await refresh().catch(fail('Could not reload the template list'));
     } catch (err) {
       toast.error('Could not save the template', { description: String(err) });
     }
-  };
+  });
 
-  const duplicate = async () => {
+  const duplicate = () => runExclusive(async () => {
     if (!draft) return;
     try {
       const copy = { ...draft, name: `${draft.name.trim()} (copy)` };
@@ -127,9 +150,9 @@ export function TemplateSettings() {
     } catch (err) {
       toast.error('Could not duplicate the template', { description: String(err) });
     }
-  };
+  });
 
-  const remove = async () => {
+  const remove = () => runExclusive(async () => {
     if (!currentId) return;
     setConfirmDelete(false);
     try {
@@ -139,6 +162,7 @@ export function TemplateSettings() {
       if (res.templates[0]) {
         await open(res.templates[0].id);
       } else {
+        viewRef.current += 1;
         setCurrentId(null);
         setDraft(null);
         setSavedJson('');
@@ -146,14 +170,14 @@ export function TemplateSettings() {
     } catch (err) {
       toast.error('Could not delete the template', { description: String(err) });
     }
-  };
+  });
 
   return (
     <div className="grid grid-cols-[16rem_1fr] gap-6">
       <div className="bg-card rounded-lg border border-border p-4 space-y-3 self-start">
         <div className="flex items-center justify-between gap-2">
           <h3 className="text-lg font-semibold text-foreground">Templates</h3>
-          <Button variant="outline" size="sm" onClick={startNew}>
+          <Button variant="outline" size="sm" onClick={startNew} disabled={busy}>
             <Plus className="w-4 h-4 mr-1" />
             New template
           </Button>
@@ -169,8 +193,9 @@ export function TemplateSettings() {
               <button
                 type="button"
                 onClick={() => select(t.id)}
+                disabled={busy}
                 aria-current={t.id === currentId ? 'true' : undefined}
-                className={`w-full rounded-md px-3 py-2 text-left text-sm text-foreground ${t.id === currentId ? 'bg-muted font-medium' : 'hover:bg-muted/60'}`}
+                className={`w-full rounded-md px-3 py-2 text-left text-sm text-foreground ${t.id === currentId ? 'bg-muted font-medium' : 'hover:bg-muted/60'} disabled:opacity-60`}
               >
                 {t.name}
                 {!t.use_when?.trim() && <span className="ml-2 text-xs text-muted-foreground">auto-pick off</span>}
@@ -267,8 +292,8 @@ export function TemplateSettings() {
             </Field>
 
             <div className="flex flex-wrap items-center gap-2 pt-2">
-              <Button onClick={save} disabled={problem !== null}>Save</Button>
-              <Button variant="outline" onClick={duplicate} disabled={problem !== null}>
+              <Button onClick={save} disabled={busy || problem !== null}>Save</Button>
+              <Button variant="outline" onClick={duplicate} disabled={busy || problem !== null}>
                 <Copy className="w-4 h-4 mr-1" />
                 Duplicate
               </Button>
@@ -276,7 +301,7 @@ export function TemplateSettings() {
                 variant="outline"
                 className="text-destructive"
                 onClick={() => setConfirmDelete(true)}
-                disabled={currentId === null || currentId === STANDARD_ID}
+                disabled={busy || currentId === null || currentId === STANDARD_ID}
                 title={currentId === STANDARD_ID ? 'The Standard template cannot be deleted' : undefined}
               >
                 <Trash2 className="w-4 h-4 mr-1" />

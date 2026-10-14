@@ -13,9 +13,17 @@ pub fn templates_dir() -> Option<PathBuf> {
     Some(dirs::data_dir()?.join("Conclave").join("templates"))
 }
 
+/// Device names Windows 10 reserves in every folder: `con.json` opens the console, not a file.
+const WINDOWS_RESERVED: [&str; 22] = [
+    "con", "prn", "aux", "nul",
+    "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+    "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+];
+
 pub fn is_valid_id(id: &str) -> bool {
     (1..=64).contains(&id.len())
         && id.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_' || b == b'-')
+        && !WINDOWS_RESERVED.contains(&id)
 }
 
 fn checked_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
@@ -149,6 +157,7 @@ pub fn new_template_id(name: &str, existing: &[String]) -> String {
     base.truncate(56);
     let base = base.trim_end_matches(['_', '-']).to_string();
     let base = if base.is_empty() { "template".to_string() } else { base };
+    let base = if WINDOWS_RESERVED.contains(&base.as_str()) { format!("{base}_template") } else { base };
     if !existing.contains(&base) {
         return base;
     }
@@ -234,12 +243,29 @@ mod tests {
     }
 
     #[test]
+    fn windows_device_names_are_never_ids() {
+        let dir = tempdir().unwrap();
+        for reserved in ["con", "prn", "aux", "nul", "com1", "com9", "lpt1", "lpt9"] {
+            assert!(!is_valid_id(reserved), "{reserved}");
+            assert!(get_template_in(dir.path(), reserved).is_err());
+        }
+        assert!(is_valid_id("console") && is_valid_id("com10") && is_valid_id("nul_day"));
+        std::fs::write(dir.path().join("con.json"), serde_json::to_string(&t("Con")).unwrap()).unwrap();
+        let listing = list_templates_in(dir.path());
+        assert!(listing.templates.iter().all(|e| e.id != "con"));
+        assert!(listing.errors.iter().any(|e| e.starts_with("con.json")));
+    }
+
+    #[test]
     fn new_ids_transliterate_and_avoid_collisions() {
         assert_eq!(new_template_id("Расулов ЛПР", &[]), "rasulov_lpr");
         assert_eq!(new_template_id("1-2-1 Расулов", &[]), "1-2-1_rasulov");
         assert_eq!(new_template_id("Scrum of Scrums", &["scrum_of_scrums".into()]), "scrum_of_scrums_2");
         assert_eq!(new_template_id("!!!", &[]), "template");
         assert!(is_valid_id(&new_template_id(&"Длинное название ".repeat(10), &[])));
+        assert_eq!(new_template_id("Con", &[]), "con_template");
+        assert_eq!(new_template_id("COM1", &[]), "com1_template");
+        assert_eq!(new_template_id("console", &[]), "console");
     }
 
     #[test]

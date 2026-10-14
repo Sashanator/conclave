@@ -14,6 +14,7 @@ import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { confirmLeave } from '@/lib/unsaved-guard';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
 import { useConfig } from '@/contexts/ConfigContext';
 
@@ -42,6 +43,10 @@ interface SidebarItem {
 const Sidebar: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
+  // Navigation that discards nothing unless the user agrees (e.g. unsaved template edits)
+  const go = (href: string) => {
+    if (confirmLeave()) router.push(href);
+  };
   const {
     currentMeeting,
     setCurrentMeeting,
@@ -445,7 +450,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => router.push('/')}
+                onClick={() => go('/')}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-muted' : 'hover:bg-accent'
                   }`}
               >
@@ -513,7 +518,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => router.push('/settings')}
+                onClick={() => go('/settings')}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-muted' : 'hover:bg-accent'
                   }`}
               >
@@ -563,6 +568,7 @@ const Sidebar: React.FC = () => {
             if (item.type === 'folder') {
               toggleFolder(item.id);
             } else {
+              if (!confirmLeave()) return;
               setCurrentMeeting({ id: item.id, title: item.title });
               const basePath = item.id.startsWith('intro-call') ? '/' :
                 item.id.includes('-') ? `/meeting-details?id=${item.id}` : `/notes/${item.id}`;
@@ -710,7 +716,7 @@ const Sidebar: React.FC = () => {
           <div className="flex-shrink-0">
             {!isCollapsed && (
               <div
-                onClick={() => router.push('/')}
+                onClick={() => go('/')}
                 className="p-3  text-lg font-semibold items-center hover:bg-accent h-10   flex mx-3 mt-3 rounded-lg cursor-pointer"
               >
                 <Home className="w-4 h-4 mr-2" />
@@ -789,7 +795,7 @@ const Sidebar: React.FC = () => {
             )}
 
             <button
-              onClick={() => router.push('/settings')}
+              onClick={() => go('/settings')}
               className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-foreground bg-muted hover:bg-muted-foreground/20 rounded-lg transition-colors shadow-sm"
             >
               <Settings className="w-4 h-4 mr-2" />

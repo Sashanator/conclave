@@ -30,7 +30,7 @@ interface UseRecordingStopReturn {
  * Handles the complex stop sequence: transcription wait → buffer flush → SQLite save → navigation.
  *
  * Features:
- * - Transcription completion polling (60s max, 500ms interval)
+ * - Transcription completion polling (60s max, 500ms interval; saves what it has after that)
  * - Transcript buffer flush coordination
  * - SQLite meeting save with folder_path from sessionStorage
  * - Auto-navigation to meeting details
@@ -198,8 +198,12 @@ export function useRecordingStop(
       console.log('🧹 CLEANUP: Cleaning up transcription-complete listener');
       unlistenComplete();
 
-      if (!transcriptionComplete && elapsedTime >= MAX_WAIT_TIME) {
-        console.warn('⏰ Transcription wait timeout reached after', elapsedTime, 'ms');
+      if (!transcriptionComplete) {
+        // Save what we have anyway: skipping the save here used to lose the whole meeting.
+        console.warn('⏰ Transcription not confirmed complete after', elapsedTime, 'ms; saving what is transcribed so far');
+        toast.warning('Saved before transcription finished', {
+          description: 'The last part of the transcript may be missing.',
+        });
       } else {
         console.log('✅ Transcription completed after', elapsedTime, 'ms');
         // Wait longer for any late transcript segments (increased from 1s to 4s)
@@ -232,7 +236,7 @@ export function useRecordingStop(
       // Save to SQLite
       // NOTE: enabled to save COMPLETE transcripts after frontend receives all updates
       // This ensures user sees all transcripts streaming in before database save
-      if (isCallApi && transcriptionComplete == true) {
+      if (isCallApi) {
 
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 

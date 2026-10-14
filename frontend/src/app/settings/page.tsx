@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical, FileText } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -9,6 +9,7 @@ import { TranscriptSettings } from '@/components/TranscriptSettings';
 import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
+import { TemplateSettings } from '@/components/TemplateSettings';
 import { BetaSettings } from '@/components/BetaSettings';
 import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -20,6 +21,7 @@ const TABS = [
   { value: 'recording', label: 'Recordings', icon: Mic },
   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
+  { value: 'templates', label: 'Templates', icon: FileText },
   { value: 'beta', label: 'Beta', icon: FlaskConical }
 ] as const;
 
@@ -31,6 +33,12 @@ export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState('general');
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
+  // Set by the Templates tab while its draft has unsaved edits
+  const templatesDirtyRef = useRef(false);
+  const canLeaveTemplates = () => !templatesDirtyRef.current || window.confirm('Discard unsaved changes?');
+  const changeTab = (tab: string) => {
+    if (canLeaveTemplates()) setActiveTab(tab);
+  };
 
   // Load saved transcript configuration on mount
   useEffect(() => {
@@ -70,7 +78,7 @@ export default function SettingsPage() {
         <div className="max-w-6xl mx-auto px-8 py-6">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => router.back()}
+              onClick={() => canLeaveTemplates() && router.back()}
               className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />
@@ -85,7 +93,7 @@ export default function SettingsPage() {
       <div className="flex-1 overflow-y-auto">
         <div className="max-w-6xl mx-auto p-8 pt-6">
           {/* Tabs */}
-          <Tabs value={activeTab} onValueChange={setActiveTab}>
+          <Tabs value={activeTab} onValueChange={changeTab}>
             <TabsList className="bg-transparent relative rounded-none border-b border-border p-0 h-auto">
               {TABS.map((tab, index) => {
                 const Icon = tab.icon;
@@ -124,6 +132,9 @@ export default function SettingsPage() {
             </TabsContent>
             <TabsContent value="summaryModels">
               <SummaryModelSettings />
+            </TabsContent>
+            <TabsContent value="templates">
+              <TemplateSettings dirtyRef={templatesDirtyRef} />
             </TabsContent>
             <TabsContent value="beta" className="mt-6">
               <BetaSettings />

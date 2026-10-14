@@ -126,11 +126,7 @@ fn build_summary_cache_source(
 }
 
 fn template_cache_fingerprint(template: &Template) -> String {
-    let rendered_template = format!(
-        "{}\n---SECTION-INSTRUCTIONS---\n{}",
-        template.to_markdown_structure(),
-        template.to_section_instructions()
-    );
+    let rendered_template = serde_json::to_string(template).unwrap_or_default();
     stable_text_fingerprint(&rendered_template)
 }
 
@@ -807,13 +803,18 @@ mod tests {
         Template {
             name: "Test".to_string(),
             description: "Test template".to_string(),
+            use_when: None,
+            title_keywords: vec![],
+            language: None,
+            context: None,
             sections: vec![crate::summary::templates::TemplateSection {
                 title: section_title.to_string(),
                 instruction: "Summarize this section".to_string(),
-                format: "paragraph".to_string(),
+                format: Some("paragraph".to_string()),
                 item_format: None,
                 example_item_format: None,
             }],
+            style: None,
         }
     }
 

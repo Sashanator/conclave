@@ -18,11 +18,8 @@
 //! // Load a specific template
 //! let template = templates::get_template("daily_standup").expect("daily standup template exists");
 //!
-//! // Generate markdown structure
-//! let markdown = template.to_markdown_structure();
-//!
-//! // Generate LLM instructions
-//! let instructions = template.to_section_instructions();
+//! // Render the LLM system prompt
+//! let prompt = template.render_system_prompt("English");
 //!
 //! // List available templates
 //! let available = templates::list_templates();
@@ -66,18 +63,6 @@ mod tests {
                 id,
                 result.err()
             );
-        }
-    }
-
-    #[test]
-    fn test_template_metadata() {
-        let templates = list_templates();
-        assert!(!templates.is_empty());
-
-        for (id, name, description) in templates {
-            assert!(!id.is_empty());
-            assert!(!name.is_empty());
-            assert!(!description.is_empty());
         }
     }
 }

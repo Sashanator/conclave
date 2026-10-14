@@ -20,6 +20,7 @@ import {
   SummaryLanguageStorage,
 } from '@/lib/summary-language-preferences';
 import { hasVisibleSummaryContent } from '@/lib/summary-content';
+import { shouldRegenerate } from '@/lib/regenerate-guard';
 
 interface SummaryPanelProps {
   meeting: {
@@ -100,6 +101,7 @@ export function SummaryPanel({
   // Last language the user saved as current; a change from it regenerates the summary.
   const persistedLanguageRef = useRef<string | null>(null);
   const summaryExistsRef = useRef(false);
+  const summaryDirtyRef = useRef(false);
   const latestLanguageSaveRequestRef = useRef<{
     version: number;
     meetingId: string;
@@ -181,7 +183,7 @@ export function SummaryPanel({
             }
             const changed = saved.language !== persistedLanguageRef.current;
             persistedLanguageRef.current = saved.language;
-            if (changed && summaryExistsRef.current) {
+            if (changed && summaryExistsRef.current && shouldRegenerate(summaryDirtyRef.current)) {
               void onRegenerateSummary();
             }
             return;
@@ -233,6 +235,7 @@ export function SummaryPanel({
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
   const hasSummary = hasVisibleSummaryContent(aiSummary);
   summaryExistsRef.current = hasSummary;
+  summaryDirtyRef.current = isSummaryDirty;
 
   const languageSlot = (
     <>

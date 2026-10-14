@@ -18,6 +18,7 @@ import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useConfig } from '@/contexts/ConfigContext';
 import { readSummaryMetadata } from '@/lib/summary-content';
+import { shouldRegenerate } from '@/lib/regenerate-guard';
 
 export default function PageContent({
   meeting,
@@ -249,6 +250,7 @@ export default function PageContent({
               currentTemplate={currentTemplate}
               languageFallback={summaryMetadata.languageFallback}
               onTemplateSelect={(id, name) => {
+                if (!shouldRegenerate(meetingData.isSummaryDirty)) return;
                 templates.handleTemplateSelection(id, name);
                 void summaryGeneration.handleRegenerateSummary(id);
               }}

@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:t
 import { forwardRef, type ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingSummary, Transcript } from '../../src/types';
+import { REGENERATE_DISCARD_PROMPT } from '../../src/lib/regenerate-guard';
 
 const originals = {
   blockNote: { ...await import('../../src/components/AISummary/BlockNoteSummaryView') },
@@ -65,13 +66,13 @@ async function flush() {
   });
 }
 
-async function renderPanel(aiSummary: MeetingSummary | null) {
+async function renderPanel(aiSummary: MeetingSummary | null, isSummaryDirty = false) {
   await act(async () => {
     renderer = create(
       <SummaryPanel
         meeting={{ id: 'meeting-a', title: 'Meeting A', created_at: '2026-10-14T00:00:00Z' }}
         meetingTitle="Meeting A"
-        isSummaryDirty={false}
+        isSummaryDirty={isSummaryDirty}
         summaryRef={{ current: null }}
         isSaving={false}
         onSaveAll={async () => {}}
@@ -153,6 +154,25 @@ describe('summary panel language change', () => {
     await chooseLanguage('de');
     consoleError.mockRestore();
     expect(regenerate).not.toHaveBeenCalled();
+  });
+
+  test('asks before regenerating over unsaved summary edits, and regenerates on Yes', async () => {
+    const confirm = spyOn(window, 'confirm').mockImplementation(() => true);
+    await renderPanel(summary, true);
+    await chooseLanguage('de');
+    expect(confirm).toHaveBeenCalledWith(REGENERATE_DISCARD_PROMPT);
+    expect(regenerate).toHaveBeenCalledTimes(1);
+    confirm.mockRestore();
+  });
+
+  test('keeps the new language saved but does not regenerate over unsaved edits on No', async () => {
+    const confirm = spyOn(window, 'confirm').mockImplementation(() => false);
+    await renderPanel(summary, true);
+    await chooseLanguage('de');
+    expect(saveLanguage).toHaveBeenCalledWith('meeting-a', 'de');
+    expect(confirm).toHaveBeenCalledTimes(1);
+    expect(regenerate).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 
   test('the language picker is disabled until the stored language has loaded', async () => {

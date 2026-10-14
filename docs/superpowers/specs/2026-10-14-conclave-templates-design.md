@@ -1,7 +1,7 @@
 # Conclave Phase 3: Summary templates, summary language, Conclave theme — Design
 
 Date: 2026-10-14
-Status: Approved in chat (2026-10-14), written spec for review
+Status: Approved by the user (2026-10-14)
 Target release: v0.4.0
 
 ## 1. Purpose
@@ -25,7 +25,7 @@ Next features, not in this phase: Speaker identification, then an AI chat over a
 
 - `summary/templates/` loads templates by id: the user folder (`dirs::data_dir()/Conclave/templates/<id>.json`, i.e. `%APPDATA%\Conclave\templates` on Windows) first, then bundled resources (`frontend/src-tauri/templates/*.json`), then built-ins embedded in `defaults.rs`. A template is `name`, `description` and `sections[{title, instruction, format, item_format?}]`. There is no Context, Style or language, and no in-app editor.
 - `summary/processor.rs` always writes the report in English (`ENGLISH_BASE_SUMMARY_INSTRUCTION`), then either translates it into the meeting's summary language or runs an "English normalization" pass. The final system prompt forces "None noted in this section." for empty sections.
-- Summary language: per-meeting value in meeting metadata (fallback: localStorage), a pinned default in localStorage, or Auto (whatlang over transcript segments, `summary/language_detection.rs`). When detection returns nothing, the pipeline ends up in English.
+- Summary language: per-meeting value in meeting metadata (fallback: localStorage), a pinned default in localStorage (removed by this phase, §5.2), or Auto (whatlang over transcript segments, `summary/language_detection.rs`). When detection returns nothing, the pipeline ends up in English.
 - The template choice is UI state in `useTemplates.ts` (default `standard_meeting`). It is not stored per meeting.
 - Summaries generate automatically after a recording (`api_get_auto_generate_setting`, on by default).
 - Themes: `lib/theme.ts` has `system | light | dark`, a `dark` class on `<html>`, CSS tokens in `globals.css`, and an inline init script to avoid a flash.
@@ -85,12 +85,11 @@ Regenerating without changing the template reuses the stored choice and does not
 Order, first match wins:
 1. A language chosen for this meeting.
 2. The template's fixed `language`.
-3. The pinned default language from Settings → Summary, if one is pinned.
-4. The detected transcript language (whatlang, existing).
-5. The language Whisper reported for the transcript segments, by majority, if recorded. (The plan checks whether segments store it; if they do not, this step is dropped.)
-6. English, flagged: the meeting view shows "Language: couldn't detect, using English" next to the language picker.
+3. The detected transcript language (whatlang, existing).
+4. The language Whisper reported for the transcript segments, by majority, if recorded. (The plan checks whether segments store it; if they do not, this step is dropped.)
+5. English, flagged: the meeting view shows "Language: couldn't detect, using English" next to the language picker.
 
-Auto (no pinned default) is the default for new installs, and Settings → Summary explains the order in one line.
+The pinned default language is removed (the user's decision, 2026-10-14): Settings → Summary keeps only the quick-switch language list, its pin buttons go, and a stored `summaryLanguageDefault` is ignored and deleted on startup. Settings → Summary explains the order in one line.
 
 ### 5.3 Writing directly in the final language
 
@@ -160,7 +159,7 @@ The auto-pick call goes to the user's configured summary provider, an outbound c
   - language order, including the flagged English case;
   - the final prompt contains the language line, context, sections and style, and omits empty blocks;
   - no code path calls the translation or normalization prompts any more.
-- Bun: theme parsing/resolution and the init script for `conclave`; editor validation (Save disabled with the right message).
+- Bun: theme parsing/resolution and the init script for `conclave`; editor validation (Save disabled with the right message); a stored pinned language is ignored and removed.
 - Manual on Windows (user): the success criteria in §2.
 
 ## 10. Out of scope

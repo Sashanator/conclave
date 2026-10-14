@@ -705,7 +705,7 @@ mod tests {
         let v = result_json("# Title\n\nBody", false, &lang).unwrap();
         assert_eq!(v["summary_language"], "en");
         assert_eq!(v["language_fallback"], true);
-        assert!(v.get("english_markdown_cache").is_none() && v.get("normalization_fallback").is_none());
+        assert!(v.get("english_cache").is_none() && v.get("normalization_fallback").is_none());
     }
 
     #[test]

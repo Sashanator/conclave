@@ -201,9 +201,6 @@ export function useRecordingStop(
       if (!transcriptionComplete) {
         // Save what we have anyway: skipping the save here used to lose the whole meeting.
         console.warn('⏰ Transcription not confirmed complete after', elapsedTime, 'ms; saving what is transcribed so far');
-        toast.warning('Saved before transcription finished', {
-          description: 'The last part of the transcript may be missing.',
-        });
       } else {
         console.log('✅ Transcription completed after', elapsedTime, 'ms');
         // Wait longer for any late transcript segments (increased from 1s to 4s)
@@ -266,6 +263,11 @@ export function useRecordingStop(
           if (!meetingId) {
             console.error('No meeting_id in response:', responseData);
             throw new Error('No meeting ID received from save operation');
+          }
+          if (!transcriptionComplete) {
+            toast.warning('Saved before transcription finished', {
+              description: 'The last part of the transcript may be missing.',
+            });
           }
 
           let shouldDetectSummaryLanguage = false;

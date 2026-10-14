@@ -45,16 +45,18 @@ pub fn mode() -> Mode {
 
 #[tauri::command]
 pub fn set_recording_post_processing<R: Runtime>(app: AppHandle<R>, active: bool) {
-    let changed = post_processing() != active;
-    set_post_processing(active);
     // The tray shows "Saving" while the flag is set; refresh only on a change so a page load doesn't hide "Starting".
-    if changed {
+    if set_post_processing(active) {
         crate::tray::update_tray_menu(&app);
     }
 }
 
-pub fn set_post_processing(active: bool) {
-    *POST_PROCESSING_SINCE.lock().unwrap_or_else(|e| e.into_inner()) = active.then(Instant::now);
+/// Returns true when the stored flag changed (an expired flag still counts as set, so clearing it refreshes).
+pub fn set_post_processing(active: bool) -> bool {
+    let mut since = POST_PROCESSING_SINCE.lock().unwrap_or_else(|e| e.into_inner());
+    let changed = since.is_some() != active;
+    *since = active.then(Instant::now);
+    changed
 }
 
 fn is_fresh(since: Option<Instant>, now: Instant) -> bool {
@@ -175,9 +177,10 @@ mod tests {
 
     #[test]
     fn post_processing_flag_follows_the_command() {
-        set_post_processing(true);
+        assert!(set_post_processing(true), "setting a clear flag is a change");
         assert!(post_processing());
-        set_post_processing(false);
+        assert!(!set_post_processing(true), "renewing a set flag is not a change");
+        assert!(set_post_processing(false));
         assert!(!post_processing());
     }
 

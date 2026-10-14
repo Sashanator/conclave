@@ -5,6 +5,11 @@ use tauri::{
     AppHandle, Manager, Runtime,
 };
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
+/// One pending tray re-check while a save shows "Stopping and saving".
+static SAVE_RECHECK: AtomicBool = AtomicBool::new(false);
+
 #[derive(Debug, Clone)]
 pub enum RecordingState {
     Stopped,
@@ -272,6 +277,16 @@ pub async fn update_tray_menu_async<R: Runtime>(app: &AppHandle<R>) {
     // Only block recording during incomplete onboarding when no transcription model is ready
     let can_record = check_can_record(app).await;
     log::info!("Tray: can_record: {}", can_record);
+
+    // "Stopping and saving" comes from the save flag, which can expire without being cleared: re-check until it's gone.
+    if matches!(recording_state, RecordingState::Stopping) && !SAVE_RECHECK.swap(true, Ordering::SeqCst) {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            SAVE_RECHECK.store(false, Ordering::SeqCst);
+            update_tray_menu(&app);
+        });
+    }
 
     if let Ok(menu) = build_menu(app, recording_state, can_record) {
         if let Some(tray) = app.tray_by_id("main-tray") {

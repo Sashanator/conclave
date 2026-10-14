@@ -1,20 +1,26 @@
 use crate::database::repositories::{
     meeting::MeetingsRepository, setting::SettingsRepository, summary::SummaryProcessesRepository,
 };
-use crate::summary::llm_client::LLMProvider;
+use crate::summary::llm_client::{generate_summary, LLMProvider};
 use crate::summary::language_choice::{resolve_summary_language, LanguageChoice};
 use crate::summary::language_detection::detect_summary_language;
-use crate::summary::metadata::read_detected_summary_language_from_metadata;
+use crate::summary::metadata::{
+    read_detected_summary_language_from_metadata, read_template_choice_from_metadata,
+    write_template_choice_to_metadata,
+};
 use crate::summary::processor::{
     clean_llm_markdown_detailed, extract_meeting_name_from_markdown, generate_meeting_summary,
     require_visible_markdown,
+};
+use crate::summary::template_choice::{
+    auto_pick_prompts, choose_without_model, parse_auto_pick_answer, Choice, TemplateSource,
 };
 use crate::summary::templates;
 use crate::ollama::metadata::ModelMetadataCache;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager};
@@ -61,6 +67,9 @@ fn build_summary_result_json(
     final_markdown: &str,
     reasoning_stripped: bool,
     language: &LanguageChoice,
+    template_id: &str,
+    template_name: &str,
+    template_source: TemplateSource,
 ) -> Result<serde_json::Value, String> {
     let cleaned = clean_llm_markdown_detailed(final_markdown);
     require_visible_markdown("Final summary", &cleaned)?;
@@ -73,6 +82,9 @@ fn build_summary_result_json(
         "reasoning_stripped": reasoning_stripped || cleaned.reasoning_stripped,
         "summary_language": language.code,
         "language_fallback": language.fallback,
+        "template_id": template_id,
+        "template_name": template_name,
+        "template_source": template_source,
     }))
 }
 
@@ -197,7 +209,7 @@ impl SummaryService {
     /// * `model_provider` - LLM provider name (e.g., "ollama", "openai")
     /// * `model_name` - Specific model (e.g., "gpt-4", "llama3.2:latest")
     /// * `custom_prompt` - Optional user-provided context
-    /// * `template_id` - Template identifier (e.g., "daily_standup", "standard_meeting")
+    /// * `manual_template_id` - Template the user picked for this run; None lets Conclave choose
     pub async fn process_transcript_background<R: tauri::Runtime>(
         _app: AppHandle<R>,
         pool: SqlitePool,
@@ -208,7 +220,7 @@ impl SummaryService {
         model_provider: String,
         model_name: String,
         custom_prompt: String,
-        template_id: String,
+        manual_template_id: Option<String>,
         summary_language: Option<String>,
     ) {
         let start_time = Instant::now();
@@ -358,14 +370,61 @@ impl SummaryService {
             info!("📝 Detected transcript summary language: {}", code);
         }
 
-        let template = match templates::get_template(&template_id) {
-            Ok(template) => template,
-            Err(e) => {
-                let err_msg = format!("Failed to load template '{}': {}", template_id, e);
-                Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
-                return;
+        let client = reqwest::Client::new();
+        let meeting = MeetingsRepository::get_meeting_metadata(&pool, &meeting_id).await.ok().flatten();
+        let title = meeting.as_ref().map(|m| m.title.clone()).unwrap_or_default();
+        let folder = meeting.and_then(|m| m.folder_path).filter(|p| !p.trim().is_empty()).map(PathBuf::from);
+        let stored = folder.as_deref().and_then(|f| read_template_choice_from_metadata(f).ok().flatten());
+        let listing = templates::list_templates();
+        let (template_id, source) = match choose_without_model(manual_template_id.as_deref(), stored, &title, &listing.templates) {
+            Choice::Decided(id, source) => (id, source),
+            Choice::AskModel => {
+                let (system, user) = auto_pick_prompts(&text, &listing.templates);
+                let answer = tokio::time::timeout(
+                    Duration::from_secs(30),
+                    generate_summary(&client, &provider, &model_name, &final_api_key, &system, &user,
+                        ollama_endpoint.as_deref(), custom_openai_endpoint.as_deref(), custom_openai_max_tokens,
+                        Some(0.0), custom_openai_top_p, app_data_dir.as_ref(), Some(&cancellation_token)),
+                ).await;
+                match answer {
+                    Ok(Ok(c)) => match parse_auto_pick_answer(&c.content, &listing.templates) {
+                        Some(id) => (id, TemplateSource::Auto),
+                        None => {
+                            warn!("Auto-pick answer is not a template id: {:?}", c.content);
+                            (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
+                        }
+                    },
+                    Ok(Err(e)) => {
+                        warn!("Auto-pick failed: {}", e);
+                        (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
+                    }
+                    Err(_) => {
+                        warn!("Auto-pick timed out");
+                        (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
+                    }
+                }
             }
         };
+        let (template_id, source, template) = match templates::get_template(&template_id) {
+            Ok(template) => (template_id, source, template),
+            Err(e) => {
+                warn!("Template '{}' unusable ({}); using Standard", template_id, e);
+                let standard = templates::get_template(templates::STANDARD_TEMPLATE_ID)
+                    .expect("standard template has an embedded fallback");
+                (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback, standard)
+            }
+        };
+        if let Some(f) = folder.as_deref() {
+            if let Err(e) = write_template_choice_to_metadata(f, Some((&template_id, source))) {
+                warn!("Could not store the template choice: {}", e);
+            }
+        }
+        if cancellation_token.is_cancelled() {
+            Self::update_process_cancelled(&pool, &meeting_id, started_at).await;
+            Self::cleanup_cancellation_token(&meeting_id, started_at);
+            return;
+        }
+
         let language = resolve_summary_language(
             summary_language.as_deref(),
             template.fixed_language(),
@@ -373,7 +432,6 @@ impl SummaryService {
         );
         info!("📝 Summary language: {} ({}){}", language.name, language.code, if language.fallback { ", fallback" } else { "" });
 
-        let client = reqwest::Client::new();
         let result = generate_meeting_summary(
             &client,
             &provider,
@@ -406,6 +464,9 @@ impl SummaryService {
                     &generated.final_markdown,
                     generated.reasoning_stripped,
                     &language,
+                    &template_id,
+                    &template.name,
+                    source,
                 ) {
                     Ok(result) => result,
                     Err(error) => {
@@ -447,20 +508,7 @@ impl SummaryService {
                 }
             }
             Err(error) if cancellation_token.is_cancelled() => {
-                match SummaryProcessesRepository::update_process_cancelled(
-                    &pool,
-                    &meeting_id,
-                    started_at,
-                )
-                .await
-                {
-                    Ok(false) => warn!("Skipped stale summary cancellation for meeting_id: {}", meeting_id),
-                    Ok(true) => info!("Summary generation was cancelled for meeting_id: {}", meeting_id),
-                    Err(db_error) => error!(
-                        "Failed to update DB status to cancelled for {}: {}",
-                        meeting_id, db_error
-                    ),
-                }
+                Self::update_process_cancelled(&pool, &meeting_id, started_at).await;
             }
             Err(error) => {
                 Self::update_process_failed(&pool, &meeting_id, started_at, &error).await;
@@ -478,6 +526,17 @@ impl SummaryService {
     ) {
         Self::update_process_failed(pool, meeting_id, started_at, error_msg).await;
         Self::cleanup_cancellation_token(meeting_id, started_at);
+    }
+
+    async fn update_process_cancelled(pool: &SqlitePool, meeting_id: &str, started_at: DateTime<Utc>) {
+        match SummaryProcessesRepository::update_process_cancelled(pool, meeting_id, started_at).await {
+            Ok(false) => warn!("Skipped stale summary cancellation for meeting_id: {}", meeting_id),
+            Ok(true) => info!("Summary generation was cancelled for meeting_id: {}", meeting_id),
+            Err(db_error) => error!(
+                "Failed to update DB status to cancelled for {}: {}",
+                meeting_id, db_error
+            ),
+        }
     }
 
     async fn update_process_failed(
@@ -613,14 +672,13 @@ mod tests {
         LanguageChoice { code: "en".into(), name: "English", fallback }
     }
 
+    fn result_json(markdown: &str, reasoning_stripped: bool, language: &LanguageChoice) -> Result<serde_json::Value, String> {
+        build_summary_result_json(markdown, reasoning_stripped, language, "standard_meeting", "Standard Meeting Notes", TemplateSource::Fallback)
+    }
+
     #[test]
     fn test_result_json_strips_display_markdown_title() {
-        let result = build_summary_result_json(
-            "# Translated Title\n## Decisions\nDone",
-            false,
-            &english_choice(false),
-        )
-        .unwrap();
+        let result = result_json("# Translated Title\n## Decisions\nDone", false, &english_choice(false)).unwrap();
 
         assert_eq!(result["markdown"], "## Decisions\nDone");
     }
@@ -628,15 +686,14 @@ mod tests {
     #[test]
     fn result_json_rejects_title_only_display_markdown() {
         assert_eq!(
-            build_summary_result_json("# Title", false, &english_choice(false)),
+            result_json("# Title", false, &english_choice(false)),
             Err("Final summary contains no visible content after title removal".to_string())
         );
     }
 
     #[test]
     fn result_json_never_persists_reasoning_text() {
-        let result =
-            build_summary_result_json("# Title\nVisible", true, &english_choice(false)).unwrap();
+        let result = result_json("# Title\nVisible", true, &english_choice(false)).unwrap();
         assert_eq!(result["reasoning_stripped"], true);
         assert!(result.get("reasoning").is_none());
     }
@@ -644,9 +701,25 @@ mod tests {
     #[test]
     fn result_json_carries_language_and_fallback_flag() {
         let lang = LanguageChoice { code: "en".into(), name: "English", fallback: true };
-        let v = build_summary_result_json("# Title\n\nBody", false, &lang).unwrap();
+        let v = result_json("# Title\n\nBody", false, &lang).unwrap();
         assert_eq!(v["summary_language"], "en");
         assert_eq!(v["language_fallback"], true);
         assert!(v.get("english_markdown_cache").is_none() && v.get("normalization_fallback").is_none());
+    }
+
+    #[test]
+    fn result_json_carries_template_id_name_and_source() {
+        let v = build_summary_result_json(
+            "# Title\n\nBody",
+            false,
+            &english_choice(false),
+            "german_lessons",
+            "German Lessons",
+            TemplateSource::Keyword,
+        )
+        .unwrap();
+        assert_eq!(v["template_id"], "german_lessons");
+        assert_eq!(v["template_name"], "German Lessons");
+        assert_eq!(v["template_source"], "keyword");
     }
 }

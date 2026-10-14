@@ -211,6 +211,10 @@ async fn get_current_recording_state() -> RecordingState {
     );
 
     if !is_recording {
+        // A Start during the previous meeting's save would be ignored, so show it as still stopping.
+        if crate::meeting_detector::post_processing() {
+            return RecordingState::Stopping;
+        }
         log::info!("Tray: Recording state is Stopped");
         return RecordingState::Stopped;
     }
@@ -341,7 +345,7 @@ fn build_menu<R: Runtime>(
             }
             RecordingState::Stopping => {
                 builder = builder.item(
-                    &MenuItemBuilder::new("⏹ Stopping...")
+                    &MenuItemBuilder::new("⏹ Stopping and saving...")
                         .enabled(false)
                         .build(app)?,
                 );

@@ -748,11 +748,11 @@ pub async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) 
     // after the save. Only a real stop claims it: a no-op stop would otherwise leave it set with no save to clear it.
     let claimed = IS_RECORDING.load(Ordering::SeqCst);
     if claimed {
-        crate::meeting_detector::set_recording_post_processing(true);
+        crate::meeting_detector::set_post_processing(true);
     }
     let result = stop_recording_inner(app, args).await;
     if claimed && result.is_err() {
-        crate::meeting_detector::set_recording_post_processing(false);
+        crate::meeting_detector::set_post_processing(false);
     }
     result
 }
@@ -1028,7 +1028,7 @@ async fn stop_recording_inner<R: Runtime>(
     };
 
     // Refresh the saving flag: the stop tail can outlast its 10-minute expiry.
-    crate::meeting_detector::set_recording_post_processing(true);
+    crate::meeting_detector::set_post_processing(true);
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);

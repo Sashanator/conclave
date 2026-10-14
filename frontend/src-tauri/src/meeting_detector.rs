@@ -44,7 +44,16 @@ pub fn mode() -> Mode {
 }
 
 #[tauri::command]
-pub fn set_recording_post_processing(active: bool) {
+pub fn set_recording_post_processing<R: Runtime>(app: AppHandle<R>, active: bool) {
+    let changed = post_processing() != active;
+    set_post_processing(active);
+    // The tray shows "Saving" while the flag is set; refresh only on a change so a page load doesn't hide "Starting".
+    if changed {
+        crate::tray::update_tray_menu(&app);
+    }
+}
+
+pub fn set_post_processing(active: bool) {
     *POST_PROCESSING_SINCE.lock().unwrap_or_else(|e| e.into_inner()) = active.then(Instant::now);
 }
 
@@ -166,9 +175,9 @@ mod tests {
 
     #[test]
     fn post_processing_flag_follows_the_command() {
-        set_recording_post_processing(true);
+        set_post_processing(true);
         assert!(post_processing());
-        set_recording_post_processing(false);
+        set_post_processing(false);
         assert!(!post_processing());
     }
 

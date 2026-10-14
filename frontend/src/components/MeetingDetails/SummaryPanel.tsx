@@ -95,6 +95,9 @@ export function SummaryPanel({
   const activeMeetingIdRef = useRef(meeting.id);
   const languageSaveVersionRef = useRef(0);
   const languageSaveLoopRunningRef = useRef(false);
+  // Last language the user saved as current; a change from it regenerates the summary.
+  const persistedLanguageRef = useRef<string | null>(null);
+  const summaryExistsRef = useRef(false);
   const latestLanguageSaveRequestRef = useRef<{
     version: number;
     meetingId: string;
@@ -124,13 +127,17 @@ export function SummaryPanel({
         if (!cancelled && languageLoadVersionRef.current === loadVersion) {
           setSummaryLang(stored.language);
           setSummaryLangStorage(stored.storage);
+          persistedLanguageRef.current = stored.language;
         }
       } catch (err) {
         console.error('Failed to load summary language:', err);
         toast.warning('Could not load saved summary language', {
           description: 'Using Auto until meeting metadata can be read.',
         });
-        if (!cancelled && languageLoadVersionRef.current === loadVersion) setSummaryLang(null);
+        if (!cancelled && languageLoadVersionRef.current === loadVersion) {
+          setSummaryLang(null);
+          persistedLanguageRef.current = null;
+        }
       }
     };
 
@@ -166,6 +173,11 @@ export function SummaryPanel({
             }
             if (request.language) {
               addRecent(request.language);
+            }
+            const changed = saved.language !== persistedLanguageRef.current;
+            persistedLanguageRef.current = saved.language;
+            if (changed && summaryExistsRef.current) {
+              void onRegenerateSummary();
             }
             return;
           }
@@ -215,6 +227,7 @@ export function SummaryPanel({
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
   const hasSummary = hasVisibleSummaryContent(aiSummary);
+  summaryExistsRef.current = hasSummary;
 
   const languageSlot = (
     <>

@@ -28,8 +28,9 @@ interface SummaryGeneratorButtonGroupProps {
   onStopGeneration: () => void;
   customPrompt: string;
   summaryStatus: 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
-  availableTemplates: Array<{ id: string, name: string, description: string }>;
-  selectedTemplate: string;
+  availableTemplates: Array<{ id: string, name: string }>;
+  selectedTemplate: string | null;
+  currentTemplate: { id: string, name: string, source: string | null } | null;
   onTemplateSelect: (templateId: string, templateName: string) => void;
   hasTranscripts?: boolean;
   hasSummary?: boolean;
@@ -47,6 +48,7 @@ export function SummaryGeneratorButtonGroup({
   summaryStatus,
   availableTemplates,
   selectedTemplate,
+  currentTemplate,
   onTemplateSelect,
   hasTranscripts = true,
   hasSummary = false,
@@ -78,6 +80,11 @@ export function SummaryGeneratorButtonGroup({
   }
 
   const isGenerating = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
+  const autoPicked = ['keyword', 'auto', 'fallback'].includes(currentTemplate?.source ?? '');
+  const templateLabel = currentTemplate
+    ? `${currentTemplate.name}${autoPicked ? ' (auto)' : ''}`
+    : 'Auto';
+  const activeTemplateId = selectedTemplate ?? currentTemplate?.id;
 
   return (
     <ButtonGroup>
@@ -167,7 +174,7 @@ export function SummaryGeneratorButtonGroup({
               title="Select summary template"
             >
               <FileText />
-              <span className="hidden @[40rem]:inline">Template</span>
+              <span className="hidden @[40rem]:inline">Template: {templateLabel}</span>
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
@@ -175,11 +182,10 @@ export function SummaryGeneratorButtonGroup({
               <DropdownMenuItem
                 key={template.id}
                 onClick={() => onTemplateSelect(template.id, template.name)}
-                title={template.description}
                 className="flex items-center justify-between gap-2"
               >
                 <span>{template.name}</span>
-                {selectedTemplate === template.id && (
+                {activeTemplateId === template.id && (
                   <Check className="h-4 w-4 text-green-600" />
                 )}
               </DropdownMenuItem>

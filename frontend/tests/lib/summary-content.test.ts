@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { hasVisibleSummaryContent, parseSummaryContent } from '../../src/lib/summary-content';
+import { hasVisibleSummaryContent, parseSummaryContent, readSummaryMetadata } from '../../src/lib/summary-content';
 
 describe('summary content validation', () => {
   test('accepts visible markdown and rejects whitespace or reasoning markers', () => {
@@ -28,5 +28,18 @@ describe('summary content validation', () => {
   test('parses one historical double-encoded payload', () => {
     expect(parseSummaryContent('{"markdown":"Visible"}')).toEqual({ markdown: 'Visible' });
     expect(parseSummaryContent('{not json')).toBeNull();
+  });
+
+  test('readSummaryMetadata reads template and language fields', () => {
+    const m = readSummaryMetadata({
+      markdown: 'x', template_id: 'one_to_one', template_name: 'One-to-One',
+      template_source: 'auto', summary_language: 'ru', language_fallback: false,
+    });
+    expect(m).toMatchObject({ templateId: 'one_to_one', templateName: 'One-to-One', templateSource: 'auto', summaryLanguage: 'ru', languageFallback: false });
+  });
+
+  test('readSummaryMetadata tolerates old results', () => {
+    const m = readSummaryMetadata({ markdown: 'x', normalization_fallback: true });
+    expect(m).toMatchObject({ templateId: null, templateSource: null, languageFallback: false });
   });
 });

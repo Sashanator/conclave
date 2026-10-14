@@ -11,44 +11,18 @@ import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 
-import {
-  detectAndCacheSummaryLanguage,
-  readMeetingSummaryLanguage,
-  readCachedDetectedSummaryLanguage,
-} from '@/lib/summary-language-preferences';
+import { readMeetingSummaryLanguage } from '@/lib/summary-language-preferences';
 import { parseSummaryContent, readSummaryMetadata } from '@/lib/summary-content';
 
-async function resolveSummaryLanguage(
-  meetingId: string,
-  transcriptTexts: string[]
-): Promise<string | null> {
+// Only the meeting's own choice is sent; Rust resolves the rest from the cached or detected language.
+async function readChosenSummaryLanguage(meetingId: string): Promise<string | null> {
   try {
-    const perMeeting = await readMeetingSummaryLanguage(meetingId);
-    if (perMeeting.language) return perMeeting.language;
+    return (await readMeetingSummaryLanguage(meetingId)).language;
   } catch (err) {
     console.warn('Failed to load meeting summary language:', err);
     toast.warning('Could not load saved summary language', {
       description: 'Using Auto for this generation.',
     });
-  }
-
-  try {
-    const cachedDetected = await readCachedDetectedSummaryLanguage(meetingId);
-    if (cachedDetected) return cachedDetected;
-  } catch (err) {
-    console.warn('Failed to load cached detected summary language:', err);
-  }
-
-  try {
-    const detection = await detectAndCacheSummaryLanguage(meetingId, transcriptTexts);
-    if (detection.reason === 'tie') {
-      toast.warning('Bilingual transcript detected', {
-        description: 'Pick a summary language manually if Auto chooses the wrong fallback.',
-      });
-    }
-    return detection.language;
-  } catch (err) {
-    console.warn('Failed to detect transcript summary language:', err);
     return null;
   }
 }
@@ -73,7 +47,7 @@ interface UseSummaryGenerationProps {
   transcripts: Transcript[];
   modelConfig: ModelConfig;
   isModelConfigLoading: boolean;
-  selectedTemplate: string;
+  selectedTemplate: string | null;
   onMeetingUpdated?: () => Promise<void>;
   updateMeetingTitle: (title: string) => void;
   setAiSummary: (summary: MeetingSummary | null) => void;
@@ -221,9 +195,9 @@ export function useSummaryGeneration({
       setSummaryStatus('completed');
       activeProcessIdRef.current = null;
       setSummaryError(null);
-      if (metadata.normalizationFallback) {
-        toast.warning('Summary generated with fallback', {
-          description: 'English normalization failed, so the original sanitized summary was kept.',
+      if (metadata.languageFallback) {
+        toast.warning("Language: couldn't detect, using English", {
+          description: 'Pick the summary language for this meeting and regenerate.',
         });
       } else {
         toast.success('Summary generated successfully!', {
@@ -271,14 +245,14 @@ export function useSummaryGeneration({
 
   const processSummary = useCallback(async ({
     transcriptText,
-    transcriptTexts,
     customPrompt = '',
     isRegeneration = false,
+    templateId,
   }: {
     transcriptText: string;
-    transcriptTexts?: string[];
     customPrompt?: string;
     isRegeneration?: boolean;
+    templateId?: string | null;
   }) => {
     const generationId = ++generationIdRef.current;
     activeProcessIdRef.current = null;
@@ -296,10 +270,7 @@ export function useSummaryGeneration({
         duration: 3000,
       });
 
-      const summaryLanguage = await resolveSummaryLanguage(
-        meeting.id,
-        transcriptTexts?.length ? transcriptTexts : [transcriptText],
-      );
+      const summaryLanguage = await readChosenSummaryLanguage(meeting.id);
       if (!mountedRef.current || visibleMeetingIdRef.current !== meeting.id || generationId !== generationIdRef.current) {
         return;
       }
@@ -312,7 +283,7 @@ export function useSummaryGeneration({
         chunkSize: 40000,
         overlap: 1000,
         customPrompt,
-        templateId: selectedTemplate,
+        templateId: templateId ?? selectedTemplate ?? null,
         summaryLanguage,
       });
       const processId = result.process_id;
@@ -387,7 +358,6 @@ export function useSummaryGeneration({
       transcriptText: allTranscripts
         .map((transcript) => `${formatTime(transcript.audio_start_time, transcript.timestamp)} ${transcript.text}`)
         .join('\n'),
-      transcriptTexts: allTranscripts.map((transcript) => transcript.text),
     };
   }, []);
 
@@ -456,7 +426,7 @@ export function useSummaryGeneration({
   ]);
 
   // Public API: Regenerate summary from the current saved transcript
-  const handleRegenerateSummary = useCallback(async () => {
+  const handleRegenerateSummary = useCallback(async (templateId?: string) => {
     const allTranscripts = await fetchAllTranscripts(meeting.id);
 
     if (!allTranscripts.length) {
@@ -467,7 +437,8 @@ export function useSummaryGeneration({
 
     await processSummary({
       ...buildSummaryTranscriptPayload(allTranscripts),
-      isRegeneration: true
+      isRegeneration: true,
+      templateId,
     });
   }, [meeting.id, fetchAllTranscripts, buildSummaryTranscriptPayload, processSummary]);
 

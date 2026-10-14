@@ -10,6 +10,11 @@ pub(crate) enum TemplateSource { Manual, Keyword, Auto, Fallback }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Choice { Decided(String, TemplateSource), AskModel }
 
+/// Only a choice the user or a rule made is kept; a Fallback (model failed or cancelled) is re-decided next time.
+pub(crate) fn choice_to_store(source: TemplateSource, cancelled: bool) -> bool {
+    !cancelled && source != TemplateSource::Fallback
+}
+
 fn exists(id: &str, templates: &[TemplateEntry]) -> bool {
     templates.iter().any(|e| e.id == id)
 }
@@ -103,6 +108,16 @@ mod tests {
         assert!(user.contains("one_two_one_rasulov") && user.contains("1-on-1 with my HoD"));
         assert!(!user.contains("no_hint"));
         assert!(user.chars().filter(|c| *c == 'я').count() <= 4_000);
+    }
+
+    #[test]
+    fn only_real_choices_of_an_uncancelled_run_are_stored() {
+        assert!(choice_to_store(TemplateSource::Manual, false));
+        assert!(choice_to_store(TemplateSource::Keyword, false));
+        assert!(choice_to_store(TemplateSource::Auto, false));
+        assert!(!choice_to_store(TemplateSource::Fallback, false));
+        assert!(!choice_to_store(TemplateSource::Manual, true));
+        assert!(!choice_to_store(TemplateSource::Auto, true));
     }
 
     #[test]

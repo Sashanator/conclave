@@ -13,7 +13,8 @@ use crate::summary::processor::{
     require_visible_markdown,
 };
 use crate::summary::template_choice::{
-    auto_pick_prompts, choose_without_model, parse_auto_pick_answer, Choice, TemplateSource,
+    auto_pick_prompts, choice_to_store, choose_without_model, parse_auto_pick_answer, Choice,
+    TemplateSource,
 };
 use crate::summary::templates;
 use crate::ollama::metadata::ModelMetadataCache;
@@ -414,15 +415,15 @@ impl SummaryService {
                 (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback, standard)
             }
         };
-        if let Some(f) = folder.as_deref() {
-            if let Err(e) = write_template_choice_to_metadata(f, Some((&template_id, source))) {
-                warn!("Could not store the template choice: {}", e);
-            }
-        }
         if cancellation_token.is_cancelled() {
             Self::update_process_cancelled(&pool, &meeting_id, started_at).await;
             Self::cleanup_cancellation_token(&meeting_id, started_at);
             return;
+        }
+        if let Some(f) = folder.as_deref().filter(|_| choice_to_store(source, cancellation_token.is_cancelled())) {
+            if let Err(e) = write_template_choice_to_metadata(f, Some((&template_id, source))) {
+                warn!("Could not store the template choice: {}", e);
+            }
         }
 
         let language = resolve_summary_language(

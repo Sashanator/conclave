@@ -82,13 +82,21 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), String> {
     })
 }
 
+/// Every `<id>.json` file stem, parseable or not, so a new template never overwrites a file it could not read.
+fn taken_ids(dir: &Path) -> Vec<String> {
+    let mut ids: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
+        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".json").map(str::to_string))
+        .collect();
+    ids.push(STANDARD_TEMPLATE_ID.into());
+    ids
+}
+
 pub fn save_template_in(dir: &Path, id: Option<&str>, template: &Template) -> Result<String, String> {
     template.validate()?;
     let id = match id {
         Some(id) => { checked_path(dir, id)?; id.to_string() }
         None => {
-            let existing: Vec<String> = list_templates_in(dir).templates.into_iter().map(|e| e.id).collect();
-            new_template_id(&template.name, &existing)
+            new_template_id(&template.name, &taken_ids(dir))
         }
     };
     let json = serde_json::to_string_pretty(template).map_err(|e| e.to_string())?;
@@ -257,6 +265,16 @@ mod tests {
         assert_eq!(get_template_in(dir.path(), STANDARD_TEMPLATE_ID).unwrap().name, "Standard Meeting Notes");
         std::fs::write(dir.path().join("standard_meeting.json"), "{ broken").unwrap();
         assert_eq!(get_template_in(dir.path(), STANDARD_TEMPLATE_ID).unwrap().name, "Standard Meeting Notes");
+    }
+
+    #[test]
+    fn new_ids_never_take_a_file_that_cannot_be_read() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join("weekly_sync.json"), "{ broken").unwrap();
+        let id = save_template_in(dir.path(), None, &t("Weekly Sync")).unwrap();
+        assert_eq!(id, "weekly_sync_2");
+        assert_eq!(std::fs::read_to_string(dir.path().join("weekly_sync.json")).unwrap(), "{ broken");
+        assert_eq!(save_template_in(dir.path(), None, &t("Standard Meeting")).unwrap(), "standard_meeting_2");
     }
 
     #[test]

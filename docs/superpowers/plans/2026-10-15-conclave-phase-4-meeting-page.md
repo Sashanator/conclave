@@ -6,6 +6,8 @@
 
 **Architecture:** Marks are a `transcripts.mark` column and notes reuse the unused `meeting_notes` table. During a recording both live in `TranscriptContext` and in the IndexedDB recovery record, and are saved with the transcript at stop in the existing single transaction. One Rust folder guard protects every file operation (playback, retention, meeting delete). Playback grants the asset protocol one file at runtime and plays it in an `<audio>` element. Retention is a Rust background task (startup + 1 min, then every 24 h). The summary gets marks inline in the transcript text and notes as a `<user_notes>` block read from the DB.
 
+**Changes after the Codex plan review (2026-10-15), also reflected in the spec:** meeting-folder deletion is never recursive (known files only, then an empty-folder delete); re-transcription carries marks to the best-overlapping new line; with chunked local summaries the marked lines are passed again in `<marked_lines>`; the asset-protocol scope is emptied; "Delete eligible audio now" deletes exactly the previewed meetings; the grace period starts at launch.
+
 **Deviations from the spec (implementation detail, same behaviour):** live marks are kept on the IndexedDB *meeting* record keyed by `sequence_id` (not by rewriting each line's record); notes and `keep_audio` reach the saved page through `get_meeting_notes` and `get_meeting_audio` rather than `get_meeting`.
 
 **Tech Stack:** Rust (Tauri 2.11, sqlx/SQLite, serde, tokio, chrono, `dunce`, `tempfile` in tests), Next.js 14 + React 18 + TypeScript, Radix popover/tabs/select/switch from `components/ui`, Bun tests (happy-dom).
@@ -21,7 +23,7 @@
 - Note: `{ id, at, text }`; `at` = seconds into the recording (`null` = added after the meeting); text trimmed, non-empty, at most 2,000 characters; id non-empty, at most 64 characters, generated as `note-<uuid>`.
 - Prompt label for marks: `[MARKED: important]` / `[MARKED: action]` / `[MARKED: followup]`. Notes block tag: `<user_notes>`; a note without a time renders as `[after the meeting]`.
 - Retention options: Never / 7 / 30 / 90 days, default 30. Settings line: "Transcripts, summaries and notes are kept."
-- Retention deletes only top-level `audio.<ext>` (ext in mp4, m4a, wav, mp3, ogg, flac, webm, aac) and the `.checkpoints/` folder. Never `transcripts.json`, `metadata.json` or anything else.
+- Retention deletes only top-level `audio.<ext>` (ext in mp4, m4a, wav, mp3, ogg, flac, webm, aac) and Conclave's own files in `.checkpoints/` (`audio_chunk_*`, `concat_list.txt`). Never `transcripts.json`, `metadata.json` or anything else. No file operation on a meeting folder is ever recursive (`remove_dir_all` is not used): `folder_path` is supplied by the webview at save time.
 - Every file operation on a meeting folder goes through `guarded_meeting_folder` (Task 3).
 - localStorage keys: `conclave.meetingPageLayout`, `conclave.notesPaneCollapsed`, `conclave.live.transcriptRatio`, `conclave.threeCol.transcriptRatio`, `conclave.threeCol.notesRatio`; the existing `meetily.meetingDetails.transcriptPaneRatio` stays the sub-tab layout's key.
 - Layout values: `three-columns` (default) | `subtab`.
@@ -65,7 +67,7 @@
 **Files:**
 - Create: `frontend/src-tauri/migrations/20261015000000_meeting_page.sql`
 - Create: `frontend/src-tauri/src/database/repositories/meeting_notes.rs`
-- Modify: `frontend/src-tauri/src/database/repositories/mod.rs`, `database/repositories/transcript.rs`, `database/repositories/meeting.rs`, `database/models.rs`, `api/api.rs` (`TranscriptSegment`, `MeetingTranscript`, `api_save_transcript`, the two `MeetingTranscript` mappings), `audio/import.rs` (test literals)
+- Modify: `frontend/src-tauri/src/database/repositories/mod.rs`, `database/repositories/transcript.rs`, `database/repositories/meeting.rs`, `database/models.rs`, `api/api.rs` (`TranscriptSegment`, `MeetingTranscript`, `api_save_transcript`, the two `MeetingTranscript` mappings), `audio/import.rs` (test literals), `audio/common.rs` (production literal at line ~59), `audio/retranscription.rs` (keep marks, Step 8)
 - Test: `#[cfg(test)] mod tests` in `meeting_notes.rs` and `transcript.rs`
 
 **Interfaces:**
@@ -73,6 +75,8 @@
   - `pub struct MeetingNote { pub id: String, pub at: Option<f64>, pub text: String }` (`Serialize, Deserialize, Clone, Debug, PartialEq`)
   - `pub const NOTE_MAX_CHARS: usize = 2000;` `pub const MARKS: [&str; 3]`
   - `validate_mark(Option<&str>) -> Result<(), String>`, `validate_notes(&[MeetingNote]) -> Result<Vec<MeetingNote>, String>`, `sanitize_notes(&[MeetingNote]) -> Vec<MeetingNote>`, `sanitize_mark(Option<&str>) -> Option<String>`, `sort_notes(&mut [MeetingNote])`
+  - `parse_notes(values: Vec<serde_json::Value>) -> Vec<MeetingNote>` (drops entries that do not decode, logs them)
+  - `pub struct TimedMark { pub start: f64, pub end: f64, pub mark: String }` and `carry_marks(old: &[TimedMark], new: &[(String, f64, f64)]) -> Vec<(String, String)>` (new segment id, mark)
   - `MeetingNotesRepository::get(&SqlitePool, &str) -> Result<Vec<MeetingNote>, sqlx::Error>`, `MeetingNotesRepository::save(&mut SqliteConnection, &str, &[MeetingNote]) -> Result<(), sqlx::Error>`
   - `TranscriptsRepository::save_transcript(pool, title, transcripts, folder_path, notes: &[MeetingNote]) -> Result<String, SqlxError>`
   - `TranscriptsRepository::set_mark(&SqlitePool, transcript_id: &str, mark: Option<&str>) -> Result<bool, SqlxError>`
@@ -153,6 +157,48 @@ mod tests {
         assert!(validate_mark(Some("IMPORTANT")).is_err());
         assert_eq!(sanitize_mark(Some("action")), Some("action".into()));
         assert_eq!(sanitize_mark(Some("bogus")), None);
+    }
+
+    #[test]
+    fn parse_notes_drops_entries_that_do_not_decode() {
+        let v = vec![
+            serde_json::json!({"id": "n1", "at": 1.0, "text": "ok"}),
+            serde_json::json!({"id": "n2", "at": "soon", "text": "bad time"}),
+            serde_json::json!({"id": "n3"}),
+            serde_json::json!({"id": "n4", "at": null, "text": "later"}),
+        ];
+        let ids: Vec<_> = parse_notes(v).into_iter().map(|n| n.id).collect();
+        assert_eq!(ids, ["n1", "n4"]);
+    }
+
+    #[test]
+    fn carry_marks_moves_each_mark_to_the_best_overlapping_segment() {
+        let old = vec![
+            TimedMark { start: 10.0, end: 14.0, mark: "action".into() },
+            TimedMark { start: 30.0, end: 31.0, mark: "important".into() },
+            TimedMark { start: 100.0, end: 101.0, mark: "followup".into() }, // no overlap: nearest start
+        ];
+        let new = vec![
+            ("a".to_string(), 9.0, 11.0),
+            ("b".to_string(), 11.0, 15.0),
+            ("c".to_string(), 29.0, 33.0),
+            ("d".to_string(), 90.0, 95.0),
+        ];
+        assert_eq!(
+            carry_marks(&old, &new),
+            vec![("b".to_string(), "action".to_string()), ("c".to_string(), "important".to_string()), ("d".to_string(), "followup".to_string())]
+        );
+        assert!(carry_marks(&old, &[]).is_empty());
+    }
+
+    #[test]
+    fn carry_marks_keeps_the_first_mark_when_two_land_on_one_segment() {
+        let old = vec![
+            TimedMark { start: 1.0, end: 2.0, mark: "action".into() },
+            TimedMark { start: 2.0, end: 3.0, mark: "important".into() },
+        ];
+        let new = vec![("a".to_string(), 0.0, 5.0)];
+        assert_eq!(carry_marks(&old, &new), vec![("a".to_string(), "action".to_string())]);
     }
 
     #[test]
@@ -346,6 +392,51 @@ pub fn sort_notes(notes: &mut [MeetingNote]) {
     });
 }
 
+/// Decodes notes one by one, so one malformed note never fails the save at stop.
+pub fn parse_notes(values: Vec<serde_json::Value>) -> Vec<MeetingNote> {
+    values
+        .into_iter()
+        .filter_map(|v| match serde_json::from_value::<MeetingNote>(v) {
+            Ok(n) => Some(n),
+            Err(e) => {
+                warn!("Dropping a note that could not be read: {e}");
+                None
+            }
+        })
+        .collect()
+}
+
+/// A mark on a transcript line before re-transcription.
+pub struct TimedMark {
+    pub start: f64,
+    pub end: f64,
+    pub mark: String,
+}
+
+/// Re-transcription replaces every line; each old mark moves to the new line that overlaps
+/// it most (no overlap: nearest start). If two marks land on one line, the first one wins.
+pub fn carry_marks(old: &[TimedMark], new: &[(String, f64, f64)]) -> Vec<(String, String)> {
+    let mut out: Vec<(String, String)> = Vec::new();
+    for m in old {
+        let overlap = |s: f64, e: f64| (e.min(m.end) - s.max(m.start)).max(0.0);
+        let best = new
+            .iter()
+            .max_by(|a, b| {
+                overlap(a.1, a.2)
+                    .partial_cmp(&overlap(b.1, b.2))
+                    .unwrap_or(Ordering::Equal)
+                    // equal overlap: prefer the nearer start (max_by keeps the later max, so invert)
+                    .then_with(|| (b.1 - m.start).abs().partial_cmp(&(a.1 - m.start).abs()).unwrap_or(Ordering::Equal))
+            });
+        if let Some((id, _, _)) = best {
+            if !out.iter().any(|(existing, _)| existing == id) {
+                out.push((id.clone(), m.mark.clone()));
+            }
+        }
+    }
+    out
+}
+
 pub struct MeetingNotesRepository;
 
 impl MeetingNotesRepository {
@@ -407,7 +498,7 @@ impl MeetingNotesRepository {
     pub mark: Option<String>,
 ```
 
-Set `mark: t.mark,` in both `.map(|t| MeetingTranscript { ... })` blocks (`api/api.rs` `api_get_meeting_transcripts` and `database/repositories/meeting.rs` `get_meeting`). Add `mark: None,` to every other struct literal of `crate::api::TranscriptSegment` (the compiler lists them; known: the two in `audio/import.rs` tests).
+Set `mark: t.mark,` in both `.map(|t| MeetingTranscript { ... })` blocks (`api/api.rs` `api_get_meeting_transcripts` and `database/repositories/meeting.rs` `get_meeting`). Add `mark: None,` to every other struct literal of `crate::api::TranscriptSegment` (the compiler lists them; known: `audio/common.rs:59` in `create_transcript_segments`, and the two in `audio/import.rs` tests).
 
 `database/repositories/meeting.rs` — `get_meeting_metadata` SELECT becomes `SELECT id, title, created_at, updated_at, folder_path, keep_audio FROM meetings WHERE id = ?`. Add `api::MeetingMetadata.keep_audio: bool` (`#[serde(default)]`) and set it from `meeting.keep_audio` in `api_get_meeting_metadata`. Add:
 
@@ -467,18 +558,55 @@ Add:
     }
 ```
 
-`api_save_transcript` gains the parameter `notes: Option<Vec<MeetingNote>>` (after `folder_path`) and passes `&notes.unwrap_or_default()`.
+`api_save_transcript` gains the parameter `notes: Option<Vec<serde_json::Value>>` (after `folder_path`) and passes `&parse_notes(notes.unwrap_or_default())` — decoded per note so a malformed one is dropped, not fatal (the transcripts are already taken as `Vec<serde_json::Value>` for the same reason).
 
-- [ ] **Step 8: Run tests to verify they pass**
+- [ ] **Step 8: Re-transcription keeps marks** (`audio/retranscription.rs`, the transaction at ~line 430)
+
+Inside the existing transaction, before `DELETE FROM transcripts WHERE meeting_id = ?`:
+
+```rust
+    let old_marks: Vec<(Option<f64>, Option<f64>, String)> = sqlx::query_as(
+        "SELECT audio_start_time, audio_end_time, mark FROM transcripts WHERE meeting_id = ? AND mark IS NOT NULL",
+    )
+    .bind(&meeting_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| anyhow!("Failed to read marks: {}", e))?;
+    let old_marks: Vec<TimedMark> = old_marks
+        .into_iter()
+        .filter_map(|(s, e, mark)| s.map(|s| TimedMark { start: s, end: e.unwrap_or(s), mark }))
+        .collect();
+```
+
+After the insert loop, before `tx.commit()`:
+
+```rust
+    let new_times: Vec<(String, f64, f64)> = segments
+        .iter()
+        .filter_map(|s| s.audio_start_time.map(|st| (s.id.clone(), st, s.audio_end_time.unwrap_or(st))))
+        .collect();
+    for (id, mark) in carry_marks(&old_marks, &new_times) {
+        sqlx::query("UPDATE transcripts SET mark = ? WHERE id = ?")
+            .bind(mark)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow!("Failed to keep a mark: {}", e))?;
+    }
+```
+
+(import `crate::database::repositories::meeting_notes::{carry_marks, TimedMark}`). Marks without a recording time cannot be placed and are dropped (lines saved by Conclave always have one).
+
+- [ ] **Step 9: Run tests to verify they pass**
 
 Run: `cd frontend/src-tauri && nice -n 15 cargo test -p meetily --lib -j 4 -- meeting_notes repositories::transcript`
 Expected: PASS (all new tests). Then the full `nice -n 15 cargo test --workspace --exclude llama-helper -j 4` from the repo root: PASS.
 
-- [ ] **Step 9: Commit**
+- [ ] **Step 10: Commit**
 
 ```bash
-git add frontend/src-tauri/migrations/20261015000000_meeting_page.sql frontend/src-tauri/src/database frontend/src-tauri/src/api/api.rs frontend/src-tauri/src/audio/import.rs
-git commit -m "feat(db): transcript marks, meeting notes and keep-audio pin"
+git add frontend/src-tauri/migrations/20261015000000_meeting_page.sql frontend/src-tauri/src/database frontend/src-tauri/src/api/api.rs frontend/src-tauri/src/audio/import.rs frontend/src-tauri/src/audio/common.rs frontend/src-tauri/src/audio/retranscription.rs
+git commit -m "feat(db): transcript marks, meeting notes and keep-audio pin; re-transcription keeps marks"
 ```
 
 ---
@@ -627,10 +755,13 @@ git commit -m "feat(api): commands for transcript marks, meeting notes and keep-
 
 **Interfaces:**
 - Produces:
-  - `pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf>` — canonical (`dunce`) path of an existing directory that is inside the canonical `recordings_base` (strictly below it, never the base itself) or contains `metadata.json`; `None` otherwise (logged at warn).
+  - `pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf>` — canonical (`dunce`) path of an existing directory that is never the recordings base itself, and is either strictly inside the canonical base or contains `metadata.json`; `None` otherwise (logged at warn).
   - `pub const AUDIO_EXTENSIONS: [&str; 8] = ["mp4", "m4a", "wav", "mp3", "ogg", "flac", "webm", "aac"];`
   - `pub fn find_audio_file(folder: &Path) -> Option<PathBuf>` — first existing top-level `audio.<ext>` in `AUDIO_EXTENSIONS` order.
-  - `pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Result<(), String>` — guard, then `fs::remove_dir_all`; a missing folder is `Ok(())`; a guard failure is `Err`.
+  - `pub fn delete_checkpoints(checkpoints: &Path) -> u64` — deletes only `audio_chunk_*` files and `concat_list.txt`, then the folder if empty; bytes freed.
+  - `pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];`
+  - `pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Result<(), String>` — guard, then delete **only** `audio.<ext>`, `.checkpoints/` and `MEETING_FILES`, then a non-recursive `fs::remove_dir`. Anything else left inside → `Err("… kept: it contains other files")` and the folder stays. A missing folder is `Ok(())`; a guard failure is `Err`. (`folder_path` comes from the webview at save time, so a recursive delete is never allowed.)
+  - `pub async fn delete_meeting_and_folder(pool: &SqlitePool, meeting_id: &str, recordings_base: &Path) -> Result<Option<Option<String>>, sqlx::Error>` — `Ok(None)` = meeting not found; `Ok(Some(warning))` = meeting deleted, `warning` set when its folder was kept.
   - `api_delete_meeting` response gains `"folder_warning": string | null`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -660,6 +791,8 @@ mod tests {
     fn guard_rejects_base_itself_files_missing_and_dotdot_escape() {
         let b = base();
         assert!(guarded_meeting_folder(b.path().to_str().unwrap(), b.path()).is_none());
+        fs::write(b.path().join("metadata.json"), "{}").unwrap(); // even with metadata.json
+        assert!(guarded_meeting_folder(b.path().to_str().unwrap(), b.path()).is_none());
         let file = b.path().join("f.txt");
         fs::write(&file, "x").unwrap();
         assert!(guarded_meeting_folder(file.to_str().unwrap(), b.path()).is_none());
@@ -683,11 +816,13 @@ mod tests {
     }
 
     #[test]
-    fn delete_folder_respects_the_guard() {
+    fn delete_folder_removes_only_known_files() {
         let b = base();
         let m = b.path().join("m");
-        fs::create_dir(&m).unwrap();
-        fs::write(m.join("audio.mp4"), "x").unwrap();
+        fs::create_dir_all(m.join(".checkpoints")).unwrap();
+        for f in ["audio.mp4", "transcripts.json", "metadata.json", ".checkpoints/audio_chunk_000.mp4"] {
+            fs::write(m.join(f), "x").unwrap();
+        }
         delete_meeting_folder(m.to_str().unwrap(), b.path()).unwrap();
         assert!(!m.exists());
         assert!(delete_meeting_folder(m.to_str().unwrap(), b.path()).is_ok()); // already gone
@@ -695,6 +830,34 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         assert!(delete_meeting_folder(outside.path().to_str().unwrap(), b.path()).is_err());
         assert!(outside.path().exists());
+    }
+
+    #[test]
+    fn delete_folder_keeps_a_folder_with_unknown_files() {
+        // e.g. a webview-supplied folder_path pointing at a user folder that has a metadata.json
+        let elsewhere = tempfile::tempdir().unwrap();
+        fs::write(elsewhere.path().join("metadata.json"), "{}").unwrap();
+        fs::write(elsewhere.path().join("thesis.docx"), "precious").unwrap();
+        fs::create_dir(elsewhere.path().join("photos")).unwrap();
+        let err = delete_meeting_folder(elsewhere.path().to_str().unwrap(), base().path()).unwrap_err();
+        assert!(err.contains("kept"));
+        assert!(elsewhere.path().join("thesis.docx").exists());
+        assert!(elsewhere.path().join("photos").exists());
+    }
+
+    #[tokio::test]
+    async fn meeting_stays_deleted_when_its_folder_cannot_be() {
+        let pool = crate::database::repositories::test_pool().await;
+        let outside = tempfile::tempdir().unwrap(); // fails the guard
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES ('m1', 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?)")
+            .bind(outside.path().to_string_lossy().to_string())
+            .execute(&pool).await.unwrap();
+        let result = delete_meeting_and_folder(&pool, "m1", base().path()).await.unwrap();
+        assert!(matches!(result, Some(Some(_))));
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0);
+        assert!(outside.path().exists());
+        assert!(delete_meeting_and_folder(&pool, "m1", base().path()).await.unwrap().is_none());
     }
 }
 ```
@@ -728,9 +891,12 @@ pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Opti
             return None;
         }
     };
-    let inside_base = dunce::canonicalize(recordings_base)
-        .map(|base| folder != base && folder.starts_with(&base))
-        .unwrap_or(false);
+    let base = dunce::canonicalize(recordings_base).ok();
+    if base.as_ref() == Some(&folder) {
+        warn!("Meeting folder guard: refusing the recordings base folder itself");
+        return None;
+    }
+    let inside_base = base.is_some_and(|b| folder.starts_with(&b));
     if inside_base || folder.join("metadata.json").is_file() {
         Some(folder)
     } else {
@@ -746,34 +912,89 @@ pub fn find_audio_file(folder: &Path) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];
+
+/// Deletes only what Conclave writes into a meeting folder, then the empty folder.
+/// Never recursive: `folder_path` came from the webview when the meeting was saved.
 pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Result<(), String> {
     if !Path::new(folder_path).exists() {
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
         .ok_or_else(|| format!("Not a Conclave meeting folder, left untouched: {folder_path}"))?;
-    fs::remove_dir_all(&folder).map_err(|e| format!("Could not delete {}: {e}", folder.display()))
+    for ext in AUDIO_EXTENSIONS {
+        let _ = fs::remove_file(folder.join(format!("audio.{ext}")));
+    }
+    delete_checkpoints(&folder.join(".checkpoints"));
+    for name in MEETING_FILES {
+        let _ = fs::remove_file(folder.join(name));
+    }
+    fs::remove_dir(&folder)
+        .map_err(|_| format!("Recording folder kept: it contains other files ({})", folder.display()))
+}
+
+/// Removes Conclave's own files in `.checkpoints/` (`audio_chunk_NNN.mp4`, `concat_list.txt`,
+/// see `incremental_saver.rs`), then the folder if it is empty. Returns the bytes freed.
+pub fn delete_checkpoints(checkpoints: &Path) -> u64 {
+    let mut freed = 0;
+    if let Ok(entries) = fs::read_dir(checkpoints) {
+        for e in entries.flatten() {
+            let name = e.file_name().to_string_lossy().to_string();
+            let ours = (name.starts_with("audio_chunk_") || name == "concat_list.txt") && e.path().is_file();
+            if ours {
+                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
+                match fs::remove_file(e.path()) {
+                    Ok(()) => freed += size,
+                    Err(err) => warn!("Could not delete {}: {err}", e.path().display()),
+                }
+            }
+        }
+    }
+    let _ = fs::remove_dir(checkpoints); // only succeeds when empty
+    freed
+}
+
+/// DB delete first, then the folder; the meeting stays deleted if the folder cannot be.
+pub async fn delete_meeting_and_folder(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+    recordings_base: &Path,
+) -> Result<Option<Option<String>>, sqlx::Error> {
+    use crate::database::repositories::meeting::MeetingsRepository;
+    let folder_path = MeetingsRepository::get_meeting_metadata(pool, meeting_id).await?.and_then(|m| m.folder_path);
+    if !MeetingsRepository::delete_meeting(pool, meeting_id).await? {
+        return Ok(None);
+    }
+    let warning = folder_path.and_then(|p| delete_meeting_folder(&p, recordings_base).err());
+    if let Some(w) = &warning {
+        warn!("Meeting {meeting_id} deleted, folder kept: {w}");
+    }
+    Ok(Some(warning))
 }
 ```
 
-- [ ] **Step 4: Wire `api_delete_meeting`**
-
-Before calling `MeetingsRepository::delete_meeting`, read the folder: `let folder_path = MeetingsRepository::get_meeting_metadata(pool, &meeting_id).await.ok().flatten().and_then(|m| m.folder_path);`. In the `Ok(true)` arm, after the DB commit:
+- [ ] **Step 4: Wire `api_delete_meeting`** — replace the `match MeetingsRepository::delete_meeting(...)` with:
 
 ```rust
-            let folder_warning = folder_path.and_then(|p| {
-                crate::audio::meeting_folder::delete_meeting_folder(
-                    &p,
-                    &crate::audio::recording_preferences::get_default_recordings_folder(),
-                )
-                .err()
-                .inspect(|e| log_warn!("Meeting {} deleted, folder kept: {}", meeting_id, e))
-            });
+    let base = crate::audio::recording_preferences::get_default_recordings_folder();
+    match crate::audio::meeting_folder::delete_meeting_and_folder(pool, &meeting_id, &base).await {
+        Ok(Some(folder_warning)) => {
+            log_info!("Successfully deleted meeting {}", meeting_id);
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Meeting deleted successfully",
                 "folder_warning": folder_warning,
             }))
+        }
+        Ok(None) => {
+            log_warn!("Meeting not found or already deleted: {}", meeting_id);
+            Err(format!("Meeting not found or could not be deleted: {}", meeting_id))
+        }
+        Err(e) => {
+            log_error!("Error deleting meeting {}: {}", meeting_id, e);
+            Err(format!("Failed to delete meeting: {}", e))
+        }
+    }
 ```
 
 - [ ] **Step 5: Run tests** — Step 2 command: PASS; full workspace tests: PASS.
@@ -802,13 +1023,16 @@ git commit -m "feat(storage): guard meeting folders; deleting a meeting deletes 
   - `RecordingPreferences.audio_retention_days: Option<u32>` (`#[serde(default = "default_retention_days")]` → `Some(30)`; JSON `null` = Never) and `RecordingPreferences.audio_retention_started_at: Option<DateTime<Utc>>` (`#[serde(default)]`).
   - `pub fn next_retention_start(old_days: Option<u32>, old_started: Option<DateTime<Utc>>, new_days: Option<u32>, now: DateTime<Utc>) -> Option<DateTime<Utc>>`
   - `pub fn is_eligible(created_at: DateTime<Utc>, started_at: Option<DateTime<Utc>>, days: u32, now: DateTime<Utc>, ignore_grace: bool) -> bool`
-  - `pub struct RetentionSummary { pub meetings: u32, pub bytes: u64 }` (`Serialize`)
-  - `pub async fn eligible_folders(pool, days, started_at, now, ignore_grace, base: &Path) -> Result<Vec<PathBuf>, String>`
+  - `pub struct RetentionSummary { pub meetings: u32, pub bytes: u64, pub meeting_ids: Vec<String> }` (`Serialize`)
+  - `pub async fn eligible_folders(pool, days, started_at, now, ignore_grace, base: &Path) -> Result<Vec<(String, PathBuf)>, String>` (meeting id, guarded folder)
+  - `pub fn summarize(folders: &[(String, PathBuf)]) -> RetentionSummary`
+  - `pub fn only_confirmed(eligible: Vec<(String, PathBuf)>, confirmed: &[String]) -> Vec<(String, PathBuf)>`
   - `pub fn audio_paths(folder: &Path) -> Vec<PathBuf>` (top-level `audio.<ext>` files + `.checkpoints` dir if present)
   - `pub fn delete_audio(folder: &Path) -> u64` (bytes freed; errors logged)
   - `pub async fn run_once(pool, prefs: &RecordingPreferences, now, recording: bool, base: &Path) -> RetentionSummary`
   - `pub fn spawn_retention_task(app: AppHandle)`
-  - Commands: `audio_retention_preview() -> RetentionSummary`, `audio_retention_delete_now() -> RetentionSummary` (both ignore the grace period; skip pinned; refuse while recording).
+  - `pub async fn ensure_retention_start<R: Runtime>(app: &AppHandle<R>)` — sets `audio_retention_started_at` to now if retention is on and it is unset; called at startup, before the first run.
+  - Commands: `audio_retention_preview() -> RetentionSummary`, `audio_retention_delete_now(meetingIds: string[]) -> RetentionSummary` (both ignore the grace period; skip pinned; refuse while recording; delete-now deletes only the confirmed ids that are **still** eligible).
 
 - [ ] **Step 1: Write the failing tests** — `recording_preferences.rs`, new test module:
 
@@ -953,7 +1177,15 @@ mod tests {
         let folders = eligible_folders(&pool, 30, Some(now()), now(), true, b.path()).await.unwrap();
         let preview = summarize(&folders);
         assert_eq!((preview.meetings, preview.bytes), (1, 1010));
+        assert_eq!(preview.meeting_ids, vec!["old".to_string()]);
         assert!(f.join("audio.mp4").exists());
+    }
+
+    #[test]
+    fn delete_now_keeps_only_confirmed_ids() {
+        let eligible = vec![("a".to_string(), PathBuf::from("/a")), ("b".to_string(), PathBuf::from("/b"))];
+        let kept = only_confirmed(eligible, &["b".to_string(), "zzz".to_string()]);
+        assert_eq!(kept, vec![("b".to_string(), PathBuf::from("/b"))]);
     }
 }
 ```
@@ -1017,7 +1249,7 @@ Only the values 7, 30 and 90 (or `None`) are offered by the UI; any other positi
 ```rust
 //! Deletes meeting audio older than N days (spec §8.1). Transcripts, summaries, notes and
 //! the JSON files in the folder are never touched.
-use crate::audio::meeting_folder::{guarded_meeting_folder, AUDIO_EXTENSIONS};
+use crate::audio::meeting_folder::{delete_checkpoints, guarded_meeting_folder, AUDIO_EXTENSIONS};
 use crate::audio::recording_preferences::{load_recording_preferences, save_recording_preferences, RecordingPreferences, get_default_recordings_folder};
 use crate::database::models::DateTimeUtc;
 use chrono::{DateTime, Duration, Utc};
@@ -1031,10 +1263,11 @@ use tauri::{AppHandle, Manager, Runtime};
 const FIRST_RUN_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
 const RUN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
 
-#[derive(Debug, Default, Clone, Copy, PartialEq, Serialize)]
+#[derive(Debug, Default, Clone, PartialEq, Serialize)]
 pub struct RetentionSummary {
     pub meetings: u32,
     pub bytes: u64,
+    pub meeting_ids: Vec<String>,
 }
 
 pub fn is_eligible(created_at: DateTime<Utc>, started_at: Option<DateTime<Utc>>, days: u32, now: DateTime<Utc>, ignore_grace: bool) -> bool {
@@ -1063,13 +1296,16 @@ fn size_of(path: &Path) -> u64 {
     }
 }
 
-/// Returns the bytes freed. Errors are logged and skipped.
+/// Returns the bytes freed. Errors are logged and skipped. Never recursive.
 pub fn delete_audio(folder: &Path) -> u64 {
     let mut freed = 0;
     for path in audio_paths(folder) {
+        if path.is_dir() {
+            freed += delete_checkpoints(&path);
+            continue;
+        }
         let size = size_of(&path);
-        let result = if path.is_dir() { fs::remove_dir_all(&path) } else { fs::remove_file(&path) };
-        match result {
+        match fs::remove_file(&path) {
             Ok(()) => freed += size,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => warn!("Retention: could not delete {}: {e}", path.display()),
@@ -1085,7 +1321,7 @@ pub async fn eligible_folders(
     now: DateTime<Utc>,
     ignore_grace: bool,
     base: &Path,
-) -> Result<Vec<PathBuf>, String> {
+) -> Result<Vec<(String, PathBuf)>, String> {
     let rows: Vec<(String, DateTimeUtc, String)> = sqlx::query_as(
         "SELECT id, created_at, folder_path FROM meetings WHERE keep_audio = 0 AND folder_path IS NOT NULL",
     )
@@ -1095,21 +1331,31 @@ pub async fn eligible_folders(
     Ok(rows
         .into_iter()
         .filter(|(_, created, _)| is_eligible(created.0, started_at, days, now, ignore_grace))
-        .filter_map(|(_, _, path)| guarded_meeting_folder(&path, base))
-        .filter(|folder| !audio_paths(folder).is_empty())
+        .filter_map(|(id, _, path)| guarded_meeting_folder(&path, base).map(|f| (id, f)))
+        .filter(|(_, folder)| !audio_paths(folder).is_empty())
         .collect())
 }
 
-pub fn summarize(folders: &[PathBuf]) -> RetentionSummary {
+pub fn summarize(folders: &[(String, PathBuf)]) -> RetentionSummary {
     RetentionSummary {
         meetings: folders.len() as u32,
-        bytes: folders.iter().flat_map(|f| audio_paths(f)).map(|p| size_of(&p)).sum(),
+        bytes: folders.iter().flat_map(|(_, f)| audio_paths(f)).map(|p| size_of(&p)).sum(),
+        meeting_ids: folders.iter().map(|(id, _)| id.clone()).collect(),
     }
 }
 
-fn delete_all(folders: &[PathBuf]) -> RetentionSummary {
-    let bytes = folders.iter().map(|f| delete_audio(f)).sum();
-    RetentionSummary { meetings: folders.len() as u32, bytes }
+/// "Delete now" deletes exactly what the user confirmed, and only what is still eligible.
+pub fn only_confirmed(eligible: Vec<(String, PathBuf)>, confirmed: &[String]) -> Vec<(String, PathBuf)> {
+    eligible.into_iter().filter(|(id, _)| confirmed.contains(id)).collect()
+}
+
+fn delete_all(folders: &[(String, PathBuf)]) -> RetentionSummary {
+    let bytes = folders.iter().map(|(_, f)| delete_audio(f)).sum();
+    RetentionSummary {
+        meetings: folders.len() as u32,
+        bytes,
+        meeting_ids: folders.iter().map(|(id, _)| id.clone()).collect(),
+    }
 }
 
 pub async fn run_once(pool: &SqlitePool, prefs: &RecordingPreferences, now: DateTime<Utc>, recording: bool, base: &Path) -> RetentionSummary {
@@ -1134,23 +1380,28 @@ pub async fn run_once(pool: &SqlitePool, prefs: &RecordingPreferences, now: Date
     }
 }
 
-async fn run_from_app<R: Runtime>(app: &AppHandle<R>) {
-    let Some(state) = app.try_state::<crate::state::AppState>() else { return };
+/// First launch of this version: start the grace period now (spec §2.8, §8.1).
+pub async fn ensure_retention_start<R: Runtime>(app: &AppHandle<R>) {
     let mut prefs = load_recording_preferences(app).await.unwrap_or_default();
     if prefs.audio_retention_days.is_some() && prefs.audio_retention_started_at.is_none() {
-        // First run of this version: start the grace period, delete nothing yet (spec §2.8).
         prefs.audio_retention_started_at = Some(Utc::now());
         if let Err(e) = save_recording_preferences(app, &prefs).await {
             warn!("Retention: could not record the grace-period start: {e}");
         }
-        return;
     }
+}
+
+async fn run_from_app<R: Runtime>(app: &AppHandle<R>) {
+    let Some(state) = app.try_state::<crate::state::AppState>() else { return };
+    let prefs = load_recording_preferences(app).await.unwrap_or_default();
+    // A missing start means nothing is eligible yet (is_eligible), so this run deletes nothing.
     let recording = crate::audio::recording_commands::is_recording_now();
     run_once(state.db_manager.pool(), &prefs, Utc::now(), recording, &get_default_recordings_folder()).await;
 }
 
 pub fn spawn_retention_task<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
+        ensure_retention_start(&app).await;
         tokio::time::sleep(FIRST_RUN_DELAY).await;
         loop {
             run_from_app(&app).await;
@@ -1159,7 +1410,7 @@ pub fn spawn_retention_task<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
-async fn manual_folders<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<PathBuf>, String> {
+async fn manual_folders<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<(String, PathBuf)>, String> {
     if crate::audio::recording_commands::is_recording_now() {
         return Err("Stop the recording first.".into());
     }
@@ -1175,8 +1426,8 @@ pub async fn audio_retention_preview<R: Runtime>(app: AppHandle<R>) -> Result<Re
 }
 
 #[tauri::command]
-pub async fn audio_retention_delete_now<R: Runtime>(app: AppHandle<R>) -> Result<RetentionSummary, String> {
-    let s = delete_all(&manual_folders(&app).await?);
+pub async fn audio_retention_delete_now<R: Runtime>(app: AppHandle<R>, meeting_ids: Vec<String>) -> Result<RetentionSummary, String> {
+    let s = delete_all(&only_confirmed(manual_folders(&app).await?, &meeting_ids));
     info!("Retention (manual): deleted audio of {} meetings, freed {} MB", s.meetings, s.bytes / 1_000_000);
     Ok(s)
 }
@@ -1291,7 +1542,7 @@ Register `audio::meeting_folder::get_meeting_audio` in `generate_handler!`. Dele
                 "media-src": "'self' asset: http://asset.localhost https://asset.localhost",
 ```
 
-(The `assetProtocol.scope` stays `$APPDATA/**`; recordings are added per file at runtime.)
+and `assetProtocol.scope` becomes `[]` (nothing in `frontend/src` uses `convertFileSrc` or `asset:` today; recordings are added one file at a time at runtime). Confirm with `grep -rn "convertFileSrc\|asset:" frontend/src` before the change — the only hit afterwards must be `useMeetingAudio` (Task 10).
 
 - [ ] **Step 4: Dead frontend code**
 
@@ -1306,7 +1557,7 @@ In `components/Sidebar/index.tsx` replace the `basePath` expression with:
               const basePath = item.id.startsWith('intro-call') ? '/' : `/meeting-details?id=${item.id}`;
 ```
 
-Confirm nothing else references them: `grep -rn "useAudioPlayer\|components/AudioPlayer\|/notes/\|read_audio_file" frontend/src frontend/src-tauri/src` → no hits.
+Confirm nothing else references them: `grep -rn "useAudioPlayer\|components/AudioPlayer\|/notes/\|read_audio_file" frontend/src frontend/src-tauri/src --exclude=lib_old_complex.rs` → no hits (`lib_old_complex.rs` is not compiled).
 
 - [ ] **Step 5: Run tests** — Rust Step 2 command: PASS; full workspace tests: PASS; `cd frontend && pnpm exec tsc --noEmit && bun test && pnpm run build`: PASS; `bash scripts/check-no-phone-home.sh`: PASS.
 
@@ -1333,7 +1584,8 @@ git commit -m "feat(playback): serve one meeting's audio to the player; remove r
   - `pub const NOTES_INSTRUCTION: &str`
   - `pub fn render_notes_block(notes: &[MeetingNote]) -> Option<String>` (`None` when empty)
   - `pub fn transcript_has_marks(text: &str) -> bool` (contains `"[MARKED: "`)
-  - `pub(crate) fn build_final_prompts(template: &Template, language_name: &str, content: &str, custom_prompt: &str, notes_block: Option<&str>) -> (String, String)` in `processor.rs`
+  - `pub fn marked_lines_block(original_text: &str) -> Option<String>` (`<marked_lines>` block with every transcript line containing `[MARKED: `; `None` if none)
+  - `pub(crate) fn build_final_prompts(template: &Template, language_name: &str, content: &str, original_text: &str, chunked: bool, custom_prompt: &str, notes_block: Option<&str>) -> (String, String)` in `processor.rs`
   - `generate_meeting_summary(..., custom_prompt, notes_block: Option<&str>, template, ...)` — new argument right after `custom_prompt`.
 - Produces (TS, `lib/meeting-notes.ts`):
   - `type TranscriptMark = 'important' | 'action' | 'followup'`, `interface MeetingNote { id: string; at: number | null; text: string }` (exported from `types/index.ts`; `Transcript.mark?: TranscriptMark | null`; `TranscriptSegmentData.mark?: TranscriptMark | null`)
@@ -1372,6 +1624,16 @@ mod tests {
         assert!(transcript_has_marks("[00:01] [MARKED: action] send deck"));
         assert!(!transcript_has_marks("[00:01] send deck"));
     }
+
+    #[test]
+    fn marked_lines_block_keeps_only_marked_lines() {
+        let text = "[00:01] hi\n[00:05] [MARKED: action] send deck\n[00:09] bye";
+        assert_eq!(
+            marked_lines_block(text).unwrap(),
+            "<marked_lines>\n[00:05] [MARKED: action] send deck\n</marked_lines>"
+        );
+        assert!(marked_lines_block("[00:01] hi").is_none());
+    }
 }
 ```
 
@@ -1382,18 +1644,30 @@ mod tests {
     fn final_prompts_add_notes_only_when_present() {
         let t: crate::summary::templates::Template =
             serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
-        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "", None);
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None);
         assert!(!sys.contains("marked transcript lines"));
         assert!(!user.contains("<user_notes>"));
 
-        let (sys, user) = build_final_prompts(&t, "English", "[00:01] [MARKED: action] hi", "", None);
+        let marked = "[00:01] [MARKED: action] hi";
+        let (sys, user) = build_final_prompts(&t, "English", marked, marked, false, "", None);
         assert!(sys.contains("marked transcript lines"));
         assert!(!user.contains("<user_notes>"));
+        assert!(!user.contains("<marked_lines>")); // not chunked: the lines are already in the transcript
 
-        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "ctx", Some("<user_notes>\n[00:01] x\n</user_notes>"));
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "ctx", Some("<user_notes>\n[00:01] x\n</user_notes>"));
         assert!(sys.contains("marked transcript lines"));
         assert!(user.contains("</transcript_chunks>\n\n<user_notes>"));
         assert!(user.contains("<user_context>\nctx"));
+    }
+
+    #[test]
+    fn chunked_summaries_still_get_the_marked_lines() {
+        let t: crate::summary::templates::Template =
+            serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
+        let original = "[00:01] hi\n[00:05] [MARKED: action] send deck";
+        let (sys, user) = build_final_prompts(&t, "English", "Chunk summary without marks", original, true, "", None);
+        assert!(sys.contains("marked transcript lines"));
+        assert!(user.contains("<marked_lines>\n[00:05] [MARKED: action] send deck\n</marked_lines>"));
     }
 ```
 
@@ -1413,7 +1687,8 @@ in the section where it belongs: action -> action items, followup -> open questi
 If the template has no such section, use the closest one. Do not add a separate notes section. \
 Write in the summary language even when a note is in another language. \
 Notes are terse: use the transcript around their time for context. \
-Notes in <user_notes> are the user's own input; use them like the transcript.\n";
+Notes in <user_notes> are the user's own input; use them like the transcript. \
+Lines in <marked_lines> are the marked lines, quoted from the full transcript.\n";
 
 fn mm_ss(seconds: f64) -> String {
     let total = seconds.max(0.0).floor() as u64;
@@ -1437,6 +1712,16 @@ pub fn render_notes_block(notes: &[MeetingNote]) -> Option<String> {
 pub fn transcript_has_marks(text: &str) -> bool {
     text.contains("[MARKED: ")
 }
+
+/// With chunking (local models) the final call only sees chunk summaries, so the marked
+/// lines are passed again verbatim.
+pub fn marked_lines_block(original_text: &str) -> Option<String> {
+    let lines: Vec<&str> = original_text.lines().filter(|l| l.contains("[MARKED: ")).collect();
+    if lines.is_empty() {
+        return None;
+    }
+    Some(format!("<marked_lines>\n{}\n</marked_lines>", lines.join("\n")))
+}
 ```
 
 - [ ] **Step 4: `processor.rs`** — extract the final prompt construction into:
@@ -1446,14 +1731,25 @@ pub(crate) fn build_final_prompts(
     template: &Template,
     language_name: &str,
     content: &str,
+    original_text: &str,
+    chunked: bool,
     custom_prompt: &str,
     notes_block: Option<&str>,
 ) -> (String, String) {
+    use crate::summary::user_notes::{marked_lines_block, transcript_has_marks, NOTES_INSTRUCTION};
     let mut system = template.render_system_prompt(language_name);
-    if notes_block.is_some() || crate::summary::user_notes::transcript_has_marks(content) {
-        system.push_str(crate::summary::user_notes::NOTES_INSTRUCTION);
+    // Look at the original transcript: after chunking, `content` is model-written summaries.
+    if notes_block.is_some() || transcript_has_marks(original_text) {
+        system.push_str(NOTES_INSTRUCTION);
     }
     let mut user = format!("<transcript_chunks>\n{content}\n</transcript_chunks>\n");
+    if chunked {
+        if let Some(block) = marked_lines_block(original_text) {
+            user.push('\n');
+            user.push_str(&block);
+            user.push('\n');
+        }
+    }
     if let Some(block) = notes_block {
         user.push('\n');
         user.push_str(block);
@@ -1468,7 +1764,7 @@ pub(crate) fn build_final_prompts(
 }
 ```
 
-and replace the inline `final_system_prompt` / `final_user_prompt` code in `generate_meeting_summary` with `let (final_system_prompt, final_user_prompt) = build_final_prompts(template, language_name, &content_to_summarize, custom_prompt, notes_block);`. Add the `notes_block: Option<&str>` parameter after `custom_prompt`. (`content_to_summarize` is the chunk-combined text when chunking ran, so marks inside lines survive; the notes go only into this final call.)
+and replace the inline `final_system_prompt` / `final_user_prompt` code in `generate_meeting_summary` with `let (final_system_prompt, final_user_prompt) = build_final_prompts(template, language_name, &content_to_summarize, text, chunked, custom_prompt, notes_block);`, where `chunked` is true in the branch that ran chunk summaries (`processor.rs` ~341-363; set a `let mut chunked = false;` before the branch and `chunked = true;` inside it). Add the `notes_block: Option<&str>` parameter after `custom_prompt`.
 
 - [ ] **Step 5: `service.rs`** — just before the `generate_meeting_summary(` call:
 
@@ -1840,7 +2136,7 @@ export function useSplitRatio({ storageKey, defaultRatio, min, max, offset = 0, 
 }
 ```
 
-A shared separator element (put it in `useSplitRatio.ts` too, exported):
+A shared separator element (in the same `useSplitRatio.tsx`, exported):
 
 ```tsx
 export function SplitHandle(props: Record<string, unknown>) {
@@ -2090,7 +2386,8 @@ export function TranscriptMarkButton({ text, mark, onChange }: Props) {
 
 `VirtualizedTranscriptView.tsx`: add the three props to `VirtualizedTranscriptViewProps` and the destructuring; compute `const activeId = findActiveSegmentId(segments, playheadSeconds);` once per render. Extend the memo `TranscriptSegment` with props `mark`, `isActive`, `onMarkChange?: (mark: TranscriptMark | null) => void`, `onPlay?: () => void`:
 
-- timestamp: `onPlay ? <button type="button" onClick={onPlay} aria-label={`Play from ${formatRecordingTime(timestamp)}`} className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 flex-shrink-0 min-w-[50px] text-left">{formatRecordingTime(timestamp)}</button>` inside the existing `TooltipTrigger asChild`; otherwise the existing span (keep the bracketed `formatRecordingTime` helper already in this file for the span so the look is unchanged).
+- This file already has a local `formatRecordingTime` returning `[MM:SS]`; keep it for the display and import the library one under an alias: `import { formatRecordingTime as formatMmSs } from '@/lib/meeting-notes';`.
+- timestamp: when `onPlay` is set, render `<TooltipTrigger asChild><button type="button" onClick={onPlay} aria-label={`Play from ${formatMmSs(timestamp)}`} className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 flex-shrink-0 min-w-[50px] text-left">{formatRecordingTime(timestamp)}</button></TooltipTrigger>` — `asChild` is required, because the current `TooltipTrigger` (line ~88) renders its own `<button>` and a button inside a button is invalid. Without `onPlay`, keep today's `<TooltipTrigger><span …>` unchanged.
 - text (non-streaming branch): `onMarkChange ? <TranscriptMarkButton text={displayText} mark={mark} onChange={onMarkChange} /> : <p ...>{displayText}</p>`. The streaming branch stays as is (the newest live line can be marked once it stops streaming).
 - outer div: add `isActive ? 'ring-1 ring-blue-400 rounded' : ''`.
 
@@ -2119,7 +2416,7 @@ git commit -m "feat(transcript): mark lines, play from a timestamp, highlight th
 - Produces:
   - `NotesPane({ notes, onAdd, onUpdate, onDelete, onTimeClick?, collapsed, onToggleCollapsed, disabled?, disabledHint? })` — `onAdd(text: string)`, `onUpdate(id: string, text: string)`, `onDelete(id: string)`, `onTimeClick?(at: number)`.
   - `TranscriptContext` adds: `notes: MeetingNote[]`, `notesRef: MutableRefObject<MeetingNote[]>`, `addNote(text: string, at: number | null): void`, `updateNote(id: string, text: string): void`, `deleteNote(id: string): void`, `setTranscriptMark(transcriptId: string, mark: TranscriptMark | null): void`.
-  - `indexedDBService.saveAnnotations(meetingId: string, notes: MeetingNote[], marks: Record<string, TranscriptMark>): Promise<void>`; `MeetingMetadata` (IndexedDB) gains `notes?: MeetingNote[]; marks?: Record<string, TranscriptMark>`.
+  - `indexedDBService.patchMeetingMetadata(meetingId: string, patch: Partial<MeetingMetadata>): Promise<void>` — read-modify-write in **one** `readwrite` transaction, so concurrent updates (folder path, transcript count, notes, marks) never overwrite each other; `MeetingMetadata` (IndexedDB) gains `notes?: MeetingNote[]; marks?: Record<string, TranscriptMark>`.
   - `storageService.saveMeeting(meetingTitle, transcripts, folderPath, notes: MeetingNote[] = [])` → invokes `api_save_transcript` with `{ meetingTitle, transcripts, folderPath, notes }`.
 
 - [ ] **Step 1: Failing test** — `frontend/tests/components/notes-pane.test.tsx`:
@@ -2312,23 +2609,36 @@ export function NotesPane({ notes, onAdd, onUpdate, onDelete, onTimeClick, colla
 - [ ] **Step 4: IndexedDB and storage service** — `indexedDBService.ts`: add `notes?: MeetingNote[]; marks?: Record<string, TranscriptMark>;` to its `MeetingMetadata` and:
 
 ```ts
-  /** Notes and line marks for crash recovery (spec §5.1). Fails silently like saveTranscript. */
-  async saveAnnotations(meetingId: string, notes: MeetingNote[], marks: Record<string, TranscriptMark>): Promise<void> {
+  /** Read-modify-write in one transaction (spec §5.1). Fails silently like saveTranscript. */
+  async patchMeetingMetadata(meetingId: string, patch: Partial<MeetingMetadata>): Promise<void> {
     try {
-      const meeting = await this.getMeetingMetadata(meetingId);
-      if (!meeting) return;
-      await this.saveMeetingMetadata({ ...meeting, notes, marks, lastUpdated: Date.now() });
+      if (!this.db) await this.init();
+      const tx = this.db!.transaction(['meetings'], 'readwrite');
+      const store = tx.objectStore('meetings');
+      await new Promise<void>((resolve, reject) => {
+        const get = store.get(meetingId);
+        get.onsuccess = () => {
+          const meeting = get.result as MeetingMetadata | undefined;
+          if (!meeting) { resolve(); return; }
+          const put = store.put({ ...meeting, ...patch, meetingId, lastUpdated: Date.now() });
+          put.onsuccess = () => resolve();
+          put.onerror = () => reject(put.error);
+        };
+        get.onerror = () => reject(get.error);
+      });
     } catch (error) {
-      console.warn('Failed to save notes/marks to IndexedDB:', error);
+      console.warn('Failed to update meeting in IndexedDB:', error);
     }
   }
 ```
+
+Use it in `TranscriptContext.tsx` for the two existing folder-path updates (recording-started and recording-stopped: replace the `getMeetingMetadata` + `saveMeetingMetadata` pairs with `patchMeetingMetadata(id, { folderPath })`), so they can no longer drop notes/marks written in between.
 
 `storageService.saveMeeting` gains `notes: MeetingNote[] = []` and passes `notes` in the invoke args.
 
 - [ ] **Step 5: `TranscriptContext.tsx`**
   - State: `const [notes, setNotes] = useState<MeetingNote[]>([]); const notesRef = useRef<MeetingNote[]>([]);` kept in sync with an effect like `transcriptsRef`.
-  - `const [annotationsVersion, bumpAnnotations] = useReducer((x: number) => x + 1, 0);` and an effect on `[annotationsVersion]` that, when `annotationsVersion > 0`, takes `const id = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id')` and calls `indexedDBService.saveAnnotations(id, notesRef.current, collectMarks(transcriptsRef.current))`. Declare this effect after the two ref-sync effects so the refs are current.
+  - `const [annotationsVersion, bumpAnnotations] = useReducer((x: number) => x + 1, 0);` and an effect on `[annotationsVersion]` that, when `annotationsVersion > 0`, takes `const id = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id')` and calls `indexedDBService.patchMeetingMetadata(id, { notes: notesRef.current, marks: collectMarks(transcriptsRef.current) })`. Declare this effect after the two ref-sync effects so the refs are current.
   - `addNote(text, at)`: `setNotes(prev => [...prev, newNote(text, at)]); bumpAnnotations();`
   - `updateNote(id, text)`: map; bump. `deleteNote(id)`: filter; bump.
   - `setTranscriptMark(transcriptId, mark)`: `setTranscripts(prev => prev.map(t => t.id === transcriptId ? { ...t, mark } : t)); bumpAnnotations();`
@@ -2416,15 +2726,15 @@ git commit -m "feat(live): notes pane and line marks during a recording, kept th
 **Files:**
 - Create: `frontend/src/hooks/useMeetingNotes.ts`, `frontend/src/hooks/useMeetingAudio.ts`, `frontend/src/components/MeetingDetails/AudioPlayerBar.tsx`
 - Modify: `frontend/src/lib/meeting-audio.ts` (`audioMissingMessage`), `frontend/src/hooks/usePaginatedTranscripts.ts` (`mark` in segments, `setTranscriptMark`), `frontend/src/components/MeetingDetails/MeetingDetailsSplitView.tsx`, `components/MeetingDetails/TranscriptPanel.tsx`, `components/MeetingDetails/TranscriptButtonGroup.tsx`, `app/meeting-details/page-content.tsx`, `app/meeting-details/page.tsx` (pass `setTranscriptMark` through)
-- Test: `frontend/tests/lib/meeting-audio.test.ts` (extend), `frontend/tests/hooks/paginated-transcripts.test.tsx` (extend)
+- Test: `frontend/tests/lib/meeting-audio.test.ts` (extend), `frontend/tests/hooks/paginated-transcripts.test.tsx` (extend), `frontend/tests/hooks/meeting-notes.test.tsx` (new)
 
 **Interfaces:**
 - Consumes: commands from Tasks 2 and 5; Tasks 7–9 components.
 - Produces:
   - `interface MeetingAudioInfo { path: string | null; keep_audio: boolean; retention_days: number | null; removed_by_retention: boolean }`
   - `audioMissingMessage(info: MeetingAudioInfo | null): string | null` — `null` when `path` is set or info not loaded; `"Audio deleted (older than N days)"` when `removed_by_retention && retention_days`; else `"Audio file not found"`.
-  - `useMeetingAudio(meetingId: string)` → `{ info, src: string | null, audioRef, playhead: number | null, isPlaying, rate, setRate(r: 1 | 1.5 | 2), playFrom(seconds), togglePlay(), seek(seconds), setKeepAudio(keep: boolean) }`
-  - `useMeetingNotes(meetingId: string)` → `{ notes, addNote(text), updateNote(id, text), deleteNote(id) }` (after-meeting notes get `at: null`; each change saves the whole list via `save_meeting_notes`; on error the previous list is restored and `toast.error` shown)
+  - `useMeetingAudio(meetingId: string)` → `{ info, src: string | null, audioRef, playhead: number | null, duration: number | null, isPlaying, rate, setRate(r: 1 | 1.5 | 2), playFrom(seconds), togglePlay(), seek(seconds), setKeepAudio(keep: boolean), audioEvents }`. The `<audio>` element is rendered **once in `page-content.tsx`, outside every Tabs**, so switching tabs never unmounts it.
+  - `useMeetingNotes(meetingId: string)` → `{ notes, loaded: boolean, addNote(text), updateNote(id, text), deleteNote(id) }` (after-meeting notes get `at: null`; edits are ignored until `loaded`; each change saves the whole list via `save_meeting_notes`; only the latest save's response is applied; on error the last confirmed list is restored and `toast.error` shown). `NotesPane` gets `disabled={!loaded}`.
   - `usePaginatedTranscripts` returns `setTranscriptMark(id: string, mark: TranscriptMark | null): Promise<void>` (invoke `set_transcript_mark`, then update local state; toast on error) and segments carry `mark`.
   - `MeetingDetailsSplitView` props: `transcript`, `notes: ReactNode`, `notesCount: number`, `summary`, `layout: MeetingPageLayout`, `activeTab`, `onTabChange`; `MeetingDetailsTab = 'transcript' | 'notes' | 'summary'`.
   - `TranscriptButtonGroup` prop `audioMissingReason?: string | null` — when set, the Re-transcribe button is disabled with `title={audioMissingReason}`.
@@ -2446,9 +2756,15 @@ describe('audioMissingMessage', () => {
 });
 ```
 
+Create `tests/hooks/meeting-notes.test.tsx` (same invoke-mock pattern as `paginated-transcripts.test.tsx`, rendering the hook in a tiny test component with react-test-renderer):
+- while `get_meeting_notes` is still pending, `loaded` is false and `addNote('x')` does **not** call `save_meeting_notes`;
+- after it resolves with `[{ id: 'n1', at: 3, text: 'old' }]`, `addNote('new')` saves `[old, new]` (the stored note is never lost);
+- two quick edits whose responses resolve in reverse order end with the second edit's list;
+- a rejected save restores the last confirmed list.
+
 Extend `tests/hooks/paginated-transcripts.test.tsx` following its existing invoke-mock pattern: a test that loads one transcript `{ id: 't1', mark: 'action', ... }`, checks `segments[0].mark === 'action'`, calls `setTranscriptMark('t1', null)`, asserts the mocked invoke got `('set_transcript_mark', { transcriptId: 't1', mark: null })` and `segments[0].mark` is `null`; and a test where invoke rejects, asserting the mark stays `'action'`.
 
-- [ ] **Step 2: Verify failure** — `cd frontend && bun test tests/lib/meeting-audio.test.ts tests/hooks/paginated-transcripts.test.tsx`: FAIL.
+- [ ] **Step 2: Verify failure** — `cd frontend && bun test tests/lib/meeting-audio.test.ts tests/hooks/paginated-transcripts.test.tsx tests/hooks/meeting-notes.test.tsx`: FAIL.
 
 - [ ] **Step 3: Implement the lib and hooks**
 
@@ -2497,33 +2813,48 @@ import type { MeetingNote } from '@/types';
 
 export function useMeetingNotes(meetingId: string) {
   const [notes, setNotes] = useState<MeetingNote[]>([]);
-  const notesRef = useRef<MeetingNote[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const notesRef = useRef<MeetingNote[]>([]);      // what the UI shows (optimistic)
+  const confirmedRef = useRef<MeetingNote[]>([]);  // what the backend last stored
+  const loadedRef = useRef(false);
+  const saveSeq = useRef(0);
 
   useEffect(() => {
     let cancelled = false;
+    loadedRef.current = false;
+    setLoaded(false);
     invoke<MeetingNote[]>('get_meeting_notes', { meetingId })
-      .then((n) => { if (!cancelled) { notesRef.current = n; setNotes(n); } })
-      .catch((e) => console.error('Failed to load notes:', e));
+      .then((n) => {
+        if (cancelled) return;
+        notesRef.current = n; confirmedRef.current = n; setNotes(n);
+        loadedRef.current = true; setLoaded(true);
+      })
+      .catch((e) => {
+        console.error('Failed to load notes:', e);
+        toast.error('Could not load notes');
+      });
     return () => { cancelled = true; };
   }, [meetingId]);
 
   const save = useCallback(async (next: MeetingNote[]) => {
-    const previous = notesRef.current;
+    if (!loadedRef.current) return; // never overwrite notes we have not read yet
+    const seq = ++saveSeq.current;
     notesRef.current = next;
     setNotes(next);
     try {
       const stored = await invoke<MeetingNote[]>('save_meeting_notes', { meetingId, notes: next });
-      notesRef.current = stored;
-      setNotes(stored);
+      if (seq !== saveSeq.current) return; // a newer save is in flight; its response wins
+      notesRef.current = stored; confirmedRef.current = stored; setNotes(stored);
     } catch (e) {
-      notesRef.current = previous;
-      setNotes(previous);
+      if (seq !== saveSeq.current) return;
+      notesRef.current = confirmedRef.current; setNotes(confirmedRef.current);
       toast.error('Could not save notes', { description: String(e) });
     }
   }, [meetingId]);
 
   return {
     notes,
+    loaded,
     addNote: (text: string) => save([...notesRef.current, newNote(text, null)]),
     updateNote: (id: string, text: string) => save(notesRef.current.map((n) => (n.id === id ? { ...n, text } : n))),
     deleteNote: (id: string) => save(notesRef.current.filter((n) => n.id !== id)),
@@ -2547,6 +2878,7 @@ export function useMeetingAudio(meetingId: string) {
   const audioRef = useRef<HTMLAudioElement>(null);
   const [playhead, setPlayhead] = useState<number | null>(null);
   const [isPlaying, setIsPlaying] = useState(false);
+  const [duration, setDuration] = useState<number | null>(null);
   const [rate, setRateState] = useState<PlaybackRate>(1);
 
   useEffect(() => {
@@ -2583,9 +2915,11 @@ export function useMeetingAudio(meetingId: string) {
   }, [meetingId]);
 
   return {
-    info, src, audioRef, playhead, isPlaying, rate, setRate, playFrom, togglePlay, seek, setKeepAudio,
-    // wired onto the <audio> element by AudioPlayerBar
+    info, src, audioRef, playhead, duration, isPlaying, rate, setRate, playFrom, togglePlay, seek, setKeepAudio,
+    // spread onto the single <audio> element in page-content.tsx
     audioEvents: {
+      onLoadedMetadata: (e: React.SyntheticEvent<HTMLAudioElement>) => setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : null),
+      onDurationChange: (e: React.SyntheticEvent<HTMLAudioElement>) => setDuration(Number.isFinite(e.currentTarget.duration) ? e.currentTarget.duration : null),
       onTimeUpdate: (e: React.SyntheticEvent<HTMLAudioElement>) => setPlayhead(e.currentTarget.currentTime),
       onPlay: () => setIsPlaying(true),
       onPause: () => setIsPlaying(false),
@@ -2610,24 +2944,23 @@ const RATES: PlaybackRate[] = [1, 1.5, 2];
 export function AudioPlayerBar({ audio }: { audio: ReturnType<typeof useMeetingAudio> }) {
   const missing = audioMissingMessage(audio.info);
   if (!audio.info) return null;
-  const duration = audio.audioRef.current?.duration;
+  const duration = audio.duration;
   return (
     <div className="flex items-center gap-3 border-t border-border bg-background px-3 py-2 text-sm">
       {missing ? (
         <span className="text-muted-foreground">{missing}</span>
       ) : (
         <>
-          <audio ref={audio.audioRef} src={audio.src ?? undefined} preload="metadata" {...audio.audioEvents} />
           <button type="button" onClick={audio.togglePlay} aria-label={audio.isPlaying ? 'Pause' : 'Play'} className="rounded p-1 hover:bg-accent">
             {audio.isPlaying ? <Pause className="h-4 w-4" /> : <Play className="h-4 w-4" />}
           </button>
           <input
-            type="range" min={0} max={Number.isFinite(duration) ? duration : 0} step={0.1}
+            type="range" min={0} max={duration ?? 0} step={0.1}
             value={audio.playhead ?? 0} onChange={(e) => audio.seek(Number(e.target.value))}
             aria-label="Playback position" className="flex-1 accent-blue-600"
           />
           <span className="tabular-nums text-muted-foreground">
-            {formatRecordingTime(audio.playhead ?? 0)} / {formatRecordingTime(Number.isFinite(duration) ? duration : null)}
+            {formatRecordingTime(audio.playhead ?? 0)} / {formatRecordingTime(duration)}
           </span>
           <button type="button" className="rounded px-1.5 py-0.5 hover:bg-accent tabular-nums" aria-label={`Playback speed ${audio.rate}x`}
             onClick={() => audio.setRate(RATES[(RATES.indexOf(audio.rate) + 1) % RATES.length])}>
@@ -2652,8 +2985,9 @@ export function AudioPlayerBar({ audio }: { audio: ReturnType<typeof useMeetingA
 
 - [ ] **Step 6: Wire `page-content.tsx`**
   - `const layout = useMemo(readMeetingPageLayout, []);`, `const notes = useMeetingNotes(meeting.id);`, `const audio = useMeetingAudio(meeting.id);`, `const [notesCollapsed, setNotesCollapsed] = useState(() => readFlag('conclave.notesPaneCollapsed'));`
+  - Render the one audio element next to `MeetingDetailsSplitView`, outside it: `{audio.src && <audio ref={audio.audioRef} src={audio.src} preload="metadata" className="hidden" {...audio.audioEvents} />}`. Clicking a note's time in the sub-tab layout (transcript tab unmounted) must still play — this is why it lives here.
   - Pass to `TranscriptPanel`: `onMarkChange={onSetTranscriptMark}` (new prop received from `page.tsx`, which takes `setTranscriptMark` from `usePaginatedTranscripts`), `onPlayFrom={audio.info?.path ? audio.playFrom : undefined}`, `playheadSeconds={audio.playhead}`, `footer={<AudioPlayerBar audio={audio} />}`, `audioMissingReason={audioMissingMessage(audio.info)}`.
-  - `notes={<NotesPane notes={notes.notes} onAdd={notes.addNote} onUpdate={notes.updateNote} onDelete={notes.deleteNote} onTimeClick={audio.info?.path ? audio.playFrom : undefined} collapsed={layout === 'three-columns' && notesCollapsed} onToggleCollapsed={...writeFlag + setState} />}`, `notesCount={notes.notes.length}`, `layout={layout}`.
+  - `notes={<NotesPane disabled={!notes.loaded} disabledHint="Loading notes…" notes={notes.notes} onAdd={notes.addNote} onUpdate={notes.updateNote} onDelete={notes.deleteNote} onTimeClick={audio.info?.path ? audio.playFrom : undefined} collapsed={layout === 'three-columns' && notesCollapsed} onToggleCollapsed={...writeFlag + setState} />}`, `notesCount={notes.notes.length}`, `layout={layout}`.
   - `components/MeetingDetails/TranscriptPanel.tsx`: accept and forward `onMarkChange`, `onPlayFrom`, `playheadSeconds` to `VirtualizedTranscriptView`; render `footer` below the transcript list (above the custom-prompt box); include `mark: t.mark` in the non-paginated segment mapping; forward `audioMissingReason` to `TranscriptButtonGroup`.
   - `TranscriptButtonGroup.tsx`: Re-transcribe button `disabled={transcriptCount === 0 || !!audioMissingReason}` with `title={audioMissingReason ?? undefined}`.
 
@@ -2662,7 +2996,7 @@ export function AudioPlayerBar({ audio }: { audio: ReturnType<typeof useMeetingA
 - [ ] **Step 8: Commit**
 
 ```bash
-git add frontend/src/hooks/useMeetingNotes.ts frontend/src/hooks/useMeetingAudio.ts frontend/src/hooks/usePaginatedTranscripts.ts frontend/src/lib/meeting-audio.ts frontend/src/components/MeetingDetails frontend/src/app/meeting-details frontend/tests/lib/meeting-audio.test.ts frontend/tests/hooks/paginated-transcripts.test.tsx
+git add frontend/src/hooks/useMeetingNotes.ts frontend/src/hooks/useMeetingAudio.ts frontend/src/hooks/usePaginatedTranscripts.ts frontend/src/lib/meeting-audio.ts frontend/src/components/MeetingDetails frontend/src/app/meeting-details frontend/tests/lib/meeting-audio.test.ts frontend/tests/hooks/paginated-transcripts.test.tsx frontend/tests/hooks/meeting-notes.test.tsx
 git commit -m "feat(meeting): notes, marks and playback on the saved meeting page, in both layouts"
 ```
 
@@ -2751,7 +3085,7 @@ export function formatMegabytes(bytes: number): string {
   };
 ```
 
-  - Delete-now: state `const [deleteNow, setDeleteNow] = useState<{ meetings: number; bytes: number } | null>(null);`. Button "Delete eligible audio now…" (disabled when `audio_retention_days === null` or `isRecording`) calls `invoke<{meetings:number;bytes:number}>('audio_retention_preview')`; if `meetings === 0` → `toast.info('No audio is old enough to delete')`; else `setDeleteNow(result)`. Render `ConfirmationModal` from `components/ConfirmationModel/confirmation-modal` (same props as the Sidebar uses) with text `` `Delete the audio of ${deleteNow.meetings} meetings (${formatMegabytes(deleteNow.bytes)})? Transcripts, summaries and notes are kept. This cannot be undone.` ``; on confirm invoke `audio_retention_delete_now` and `toast.success(`Freed ${formatMegabytes(r.bytes)}`)`; errors → `toast.error`.
+  - Delete-now: state `const [deleteNow, setDeleteNow] = useState<{ meetings: number; bytes: number; meeting_ids: string[] } | null>(null);`. Button "Delete eligible audio now…" (disabled when `audio_retention_days === null` or `isRecording`) calls `invoke<{ meetings: number; bytes: number; meeting_ids: string[] }>('audio_retention_preview')`; if `meetings === 0` → `toast.info('No audio is old enough to delete')`; else `setDeleteNow(result)`. Render `ConfirmationModal` from `components/ConfirmationModel/confirmation-modal` (same props as the Sidebar uses) with text `` `Delete the audio of ${deleteNow.meetings} meetings (${formatMegabytes(deleteNow.bytes)})? Transcripts, summaries and notes are kept. This cannot be undone.` ``; on confirm invoke `audio_retention_delete_now` with `{ meetingIds: deleteNow.meeting_ids }` (only the confirmed meetings) and `toast.success(`Freed ${formatMegabytes(r.bytes)}`)`; errors → `toast.error`.
   - Markup: a new block after Meeting Detection, same structure:
 
 ```tsx

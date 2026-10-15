@@ -86,7 +86,9 @@ New Tauri commands:
 
 ### 5.4 Meeting delete
 
-`delete_meeting` reads `folder_path` first, deletes the DB rows (adding an explicit `DELETE FROM meeting_notes`), commits, and then deletes the folder if it passes the folder guard (§8.3). A failed folder delete is logged and returned as a warning; the meeting stays deleted. The confirm dialog says the recording is deleted too.
+`delete_meeting` reads `folder_path` first, deletes the DB rows (adding an explicit `DELETE FROM meeting_notes`), commits, and then deletes the folder if it passes the folder guard (§8.3). The delete is never recursive: only the files Conclave writes (`audio.<ext>`, Conclave's `.checkpoints/` files, `transcripts.json`, `metadata.json` and their `.tmp` siblings) are removed, then the folder if it is empty; a folder with anything else in it is kept. (`folder_path` comes from the webview at save time.) A failed or partial folder delete is logged and returned as a warning; the meeting stays deleted. The confirm dialog says the recording is deleted too.
+
+Re-transcribing a meeting replaces all its lines; each mark moves to the new line that overlaps it most in time (no overlap: the nearest start).
 
 ## 6. UI
 
@@ -134,7 +136,7 @@ Marks go inline in the transcript text built by `buildSummaryTranscriptPayload`:
 [12:06] [MARKED: action] I'll send the deck on Friday
 ```
 
-Notes are read by the backend from `meeting_notes` for the meeting (no new parameter) and added to the final user message in `processor.rs`, after `<transcript_chunks>`:
+Notes are read by the backend from `meeting_notes` for the meeting (no new parameter) and added to the final user message in `processor.rs`, after `<transcript_chunks>`. When local providers chunk a long transcript, the final call only sees chunk summaries, so the marked lines are also passed verbatim in a `<marked_lines>` block:
 
 ```
 <user_notes>
@@ -155,16 +157,16 @@ Editing notes after a summary exists does not regenerate it; the user presses Re
 
 ### 8.1 Retention job (`audio/retention.rs`)
 
-- `recording_preferences.json` gains `audio_retention_days: Option<u32>` (`None` = Never; default `Some(30)`) and `audio_retention_started_at`, set to now when first loaded by this version and whenever the setting changes from Never to a number of days.
+- `recording_preferences.json` gains `audio_retention_days: Option<u32>` (`None` = Never; default `Some(30)`) and `audio_retention_started_at`, set to now at the first launch of this version and whenever the setting changes from Never to a number of days.
 - Runs 1 minute after startup (spawned after DB init in `lib.rs` setup), then every 24 h. Reads the setting each run. Skips the whole run while a recording is in progress.
 - Candidates: `keep_audio = 0`, `folder_path` not null, `created_at` older than N days **and** `audio_retention_started_at` older than N days (grace period).
-- In each candidate folder that passes the guard (§8.3) it deletes only top-level files named `audio.<ext>` with a known audio extension (mp4, m4a, wav, mp3, ogg, flac, webm, aac) and the `.checkpoints/` subfolder. Nothing else.
+- In each candidate folder that passes the guard (§8.3) it deletes only top-level files named `audio.<ext>` with a known audio extension (mp4, m4a, wav, mp3, ogg, flac, webm, aac) and Conclave's own files in `.checkpoints/` (then that subfolder if empty). Nothing else, never recursively.
 - A missing file counts as done. Errors are logged per meeting and the job continues. Each run logs the files deleted and the MB freed.
-- `audio_retention_preview()` returns the count and total size of eligible audio **ignoring the grace period**; `audio_retention_delete_now()` deletes exactly that set. The Settings button shows "N meetings, X MB. Delete?" first. Both use the same selection code as the job.
+- `audio_retention_preview()` returns the count, total size and meeting ids of eligible audio **ignoring the grace period**; `audio_retention_delete_now(meeting_ids)` deletes exactly those meetings' audio, re-checking each is still eligible. The Settings button shows "N meetings, X MB. Delete?" first. Both use the same selection code as the job.
 
 ### 8.2 Playback (least privilege)
 
-`get_meeting_audio(meeting_id)` finds the `audio.<ext>` file in that meeting's `folder_path` (folder must pass the guard), allows the asset protocol to read **that one file** at runtime (`asset_protocol_scope().allow_file`), and returns its path; the frontend plays it with `convertFileSrc` in an `<audio>` element. Seeking uses the asset protocol's byte ranges, so the file is never loaded whole. The CSP gains `media-src 'self' asset: http://asset.localhost`. Returns `None` when there is no audio file.
+`get_meeting_audio(meeting_id)` finds the `audio.<ext>` file in that meeting's `folder_path` (folder must pass the guard), allows the asset protocol to read **that one file** at runtime (`asset_protocol_scope().allow_file`), and returns its path; the frontend plays it with `convertFileSrc` in an `<audio>` element. Seeking uses the asset protocol's byte ranges, so the file is never loaded whole. The CSP gains `media-src 'self' asset: http://asset.localhost`, and the static asset scope (`$APPDATA/**`, unused) is emptied. Returns `None` when there is no audio file.
 
 Removed: `read_audio_file`, `hooks/useAudioPlayer.ts`, `components/AudioPlayer.tsx`, `app/notes/[id]/page.tsx` and its Sidebar branch.
 

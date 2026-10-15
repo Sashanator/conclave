@@ -90,7 +90,7 @@ New Tauri commands:
 
 ### 5.4 Meeting delete
 
-`delete_meeting` reads `folder_path` first, deletes the DB rows (adding an explicit `DELETE FROM meeting_notes`), commits, and then deletes the folder if it passes the folder guard (§8.3, inside the recordings folder only) and holds nothing but Conclave's files — checked before anything is deleted. The delete is never recursive: only the files Conclave writes (`audio.<ext>`, Conclave's `.checkpoints/` files, `transcripts.json`, `metadata.json` and their `.tmp` siblings) are removed, then the folder if it is empty; a folder with anything else in it is kept. (`folder_path` comes from the webview at save time.) A failed or partial folder delete is logged and returned as a warning; the meeting stays deleted. The confirm dialog says the recording is deleted too.
+`delete_meeting` reads `folder_path` first, deletes the DB rows (adding an explicit `DELETE FROM meeting_notes`), commits, and then deletes the folder if it passes the folder guard (§8.3, inside the recordings folder only) and holds nothing but Conclave's files — checked before anything is deleted. The delete is never recursive: only the files Conclave writes (`audio.<ext>` in any case, Conclave's `.checkpoints/` files, `transcripts.json`, `metadata.json` and their `.tmp` siblings) are moved to the Recycle Bin one by one (each re-checked right before), audio last, then `.checkpoints` and the folder if empty; a folder with anything else in it is kept, and so is one where a new file appeared meanwhile, or one another meeting also uses. (`folder_path` comes from the webview at save time.) A failed or partial folder delete is logged and returned as a warning; the meeting stays deleted. The confirm dialog says the recording is deleted too.
 
 Re-transcribing a meeting replaces all its lines; each mark moves to the new line that overlaps it most in time (no overlap: the nearest start).
 
@@ -164,7 +164,7 @@ Editing notes after a summary exists does not regenerate it; the user presses Re
 - `recording_preferences.json` gains `old_audio_days: Option<u32>` (`None` = Never; default `Some(30)`): the age after which a recording is listed.
 - `old_audio_list()` returns, for every meeting with `keep_audio = 0`, `created_at` older than N days and a folder that passes the guard (§8.3) and still holds audio: id, title, date, total size and the exact paths that would be deleted. Empty while a recording is in progress or when the setting is Never.
 - What can be deleted in a folder: top-level files named `audio.<ext>` with an import audio extension (mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — `audio/constants.rs`) that are real files, and Conclave's own files in a real `.checkpoints/` folder (`audio_chunk_*`, `concat_list.txt`). Nothing else, never recursively, never through links or junctions.
-- `delete_old_audio(meeting_ids)` deletes exactly the confirmed meetings' audio, re-checking each one is still listed, sets `audio_deleted_at`, and returns the count and bytes freed. Refused while recording.
+- `delete_old_audio(meeting_ids)` moves exactly the confirmed meetings' audio to the Recycle Bin, re-checking each meeting is still listed and each file right before it is recycled (checkpoints first, audio last), sets `audio_deleted_at` once no `audio.*` is left, and returns the count, bytes moved and any failures (e.g. the user declined Windows' prompt; partial moves are reported). Refused while recording. Folders shared by several meetings are not listed.
 - Reminder: the frontend calls `old_audio_list()` at startup and every 24 h; if the list is not empty and no reminder was shown today, it shows a toast with a [Review] action. Dismissing it is fine; nothing happens until the user confirms in the review.
 - No background deletion, so no grace period is needed: the first launch after the update deletes nothing.
 
@@ -176,7 +176,7 @@ Removed: `read_audio_file`, `hooks/useAudioPlayer.ts`, `components/AudioPlayer.t
 
 ### 8.3 Folder guard
 
-One helper used by the review, meeting delete and `get_meeting_audio`: the path, canonicalized, must be an existing directory strictly inside the canonical recordings base folder (`get_default_recordings_folder()`, where every recording and import is created). The base folder itself, anything outside it, and anything reached through `..`, a symlink or a junction are refused and logged. There is no other way for a folder to qualify.
+One helper used by the review, meeting delete and `get_meeting_audio`: the path, canonicalized, must be an existing directory strictly inside the canonical recordings base folder (`get_default_recordings_folder()`, where every recording and import is created). The path is resolved first (`..`, symlinks, junctions), and the resolved path must be inside the base; the base folder itself and anything resolving outside it are refused and logged. There is no other way for a folder to qualify. A folder used by more than one meeting is never deleted or offered in the review (new folders are always unique: `create_meeting_folder` never reuses one).
 
 ## 9. Error handling
 

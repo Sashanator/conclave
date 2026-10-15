@@ -8,7 +8,7 @@
 
 **User decisions after the plan review (2026-10-15):** no automatic deletion — a reminder plus a review list where the user ticks what to delete; deletions go to the Windows Recycle Bin; the folder guard is the recordings folder only (the `metadata.json` rule is gone); this ships as **v0.5.0** (Phase 3 is tagged v0.4.0 first).
 
-**Changes after the Codex plan review (2026-10-15), also reflected in the spec:** meeting-folder deletion is never recursive (known files only, then an empty-folder delete); re-transcription carries marks to the best-overlapping new line; with chunked local summaries the marked lines are passed again in `<marked_lines>`; the asset-protocol scope is emptied; the review deletes exactly the confirmed meetings.
+**Changes after the Codex plan review (2026-10-15), also reflected in the spec:** meeting-folder deletion is never recursive (known files only, one by one, then the empty folder); re-transcription carries marks to the best-overlapping new line; with chunked local summaries the marked lines are passed again in `<marked_lines>`; the asset-protocol scope is emptied; the review deletes exactly the confirmed meetings.
 
 **Deviations from the spec (implementation detail, same behaviour):** live marks are kept on the IndexedDB *meeting* record keyed by `sequence_id` (not by rewriting each line's record); notes and `keep_audio` reach the saved page through `get_meeting_notes` and `get_meeting_audio` rather than `get_meeting`.
 
@@ -25,7 +25,7 @@
 - Note: `{ id, at, text }`; `at` = seconds into the recording (`null` = added after the meeting); text trimmed, non-empty, at most 2,000 characters; id non-empty, at most 64 characters, generated as `note-<uuid>`.
 - Prompt label for marks: `[MARKED: important]` / `[MARKED: action]` / `[MARKED: followup]`. Notes block tag: `<user_notes>`; a note without a time renders as `[after the meeting]`.
 - Old-audio reminder options: Never / 7 / 30 / 90 days, default 30 (`old_audio_days`). Settings line: "Conclave never deletes audio by itself. Transcripts, summaries and notes are always kept." Reminder at most once a day.
-- Conclave never deletes on its own: only `delete_old_audio` (after the user ticks meetings in the review) and meeting delete remove files, always through `recycle` (Recycle Bin), and only inside the canonical recordings folder. The review deletes only top-level `audio.<ext>` (ext from the existing `crate::audio::constants::AUDIO_EXTENSIONS`: mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma) and Conclave's own files in `.checkpoints/` (`audio_chunk_*`, `concat_list.txt`). Never `transcripts.json`, `metadata.json` or anything else. No file operation on a meeting folder is ever recursive (`remove_dir_all` is not used) and links/junctions are never followed: `folder_path` is supplied by the webview at save time.
+- Conclave never deletes on its own: only `delete_old_audio` (after the user ticks meetings in the review) and meeting delete remove files, always through `recycle` (Recycle Bin), and only inside the canonical recordings folder. The review deletes only top-level `audio.<ext>` (ext from the existing `crate::audio::constants::AUDIO_EXTENSIONS`: mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma) and Conclave's own files in `.checkpoints/` (`audio_chunk_*`, `concat_list.txt`). Never `transcripts.json`, `metadata.json` or anything else. Files are recycled one at a time after a per-file re-check, folders only when empty; nothing is recursive, production code never calls `fs::remove_*`, links/junctions are never followed, and a folder used by two meetings is never touched: `folder_path` is supplied by the webview at save time.
 - Every file operation on a meeting folder goes through `guarded_meeting_folder` (Task 3).
 - localStorage keys: `conclave.meetingPageLayout`, `conclave.notesPaneCollapsed`, `conclave.live.transcriptRatio`, `conclave.threeCol.transcriptRatio`, `conclave.threeCol.notesRatio`; the existing `meetily.meetingDetails.transcriptPaneRatio` stays the sub-tab layout's key.
 - Layout values: `three-columns` (default) | `subtab`.
@@ -756,45 +756,57 @@ git commit -m "feat(api): commands for transcript marks, meeting notes and keep-
 
 **Files:**
 - Create: `frontend/src-tauri/src/audio/meeting_folder.rs` (add `pub mod meeting_folder;` to `audio/mod.rs`)
-- Modify: `frontend/src-tauri/Cargo.toml` (`dunce = "1.0.5"`, already in `Cargo.lock`; `trash = "5.2"`, new — the user approved it for Recycle Bin deletes), `frontend/src-tauri/src/api/api.rs` (`api_delete_meeting`)
-- Test: `#[cfg(test)] mod tests` in `meeting_folder.rs` (uses `tempfile`)
+- Modify: `frontend/src-tauri/Cargo.toml` (`dunce = "1.0.5"`, already in `Cargo.lock`; `trash = "5.2"`, new — the user approved it for Recycle Bin deletes), `frontend/src-tauri/src/api/api.rs` (`api_delete_meeting`), `frontend/src-tauri/src/audio/audio_processing.rs` (`create_meeting_folder` never reuses a folder)
+- Test: `#[cfg(test)] mod tests` in `meeting_folder.rs` and `audio_processing.rs` (uses `tempfile`)
 
-**Safety rules (spec §1, §8.3 — user decision):** a folder qualifies only if its canonical path is strictly inside the canonical recordings base (`get_default_recordings_folder()`); there is no other rule. Everything Conclave deletes goes to the Recycle Bin through one function, `recycle`, and every deleting function takes the remover as a parameter so tests never touch the real trash. Nothing is deleted before the whole folder has been checked.
+**Safety rules (spec §1, §8.3 — user decision):**
+- A folder qualifies only if its canonical path is strictly inside the canonical recordings base (`get_default_recordings_folder()`); there is no other rule.
+- Everything Conclave deletes goes to the Recycle Bin, **one checked item at a time**: each file is re-checked (real file, parent resolves to exactly the guarded folder or its `.checkpoints`) right before it is passed to the remover; folders are recycled only when empty. Nothing is ever deleted with `fs::remove_*` in production code.
+- The remover is a parameter (`Remover`) so tests never touch the real trash; production passes `recycle`.
+- A folder used by more than one meeting is never deleted.
+- Known remaining window (documented in the code): a local process running as the user could swap a path between the per-file re-check and the Recycle Bin call; the window is one file's recycle call.
 
 **Interfaces:**
 - Produces:
-  - `pub use crate::audio::constants::AUDIO_EXTENSIONS;` (mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — imports are stored as `audio.<source ext>`)
-  - `pub type Remover<'a> = &'a dyn Fn(&[PathBuf]) -> Result<(), String>;`
-  - `pub fn recycle(paths: &[PathBuf]) -> Result<(), String>` — `trash::delete_all`; the only production remover.
-  - `pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf>` — canonical (`dunce`) path of an existing directory strictly inside the canonical base; `None` otherwise (logged at warn). The base itself, anything outside, `..` escapes and links resolving outside are all refused by the canonical containment check.
-  - `pub fn find_audio_file(folder: &Path) -> Option<PathBuf>` — first top-level `audio.<ext>` that is a real file (not a link), in `AUDIO_EXTENSIONS` order.
+  - `pub use crate::audio::constants::AUDIO_EXTENSIONS;` (mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — imports are stored as `audio.<source ext>`, case as typed)
+  - `pub type Remover<'a> = &'a (dyn Fn(&[PathBuf]) -> Result<(), String> + Sync);` (`Sync` so async Tauri commands holding it across `.await` stay `Send`)
+  - `pub fn recycle(paths: &[PathBuf]) -> Result<(), String>` — `trash::delete_all` on its own thread; the only production remover.
+  - `pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf>` — canonical (`dunce`) path of an existing directory strictly inside the canonical base; `None` otherwise (logged at warn).
+  - `pub fn audio_files(folder: &Path) -> Vec<PathBuf>` — real top-level files named `audio.<ext>` (ext compared case-insensitively against `AUDIO_EXTENSIONS`), in `AUDIO_EXTENSIONS` order.
+  - `pub fn find_audio_file(folder: &Path) -> Option<PathBuf>` — `audio_files(folder).into_iter().next()`.
   - `pub fn checkpoint_files(checkpoints: &Path) -> Vec<PathBuf>` — real files named `audio_chunk_*` or `concat_list.txt` inside a real (non-link) `.checkpoints` folder.
   - `pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];`
-  - `pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: Remover) -> Result<(), String>` — missing folder: `Ok(())`; guard failure: `Err`; if the folder holds anything besides `audio.<ext>`, `MEETING_FILES` and a `.checkpoints` with only checkpoint files (or any link): `Err("Recording folder kept: it contains other files (…)")` and nothing is removed; otherwise the folder is passed to `remove` as one item.
-  - `pub async fn delete_meeting_and_folder(pool: &SqlitePool, meeting_id: &str, recordings_base: &Path, remove: Remover<'_>) -> Result<Option<Option<String>>, sqlx::Error>` — `Ok(None)` = meeting not found; `Ok(Some(warning))` = meeting deleted, `warning` set when its folder was kept.
+  - `pub fn recycle_checked(path: &Path, folder: &Path, remove: Remover) -> Result<(), String>` — the per-file re-check, then `remove(&[path])`.
+  - `pub fn recycle_if_empty(dir: &Path, remove: Remover) -> Result<bool, String>` — recycles a real, empty directory; `Ok(false)` if it is missing, a link or not empty.
+  - `pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: Remover) -> Result<(), String>` — missing folder: `Ok(())`; guard failure or foreign content: `Err("Recording folder kept: …")` with nothing removed; otherwise recycles checkpoint files, the JSON files and the audio (audio last), then `.checkpoints` and the folder if empty; a file that appeared meanwhile keeps the folder (`Err`).
+  - `pub async fn delete_meeting_and_folder(pool: &SqlitePool, meeting_id: &str, recordings_base: &Path, remove: Remover<'_>) -> Result<Option<Option<String>>, sqlx::Error>` — `Ok(None)` = meeting not found; `Ok(Some(warning))` = meeting deleted, `warning` set when its folder was kept (including "another meeting uses this folder").
   - `api_delete_meeting` response gains `"folder_warning": string | null`.
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Write the failing tests** — `meeting_folder.rs`:
 
 ```rust
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::cell::RefCell;
     use std::fs;
+    use std::sync::Mutex;
 
     fn base() -> tempfile::TempDir { tempfile::tempdir().unwrap() }
 
-    /// Stand-in for the Recycle Bin: records what would be recycled, then removes it.
-    struct FakeBin(RefCell<Vec<PathBuf>>);
+    /// Stand-in for the Recycle Bin. Removes files, and directories only when empty
+    /// (`remove_dir` fails otherwise), so a non-empty folder ever reaching it fails the test.
+    struct FakeBin(Mutex<Vec<PathBuf>>);
     impl FakeBin {
-        fn new() -> Self { FakeBin(RefCell::new(Vec::new())) }
+        fn new() -> Self { FakeBin(Mutex::new(Vec::new())) }
         fn remove(&self, paths: &[PathBuf]) -> Result<(), String> {
             for p in paths {
-                if p.is_dir() { fs::remove_dir_all(p).unwrap() } else { fs::remove_file(p).unwrap() }
-                self.0.borrow_mut().push(p.clone());
+                if p.is_dir() { fs::remove_dir(p).map_err(|e| e.to_string())? } else { fs::remove_file(p).map_err(|e| e.to_string())? }
+                self.0.lock().unwrap().push(p.clone());
             }
             Ok(())
+        }
+        fn names(&self) -> Vec<String> {
+            self.0.lock().unwrap().iter().map(|p| p.file_name().unwrap().to_string_lossy().to_string()).collect()
         }
     }
 
@@ -804,9 +816,11 @@ mod tests {
         let inside = b.path().join("Standup_2026-10-15_10-00");
         fs::create_dir(&inside).unwrap();
         assert!(guarded_meeting_folder(inside.to_str().unwrap(), b.path()).is_some());
+        let dotdot_inside = inside.join("..").join("Standup_2026-10-15_10-00");
+        assert!(guarded_meeting_folder(dotdot_inside.to_str().unwrap(), b.path()).is_some());
 
         let elsewhere = tempfile::tempdir().unwrap();
-        fs::write(elsewhere.path().join("metadata.json"), "{}").unwrap(); // no longer a pass
+        fs::write(elsewhere.path().join("metadata.json"), "{}").unwrap(); // not a pass any more
         assert!(guarded_meeting_folder(elsewhere.path().to_str().unwrap(), b.path()).is_none());
     }
 
@@ -820,8 +834,7 @@ mod tests {
         assert!(guarded_meeting_folder(b.path().join("nope").to_str().unwrap(), b.path()).is_none());
         let sub = b.path().join("m");
         fs::create_dir(&sub).unwrap();
-        let escape = sub.join("..").join("..");
-        assert!(guarded_meeting_folder(escape.to_str().unwrap(), b.path()).is_none());
+        assert!(guarded_meeting_folder(sub.join("..").join("..").to_str().unwrap(), b.path()).is_none());
         assert!(guarded_meeting_folder("", b.path()).is_none());
     }
 
@@ -835,27 +848,31 @@ mod tests {
     }
 
     #[test]
-    fn find_audio_file_prefers_mp4_and_finds_imported_formats() {
+    fn audio_files_prefer_mp4_and_find_imported_formats_in_any_case() {
         let b = base();
         assert!(find_audio_file(b.path()).is_none());
-        fs::write(b.path().join("audio.wma"), "x").unwrap();
+        fs::write(b.path().join("audio.MP3"), "x").unwrap();
         fs::write(b.path().join("other.mp4"), "x").unwrap();
-        assert_eq!(find_audio_file(b.path()).unwrap().file_name().unwrap(), "audio.wma");
+        assert_eq!(find_audio_file(b.path()).unwrap().file_name().unwrap(), "audio.MP3");
         fs::write(b.path().join("audio.mp4"), "x").unwrap();
         assert_eq!(find_audio_file(b.path()).unwrap().file_name().unwrap(), "audio.mp4");
+        assert_eq!(audio_files(b.path()).len(), 2);
     }
 
     #[test]
-    fn delete_folder_recycles_a_conclave_only_folder_as_one_item() {
+    fn delete_folder_recycles_conclave_files_one_by_one_audio_last() {
         let b = base();
         let m = b.path().join("m");
         fs::create_dir_all(m.join(".checkpoints")).unwrap();
-        for f in ["audio.mkv", "transcripts.json", "metadata.json", ".checkpoints/audio_chunk_000.mp4", ".checkpoints/concat_list.txt"] {
+        for f in ["audio.MKV", "transcripts.json", "metadata.json", ".checkpoints/audio_chunk_000.mp4", ".checkpoints/concat_list.txt"] {
             fs::write(m.join(f), "x").unwrap();
         }
         let bin = FakeBin::new();
         delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap();
-        assert_eq!(bin.0.borrow().len(), 1);
+        let names = bin.names();
+        assert_eq!(names.len(), 7); // 5 files + .checkpoints + the folder
+        assert_eq!(names[names.len() - 3], "audio.MKV"); // audio is the last file
+        assert_eq!(names.last().unwrap(), "m");
         assert!(!m.exists());
         assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_ok()); // already gone
     }
@@ -864,7 +881,6 @@ mod tests {
     fn delete_folder_touches_nothing_outside_the_base_or_with_other_files() {
         let b = base();
         let bin = FakeBin::new();
-
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("metadata.json"), "{}").unwrap();
         fs::write(outside.path().join("audio.mp4"), "theirs").unwrap();
@@ -874,13 +890,31 @@ mod tests {
         fs::create_dir(&m).unwrap();
         fs::write(m.join("audio.mp4"), "x").unwrap();
         fs::write(m.join("thesis.docx"), "precious").unwrap();
-        let err = delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap_err();
-        assert!(err.contains("kept"));
+        assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap_err().contains("kept"));
 
-        assert!(bin.0.borrow().is_empty());
+        assert!(bin.names().is_empty());
         for f in [outside.path().join("metadata.json"), outside.path().join("audio.mp4"), m.join("audio.mp4"), m.join("thesis.docx")] {
             assert!(f.exists(), "{}", f.display());
         }
+    }
+
+    #[test]
+    fn a_file_appearing_during_the_delete_keeps_the_folder() {
+        let b = base();
+        let m = b.path().join("m");
+        fs::create_dir(&m).unwrap();
+        fs::write(m.join("metadata.json"), "{}").unwrap();
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        let bin = FakeBin::new();
+        let intruder = m.join("new-file.txt");
+        let remove = |p: &[PathBuf]| {
+            if !intruder.exists() { fs::write(&intruder, "appeared").unwrap(); }
+            bin.remove(p)
+        };
+        assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &remove).unwrap_err().contains("kept"));
+        assert!(intruder.exists());
+        assert!(!bin.names().contains(&"new-file.txt".to_string()));
+        assert!(!bin.names().contains(&"m".to_string()));
     }
 
     #[cfg(unix)]
@@ -899,9 +933,16 @@ mod tests {
         assert!(find_audio_file(&m).is_none());
         let bin = FakeBin::new();
         assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_err());
-        assert!(bin.0.borrow().is_empty());
+        assert!(recycle_checked(&m.join(".checkpoints").join("audio_chunk_000.mp4"), &dunce::canonicalize(&m).unwrap(), &|p| bin.remove(p)).is_err());
+        assert!(bin.names().is_empty());
         assert!(target.path().join("audio_chunk_000.mp4").exists());
         assert!(target.path().join("secret.mp4").exists());
+    }
+
+    async fn meeting(pool: &sqlx::SqlitePool, id: &str, folder: &Path) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES (?, 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?)")
+            .bind(id).bind(folder.to_string_lossy().to_string())
+            .execute(pool).await.unwrap();
     }
 
     #[tokio::test]
@@ -909,31 +950,66 @@ mod tests {
         let pool = crate::database::repositories::test_pool().await;
         let b = base();
         let outside = tempfile::tempdir().unwrap(); // fails the guard
-        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES ('m1', 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?)")
-            .bind(outside.path().to_string_lossy().to_string())
-            .execute(&pool).await.unwrap();
+        meeting(&pool, "m1", outside.path()).await;
         let bin = FakeBin::new();
         let result = delete_meeting_and_folder(&pool, "m1", b.path(), &|p| bin.remove(p)).await.unwrap();
         assert!(matches!(result, Some(Some(_))));
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings").fetch_one(&pool).await.unwrap();
         assert_eq!(n, 0);
         assert!(outside.path().exists());
-        assert!(bin.0.borrow().is_empty());
+        assert!(bin.names().is_empty());
         assert!(delete_meeting_and_folder(&pool, "m1", b.path(), &|p| bin.remove(p)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_folder_shared_by_two_meetings_is_kept() {
+        let pool = crate::database::repositories::test_pool().await;
+        let b = base();
+        let m = b.path().join("Standup_2026-10-15_10-00");
+        fs::create_dir(&m).unwrap();
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        meeting(&pool, "a", &m).await;
+        meeting(&pool, "b", &m).await;
+        let bin = FakeBin::new();
+        let w = delete_meeting_and_folder(&pool, "a", b.path(), &|p| bin.remove(p)).await.unwrap().unwrap().unwrap();
+        assert!(w.contains("another meeting"));
+        assert!(m.join("audio.mp4").exists());
+        assert!(bin.names().is_empty());
+    }
+}
+```
+
+`audio_processing.rs` test (add a `#[cfg(test)]` module if there is none):
+
+```rust
+#[cfg(test)]
+mod meeting_folder_name_tests {
+    use super::*;
+
+    #[test]
+    fn two_meetings_never_share_a_folder() {
+        let base = tempfile::tempdir().unwrap();
+        let a = create_meeting_folder(&base.path().to_path_buf(), "Standup", true).unwrap();
+        let b = create_meeting_folder(&base.path().to_path_buf(), "Standup", false).unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_dir() && b.is_dir());
+        assert!(a.join(".checkpoints").is_dir());
     }
 }
 ```
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd frontend/src-tauri && nice -n 15 cargo test -p meetily --lib -j 4 -- audio::meeting_folder`
-Expected: compile error (module missing).
+Run: `cd frontend/src-tauri && nice -n 15 cargo test -p meetily --lib -j 4 -- audio::meeting_folder meeting_folder_name_tests`
+Expected: compile error (module missing) and, once it compiles, `two_meetings_never_share_a_folder` FAILS (same minute → same folder).
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement `meeting_folder.rs`**
 
 ```rust
 //! The one place that decides whether a meeting folder may be read or deleted (spec §8.3).
-//! Conclave never deletes outside the recordings folder, and never permanently: see `recycle`.
+//! Conclave never deletes outside the recordings folder and never permanently: see `recycle`.
+//! Remaining window: another process running as the user could swap a path between the
+//! per-file re-check in `recycle_checked` and the Recycle Bin call for that one file.
 use log::warn;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -944,15 +1020,21 @@ pub use crate::audio::constants::AUDIO_EXTENSIONS;
 pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];
 
 /// Every deleting function takes this, so tests never touch the real Recycle Bin.
-pub type Remover<'a> = &'a dyn Fn(&[PathBuf]) -> Result<(), String>;
+/// `Sync` keeps the async commands that hold it across `.await` `Send`.
+pub type Remover<'a> = &'a (dyn Fn(&[PathBuf]) -> Result<(), String> + Sync);
 
 /// Moves paths to the Windows Recycle Bin. With `trash`'s flags Windows asks the user before
 /// permanently deleting anything too big for the Bin; declining returns an error here.
+/// Runs on its own thread so `trash` gets a fresh COM apartment.
+/// shortcut: the join blocks one async worker while Windows shows a prompt; move to spawn_blocking if that ever matters.
 pub fn recycle(paths: &[PathBuf]) -> Result<(), String> {
     if paths.is_empty() {
         return Ok(());
     }
-    trash::delete_all(paths).map_err(|e| format!("Could not move to the Recycle Bin: {e}"))
+    let owned = paths.to_vec();
+    std::thread::spawn(move || trash::delete_all(&owned).map_err(|e| format!("Could not move to the Recycle Bin: {e}")))
+        .join()
+        .map_err(|_| "The Recycle Bin call failed unexpectedly".to_string())?
 }
 
 /// Canonical path of a meeting folder strictly inside the recordings base, or `None`.
@@ -982,19 +1064,33 @@ fn is_plain_dir(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir())
 }
 
-pub fn find_audio_file(folder: &Path) -> Option<PathBuf> {
-    AUDIO_EXTENSIONS
-        .iter()
-        .map(|ext| folder.join(format!("audio.{ext}")))
-        .find(|p| is_plain_file(p))
-}
-
-fn is_audio_name(name: &str) -> bool {
-    AUDIO_EXTENSIONS.iter().any(|ext| name == format!("audio.{ext}"))
+/// Position of `name`'s extension in `AUDIO_EXTENSIONS` if it is `audio.<ext>`, any case
+/// (imports keep the source file's case, e.g. `audio.MP3`).
+fn audio_rank(name: &str) -> Option<usize> {
+    let (stem, ext) = name.split_once('.')?;
+    if !stem.eq_ignore_ascii_case("audio") {
+        return None;
+    }
+    AUDIO_EXTENSIONS.iter().position(|e| e.eq_ignore_ascii_case(ext))
 }
 
 fn is_checkpoint_name(name: &str) -> bool {
     name.starts_with("audio_chunk_") || name == "concat_list.txt"
+}
+
+pub fn audio_files(folder: &Path) -> Vec<PathBuf> {
+    let Ok(rd) = fs::read_dir(folder) else { return Vec::new() };
+    let mut found: Vec<(usize, PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+        .filter_map(|e| audio_rank(&e.file_name().to_string_lossy()).map(|r| (r, e.path())))
+        .collect();
+    found.sort_by_key(|(r, _)| *r);
+    found.into_iter().map(|(_, p)| p).collect()
+}
+
+pub fn find_audio_file(folder: &Path) -> Option<PathBuf> {
+    audio_files(folder).into_iter().next()
 }
 
 /// Conclave's own files in `.checkpoints/` (`audio_chunk_NNN.mp4`, `concat_list.txt`, see
@@ -1014,34 +1110,71 @@ pub fn checkpoint_files(checkpoints: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-/// True when every entry is something Conclave writes. Links never count as ours.
-fn only_conclave_files(folder: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(folder) else { return false };
-    entries.flatten().all(|e| {
-        let name = e.file_name().to_string_lossy().to_string();
-        match e.file_type() {
-            Ok(t) if t.is_file() => is_audio_name(&name) || MEETING_FILES.contains(&name.as_str()),
-            Ok(t) if t.is_dir() && name == ".checkpoints" => {
-                let p = e.path();
-                fs::read_dir(&p).is_ok_and(|rd| rd.count() == checkpoint_files(&p).len())
-            }
-            _ => false,
-        }
-    })
+/// Re-checks one file right before recycling it: a real file whose parent resolves to exactly
+/// the (canonical) meeting folder or its `.checkpoints`.
+pub fn recycle_checked(path: &Path, folder: &Path, remove: Remover) -> Result<(), String> {
+    let parent_ok = path
+        .parent()
+        .and_then(|p| dunce::canonicalize(p).ok())
+        .is_some_and(|p| p == folder || p == folder.join(".checkpoints"));
+    if !parent_ok || !is_plain_file(path) {
+        return Err(format!("Skipped {}: it is no longer a Conclave file in the meeting folder", path.display()));
+    }
+    remove(&[path.to_path_buf()])
 }
 
-/// Moves a meeting folder to the Recycle Bin, but only a folder inside the recordings base that
-/// holds nothing but Conclave's files. Checked completely before anything is removed.
+/// Recycles a real, empty directory. `Ok(false)` if it is missing, a link or not empty.
+pub fn recycle_if_empty(dir: &Path, remove: Remover) -> Result<bool, String> {
+    let empty = is_plain_dir(dir) && fs::read_dir(dir).is_ok_and(|mut rd| rd.next().is_none());
+    if !empty {
+        return Ok(false);
+    }
+    remove(&[dir.to_path_buf()]).map(|_| true)
+}
+
+/// The files to recycle for a whole-folder delete, checkpoint files first and audio last,
+/// or `None` if the folder holds anything Conclave did not write (links never count as ours).
+fn conclave_files(folder: &Path) -> Option<Vec<PathBuf>> {
+    let mut checkpoints = Vec::new();
+    let mut json = Vec::new();
+    for e in fs::read_dir(folder).ok()?.flatten() {
+        let name = e.file_name().to_string_lossy().to_string();
+        match e.file_type().ok()? {
+            t if t.is_file() && audio_rank(&name).is_some() => {}
+            t if t.is_file() && MEETING_FILES.contains(&name.as_str()) => json.push(e.path()),
+            t if t.is_dir() && name == ".checkpoints" => {
+                let files = checkpoint_files(&e.path());
+                if fs::read_dir(e.path()).ok()?.count() != files.len() {
+                    return None;
+                }
+                checkpoints = files;
+            }
+            _ => return None,
+        }
+    }
+    Some([checkpoints, json, audio_files(folder)].concat())
+}
+
+/// Moves a meeting folder to the Recycle Bin item by item, but only a folder inside the
+/// recordings base that holds nothing but Conclave's files. Checked completely first.
 pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: Remover) -> Result<(), String> {
     if !Path::new(folder_path).exists() {
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
         .ok_or_else(|| format!("Recording folder kept: it is outside the Conclave recordings folder ({folder_path})"))?;
-    if !only_conclave_files(&folder) {
-        return Err(format!("Recording folder kept: it contains other files ({})", folder.display()));
+    let files = conclave_files(&folder)
+        .ok_or_else(|| format!("Recording folder kept: it contains other files ({})", folder.display()))?;
+    for f in &files {
+        recycle_checked(f, &folder, remove)?;
     }
-    remove(&[folder])
+    recycle_if_empty(&folder.join(".checkpoints"), remove)?;
+    if guarded_meeting_folder(&folder.to_string_lossy(), recordings_base).as_ref() != Some(&folder)
+        || !recycle_if_empty(&folder, remove)?
+    {
+        return Err(format!("Recording folder kept: new files appeared in it ({})", folder.display()));
+    }
+    Ok(())
 }
 
 /// DB delete first, then the folder; the meeting stays deleted if the folder cannot be.
@@ -1056,7 +1189,20 @@ pub async fn delete_meeting_and_folder(
     if !MeetingsRepository::delete_meeting(pool, meeting_id).await? {
         return Ok(None);
     }
-    let warning = folder_path.and_then(|p| delete_meeting_folder(&p, recordings_base, remove).err());
+    let warning = match folder_path {
+        None => None,
+        Some(p) => {
+            let (others,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings WHERE folder_path = ?")
+                .bind(&p)
+                .fetch_one(pool)
+                .await?;
+            if others > 0 {
+                Some(format!("Recording folder kept: another meeting uses it ({p})"))
+            } else {
+                delete_meeting_folder(&p, recordings_base, remove).err()
+            }
+        }
+    };
     if let Some(w) = &warning {
         warn!("Meeting {meeting_id} deleted, folder kept: {w}");
     }
@@ -1064,7 +1210,29 @@ pub async fn delete_meeting_and_folder(
 }
 ```
 
-- [ ] **Step 4: Wire `api_delete_meeting`** — replace the `match MeetingsRepository::delete_meeting(...)` with:
+- [ ] **Step 4: `create_meeting_folder` never reuses a folder** (`audio_processing.rs`) — replace the `create_dir_all(&meeting_folder)` line and the `let meeting_folder = …` before it with:
+
+```rust
+    std::fs::create_dir_all(base_path)?;
+    // `create_dir` (not `_all`) fails on an existing folder, so two meetings never share one;
+    // the name only has minute resolution.
+    let mut meeting_folder = base_path.join(&folder_name);
+    let mut n = 2;
+    loop {
+        match std::fs::create_dir(&meeting_folder) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n <= 99 => {
+                meeting_folder = base_path.join(format!("{folder_name}_{n}"));
+                n += 1;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+```
+
+(Callers: `recording_saver.rs:229` and `import.rs:344`, each once per new meeting — check neither expects to reopen an existing folder.)
+
+- [ ] **Step 5: Wire `api_delete_meeting`** — replace the `match MeetingsRepository::delete_meeting(...)` with:
 
 ```rust
     let base = crate::audio::recording_preferences::get_default_recordings_folder();
@@ -1088,13 +1256,13 @@ pub async fn delete_meeting_and_folder(
     }
 ```
 
-- [ ] **Step 5: Run tests** — Step 2 command: PASS; full workspace tests: PASS; `nice -n 15 cargo check -p meetily --target x86_64-pc-windows-msvc -j 4` is not possible on Linux (no Windows toolchain), so `trash` on Windows is first compiled by the Windows CI run at the end of the phase — note it in the report.
+- [ ] **Step 6: Run tests** — Step 2 command: PASS; full workspace tests: PASS. `trash` on Windows is first compiled by the Windows CI run at the end of the phase — note it in the report.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add frontend/src-tauri/Cargo.toml Cargo.lock frontend/src-tauri/src/audio/meeting_folder.rs frontend/src-tauri/src/audio/mod.rs frontend/src-tauri/src/api/api.rs
-git commit -m "feat(storage): guard meeting folders to the recordings folder; meeting delete moves its folder to the Recycle Bin"
+git add frontend/src-tauri/Cargo.toml Cargo.lock frontend/src-tauri/src/audio/meeting_folder.rs frontend/src-tauri/src/audio/mod.rs frontend/src-tauri/src/audio/audio_processing.rs frontend/src-tauri/src/api/api.rs
+git commit -m "feat(storage): guard meeting folders to the recordings folder; meeting delete moves its files to the Recycle Bin"
 ```
 
 ---
@@ -1108,17 +1276,17 @@ git commit -m "feat(storage): guard meeting folders to the recordings folder; me
 - Modify: `frontend/src-tauri/src/audio/recording_preferences.rs`, `frontend/src-tauri/src/lib.rs` (register commands)
 - Test: `#[cfg(test)] mod tests` in `retention.rs` and `recording_preferences.rs`
 
-There is **no background deletion and no grace period** (spec §8.1): the backend only lists old audio and deletes exactly what the user confirmed in the review, through the Recycle Bin.
+There is **no background deletion and no grace period** (spec §8.1): the backend only lists old audio and moves exactly what the user confirmed in the review to the Recycle Bin, re-checking each meeting and each file right before.
 
 **Interfaces:**
-- Consumes: `guarded_meeting_folder`, `find_audio_file`-style rules via `AUDIO_EXTENSIONS`, `checkpoint_files`, `Remover`, `recycle` (Task 3); `MeetingModel.keep_audio`, `meetings.audio_deleted_at` (Task 1); `crate::audio::recording_commands::is_recording_now()`.
+- Consumes (Task 3): `guarded_meeting_folder`, `audio_files`, `checkpoint_files`, `recycle_checked`, `recycle_if_empty`, `Remover`, `recycle`; (Task 1) `keep_audio`, `audio_deleted_at`; `crate::audio::recording_commands::is_recording_now()`.
 - Produces:
   - `RecordingPreferences.old_audio_days: Option<u32>` (`#[serde(default = "default_old_audio_days")]` → `Some(30)`; JSON `null` = Never)
-  - `#[derive(Serialize)] pub struct OldAudio { pub meeting_id: String, pub title: String, pub created_at: String, pub bytes: u64, pub files: Vec<String> }`
+  - `#[derive(Serialize)] pub struct OldAudio { pub meeting_id: String, pub title: String, pub created_at: String, pub folder: String, pub bytes: u64, pub files: Vec<String> }`
   - `#[derive(Serialize, Default)] pub struct DeleteResult { pub meetings: u32, pub bytes: u64, pub failed: Vec<String> }`
   - `pub fn is_old(created_at: DateTime<Utc>, days: u32, now: DateTime<Utc>) -> bool`
-  - `pub fn audio_paths(folder: &Path) -> Vec<PathBuf>` (real top-level `audio.<ext>` files + `checkpoint_files(.checkpoints)`; never a directory)
-  - `pub async fn list_old_audio(pool, days: Option<u32>, now, recording: bool, base: &Path) -> Result<Vec<OldAudio>, String>`
+  - `pub fn audio_paths(folder: &Path) -> Vec<PathBuf>` — `checkpoint_files(.checkpoints)` then `audio_files(folder)` (audio last; never a directory)
+  - `pub async fn list_old_audio(pool, days: Option<u32>, now, recording: bool, base: &Path) -> Result<Vec<OldAudio>, String>` — skips pinned, too new, no folder, guard failures, folders shared by several meetings, and folders without audio.
   - `pub async fn delete_old_audio_inner(pool, confirmed: &[String], days: Option<u32>, now, recording: bool, base: &Path, remove: Remover<'_>) -> Result<DeleteResult, String>`
   - Commands: `old_audio_list() -> OldAudio[]`, `delete_old_audio(meetingIds: string[]) -> DeleteResult`.
 
@@ -1153,16 +1321,20 @@ mod tests {
     use super::*;
     use crate::database::repositories::test_pool;
     use chrono::{Duration, TimeZone, Utc};
-    use std::cell::RefCell;
     use std::fs;
+    use std::sync::Mutex;
 
     fn now() -> DateTime<Utc> { Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap() }
 
-    struct FakeBin(RefCell<Vec<PathBuf>>);
+    /// Recycle Bin stand-in: files, and directories only when empty.
+    struct FakeBin(Mutex<Vec<PathBuf>>);
     impl FakeBin {
-        fn new() -> Self { FakeBin(RefCell::new(Vec::new())) }
+        fn new() -> Self { FakeBin(Mutex::new(Vec::new())) }
         fn remove(&self, paths: &[PathBuf]) -> Result<(), String> {
-            for p in paths { fs::remove_file(p).unwrap(); self.0.borrow_mut().push(p.clone()); }
+            for p in paths {
+                if p.is_dir() { fs::remove_dir(p).map_err(|e| e.to_string())? } else { fs::remove_file(p).map_err(|e| e.to_string())? }
+                self.0.lock().unwrap().push(p.clone());
+            }
             Ok(())
         }
     }
@@ -1184,6 +1356,11 @@ mod tests {
             .execute(pool).await.unwrap();
     }
 
+    async fn deleted_at(pool: &SqlitePool, id: &str) -> Option<String> {
+        let (d,): (Option<String>,) = sqlx::query_as("SELECT audio_deleted_at FROM meetings WHERE id = ?").bind(id).fetch_one(pool).await.unwrap();
+        d
+    }
+
     #[test]
     fn is_old_uses_the_cutoff() {
         assert!(is_old(now() - Duration::days(31), 30, now()));
@@ -1198,6 +1375,7 @@ mod tests {
         let f_old = folder(b.path(), "old");
         let f_new = folder(b.path(), "new");
         let f_pin = folder(b.path(), "pinned");
+        let f_shared = folder(b.path(), "shared");
         let outside = tempfile::tempdir().unwrap();
         fs::write(outside.path().join("audio.mp4"), "x").unwrap();
         insert(&pool, "old", old, Some(&f_old), false).await;
@@ -1205,6 +1383,8 @@ mod tests {
         insert(&pool, "pinned", old, Some(&f_pin), true).await;
         insert(&pool, "nofolder", old, None, false).await;
         insert(&pool, "outside", old, Some(outside.path()), false).await;
+        insert(&pool, "shared1", old, Some(&f_shared), false).await;
+        insert(&pool, "shared2", now() - Duration::days(1), Some(&f_shared), false).await;
 
         let list = list_old_audio(&pool, Some(30), now(), false, b.path()).await.unwrap();
         assert_eq!(list.len(), 1);
@@ -1212,13 +1392,14 @@ mod tests {
         assert_eq!(list[0].title, "Meeting old");
         assert_eq!(list[0].bytes, 1010);
         assert_eq!(list[0].files.len(), 2);
+        assert!(list[0].files.last().unwrap().ends_with("audio.mp4")); // audio last
         assert!(f_old.join("audio.mp4").exists());
         assert!(list_old_audio(&pool, None, now(), false, b.path()).await.unwrap().is_empty());
         assert!(list_old_audio(&pool, Some(30), now(), true, b.path()).await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn delete_removes_only_confirmed_audio_and_marks_the_meeting() {
+    async fn delete_recycles_only_confirmed_audio_and_marks_the_meeting() {
         let pool = test_pool().await;
         let b = tempfile::tempdir().unwrap();
         let old = now() - Duration::days(40);
@@ -1232,26 +1413,32 @@ mod tests {
         assert_eq!((r.meetings, r.bytes), (1, 1010));
         assert!(r.failed.is_empty());
         assert!(!f1.join("audio.mp4").exists());
-        assert!(!f1.join(".checkpoints").exists()); // emptied, then removed
+        assert!(!f1.join(".checkpoints").exists()); // emptied, then recycled
         for keep in ["transcripts.json", "metadata.json"] { assert!(f1.join(keep).exists(), "{keep}"); }
         assert!(f2.join("audio.mp4").exists()); // not confirmed
-        let (deleted_at,): (Option<String>,) = sqlx::query_as("SELECT audio_deleted_at FROM meetings WHERE id = 'one'").fetch_one(&pool).await.unwrap();
-        assert!(deleted_at.is_some());
-        assert_eq!(bin.0.borrow().len(), 2);
+        assert!(deleted_at(&pool, "one").await.is_some());
+        assert!(deleted_at(&pool, "two").await.is_none());
+        assert_eq!(bin.0.lock().unwrap().len(), 3); // chunk, audio, then the empty .checkpoints
     }
 
     #[tokio::test]
-    async fn delete_is_refused_while_recording_and_reports_bin_failures() {
+    async fn delete_is_refused_while_recording_and_reports_partial_bin_failures() {
         let pool = test_pool().await;
         let b = tempfile::tempdir().unwrap();
         let f = folder(b.path(), "one");
         insert(&pool, "one", now() - Duration::days(40), Some(&f), false).await;
-        let failing = |_: &[PathBuf]| Err("user declined".to_string());
-        assert!(delete_old_audio_inner(&pool, &["one".into()], Some(30), now(), true, b.path(), &failing).await.is_err());
-        let r = delete_old_audio_inner(&pool, &["one".into()], Some(30), now(), false, b.path(), &failing).await.unwrap();
+        let bin = FakeBin::new();
+        // the user declines Windows' prompt for the big audio file; the chunk was already moved
+        let declines_audio = |p: &[PathBuf]| {
+            if p.iter().any(|x| x.file_name().is_some_and(|n| n == "audio.mp4")) { Err("user declined".to_string()) } else { bin.remove(p) }
+        };
+        assert!(delete_old_audio_inner(&pool, &["one".into()], Some(30), now(), true, b.path(), &declines_audio).await.is_err());
+        let r = delete_old_audio_inner(&pool, &["one".into()], Some(30), now(), false, b.path(), &declines_audio).await.unwrap();
         assert_eq!(r.meetings, 0);
+        assert_eq!(r.bytes, 10);
         assert_eq!(r.failed.len(), 1);
         assert!(f.join("audio.mp4").exists());
+        assert!(deleted_at(&pool, "one").await.is_none()); // audio still there
     }
 
     #[test]
@@ -1260,6 +1447,18 @@ mod tests {
         let f = b.path().join("m");
         fs::create_dir_all(f.join(".checkpoints")).unwrap();
         fs::write(f.join(".checkpoints/mine.txt"), vec![0u8; 500]).unwrap();
+        assert!(audio_paths(&f).is_empty());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn linked_checkpoints_are_not_listed() {
+        let b = tempfile::tempdir().unwrap();
+        let target = tempfile::tempdir().unwrap();
+        fs::write(target.path().join("audio_chunk_000.mp4"), "x").unwrap();
+        let f = b.path().join("m");
+        fs::create_dir(&f).unwrap();
+        std::os::unix::fs::symlink(target.path(), f.join(".checkpoints")).unwrap();
         assert!(audio_paths(&f).is_empty());
     }
 }
@@ -1284,15 +1483,16 @@ with `fn default_old_audio_days() -> Option<u32> { Some(30) }` and `old_audio_da
 
 ```rust
 //! Old-audio review (spec §8.1): lists recordings older than N days and moves exactly the
-//! confirmed ones to the Recycle Bin. Never runs by itself; never deletes transcripts,
+//! confirmed ones to the Recycle Bin. Never runs by itself; never touches transcripts,
 //! summaries, notes or the JSON files in the folder.
-use crate::audio::meeting_folder::{checkpoint_files, guarded_meeting_folder, recycle, Remover, AUDIO_EXTENSIONS};
+use crate::audio::meeting_folder::{audio_files, checkpoint_files, guarded_meeting_folder, recycle, recycle_checked, recycle_if_empty, Remover};
 use crate::audio::recording_preferences::{get_default_recordings_folder, load_recording_preferences};
 use crate::database::models::DateTimeUtc;
 use chrono::{DateTime, Duration, Utc};
 use log::{info, warn};
 use serde::Serialize;
 use sqlx::SqlitePool;
+use std::collections::HashMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime};
@@ -1302,6 +1502,7 @@ pub struct OldAudio {
     pub meeting_id: String,
     pub title: String,
     pub created_at: String,
+    pub folder: String,
     pub bytes: u64,
     pub files: Vec<String>,
 }
@@ -1317,16 +1518,9 @@ pub fn is_old(created_at: DateTime<Utc>, days: u32, now: DateTime<Utc>) -> bool 
     created_at < now - Duration::days(i64::from(days))
 }
 
-/// Everything the review may delete in one folder: real top-level `audio.<ext>` files and
-/// Conclave's own checkpoint files. Listing, size and delete all use this one list.
+/// Everything the review may delete in one folder, checkpoint files first and audio last.
 pub fn audio_paths(folder: &Path) -> Vec<PathBuf> {
-    let mut paths: Vec<PathBuf> = AUDIO_EXTENSIONS
-        .iter()
-        .map(|ext| folder.join(format!("audio.{ext}")))
-        .filter(|p| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file()))
-        .collect();
-    paths.extend(checkpoint_files(&folder.join(".checkpoints")));
-    paths
+    [checkpoint_files(&folder.join(".checkpoints")), audio_files(folder)].concat()
 }
 
 fn size_of(path: &Path) -> u64 {
@@ -1344,26 +1538,31 @@ pub async fn list_old_audio(
     if recording {
         return Ok(Vec::new());
     }
-    let rows: Vec<(String, String, DateTimeUtc, String)> = sqlx::query_as(
-        "SELECT id, title, created_at, folder_path FROM meetings
-         WHERE keep_audio = 0 AND folder_path IS NOT NULL ORDER BY created_at",
+    let rows: Vec<(String, String, DateTimeUtc, String, bool)> = sqlx::query_as(
+        "SELECT id, title, created_at, folder_path, keep_audio FROM meetings WHERE folder_path IS NOT NULL ORDER BY created_at",
     )
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
+    // A folder used by several meetings is never offered (deleting it would hit the others).
+    let mut uses: HashMap<String, usize> = HashMap::new();
+    for (_, _, _, path, _) in &rows {
+        *uses.entry(path.clone()).or_default() += 1;
+    }
     Ok(rows
         .into_iter()
-        .filter(|(_, _, created, _)| is_old(created.0, days, now))
-        .filter_map(|(id, title, created, path)| {
+        .filter(|(_, _, created, path, keep)| !keep && uses[path] == 1 && is_old(created.0, days, now))
+        .filter_map(|(id, title, created, path, _)| {
             let folder = guarded_meeting_folder(&path, base)?;
             let files = audio_paths(&folder);
-            if files.is_empty() {
+            if audio_files(&folder).is_empty() {
                 return None;
             }
             Some(OldAudio {
                 meeting_id: id,
                 title,
                 created_at: created.0.to_rfc3339(),
+                folder: folder.to_string_lossy().to_string(),
                 bytes: files.iter().map(|f| size_of(f)).sum(),
                 files: files.iter().map(|f| f.to_string_lossy().to_string()).collect(),
             })
@@ -1371,7 +1570,8 @@ pub async fn list_old_audio(
         .collect())
 }
 
-/// Deletes exactly the confirmed meetings that are still listed, through `remove`.
+/// Moves exactly the confirmed meetings' audio to the Recycle Bin, re-listing first and
+/// re-checking every file right before it is recycled.
 pub async fn delete_old_audio_inner(
     pool: &SqlitePool,
     confirmed: &[String],
@@ -1389,30 +1589,39 @@ pub async fn delete_old_audio_inner(
         if !confirmed.contains(&item.meeting_id) {
             continue;
         }
-        let paths: Vec<PathBuf> = item.files.iter().map(PathBuf::from).collect();
-        match remove(&paths) {
-            Ok(()) => {
-                if let Some(first) = paths.first().and_then(|p| p.parent()) {
-                    let checkpoints = first.join(".checkpoints");
-                    if fs::symlink_metadata(&checkpoints).is_ok_and(|m| m.file_type().is_dir()) {
-                        let _ = fs::remove_dir(&checkpoints); // only when empty
-                    }
+        // Re-guard this folder now: earlier recycles may have waited minutes on a Windows prompt.
+        let Some(folder) = guarded_meeting_folder(&item.folder, base) else {
+            result.failed.push(format!("{}: the folder is no longer inside the recordings folder", item.title));
+            continue;
+        };
+        let mut error = None;
+        for f in audio_paths(&folder) {
+            let size = size_of(&f);
+            match recycle_checked(&f, &folder, remove) {
+                Ok(()) => result.bytes += size,
+                Err(e) => {
+                    error = Some(e);
+                    break;
                 }
-                if let Err(e) = sqlx::query("UPDATE meetings SET audio_deleted_at = ? WHERE id = ?")
-                    .bind(now.to_rfc3339())
-                    .bind(&item.meeting_id)
-                    .execute(pool)
-                    .await
-                {
-                    warn!("Old audio: could not record the deletion for {}: {e}", item.meeting_id);
-                }
-                result.meetings += 1;
-                result.bytes += item.bytes;
             }
-            Err(e) => {
-                warn!("Old audio: {} not deleted: {e}", item.meeting_id);
-                result.failed.push(format!("{}: {e}", item.title));
+        }
+        if let Err(e) = recycle_if_empty(&folder.join(".checkpoints"), remove) {
+            warn!("Old audio: could not recycle the empty .checkpoints of {}: {e}", item.meeting_id);
+        }
+        if audio_files(&folder).is_empty() {
+            if let Err(e) = sqlx::query("UPDATE meetings SET audio_deleted_at = ? WHERE id = ?")
+                .bind(now.to_rfc3339())
+                .bind(&item.meeting_id)
+                .execute(pool)
+                .await
+            {
+                warn!("Old audio: could not record the deletion for {}: {e}", item.meeting_id);
             }
+            result.meetings += 1;
+        }
+        if let Some(e) = error {
+            warn!("Old audio: {} not fully moved: {e}", item.meeting_id);
+            result.failed.push(format!("{}: {e}", item.title));
         }
     }
     info!("Old audio: moved {} recordings ({} MB) to the Recycle Bin", result.meetings, result.bytes / 1_000_000);
@@ -1452,6 +1661,7 @@ git commit -m "feat(storage): list old recordings and move the confirmed ones to
 ```
 
 ---
+
 
 ### Task 5: Playback backend and dead-code removal
 
@@ -2878,6 +3088,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import type { MeetingAudioInfo } from '@/lib/meeting-audio';
+import { AUDIO_DELETED_EVENT } from '@/lib/old-audio';
 
 export type PlaybackRate = 1 | 1.5 | 2;
 
@@ -2891,10 +3102,14 @@ export function useMeetingAudio(meetingId: string) {
 
   useEffect(() => {
     let cancelled = false;
-    invoke<MeetingAudioInfo>('get_meeting_audio', { meetingId })
-      .then((i) => { if (!cancelled) setInfo(i); })
-      .catch((e) => console.error('Failed to locate meeting audio:', e));
-    return () => { cancelled = true; };
+    const load = () =>
+      invoke<MeetingAudioInfo>('get_meeting_audio', { meetingId })
+        .then((i) => { if (!cancelled) setInfo(i); })
+        .catch((e) => console.error('Failed to locate meeting audio:', e));
+    void load();
+    // The old-audio review (mounted in the layout) may delete this meeting's audio while it is open.
+    window.addEventListener(AUDIO_DELETED_EVENT, load);
+    return () => { cancelled = true; window.removeEventListener(AUDIO_DELETED_EVENT, load); };
   }, [meetingId]);
 
   const src = info?.path ? convertFileSrc(info.path) : null;
@@ -3027,10 +3242,10 @@ git commit -m "feat(meeting): notes, marks and playback on the saved meeting pag
   - `toggleId(selected: string[], id: string): string[]`
   - `shouldRemind(lastShownDay: string | null, today: string, count: number): boolean` (`count > 0 && lastShownDay !== today`)
   - `todayKey(d = new Date()): string` (`YYYY-MM-DD`, local time)
-  - `REMINDER_DAY_KEY = 'conclave.oldAudioReminderDay'`
+  - `REMINDER_DAY_KEY = 'conclave.oldAudioReminderDay'`, `AUDIO_DELETED_EVENT = 'conclave:audio-deleted'` (dispatched on `window` after a review delete; `useMeetingAudio` (Task 10) refetches on it — Task 10 imports this constant, so create `lib/old-audio.ts` with at least this export in Task 10 if Task 11 has not run yet)
 - `OldAudioReview({ open, onOpenChange })`: loads `old_audio_list` when opened; nothing selected by default.
 
-Behaviour (spec §2.8–2.9, §8.1): the review lists each meeting with title, local date, size and its exact file paths (small monospace text), a checkbox per meeting, "Select all" / "Select none", and a footer line "Selected recordings go to the Windows Recycle Bin. Space is freed when you empty it. Transcripts, summaries and notes stay." The **Move N to Recycle Bin** button is disabled until at least one meeting is ticked. After the call: `toast.success("Moved N recordings (X) to the Recycle Bin")`; each `failed` entry → one `toast.warning`; the list reloads. Empty list → "No recordings are older than D days." The reminder checks on mount and every 24 h and shows at most one toast per day: `"N recordings are older than D days (X)."` with action **Review** that opens the dialog.
+Behaviour (spec §2.8–2.9, §8.1): the review lists each meeting with title, local date, size and its exact file paths (small monospace text), a checkbox per meeting, "Select all" / "Select none", and a footer line "Selected recordings go to the Windows Recycle Bin. Space is freed when you empty it. Transcripts, summaries and notes stay." The **Move N to Recycle Bin** button is disabled until at least one meeting is ticked. After the call: `toast.success("Moved N recordings (X) to the Recycle Bin")`; each `failed` entry → one `toast.warning`; the list reloads. Empty list → "No recordings are old enough to review." The reminder checks on mount and every 24 h and shows at most one toast per day: `"N recordings are older than D days (X)."` (D from `get_recording_preferences().old_audio_days`) with action **Review** that opens the dialog.
 
 - [ ] **Step 1: Failing tests** — `frontend/tests/lib/old-audio.test.ts`:
 
@@ -3069,7 +3284,8 @@ describe('old-audio helpers', () => {
 - ticking one enables the button; clicking it calls `invoke('delete_old_audio', { meetingIds: ['m1'] })` with **only** that id;
 - "Select all" then delete sends both ids;
 - the rendered text contains each item's file paths;
-- a result with `failed: ['Standup: user declined']` shows a warning toast.
+- a result with `failed: ['Standup: user declined']` shows a warning toast;
+- a successful delete dispatches `AUDIO_DELETED_EVENT` on `window`.
 
 - [ ] **Step 2: Verify failure** — `cd frontend && bun test tests/lib/old-audio.test.ts tests/components/old-audio-review.test.tsx`: FAIL.
 
@@ -3080,6 +3296,7 @@ export interface OldAudio { meeting_id: string; title: string; created_at: strin
 export interface DeleteResult { meetings: number; bytes: number; failed: string[] }
 
 export const REMINDER_DAY_KEY = 'conclave.oldAudioReminderDay';
+export const AUDIO_DELETED_EVENT = 'conclave:audio-deleted';
 
 export const OLD_AUDIO_OPTIONS = [
   { value: 'never', label: 'Never' },
@@ -3125,7 +3342,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { formatMegabytes, toggleId, type DeleteResult, type OldAudio } from '@/lib/old-audio';
+import { AUDIO_DELETED_EVENT, formatMegabytes, toggleId, type DeleteResult, type OldAudio } from '@/lib/old-audio';
 
 export function OldAudioReview({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const [items, setItems] = useState<OldAudio[] | null>(null);
@@ -3150,6 +3367,7 @@ export function OldAudioReview({ open, onOpenChange }: { open: boolean; onOpenCh
       const r = await invoke<DeleteResult>('delete_old_audio', { meetingIds: selected });
       if (r.meetings > 0) toast.success(`Moved ${r.meetings} recordings (${formatMegabytes(r.bytes)}) to the Recycle Bin`);
       for (const f of r.failed) toast.warning('Not moved to the Recycle Bin', { description: f });
+      window.dispatchEvent(new Event(AUDIO_DELETED_EVENT));
       await load();
     } catch (e) {
       toast.error('Could not delete the selected audio', { description: String(e) });
@@ -3244,7 +3462,10 @@ export function OldAudioReminder() {
       if (!shouldRemind(last, today, items.length)) return;
       try { localStorage.setItem(REMINDER_DAY_KEY, today); } catch { /* optional */ }
       const bytes = items.reduce((s, i) => s + i.bytes, 0);
-      toast(`${items.length} recordings are older than your limit (${formatMegabytes(bytes)}).`, {
+      let days: number | null = null;
+      try { days = (await invoke<{ old_audio_days: number | null }>('get_recording_preferences')).old_audio_days; } catch { /* generic text */ }
+      const age = days ? `older than ${days} days` : 'old';
+      toast(`${items.length} recordings are ${age} (${formatMegabytes(bytes)}).`, {
         description: 'Nothing is deleted until you review and confirm.',
         action: { label: 'Review', onClick: () => setOpen(true) },
         duration: 15000,

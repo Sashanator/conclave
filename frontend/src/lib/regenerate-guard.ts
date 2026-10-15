@@ -7,3 +7,15 @@ export function shouldRegenerate(
 ): boolean {
   return !hasUnsavedEdits || confirm(REGENERATE_DISCARD_PROMPT);
 }
+
+/** Picking a template replaces the summary, so it runs only when the same guard allows a regenerate. */
+export function pickTemplateIfAllowed(
+  hasUnsavedEdits: boolean,
+  pick: () => void,
+  regenerate: () => unknown,
+  confirm?: (message: string) => boolean,
+): void {
+  if (!shouldRegenerate(hasUnsavedEdits, confirm)) return;
+  pick();
+  void regenerate();
+}

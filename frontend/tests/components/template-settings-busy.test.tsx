@@ -32,11 +32,13 @@ const template = {
 };
 let pendingSave: { resolve: (id: string) => void } | null = null;
 let holdBeta = false;
+let failBeta = false;
 let releaseBeta: (() => void) | null = null;
 const invoke = mock(async (command: string, _args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'api_list_templates') return listing;
   if (command === 'api_get_template') {
     const id = _args?.templateId;
+    if (id === 'beta' && failBeta) throw new Error('load failed');
     const body = id === 'beta' ? { ...template, name: 'Beta' } : template;
     if (id === 'beta' && holdBeta) {
       return new Promise((resolve) => {
@@ -53,7 +55,7 @@ const invoke = mock(async (command: string, _args?: Record<string, unknown>): Pr
   if (command === 'api_delete_template') return undefined;
   throw new Error(`Unexpected command: ${command}`);
 });
-const toast = { success: () => {}, error: () => {}, info: () => {}, warning: () => {} };
+const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
 
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
@@ -98,7 +100,9 @@ describe('template editor busy state', () => {
     invoke.mockClear();
     pendingSave = null;
     holdBeta = false;
+    failBeta = false;
     releaseBeta = null;
+    toast.error.mockClear();
     renderer?.unmount();
     renderer = null;
     await act(async () => {
@@ -161,6 +165,19 @@ describe('template editor busy state', () => {
     await flush();
     expect(field('tpl-name', 'input').props.value).toBe('Fresh');
     confirm.mockRestore();
+  });
+
+  test('a failed template load clears busy, re-enables the editor and list, and shows the error', async () => {
+    failBeta = true;
+    await act(async () => {
+      renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Beta')[0].props.onClick();
+    });
+    await flush();
+    expect(toast.error.mock.calls.map(([what]) => what)).toEqual(['Could not open the template']);
+    expect(button('Save').props.disabled).toBe(false);
+    expect(button('New template').props.disabled).toBe(false);
+    expect(renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Beta')[0].props.disabled).toBe(false);
+    expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-current'] === 'true').map((n) => n.children[0])).toEqual(['Standard']);
   });
 
   test('Save clicked while another template is loading does not write into the loaded template', async () => {

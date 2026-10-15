@@ -20,7 +20,7 @@ import {
 const STANDARD_ID = 'standard_meeting';
 const DISCARD_PROMPT = 'Discard unsaved changes?';
 
-interface TemplateInfo { id: string; name: string; use_when: string | null }
+interface TemplateInfo { id: string; name: string; use_when: string | null; has_keywords: boolean }
 interface TemplateListing { templates: TemplateInfo[]; errors: string[] }
 
 const fail = (what: string) => (err: unknown) => toast.error(what, { description: String(err) });
@@ -202,7 +202,7 @@ export function TemplateSettings() {
                 className={`w-full rounded-md px-3 py-2 text-left text-sm text-foreground ${t.id === currentId ? 'bg-muted font-medium' : 'hover:bg-muted/60'} disabled:opacity-60`}
               >
                 {t.name}
-                {!t.use_when?.trim() && <span className="ml-2 text-xs text-muted-foreground">auto-pick off</span>}
+                {!t.use_when?.trim() && !t.has_keywords && <span className="ml-2 text-xs text-muted-foreground">auto-pick off</span>}
               </button>
             </li>
           ))}

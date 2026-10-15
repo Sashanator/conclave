@@ -1,12 +1,14 @@
-# Conclave Phase 4: Live notes, transcript marks, click-to-play, audio retention — Design
+# Conclave Phase 4: Live notes, transcript marks, click-to-play, old-audio review — Design
 
 Date: 2026-10-15
 Status: Approved in conversation by the user (2026-10-15); written spec awaiting review
-Target release: v0.4.0 (together with Phase 3)
+Target release: v0.5.0 (Phase 3 ships first as v0.4.0)
 
 ## 1. Purpose
 
-During a call the user wants to (a) jot notes next to the live transcript and (b) mark transcript lines as important, an action, or a follow-up, and have both reflected in the summary. After the call they want to click a transcript line and hear that moment. Audio takes disk space and is rarely needed after a few weeks, so it should be deleted automatically after 30 days by default, while transcripts, summaries and notes stay.
+During a call the user wants to (a) jot notes next to the live transcript and (b) mark transcript lines as important, an action, or a follow-up, and have both reflected in the summary. After the call they want to click a transcript line and hear that moment. Audio takes disk space and is rarely needed after a few weeks, so Conclave reminds the user about recordings older than 30 days (by default) and lets them review and delete that audio, while transcripts, summaries and notes stay.
+
+**Safety rule (user decision, 2026-10-15):** Conclave never deletes files on its own, and everything it deletes goes to the Windows Recycle Bin (the `trash` crate; Windows itself asks before permanently deleting anything too big for the Bin, and declining leaves the files). Every deletion is something the user sees and confirms, and no deletion can reach outside the recordings folder (`Music\conclave-recordings`), whatever a bug or a bad `folder_path` says.
 
 The summary is still written from the transcript exactly as today. Notes and marks are extra input that must each be reflected in it, woven into the section where it belongs. They are not the skeleton of the summary.
 
@@ -20,9 +22,10 @@ Out of scope, decided in the brainstorm: mic-only mode (dropped; the later "Conc
 4. A crash during a recording followed by transcript recovery brings back the notes and marks along with the transcript.
 5. On a saved meeting, clicking a line's timestamp plays the audio from that moment. The player can pause, seek and play at 1× / 1.5× / 2×, and highlights the line being played.
 6. Settings → Preferences → "Meeting page layout" switches the saved meeting page between three columns (Transcript ┃ My notes ┃ Summary) and a sub-tab layout (left pane: Transcript | My notes). Splitters are draggable and remembered.
-7. Settings → Recording → "Delete audio after" offers Never / 7 / 30 / 90 days (default 30). Audio of meetings older than that is deleted; transcripts, summaries, notes, `transcripts.json` and `metadata.json` stay. Meetings pinned with 📌 Keep audio are never touched.
-8. The first launch after the update deletes nothing: existing recordings get 30 days from the update. "Delete eligible audio now…" in Settings frees the space at once after confirming the count and size.
-9. Deleting a meeting also deletes its recording folder.
+7. Settings → Recording → "Remind me about audio older than" offers Never / 7 / 30 / 90 days (default 30). Meetings pinned with 📌 Keep audio are never listed.
+8. When such recordings exist, Conclave shows a reminder at most once a day: "12 recordings are older than 30 days (3.1 GB). [Review]". "Review old audio…" in Settings opens the same list at any time.
+9. The review list shows each meeting's title, date, size and exact file paths, with nothing selected. The user ticks meetings (or "Select all") and confirms; only then is that audio deleted. Transcripts, summaries, notes, `transcripts.json` and `metadata.json` stay. Nothing is ever deleted in the background.
+10. Deleting a meeting also deletes its recording folder, but only when the folder is inside the recordings folder and holds nothing but Conclave's files; otherwise the folder is kept and the user is told where it is.
 
 ## 3. Current state (as of Phase 3, commit 7303bc5)
 
@@ -45,6 +48,7 @@ One new sqlx migration:
 ```sql
 ALTER TABLE transcripts ADD COLUMN mark TEXT;            -- 'important' | 'action' | 'followup' | NULL
 ALTER TABLE meetings ADD COLUMN keep_audio INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE meetings ADD COLUMN audio_deleted_at TEXT;   -- set when the user deletes the audio in the review
 ```
 
 Notes reuse `meeting_notes`: `notes_json` holds a JSON array, sorted by `at` (nulls last), then creation order:
@@ -80,13 +84,13 @@ New Tauri commands:
 | `save_meeting_notes(meeting_id, notes: Vec<Note>)` | Replaces the list (upsert). |
 | `set_keep_audio(meeting_id, keep: bool)` | Updates the pin. |
 | `get_meeting_audio(meeting_id)` | See §8.2. |
-| `audio_retention_preview()` / `audio_retention_delete_now()` | See §8.1. |
+| `old_audio_list()` / `delete_old_audio(meeting_ids)` | See §8.1. |
 
 `get_meeting` and the paginated transcript query return `mark`, the notes and `keep_audio`.
 
 ### 5.4 Meeting delete
 
-`delete_meeting` reads `folder_path` first, deletes the DB rows (adding an explicit `DELETE FROM meeting_notes`), commits, and then deletes the folder if it passes the folder guard (§8.3). The delete is never recursive: only the files Conclave writes (`audio.<ext>`, Conclave's `.checkpoints/` files, `transcripts.json`, `metadata.json` and their `.tmp` siblings) are removed, then the folder if it is empty; a folder with anything else in it is kept. (`folder_path` comes from the webview at save time.) A failed or partial folder delete is logged and returned as a warning; the meeting stays deleted. The confirm dialog says the recording is deleted too.
+`delete_meeting` reads `folder_path` first, deletes the DB rows (adding an explicit `DELETE FROM meeting_notes`), commits, and then deletes the folder if it passes the folder guard (§8.3, inside the recordings folder only) and holds nothing but Conclave's files — checked before anything is deleted. The delete is never recursive: only the files Conclave writes (`audio.<ext>`, Conclave's `.checkpoints/` files, `transcripts.json`, `metadata.json` and their `.tmp` siblings) are removed, then the folder if it is empty; a folder with anything else in it is kept. (`folder_path` comes from the webview at save time.) A failed or partial folder delete is logged and returned as a warning; the meeting stays deleted. The confirm dialog says the recording is deleted too.
 
 Re-transcribing a meeting replaces all its lines; each mark moves to the new line that overlaps it most in time (no overlap: the nearest start).
 
@@ -121,11 +125,11 @@ Notes added after the meeting show "added later". Clicking a note's time plays f
 
 At the bottom of the transcript pane on saved meetings: play/pause, scrub bar, current time / duration, speed 1× / 1.5× / 2×, and a 📌 Keep audio toggle. The line under the playhead is highlighted; the view does not auto-scroll.
 
-Without audio the bar shows "Audio deleted (older than N days)" when retention would have removed it, otherwise "Audio file not found", and timestamps are not clickable. Re-transcribe is disabled with the same message.
+Without audio the bar shows "Audio deleted on <date>" when the user deleted it in the review (`audio_deleted_at`), otherwise "Audio file not found", and timestamps are not clickable. Re-transcribe is disabled with the same message.
 
 ### 6.5 Settings → Recording
 
-"Delete audio after: Never / 7 / 30 / 90 days" (default 30), with the line "Transcripts, summaries and notes are kept." Below it, "Delete eligible audio now…" (§8.1).
+"Remind me about audio older than: Never / 7 / 30 / 90 days" (default 30), with the line "Conclave never deletes audio by itself. Transcripts, summaries and notes are always kept." Below it, "Review old audio…" (§8.1).
 
 ## 7. Summary prompt
 
@@ -153,26 +157,26 @@ Notes are the user's own input, so they are trusted. The existing "ignore instru
 
 Editing notes after a summary exists does not regenerate it; the user presses Regenerate.
 
-## 8. Audio retention, playback, folder guard
+## 8. Old-audio review, playback, folder guard
 
-### 8.1 Retention job (`audio/retention.rs`)
+### 8.1 Old-audio review (`audio/retention.rs`)
 
-- `recording_preferences.json` gains `audio_retention_days: Option<u32>` (`None` = Never; default `Some(30)`) and `audio_retention_started_at`, set to now at the first launch of this version and whenever the setting changes from Never to a number of days.
-- Runs 1 minute after startup (spawned after DB init in `lib.rs` setup), then every 24 h. Reads the setting each run. Skips the whole run while a recording is in progress.
-- Candidates: `keep_audio = 0`, `folder_path` not null, `created_at` older than N days **and** `audio_retention_started_at` older than N days (grace period).
-- In each candidate folder that passes the guard (§8.3) it deletes only top-level files named `audio.<ext>` with an import audio extension (mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — `audio/constants.rs`) and Conclave's own files in `.checkpoints/` (then that subfolder if empty). Nothing else, never recursively.
-- A missing file counts as done. Errors are logged per meeting and the job continues. Each run logs the files deleted and the MB freed.
-- `audio_retention_preview()` returns the count, total size and meeting ids of eligible audio **ignoring the grace period**; `audio_retention_delete_now(meeting_ids)` deletes exactly those meetings' audio, re-checking each is still eligible. The Settings button shows "N meetings, X MB. Delete?" first. Both use the same selection code as the job.
+- `recording_preferences.json` gains `old_audio_days: Option<u32>` (`None` = Never; default `Some(30)`): the age after which a recording is listed.
+- `old_audio_list()` returns, for every meeting with `keep_audio = 0`, `created_at` older than N days and a folder that passes the guard (§8.3) and still holds audio: id, title, date, total size and the exact paths that would be deleted. Empty while a recording is in progress or when the setting is Never.
+- What can be deleted in a folder: top-level files named `audio.<ext>` with an import audio extension (mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — `audio/constants.rs`) that are real files, and Conclave's own files in a real `.checkpoints/` folder (`audio_chunk_*`, `concat_list.txt`). Nothing else, never recursively, never through links or junctions.
+- `delete_old_audio(meeting_ids)` deletes exactly the confirmed meetings' audio, re-checking each one is still listed, sets `audio_deleted_at`, and returns the count and bytes freed. Refused while recording.
+- Reminder: the frontend calls `old_audio_list()` at startup and every 24 h; if the list is not empty and no reminder was shown today, it shows a toast with a [Review] action. Dismissing it is fine; nothing happens until the user confirms in the review.
+- No background deletion, so no grace period is needed: the first launch after the update deletes nothing.
 
 ### 8.2 Playback (least privilege)
 
-`get_meeting_audio(meeting_id)` finds the `audio.<ext>` file in that meeting's `folder_path` (folder must pass the guard), allows the asset protocol to read **that one file** at runtime (`asset_protocol_scope().allow_file`), and returns its path; the frontend plays it with `convertFileSrc` in an `<audio>` element. Seeking uses the asset protocol's byte ranges, so the file is never loaded whole. The CSP gains `media-src 'self' asset: http://asset.localhost`, and the static asset scope (`$APPDATA/**`, unused) is emptied. Returns `None` when there is no audio file.
+`get_meeting_audio(meeting_id)` finds the `audio.<ext>` file (a real file, not a link) in that meeting's `folder_path` (folder must pass the guard), allows the asset protocol to read **that one file** at runtime (`asset_protocol_scope().allow_file`), and returns its path; the frontend plays it with `convertFileSrc` in an `<audio>` element. Seeking uses the asset protocol's byte ranges, so the file is never loaded whole. The CSP gains `media-src 'self' asset: http://asset.localhost`, and the static asset scope (`$APPDATA/**`, unused) is emptied. Returns `None` when there is no audio file.
 
 Removed: `read_audio_file`, `hooks/useAudioPlayer.ts`, `components/AudioPlayer.tsx`, `app/notes/[id]/page.tsx` and its Sidebar branch.
 
 ### 8.3 Folder guard
 
-One helper used by retention, meeting delete and `get_meeting_audio`: the path, canonicalized, must be an existing directory, is never the recordings base folder itself, and must either be inside the canonical recordings base folder or contain `metadata.json`. Anything else is refused and logged. Symlinks and junctions inside a meeting folder are never followed.
+One helper used by the review, meeting delete and `get_meeting_audio`: the path, canonicalized, must be an existing directory strictly inside the canonical recordings base folder (`get_default_recordings_folder()`, where every recording and import is created). The base folder itself, anything outside it, and anything reached through `..`, a symlink or a junction are refused and logged. There is no other way for a folder to qualify.
 
 ## 9. Error handling
 
@@ -180,25 +184,25 @@ One helper used by retention, meeting delete and `get_meeting_audio`: the path, 
 |---|---|
 | Mark/notes command with an invalid mark, empty or over-long note | Rejected with a message; nothing saved. |
 | Save at stop fails | Existing behaviour: nothing is written, the IndexedDB copy stays for recovery (now with notes and marks). |
-| Folder fails the guard | Retention skips it, delete keeps the folder, playback reports "Audio file not found". Logged. |
+| Folder fails the guard | Not listed in the review, delete keeps the folder, playback reports "Audio file not found". Logged. |
 | Folder delete fails after a meeting delete | Meeting stays deleted; warning shown and logged. |
-| Retention error on one meeting | Logged; the job moves on. |
+| Deleting one meeting's audio fails in the review | Logged and reported in the result; the others are still deleted. |
 | Audio file missing | Player bar message (§6.4); timestamps not clickable; Re-transcribe disabled. |
 
 ## 10. Testing
 
 **Rust (`cargo test`, Linux):**
-- Retention (temp folders, in-memory SQLite): deletes only `audio.*` and `.checkpoints/` and keeps the JSON files; skips pinned, too new, inside the grace period, no `folder_path`, and guard failures; preview matches delete-now and deletes nothing; a missing file is not an error; Never does nothing; changing from Never resets the grace start.
-- Meeting delete: guarded folder removed; unguarded folder left alone; a folder delete failure still deletes the meeting.
+- Review (temp folders, in-memory SQLite): the list skips pinned, too new, no `folder_path`, outside the base and links; listing deletes nothing; delete removes only `audio.*` and Conclave's checkpoint files, keeps the JSON files, deletes only the confirmed ids and sets `audio_deleted_at`; a missing file is not an error; Never and recording-in-progress list nothing.
+- Meeting delete: a Conclave-only folder inside the base is removed; a folder outside the base, or with any other file, is left completely untouched; a folder delete failure still deletes the meeting.
 - `save_transcript` stores marks and notes in one transaction; mark/notes/keep_audio commands round-trip and validate input.
 - Prompt: `<user_notes>` block and the extra instruction appear only with notes or marks; null `at` renders as "after the meeting".
 - The migration applies over the current schema.
 
 **Frontend (`bun test`):** inline mark formatting in the summary payload; note ordering; mark toggle (set, replace, remove); per-layout splitter storage; "deleted" vs "not found" message choice.
 
-**Manual on Windows (v0.4.0 test build):** play from a timestamp, seek, speed; mark lines during a real call and check the summary; crash → recovery keeps notes and marks; both layouts; meeting delete removes the folder.
+**Manual on Windows (v0.5.0 test build):** play from a timestamp, seek, speed; mark lines during a real call and check the summary; crash → recovery keeps notes and marks; both layouts; meeting delete removes the folder.
 
-**Reviews:** `reviewer` per task; a Codex pass for retention, meeting delete and the asset scope (data deletion, widening what the webview can read); whole-branch review with Codex and Antigravity at the end of the phase.
+**Reviews:** `reviewer` per task; a Codex pass for the old-audio review, meeting delete and the asset scope (data deletion, widening what the webview can read); whole-branch review with Codex and Antigravity at the end of the phase.
 
 ## 11. Not included
 

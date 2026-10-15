@@ -1,16 +1,18 @@
-# Conclave Phase 4: Live Notes, Transcript Marks, Click-to-Play, Audio Retention — Implementation Plan
+# Conclave Phase 4 (v0.5.0): Live Notes, Transcript Marks, Click-to-Play, Old-Audio Review — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Notes and ⭐/✅/❓ line marks during and after a call that are woven into the summary; click a timestamp to play the recording from there; audio deleted automatically after N days (default 30, grace period on upgrade, per-meeting pin); deleting a meeting deletes its folder.
+**Goal:** Notes and ⭐/✅/❓ line marks during and after a call that are woven into the summary; click a timestamp to play the recording from there; a daily reminder and a review list for recordings older than N days (default 30, per-meeting pin) whose confirmed audio goes to the Recycle Bin; deleting a meeting moves its folder to the Recycle Bin. Conclave never deletes anything by itself and never outside `Music\conclave-recordings`.
 
-**Architecture:** Marks are a `transcripts.mark` column and notes reuse the unused `meeting_notes` table. During a recording both live in `TranscriptContext` and in the IndexedDB recovery record, and are saved with the transcript at stop in the existing single transaction. One Rust folder guard protects every file operation (playback, retention, meeting delete). Playback grants the asset protocol one file at runtime and plays it in an `<audio>` element. Retention is a Rust background task (startup + 1 min, then every 24 h). The summary gets marks inline in the transcript text and notes as a `<user_notes>` block read from the DB.
+**Architecture:** Marks are a `transcripts.mark` column and notes reuse the unused `meeting_notes` table. During a recording both live in `TranscriptContext` and in the IndexedDB recovery record, and are saved with the transcript at stop in the existing single transaction. One Rust folder guard (canonical path strictly inside the recordings folder) protects every file operation, and one `recycle` function (the `trash` crate) is the only way anything is deleted. Playback grants the asset protocol one file at runtime and plays it in an `<audio>` element. Old audio is only listed by the backend; the frontend reminds once a day and deletes exactly what the user ticks. The summary gets marks inline in the transcript text and notes as a `<user_notes>` block read from the DB.
 
-**Changes after the Codex plan review (2026-10-15), also reflected in the spec:** meeting-folder deletion is never recursive (known files only, then an empty-folder delete); re-transcription carries marks to the best-overlapping new line; with chunked local summaries the marked lines are passed again in `<marked_lines>`; the asset-protocol scope is emptied; "Delete eligible audio now" deletes exactly the previewed meetings; the grace period starts at launch.
+**User decisions after the plan review (2026-10-15):** no automatic deletion — a reminder plus a review list where the user ticks what to delete; deletions go to the Windows Recycle Bin; the folder guard is the recordings folder only (the `metadata.json` rule is gone); this ships as **v0.5.0** (Phase 3 is tagged v0.4.0 first).
+
+**Changes after the Codex plan review (2026-10-15), also reflected in the spec:** meeting-folder deletion is never recursive (known files only, then an empty-folder delete); re-transcription carries marks to the best-overlapping new line; with chunked local summaries the marked lines are passed again in `<marked_lines>`; the asset-protocol scope is emptied; the review deletes exactly the confirmed meetings.
 
 **Deviations from the spec (implementation detail, same behaviour):** live marks are kept on the IndexedDB *meeting* record keyed by `sequence_id` (not by rewriting each line's record); notes and `keep_audio` reach the saved page through `get_meeting_notes` and `get_meeting_audio` rather than `get_meeting`.
 
-**Tech Stack:** Rust (Tauri 2.11, sqlx/SQLite, serde, tokio, chrono, `dunce`, `tempfile` in tests), Next.js 14 + React 18 + TypeScript, Radix popover/tabs/select/switch from `components/ui`, Bun tests (happy-dom).
+**Tech Stack:** Rust (Tauri 2.11, sqlx/SQLite, serde, tokio, chrono, `dunce`, `trash` (new, Recycle Bin), `tempfile` in tests), Next.js 14 + React 18 + TypeScript, Radix popover/tabs/select/switch from `components/ui`, Bun tests (happy-dom).
 
 **Spec:** `docs/superpowers/specs/2026-10-15-conclave-meeting-page-design.md` (read it before any task).
 
@@ -22,8 +24,8 @@
 - Mark values: exactly `important`, `action`, `followup` (or null). UI icons: ⭐ important, ✅ action, ❓ follow-up.
 - Note: `{ id, at, text }`; `at` = seconds into the recording (`null` = added after the meeting); text trimmed, non-empty, at most 2,000 characters; id non-empty, at most 64 characters, generated as `note-<uuid>`.
 - Prompt label for marks: `[MARKED: important]` / `[MARKED: action]` / `[MARKED: followup]`. Notes block tag: `<user_notes>`; a note without a time renders as `[after the meeting]`.
-- Retention options: Never / 7 / 30 / 90 days, default 30. Settings line: "Transcripts, summaries and notes are kept."
-- Retention deletes only top-level `audio.<ext>` (ext from the existing `crate::audio::constants::AUDIO_EXTENSIONS`: mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma) and Conclave's own files in `.checkpoints/` (`audio_chunk_*`, `concat_list.txt`). Never `transcripts.json`, `metadata.json` or anything else. No file operation on a meeting folder is ever recursive (`remove_dir_all` is not used) and links/junctions are never followed: `folder_path` is supplied by the webview at save time.
+- Old-audio reminder options: Never / 7 / 30 / 90 days, default 30 (`old_audio_days`). Settings line: "Conclave never deletes audio by itself. Transcripts, summaries and notes are always kept." Reminder at most once a day.
+- Conclave never deletes on its own: only `delete_old_audio` (after the user ticks meetings in the review) and meeting delete remove files, always through `recycle` (Recycle Bin), and only inside the canonical recordings folder. The review deletes only top-level `audio.<ext>` (ext from the existing `crate::audio::constants::AUDIO_EXTENSIONS`: mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma) and Conclave's own files in `.checkpoints/` (`audio_chunk_*`, `concat_list.txt`). Never `transcripts.json`, `metadata.json` or anything else. No file operation on a meeting folder is ever recursive (`remove_dir_all` is not used) and links/junctions are never followed: `folder_path` is supplied by the webview at save time.
 - Every file operation on a meeting folder goes through `guarded_meeting_folder` (Task 3).
 - localStorage keys: `conclave.meetingPageLayout`, `conclave.notesPaneCollapsed`, `conclave.live.transcriptRatio`, `conclave.threeCol.transcriptRatio`, `conclave.threeCol.notesRatio`; the existing `meetily.meetingDetails.transcriptPaneRatio` stays the sub-tab layout's key.
 - Layout values: `three-columns` (default) | `subtab`.
@@ -33,8 +35,8 @@
 ## Review Focus
 
 1. **Save at stop must never fail because of a note or mark.** An empty note, a 5,000-character note, a `NaN` time or an unknown mark string arriving in `api_save_transcript` must be dropped/truncated, and the meeting still saved — test in Task 1 (`save_transcript_sanitizes_bad_notes_and_marks`).
-2. **A `folder_path` pointing outside a recording folder** (`C:\`, the user's home, a folder without `metadata.json` outside the recordings base, a path with `..`, a file instead of a folder) must never be deleted or exposed to the webview — tests in Task 3.
-3. **The meeting being recorded right now** must never lose audio: the retention run is skipped while `is_recording_now()` is true — test in Task 4 (`run_skips_while_recording_never_and_grace`, recording flag injected into `run_once`).
+2. **A `folder_path` pointing outside the recordings folder** (`C:\`, the user's home, a folder with a `metadata.json` elsewhere, a path with `..`, a link inside the base pointing out, a file instead of a folder) must never be deleted, recycled or exposed to the webview — tests in Task 3.
+3. **Nothing is deleted without the user ticking it, and nothing while recording**: the review deletes only confirmed ids that are still listed, refuses while `is_recording_now()` is true, and a Recycle Bin failure (e.g. the user declines Windows' "too big for the Recycle Bin" prompt) leaves the files — tests in Task 4 (`delete_removes_only_confirmed_audio_and_marks_the_meeting`, `delete_is_refused_while_recording_and_reports_bin_failures`) and Task 11.
 4. **An app reload during a recording** must keep notes and marks (reload sync rebuilds transcripts from the backend, which knows nothing about them) — `collectMarks`/`applyMarks` round-trip test in Task 6, restore wiring in Task 9 Step 5.
 5. **Selecting transcript text to copy it** must not open the mark popover, and Enter/Space/Escape must work from the keyboard — test in Task 8.
 
@@ -48,8 +50,8 @@
 | `frontend/src-tauri/src/database/repositories/meeting_notes.rs` (new) | Note type, validation/sanitizing, notes read/write | 1 |
 | `frontend/src-tauri/src/database/repositories/{transcript,meeting,mod}.rs`, `database/models.rs`, `api/api.rs` | Save marks+notes at stop, mark/pin updates, explicit notes delete | 1 |
 | `frontend/src-tauri/src/api/meeting_page.rs` (new), `api/mod.rs`, `lib.rs` | Tauri commands for marks, notes, pin | 2 |
-| `frontend/src-tauri/src/audio/meeting_folder.rs` (new) | Folder guard, audio-file lookup, folder delete, `get_meeting_audio` | 3, 5 |
-| `frontend/src-tauri/src/audio/retention.rs` (new), `audio/recording_preferences.rs` | Retention settings, grace period, job, preview/delete-now | 4 |
+| `frontend/src-tauri/src/audio/meeting_folder.rs` (new) | Folder guard, `recycle`, audio-file lookup, folder delete, `get_meeting_audio` | 3, 5 |
+| `frontend/src-tauri/src/audio/retention.rs` (new), `audio/recording_preferences.rs` | `old_audio_days`, list old audio, delete confirmed audio | 4 |
 | `frontend/src-tauri/tauri.conf.json`, `lib.rs`, dead frontend files | CSP `media-src`, remove `read_audio_file`, dead player and notes page | 5 |
 | `frontend/src-tauri/src/summary/user_notes.rs` (new), `summary/processor.rs`, `summary/service.rs` | `<user_notes>` block and instruction | 6 |
 | `frontend/src/lib/meeting-notes.ts` (new), `frontend/src/types/index.ts`, `hooks/meeting-details/useSummaryGeneration.ts` | Shared note/mark helpers, inline marks in the summary payload | 6 |
@@ -57,8 +59,8 @@
 | `frontend/src/components/VirtualizedTranscriptView.tsx`, `frontend/src/components/TranscriptMarkButton.tsx` (new) | Mark popover, clickable timestamps, active line | 8 |
 | `frontend/src/components/MeetingNotes/NotesPane.tsx` (new), `contexts/TranscriptContext.tsx`, `services/{indexedDBService,storageService}.ts`, `hooks/{useRecordingStop,useTranscriptRecovery}.ts`, `app/page.tsx`, `app/_components/TranscriptPanel.tsx` | Live notes and marks | 9 |
 | `frontend/src/hooks/{useMeetingNotes,useMeetingAudio,usePaginatedTranscripts}.ts`, `components/MeetingDetails/{AudioPlayerBar,TranscriptPanel,TranscriptButtonGroup,MeetingDetailsSplitView}.tsx`, `app/meeting-details/page-content.tsx`, `lib/meeting-audio.ts` (new), `components/PreferenceSettings.tsx` | Saved page: notes, marks, player, both layouts | 10 |
-| `frontend/src/components/RecordingSettings.tsx`, `components/Sidebar/index.tsx` | Retention settings, delete-now, delete warning | 11 |
-| `.github/workflows/release.yml` | 0.4.0 release notes | 12 |
+| `frontend/src/lib/old-audio.ts` (new), `components/OldAudio/*` (new), `components/RecordingSettings.tsx`, `app/layout.tsx`, `components/Sidebar/index.tsx` | Review dialog, daily reminder, setting, delete warning | 11 |
+| `.github/workflows/release.yml` | 0.5.0 release notes | 12 |
 
 ---
 
@@ -81,7 +83,7 @@
   - `TranscriptsRepository::save_transcript(pool, title, transcripts, folder_path, notes: &[MeetingNote]) -> Result<String, SqlxError>`
   - `TranscriptsRepository::set_mark(&SqlitePool, transcript_id: &str, mark: Option<&str>) -> Result<bool, SqlxError>`
   - `MeetingsRepository::set_keep_audio(&SqlitePool, meeting_id: &str, keep: bool) -> Result<bool, SqlxError>`
-  - `MeetingModel.keep_audio: bool`, `Transcript.mark: Option<String>`, `api::TranscriptSegment.mark: Option<String>`, `api::MeetingTranscript.mark: Option<String>`
+  - `MeetingModel.keep_audio: bool`, `MeetingModel.audio_deleted_at: Option<String>` (RFC 3339), `Transcript.mark: Option<String>`, `api::TranscriptSegment.mark: Option<String>`, `api::MeetingTranscript.mark: Option<String>`
   - `#[cfg(test)] pub(crate) async fn test_pool() -> SqlitePool` in `database/repositories/mod.rs`
 
 - [ ] **Step 1: Migration**
@@ -89,9 +91,11 @@
 `frontend/src-tauri/migrations/20261015000000_meeting_page.sql`:
 
 ```sql
--- Phase 4 (spec §4): one mark per transcript line, and the per-meeting "Keep audio" pin.
+-- Phase 4 (spec §4): one mark per transcript line, the per-meeting "Keep audio" pin,
+-- and when the user deleted the audio in the old-audio review.
 ALTER TABLE transcripts ADD COLUMN mark TEXT;
 ALTER TABLE meetings ADD COLUMN keep_audio INTEGER NOT NULL DEFAULT 0;
+ALTER TABLE meetings ADD COLUMN audio_deleted_at TEXT;
 ```
 
 - [ ] **Step 2: Test pool helper** — append to `database/repositories/mod.rs`:
@@ -481,9 +485,11 @@ impl MeetingNotesRepository {
 `database/models.rs` — add to `MeetingModel` and `Transcript`:
 
 ```rust
-    // Phase 4; `default` keeps older explicit SELECTs without this column working.
+    // Phase 4; `default` keeps older explicit SELECTs without these columns working.
     #[sqlx(default)]
     pub keep_audio: bool,
+    #[sqlx(default)]
+    pub audio_deleted_at: Option<String>,
 ```
 
 ```rust
@@ -500,7 +506,7 @@ impl MeetingNotesRepository {
 
 Set `mark: t.mark,` in both `.map(|t| MeetingTranscript { ... })` blocks (`api/api.rs` `api_get_meeting_transcripts` and `database/repositories/meeting.rs` `get_meeting`). Add `mark: None,` to every other struct literal of `crate::api::TranscriptSegment` (the compiler lists them; known: `audio/common.rs:59` in `create_transcript_segments`, and the two in `audio/import.rs` tests).
 
-`database/repositories/meeting.rs` — `get_meeting_metadata` SELECT becomes `SELECT id, title, created_at, updated_at, folder_path, keep_audio FROM meetings WHERE id = ?`. Add `api::MeetingMetadata.keep_audio: bool` (`#[serde(default)]`) and set it from `meeting.keep_audio` in `api_get_meeting_metadata`. Add:
+`database/repositories/meeting.rs` — `get_meeting_metadata` SELECT becomes `SELECT id, title, created_at, updated_at, folder_path, keep_audio, audio_deleted_at FROM meetings WHERE id = ?`. Add `api::MeetingMetadata.keep_audio: bool` (`#[serde(default)]`) and set it from `meeting.keep_audio` in `api_get_meeting_metadata`. Add:
 
 ```rust
     pub async fn set_keep_audio(pool: &SqlitePool, meeting_id: &str, keep: bool) -> Result<bool, SqlxError> {
@@ -744,25 +750,28 @@ git commit -m "feat(api): commands for transcript marks, meeting notes and keep-
 
 ---
 
-### Task 3: Folder guard, and meeting delete removes the folder
+### Task 3: Folder guard, Recycle Bin, and meeting delete removes the folder
 
 **Codex pass required** (data deletion).
 
 **Files:**
 - Create: `frontend/src-tauri/src/audio/meeting_folder.rs` (add `pub mod meeting_folder;` to `audio/mod.rs`)
-- Modify: `frontend/src-tauri/Cargo.toml` (`dunce = "1.0.5"`, already in `Cargo.lock`), `frontend/src-tauri/src/api/api.rs` (`api_delete_meeting`)
+- Modify: `frontend/src-tauri/Cargo.toml` (`dunce = "1.0.5"`, already in `Cargo.lock`; `trash = "5.2"`, new — the user approved it for Recycle Bin deletes), `frontend/src-tauri/src/api/api.rs` (`api_delete_meeting`)
 - Test: `#[cfg(test)] mod tests` in `meeting_folder.rs` (uses `tempfile`)
+
+**Safety rules (spec §1, §8.3 — user decision):** a folder qualifies only if its canonical path is strictly inside the canonical recordings base (`get_default_recordings_folder()`); there is no other rule. Everything Conclave deletes goes to the Recycle Bin through one function, `recycle`, and every deleting function takes the remover as a parameter so tests never touch the real trash. Nothing is deleted before the whole folder has been checked.
 
 **Interfaces:**
 - Produces:
-  - `pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf>` — canonical (`dunce`) path of an existing directory that is never the recordings base itself, and is either strictly inside the canonical base or contains `metadata.json`; `None` otherwise (logged at warn).
-  - `pub use crate::audio::constants::AUDIO_EXTENSIONS;` (the existing import list: mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — imports are stored as `audio.<source ext>`)
+  - `pub use crate::audio::constants::AUDIO_EXTENSIONS;` (mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — imports are stored as `audio.<source ext>`)
+  - `pub type Remover<'a> = &'a dyn Fn(&[PathBuf]) -> Result<(), String>;`
+  - `pub fn recycle(paths: &[PathBuf]) -> Result<(), String>` — `trash::delete_all`; the only production remover.
+  - `pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf>` — canonical (`dunce`) path of an existing directory strictly inside the canonical base; `None` otherwise (logged at warn). The base itself, anything outside, `..` escapes and links resolving outside are all refused by the canonical containment check.
   - `pub fn find_audio_file(folder: &Path) -> Option<PathBuf>` — first top-level `audio.<ext>` that is a real file (not a link), in `AUDIO_EXTENSIONS` order.
-  - `pub fn checkpoint_files(checkpoints: &Path) -> Vec<PathBuf>` — real files named `audio_chunk_*` or `concat_list.txt` inside a real (non-link) `.checkpoints` folder; the single source for retention's eligibility, preview size and delete.
-  - `pub fn delete_checkpoints(checkpoints: &Path) -> u64` — deletes `checkpoint_files`, then the folder if empty; bytes freed.
+  - `pub fn checkpoint_files(checkpoints: &Path) -> Vec<PathBuf>` — real files named `audio_chunk_*` or `concat_list.txt` inside a real (non-link) `.checkpoints` folder.
   - `pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];`
-  - `pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Result<(), String>` — guard, then **check first**: if the folder holds anything besides `audio.<ext>`, `MEETING_FILES` and a `.checkpoints` with only checkpoint files (or any link), delete nothing and return `Err("Recording folder kept: it contains other files …")`. Otherwise delete those files and the empty folder (non-recursive `fs::remove_dir`). A missing folder is `Ok(())`; a guard failure is `Err`. (`folder_path` comes from the webview at save time, so a recursive delete is never allowed.)
-  - `pub async fn delete_meeting_and_folder(pool: &SqlitePool, meeting_id: &str, recordings_base: &Path) -> Result<Option<Option<String>>, sqlx::Error>` — `Ok(None)` = meeting not found; `Ok(Some(warning))` = meeting deleted, `warning` set when its folder was kept.
+  - `pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: Remover) -> Result<(), String>` — missing folder: `Ok(())`; guard failure: `Err`; if the folder holds anything besides `audio.<ext>`, `MEETING_FILES` and a `.checkpoints` with only checkpoint files (or any link): `Err("Recording folder kept: it contains other files (…)")` and nothing is removed; otherwise the folder is passed to `remove` as one item.
+  - `pub async fn delete_meeting_and_folder(pool: &SqlitePool, meeting_id: &str, recordings_base: &Path, remove: Remover<'_>) -> Result<Option<Option<String>>, sqlx::Error>` — `Ok(None)` = meeting not found; `Ok(Some(warning))` = meeting deleted, `warning` set when its folder was kept.
   - `api_delete_meeting` response gains `"folder_warning": string | null`.
 
 - [ ] **Step 1: Write the failing tests**
@@ -771,28 +780,39 @@ git commit -m "feat(api): commands for transcript marks, meeting notes and keep-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::cell::RefCell;
     use std::fs;
 
     fn base() -> tempfile::TempDir { tempfile::tempdir().unwrap() }
 
+    /// Stand-in for the Recycle Bin: records what would be recycled, then removes it.
+    struct FakeBin(RefCell<Vec<PathBuf>>);
+    impl FakeBin {
+        fn new() -> Self { FakeBin(RefCell::new(Vec::new())) }
+        fn remove(&self, paths: &[PathBuf]) -> Result<(), String> {
+            for p in paths {
+                if p.is_dir() { fs::remove_dir_all(p).unwrap() } else { fs::remove_file(p).unwrap() }
+                self.0.borrow_mut().push(p.clone());
+            }
+            Ok(())
+        }
+    }
+
     #[test]
-    fn guard_accepts_folder_inside_base_or_with_metadata() {
+    fn guard_accepts_only_folders_strictly_inside_the_base() {
         let b = base();
         let inside = b.path().join("Standup_2026-10-15_10-00");
         fs::create_dir(&inside).unwrap();
         assert!(guarded_meeting_folder(inside.to_str().unwrap(), b.path()).is_some());
 
         let elsewhere = tempfile::tempdir().unwrap();
+        fs::write(elsewhere.path().join("metadata.json"), "{}").unwrap(); // no longer a pass
         assert!(guarded_meeting_folder(elsewhere.path().to_str().unwrap(), b.path()).is_none());
-        fs::write(elsewhere.path().join("metadata.json"), "{}").unwrap();
-        assert!(guarded_meeting_folder(elsewhere.path().to_str().unwrap(), b.path()).is_some());
     }
 
     #[test]
     fn guard_rejects_base_itself_files_missing_and_dotdot_escape() {
         let b = base();
-        assert!(guarded_meeting_folder(b.path().to_str().unwrap(), b.path()).is_none());
-        fs::write(b.path().join("metadata.json"), "{}").unwrap(); // even with metadata.json
         assert!(guarded_meeting_folder(b.path().to_str().unwrap(), b.path()).is_none());
         let file = b.path().join("f.txt");
         fs::write(&file, "x").unwrap();
@@ -805,65 +825,67 @@ mod tests {
         assert!(guarded_meeting_folder("", b.path()).is_none());
     }
 
+    #[cfg(unix)]
     #[test]
-    fn find_audio_file_prefers_mp4_and_ignores_other_names() {
+    fn guard_rejects_a_link_inside_the_base_that_points_outside() {
+        let b = base();
+        let outside = tempfile::tempdir().unwrap();
+        std::os::unix::fs::symlink(outside.path(), b.path().join("sneaky")).unwrap();
+        assert!(guarded_meeting_folder(b.path().join("sneaky").to_str().unwrap(), b.path()).is_none());
+    }
+
+    #[test]
+    fn find_audio_file_prefers_mp4_and_finds_imported_formats() {
         let b = base();
         assert!(find_audio_file(b.path()).is_none());
-        fs::write(b.path().join("audio.wav"), "x").unwrap();
+        fs::write(b.path().join("audio.wma"), "x").unwrap();
         fs::write(b.path().join("other.mp4"), "x").unwrap();
-        assert_eq!(find_audio_file(b.path()).unwrap().file_name().unwrap(), "audio.wav");
+        assert_eq!(find_audio_file(b.path()).unwrap().file_name().unwrap(), "audio.wma");
         fs::write(b.path().join("audio.mp4"), "x").unwrap();
         assert_eq!(find_audio_file(b.path()).unwrap().file_name().unwrap(), "audio.mp4");
     }
 
     #[test]
-    fn delete_folder_removes_only_known_files() {
+    fn delete_folder_recycles_a_conclave_only_folder_as_one_item() {
         let b = base();
         let m = b.path().join("m");
         fs::create_dir_all(m.join(".checkpoints")).unwrap();
-        for f in ["audio.mp4", "transcripts.json", "metadata.json", ".checkpoints/audio_chunk_000.mp4"] {
+        for f in ["audio.mkv", "transcripts.json", "metadata.json", ".checkpoints/audio_chunk_000.mp4", ".checkpoints/concat_list.txt"] {
             fs::write(m.join(f), "x").unwrap();
         }
-        delete_meeting_folder(m.to_str().unwrap(), b.path()).unwrap();
+        let bin = FakeBin::new();
+        delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap();
+        assert_eq!(bin.0.borrow().len(), 1);
         assert!(!m.exists());
-        assert!(delete_meeting_folder(m.to_str().unwrap(), b.path()).is_ok()); // already gone
+        assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_ok()); // already gone
+    }
+
+    #[test]
+    fn delete_folder_touches_nothing_outside_the_base_or_with_other_files() {
+        let b = base();
+        let bin = FakeBin::new();
 
         let outside = tempfile::tempdir().unwrap();
-        assert!(delete_meeting_folder(outside.path().to_str().unwrap(), b.path()).is_err());
-        assert!(outside.path().exists());
-    }
+        fs::write(outside.path().join("metadata.json"), "{}").unwrap();
+        fs::write(outside.path().join("audio.mp4"), "theirs").unwrap();
+        assert!(delete_meeting_folder(outside.path().to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_err());
 
-    #[test]
-    fn delete_folder_keeps_a_folder_with_unknown_files() {
-        // e.g. a webview-supplied folder_path pointing at a user folder that has a metadata.json
-        let elsewhere = tempfile::tempdir().unwrap();
-        fs::write(elsewhere.path().join("metadata.json"), "{}").unwrap();
-        fs::write(elsewhere.path().join("thesis.docx"), "precious").unwrap();
-        fs::create_dir(elsewhere.path().join("photos")).unwrap();
-        fs::write(elsewhere.path().join("audio.mp4"), "theirs").unwrap();
-        let err = delete_meeting_folder(elsewhere.path().to_str().unwrap(), base().path()).unwrap_err();
-        assert!(err.contains("kept"));
-        // nothing at all was deleted
-        for f in ["thesis.docx", "photos", "metadata.json", "audio.mp4"] {
-            assert!(elsewhere.path().join(f).exists(), "{f}");
-        }
-    }
-
-    #[test]
-    fn imported_mkv_and_wma_are_found_and_deleted() {
-        let b = base();
-        let m = b.path().join("imported");
+        let m = b.path().join("m");
         fs::create_dir(&m).unwrap();
-        fs::write(m.join("audio.mkv"), "x").unwrap();
-        fs::write(m.join("metadata.json"), "{}").unwrap();
-        assert_eq!(find_audio_file(&m).unwrap().file_name().unwrap(), "audio.mkv");
-        delete_meeting_folder(m.to_str().unwrap(), b.path()).unwrap();
-        assert!(!m.exists());
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        fs::write(m.join("thesis.docx"), "precious").unwrap();
+        let err = delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap_err();
+        assert!(err.contains("kept"));
+
+        assert!(bin.0.borrow().is_empty());
+        for f in [outside.path().join("metadata.json"), outside.path().join("audio.mp4"), m.join("audio.mp4"), m.join("thesis.docx")] {
+            assert!(f.exists(), "{}", f.display());
+        }
     }
 
     #[cfg(unix)]
     #[test]
-    fn links_are_never_followed() {
+    fn links_inside_a_meeting_folder_are_never_followed() {
         use std::os::unix::fs::symlink;
         let b = base();
         let target = tempfile::tempdir().unwrap();
@@ -874,9 +896,10 @@ mod tests {
         symlink(target.path(), m.join(".checkpoints")).unwrap();
         symlink(target.path().join("secret.mp4"), m.join("audio.mp4")).unwrap();
         assert!(checkpoint_files(&m.join(".checkpoints")).is_empty());
-        assert_eq!(delete_checkpoints(&m.join(".checkpoints")), 0);
         assert!(find_audio_file(&m).is_none());
-        assert!(delete_meeting_folder(m.to_str().unwrap(), b.path()).is_err()); // links are not ours
+        let bin = FakeBin::new();
+        assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_err());
+        assert!(bin.0.borrow().is_empty());
         assert!(target.path().join("audio_chunk_000.mp4").exists());
         assert!(target.path().join("secret.mp4").exists());
     }
@@ -884,16 +907,19 @@ mod tests {
     #[tokio::test]
     async fn meeting_stays_deleted_when_its_folder_cannot_be() {
         let pool = crate::database::repositories::test_pool().await;
+        let b = base();
         let outside = tempfile::tempdir().unwrap(); // fails the guard
         sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES ('m1', 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?)")
             .bind(outside.path().to_string_lossy().to_string())
             .execute(&pool).await.unwrap();
-        let result = delete_meeting_and_folder(&pool, "m1", base().path()).await.unwrap();
+        let bin = FakeBin::new();
+        let result = delete_meeting_and_folder(&pool, "m1", b.path(), &|p| bin.remove(p)).await.unwrap();
         assert!(matches!(result, Some(Some(_))));
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings").fetch_one(&pool).await.unwrap();
         assert_eq!(n, 0);
         assert!(outside.path().exists());
-        assert!(delete_meeting_and_folder(&pool, "m1", base().path()).await.unwrap().is_none());
+        assert!(bin.0.borrow().is_empty());
+        assert!(delete_meeting_and_folder(&pool, "m1", b.path(), &|p| bin.remove(p)).await.unwrap().is_none());
     }
 }
 ```
@@ -907,6 +933,7 @@ Expected: compile error (module missing).
 
 ```rust
 //! The one place that decides whether a meeting folder may be read or deleted (spec §8.3).
+//! Conclave never deletes outside the recordings folder, and never permanently: see `recycle`.
 use log::warn;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -914,30 +941,34 @@ use std::path::{Path, PathBuf};
 /// The import formats (`import.rs` copies a file in as `audio.<ext>`), so every format is found.
 pub use crate::audio::constants::AUDIO_EXTENSIONS;
 
-/// Canonical path of a real meeting folder, or `None`. A meeting folder is an existing
-/// directory strictly inside the recordings base, or one that contains `metadata.json`
-/// (recordings and imports both write it; the base folder setting is ignored by them).
+pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];
+
+/// Every deleting function takes this, so tests never touch the real Recycle Bin.
+pub type Remover<'a> = &'a dyn Fn(&[PathBuf]) -> Result<(), String>;
+
+/// Moves paths to the Windows Recycle Bin. With `trash`'s flags Windows asks the user before
+/// permanently deleting anything too big for the Bin; declining returns an error here.
+pub fn recycle(paths: &[PathBuf]) -> Result<(), String> {
+    if paths.is_empty() {
+        return Ok(());
+    }
+    trash::delete_all(paths).map_err(|e| format!("Could not move to the Recycle Bin: {e}"))
+}
+
+/// Canonical path of a meeting folder strictly inside the recordings base, or `None`.
+/// Canonicalizing first resolves `..` and links, so nothing outside the base can qualify.
 pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf> {
     if folder_path.trim().is_empty() {
         return None;
     }
-    let folder = match dunce::canonicalize(folder_path) {
-        Ok(p) if p.is_dir() => p,
-        _ => {
-            warn!("Meeting folder guard: not a directory: {folder_path}");
-            return None;
-        }
-    };
-    let base = dunce::canonicalize(recordings_base).ok();
-    if base.as_ref() == Some(&folder) {
-        warn!("Meeting folder guard: refusing the recordings base folder itself");
+    let (Ok(folder), Ok(base)) = (dunce::canonicalize(folder_path), dunce::canonicalize(recordings_base)) else {
+        warn!("Meeting folder guard: cannot resolve {folder_path}");
         return None;
-    }
-    let inside_base = base.is_some_and(|b| folder.starts_with(&b));
-    if inside_base || folder.join("metadata.json").is_file() {
+    };
+    if folder.is_dir() && folder != base && folder.starts_with(&base) {
         Some(folder)
     } else {
-        warn!("Meeting folder guard: refusing {}", folder.display());
+        warn!("Meeting folder guard: refusing {} (not inside {})", folder.display(), base.display());
         None
     }
 }
@@ -983,10 +1014,7 @@ pub fn checkpoint_files(checkpoints: &Path) -> Vec<PathBuf> {
         .unwrap_or_default()
 }
 
-pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];
-
-/// True when every entry is something Conclave writes: `audio.<ext>`, `MEETING_FILES`, and a
-/// real `.checkpoints` folder holding only checkpoint files. Links never count as ours.
+/// True when every entry is something Conclave writes. Links never count as ours.
 fn only_conclave_files(folder: &Path) -> bool {
     let Ok(entries) = fs::read_dir(folder) else { return false };
     entries.flatten().all(|e| {
@@ -1002,41 +1030,18 @@ fn only_conclave_files(folder: &Path) -> bool {
     })
 }
 
-/// Deletes a meeting folder only if it holds nothing but Conclave's files; otherwise deletes
-/// nothing at all. Never recursive: `folder_path` came from the webview when the meeting was saved.
-pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Result<(), String> {
+/// Moves a meeting folder to the Recycle Bin, but only a folder inside the recordings base that
+/// holds nothing but Conclave's files. Checked completely before anything is removed.
+pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: Remover) -> Result<(), String> {
     if !Path::new(folder_path).exists() {
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
-        .ok_or_else(|| format!("Not a Conclave meeting folder, left untouched: {folder_path}"))?;
+        .ok_or_else(|| format!("Recording folder kept: it is outside the Conclave recordings folder ({folder_path})"))?;
     if !only_conclave_files(&folder) {
         return Err(format!("Recording folder kept: it contains other files ({})", folder.display()));
     }
-    for ext in AUDIO_EXTENSIONS {
-        let _ = fs::remove_file(folder.join(format!("audio.{ext}")));
-    }
-    delete_checkpoints(&folder.join(".checkpoints"));
-    for name in MEETING_FILES {
-        let _ = fs::remove_file(folder.join(name));
-    }
-    fs::remove_dir(&folder).map_err(|e| format!("Recording folder kept ({}): {e}", folder.display()))
-}
-
-/// Removes `checkpoint_files`, then `.checkpoints` itself if now empty. Returns the bytes freed.
-pub fn delete_checkpoints(checkpoints: &Path) -> u64 {
-    let mut freed = 0;
-    for f in checkpoint_files(checkpoints) {
-        let size = fs::symlink_metadata(&f).map(|m| m.len()).unwrap_or(0);
-        match fs::remove_file(&f) {
-            Ok(()) => freed += size,
-            Err(err) => warn!("Could not delete {}: {err}", f.display()),
-        }
-    }
-    if is_plain_dir(checkpoints) {
-        let _ = fs::remove_dir(checkpoints); // only succeeds when empty
-    }
-    freed
+    remove(&[folder])
 }
 
 /// DB delete first, then the folder; the meeting stays deleted if the folder cannot be.
@@ -1044,13 +1049,14 @@ pub async fn delete_meeting_and_folder(
     pool: &sqlx::SqlitePool,
     meeting_id: &str,
     recordings_base: &Path,
+    remove: Remover<'_>,
 ) -> Result<Option<Option<String>>, sqlx::Error> {
     use crate::database::repositories::meeting::MeetingsRepository;
     let folder_path = MeetingsRepository::get_meeting_metadata(pool, meeting_id).await?.and_then(|m| m.folder_path);
     if !MeetingsRepository::delete_meeting(pool, meeting_id).await? {
         return Ok(None);
     }
-    let warning = folder_path.and_then(|p| delete_meeting_folder(&p, recordings_base).err());
+    let warning = folder_path.and_then(|p| delete_meeting_folder(&p, recordings_base, remove).err());
     if let Some(w) = &warning {
         warn!("Meeting {meeting_id} deleted, folder kept: {w}");
     }
@@ -1062,7 +1068,7 @@ pub async fn delete_meeting_and_folder(
 
 ```rust
     let base = crate::audio::recording_preferences::get_default_recordings_folder();
-    match crate::audio::meeting_folder::delete_meeting_and_folder(pool, &meeting_id, &base).await {
+    match crate::audio::meeting_folder::delete_meeting_and_folder(pool, &meeting_id, &base, &crate::audio::meeting_folder::recycle).await {
         Ok(Some(folder_warning)) => {
             log_info!("Successfully deleted meeting {}", meeting_id);
             Ok(serde_json::json!({
@@ -1082,78 +1088,59 @@ pub async fn delete_meeting_and_folder(
     }
 ```
 
-- [ ] **Step 5: Run tests** — Step 2 command: PASS; full workspace tests: PASS.
+- [ ] **Step 5: Run tests** — Step 2 command: PASS; full workspace tests: PASS; `nice -n 15 cargo check -p meetily --target x86_64-pc-windows-msvc -j 4` is not possible on Linux (no Windows toolchain), so `trash` on Windows is first compiled by the Windows CI run at the end of the phase — note it in the report.
 
 - [ ] **Step 6: Commit**
 
 ```bash
 git add frontend/src-tauri/Cargo.toml Cargo.lock frontend/src-tauri/src/audio/meeting_folder.rs frontend/src-tauri/src/audio/mod.rs frontend/src-tauri/src/api/api.rs
-git commit -m "feat(storage): guard meeting folders; deleting a meeting deletes its folder"
+git commit -m "feat(storage): guard meeting folders to the recordings folder; meeting delete moves its folder to the Recycle Bin"
 ```
 
 ---
 
-### Task 4: Audio retention
+### Task 4: Old-audio review (backend)
 
-**Codex pass required** (data deletion, background task).
+**Codex pass required** (data deletion).
 
 **Files:**
 - Create: `frontend/src-tauri/src/audio/retention.rs` (add `pub mod retention;` to `audio/mod.rs`)
-- Modify: `frontend/src-tauri/src/audio/recording_preferences.rs`, `frontend/src-tauri/src/lib.rs` (spawn after DB init; register commands)
+- Modify: `frontend/src-tauri/src/audio/recording_preferences.rs`, `frontend/src-tauri/src/lib.rs` (register commands)
 - Test: `#[cfg(test)] mod tests` in `retention.rs` and `recording_preferences.rs`
 
+There is **no background deletion and no grace period** (spec §8.1): the backend only lists old audio and deletes exactly what the user confirmed in the review, through the Recycle Bin.
+
 **Interfaces:**
-- Consumes: `guarded_meeting_folder`, `AUDIO_EXTENSIONS` (Task 3); `MeetingModel.keep_audio` (Task 1); `crate::audio::recording_commands::is_recording_now()`.
+- Consumes: `guarded_meeting_folder`, `find_audio_file`-style rules via `AUDIO_EXTENSIONS`, `checkpoint_files`, `Remover`, `recycle` (Task 3); `MeetingModel.keep_audio`, `meetings.audio_deleted_at` (Task 1); `crate::audio::recording_commands::is_recording_now()`.
 - Produces:
-  - `RecordingPreferences.audio_retention_days: Option<u32>` (`#[serde(default = "default_retention_days")]` → `Some(30)`; JSON `null` = Never) and `RecordingPreferences.audio_retention_started_at: Option<DateTime<Utc>>` (`#[serde(default)]`).
-  - `pub fn next_retention_start(old_days: Option<u32>, old_started: Option<DateTime<Utc>>, new_days: Option<u32>, now: DateTime<Utc>) -> Option<DateTime<Utc>>`
-  - `pub fn is_eligible(created_at: DateTime<Utc>, started_at: Option<DateTime<Utc>>, days: u32, now: DateTime<Utc>, ignore_grace: bool) -> bool`
-  - `pub struct RetentionSummary { pub meetings: u32, pub bytes: u64, pub meeting_ids: Vec<String> }` (`Serialize`)
-  - `pub async fn eligible_folders(pool, days, started_at, now, ignore_grace, base: &Path) -> Result<Vec<(String, PathBuf)>, String>` (meeting id, guarded folder)
-  - `pub fn summarize(folders: &[(String, PathBuf)]) -> RetentionSummary`
-  - `pub fn only_confirmed(eligible: Vec<(String, PathBuf)>, confirmed: &[String]) -> Vec<(String, PathBuf)>`
+  - `RecordingPreferences.old_audio_days: Option<u32>` (`#[serde(default = "default_old_audio_days")]` → `Some(30)`; JSON `null` = Never)
+  - `#[derive(Serialize)] pub struct OldAudio { pub meeting_id: String, pub title: String, pub created_at: String, pub bytes: u64, pub files: Vec<String> }`
+  - `#[derive(Serialize, Default)] pub struct DeleteResult { pub meetings: u32, pub bytes: u64, pub failed: Vec<String> }`
+  - `pub fn is_old(created_at: DateTime<Utc>, days: u32, now: DateTime<Utc>) -> bool`
   - `pub fn audio_paths(folder: &Path) -> Vec<PathBuf>` (real top-level `audio.<ext>` files + `checkpoint_files(.checkpoints)`; never a directory)
-  - `pub fn delete_audio(folder: &Path) -> u64` (bytes freed; errors logged)
-  - `pub async fn run_once(pool, prefs: &RecordingPreferences, now, recording: bool, base: &Path) -> RetentionSummary`
-  - `pub fn spawn_retention_task(app: AppHandle)`
-  - `pub async fn ensure_retention_start<R: Runtime>(app: &AppHandle<R>)` — sets `audio_retention_started_at` to now if retention is on and it is unset; called at startup, before the first run.
-  - Commands: `audio_retention_preview() -> RetentionSummary`, `audio_retention_delete_now(meetingIds: string[]) -> RetentionSummary` (both ignore the grace period; skip pinned; refuse while recording; delete-now deletes only the confirmed ids that are **still** eligible).
+  - `pub async fn list_old_audio(pool, days: Option<u32>, now, recording: bool, base: &Path) -> Result<Vec<OldAudio>, String>`
+  - `pub async fn delete_old_audio_inner(pool, confirmed: &[String], days: Option<u32>, now, recording: bool, base: &Path, remove: Remover<'_>) -> Result<DeleteResult, String>`
+  - Commands: `old_audio_list() -> OldAudio[]`, `delete_old_audio(meetingIds: string[]) -> DeleteResult`.
 
 - [ ] **Step 1: Write the failing tests** — `recording_preferences.rs`, new test module:
 
 ```rust
 #[cfg(test)]
-mod retention_pref_tests {
+mod old_audio_pref_tests {
     use super::*;
-    use chrono::{TimeZone, Utc};
 
     #[test]
-    fn old_file_defaults_to_30_days_with_no_start_yet() {
+    fn old_file_defaults_to_30_days() {
         let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4"}"#;
         let p: RecordingPreferences = serde_json::from_str(json).unwrap();
-        assert_eq!(p.audio_retention_days, Some(30));
-        assert_eq!(p.audio_retention_started_at, None);
+        assert_eq!(p.old_audio_days, Some(30));
     }
 
     #[test]
     fn explicit_null_means_never() {
-        let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4","audio_retention_days":null}"#;
+        let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4","old_audio_days":null}"#;
         let p: RecordingPreferences = serde_json::from_str(json).unwrap();
-        assert_eq!(p.audio_retention_days, None);
-    }
-
-    #[test]
-    fn retention_start_rules() {
-        let t0 = Utc.with_ymd_and_hms(2026, 10, 1, 0, 0, 0).unwrap();
-        let now = Utc.with_ymd_and_hms(2026, 10, 15, 0, 0, 0).unwrap();
-        // first save by this version
-        assert_eq!(next_retention_start(Some(30), None, Some(30), now), Some(now));
-        // unchanged keeps the original start, whatever the frontend echoed
-        assert_eq!(next_retention_start(Some(30), Some(t0), Some(7), now), Some(t0));
-        // Never -> days resets the grace period
-        assert_eq!(next_retention_start(None, Some(t0), Some(30), now), Some(now));
-        // switching to Never keeps the old value (unused while Never)
-        assert_eq!(next_retention_start(Some(30), Some(t0), None, now), Some(t0));
+        assert_eq!(p.old_audio_days, None);
     }
 }
 ```
@@ -1166,20 +1153,18 @@ mod tests {
     use super::*;
     use crate::database::repositories::test_pool;
     use chrono::{Duration, TimeZone, Utc};
+    use std::cell::RefCell;
     use std::fs;
 
     fn now() -> DateTime<Utc> { Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap() }
 
-    #[test]
-    fn eligibility_needs_both_ages_unless_ignoring_grace() {
-        let old = now() - Duration::days(40);
-        let recent = now() - Duration::days(5);
-        assert!(is_eligible(old, Some(old), 30, now(), false));
-        assert!(!is_eligible(recent, Some(old), 30, now(), false));
-        assert!(!is_eligible(old, Some(recent), 30, now(), false)); // grace period
-        assert!(!is_eligible(old, None, 30, now(), false));         // start not recorded yet
-        assert!(is_eligible(old, Some(recent), 30, now(), true));
-        assert!(is_eligible(old, None, 30, now(), true));
+    struct FakeBin(RefCell<Vec<PathBuf>>);
+    impl FakeBin {
+        fn new() -> Self { FakeBin(RefCell::new(Vec::new())) }
+        fn remove(&self, paths: &[PathBuf]) -> Result<(), String> {
+            for p in paths { fs::remove_file(p).unwrap(); self.0.borrow_mut().push(p.clone()); }
+            Ok(())
+        }
     }
 
     fn folder(base: &Path, name: &str) -> PathBuf {
@@ -1189,34 +1174,24 @@ mod tests {
         fs::write(f.join(".checkpoints/audio_chunk_000.mp4"), vec![0u8; 10]).unwrap();
         fs::write(f.join("transcripts.json"), "[]").unwrap();
         fs::write(f.join("metadata.json"), "{}").unwrap();
-        fs::write(f.join("notes.txt"), "keep").unwrap();
         f
     }
 
     async fn insert(pool: &SqlitePool, id: &str, created: DateTime<Utc>, folder: Option<&Path>, keep: bool) {
-        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, keep_audio) VALUES (?, 't', ?, ?, ?, ?)")
-            .bind(id).bind(created).bind(created).bind(folder.map(|f| f.to_string_lossy().to_string())).bind(keep)
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, keep_audio) VALUES (?, ?, ?, ?, ?, ?)")
+            .bind(id).bind(format!("Meeting {id}")).bind(created).bind(created)
+            .bind(folder.map(|f| f.to_string_lossy().to_string())).bind(keep)
             .execute(pool).await.unwrap();
     }
 
-    fn prefs(days: Option<u32>, started: Option<DateTime<Utc>>) -> RecordingPreferences {
-        RecordingPreferences { audio_retention_days: days, audio_retention_started_at: started, ..Default::default() }
-    }
-
     #[test]
-    fn delete_audio_removes_only_audio_and_checkpoints() {
-        let b = tempfile::tempdir().unwrap();
-        let f = folder(b.path(), "m");
-        let freed = delete_audio(&f);
-        assert_eq!(freed, 1010);
-        assert!(!f.join("audio.mp4").exists());
-        assert!(!f.join(".checkpoints").exists());
-        for keep in ["transcripts.json", "metadata.json", "notes.txt"] { assert!(f.join(keep).exists(), "{keep}"); }
-        assert_eq!(delete_audio(&f), 0); // nothing left is not an error
+    fn is_old_uses_the_cutoff() {
+        assert!(is_old(now() - Duration::days(31), 30, now()));
+        assert!(!is_old(now() - Duration::days(29), 30, now()));
     }
 
     #[tokio::test]
-    async fn run_once_selects_the_right_meetings() {
+    async fn list_selects_the_right_meetings_and_deletes_nothing() {
         let pool = test_pool().await;
         let b = tempfile::tempdir().unwrap();
         let old = now() - Duration::days(40);
@@ -1224,129 +1199,95 @@ mod tests {
         let f_new = folder(b.path(), "new");
         let f_pin = folder(b.path(), "pinned");
         let outside = tempfile::tempdir().unwrap();
-        fs::write(outside.path().join("audio.mp4"), "x").unwrap(); // no metadata.json, not in base
+        fs::write(outside.path().join("audio.mp4"), "x").unwrap();
         insert(&pool, "old", old, Some(&f_old), false).await;
         insert(&pool, "new", now() - Duration::days(5), Some(&f_new), false).await;
         insert(&pool, "pinned", old, Some(&f_pin), true).await;
         insert(&pool, "nofolder", old, None, false).await;
         insert(&pool, "outside", old, Some(outside.path()), false).await;
 
-        let s = run_once(&pool, &prefs(Some(30), Some(old)), now(), false, b.path()).await;
-        assert_eq!(s.meetings, 1);
-        assert!(!f_old.join("audio.mp4").exists());
-        assert!(f_new.join("audio.mp4").exists());
-        assert!(f_pin.join("audio.mp4").exists());
-        assert!(outside.path().join("audio.mp4").exists());
+        let list = list_old_audio(&pool, Some(30), now(), false, b.path()).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].meeting_id, "old");
+        assert_eq!(list[0].title, "Meeting old");
+        assert_eq!(list[0].bytes, 1010);
+        assert_eq!(list[0].files.len(), 2);
+        assert!(f_old.join("audio.mp4").exists());
+        assert!(list_old_audio(&pool, None, now(), false, b.path()).await.unwrap().is_empty());
+        assert!(list_old_audio(&pool, Some(30), now(), true, b.path()).await.unwrap().is_empty());
     }
 
     #[tokio::test]
-    async fn run_skips_while_recording_never_and_grace() {
+    async fn delete_removes_only_confirmed_audio_and_marks_the_meeting() {
         let pool = test_pool().await;
         let b = tempfile::tempdir().unwrap();
         let old = now() - Duration::days(40);
-        let f = folder(b.path(), "old");
-        insert(&pool, "old", old, Some(&f), false).await;
-        assert_eq!(run_once(&pool, &prefs(Some(30), Some(old)), now(), true, b.path()).await.meetings, 0);
-        assert_eq!(run_once(&pool, &prefs(None, Some(old)), now(), false, b.path()).await.meetings, 0);
-        assert_eq!(run_once(&pool, &prefs(Some(30), Some(now() - Duration::days(1))), now(), false, b.path()).await.meetings, 0);
-        assert!(f.join("audio.mp4").exists());
+        let f1 = folder(b.path(), "one");
+        let f2 = folder(b.path(), "two");
+        insert(&pool, "one", old, Some(&f1), false).await;
+        insert(&pool, "two", old, Some(&f2), false).await;
+        let bin = FakeBin::new();
+
+        let r = delete_old_audio_inner(&pool, &["one".into(), "ghost".into()], Some(30), now(), false, b.path(), &|p| bin.remove(p)).await.unwrap();
+        assert_eq!((r.meetings, r.bytes), (1, 1010));
+        assert!(r.failed.is_empty());
+        assert!(!f1.join("audio.mp4").exists());
+        assert!(!f1.join(".checkpoints").exists()); // emptied, then removed
+        for keep in ["transcripts.json", "metadata.json"] { assert!(f1.join(keep).exists(), "{keep}"); }
+        assert!(f2.join("audio.mp4").exists()); // not confirmed
+        let (deleted_at,): (Option<String>,) = sqlx::query_as("SELECT audio_deleted_at FROM meetings WHERE id = 'one'").fetch_one(&pool).await.unwrap();
+        assert!(deleted_at.is_some());
+        assert_eq!(bin.0.borrow().len(), 2);
     }
 
     #[tokio::test]
-    async fn preview_matches_delete_now_and_deletes_nothing() {
+    async fn delete_is_refused_while_recording_and_reports_bin_failures() {
         let pool = test_pool().await;
         let b = tempfile::tempdir().unwrap();
-        let old = now() - Duration::days(40);
-        let f = folder(b.path(), "old");
-        insert(&pool, "old", old, Some(&f), false).await;
-        let folders = eligible_folders(&pool, 30, Some(now()), now(), true, b.path()).await.unwrap();
-        let preview = summarize(&folders);
-        assert_eq!((preview.meetings, preview.bytes), (1, 1010));
-        assert_eq!(preview.meeting_ids, vec!["old".to_string()]);
+        let f = folder(b.path(), "one");
+        insert(&pool, "one", now() - Duration::days(40), Some(&f), false).await;
+        let failing = |_: &[PathBuf]| Err("user declined".to_string());
+        assert!(delete_old_audio_inner(&pool, &["one".into()], Some(30), now(), true, b.path(), &failing).await.is_err());
+        let r = delete_old_audio_inner(&pool, &["one".into()], Some(30), now(), false, b.path(), &failing).await.unwrap();
+        assert_eq!(r.meetings, 0);
+        assert_eq!(r.failed.len(), 1);
         assert!(f.join("audio.mp4").exists());
     }
 
     #[test]
-    fn foreign_files_in_checkpoints_are_neither_counted_nor_deleted() {
+    fn foreign_files_in_checkpoints_are_neither_listed_nor_deleted() {
         let b = tempfile::tempdir().unwrap();
         let f = b.path().join("m");
         fs::create_dir_all(f.join(".checkpoints")).unwrap();
         fs::write(f.join(".checkpoints/mine.txt"), vec![0u8; 500]).unwrap();
-        assert!(audio_paths(&f).is_empty()); // so the folder is never "eligible" forever
-        assert_eq!(delete_audio(&f), 0);
-        assert!(f.join(".checkpoints/mine.txt").exists());
-    }
-
-    #[test]
-    fn delete_now_keeps_only_confirmed_ids() {
-        let eligible = vec![("a".to_string(), PathBuf::from("/a")), ("b".to_string(), PathBuf::from("/b"))];
-        let kept = only_confirmed(eligible, &["b".to_string(), "zzz".to_string()]);
-        assert_eq!(kept, vec![("b".to_string(), PathBuf::from("/b"))]);
+        assert!(audio_paths(&f).is_empty());
     }
 }
 ```
 
 - [ ] **Step 2: Run to verify failure**
 
-Run: `cd frontend/src-tauri && nice -n 15 cargo test -p meetily --lib -j 4 -- retention`
-Expected: compile errors (fields and module missing).
+Run: `cd frontend/src-tauri && nice -n 15 cargo test -p meetily --lib -j 4 -- retention old_audio_pref`
+Expected: compile errors (field and module missing).
 
 - [ ] **Step 3: Preferences** — in `RecordingPreferences` add:
 
 ```rust
-    /// Delete meeting audio after this many days; `None` = Never (spec §8.1).
-    #[serde(default = "default_retention_days")]
-    pub audio_retention_days: Option<u32>,
-    /// Start of the grace period: audio is only deleted once this is also N days old.
-    #[serde(default)]
-    pub audio_retention_started_at: Option<chrono::DateTime<chrono::Utc>>,
+    /// List recordings older than this many days in the old-audio review; `None` = Never (spec §8.1).
+    #[serde(default = "default_old_audio_days")]
+    pub old_audio_days: Option<u32>,
 ```
 
-with `fn default_retention_days() -> Option<u32> { Some(30) }`, both in `Default` (`audio_retention_days: default_retention_days(), audio_retention_started_at: None`), and:
-
-```rust
-/// The frontend never controls the grace start: it is set the first time this version
-/// saves, and reset when retention is switched on from Never.
-pub fn next_retention_start(
-    old_days: Option<u32>,
-    old_started: Option<chrono::DateTime<chrono::Utc>>,
-    new_days: Option<u32>,
-    now: chrono::DateTime<chrono::Utc>,
-) -> Option<chrono::DateTime<chrono::Utc>> {
-    match (new_days, old_days, old_started) {
-        (None, _, started) => started,
-        (Some(_), None, _) | (Some(_), Some(_), None) => Some(now),
-        (Some(_), Some(_), started) => started,
-    }
-}
-```
-
-`set_recording_preferences` becomes:
-
-```rust
-pub async fn set_recording_preferences<R: Runtime>(app: AppHandle<R>, mut preferences: RecordingPreferences) -> Result<(), String> {
-    let old = load_recording_preferences(&app).await.unwrap_or_default();
-    preferences.audio_retention_started_at = next_retention_start(
-        old.audio_retention_days,
-        old.audio_retention_started_at,
-        preferences.audio_retention_days,
-        chrono::Utc::now(),
-    );
-    save_recording_preferences(&app, &preferences)
-        .await
-        .map_err(|e| format!("Failed to save recording preferences: {}", e))
-}
-```
-
-Only the values 7, 30 and 90 (or `None`) are offered by the UI; any other positive number still works (no validation needed beyond `u32`; `Some(0)` is treated as Never by `run_once`).
+with `fn default_old_audio_days() -> Option<u32> { Some(30) }` and `old_audio_days: default_old_audio_days()` in `Default`. `set_recording_preferences` is unchanged.
 
 - [ ] **Step 4: Implement `retention.rs`**
 
 ```rust
-//! Deletes meeting audio older than N days (spec §8.1). Transcripts, summaries, notes and
-//! the JSON files in the folder are never touched.
-use crate::audio::meeting_folder::{checkpoint_files, guarded_meeting_folder, AUDIO_EXTENSIONS};
-use crate::audio::recording_preferences::{load_recording_preferences, save_recording_preferences, RecordingPreferences, get_default_recordings_folder};
+//! Old-audio review (spec §8.1): lists recordings older than N days and moves exactly the
+//! confirmed ones to the Recycle Bin. Never runs by itself; never deletes transcripts,
+//! summaries, notes or the JSON files in the folder.
+use crate::audio::meeting_folder::{checkpoint_files, guarded_meeting_folder, recycle, Remover, AUDIO_EXTENSIONS};
+use crate::audio::recording_preferences::{get_default_recordings_folder, load_recording_preferences};
 use crate::database::models::DateTimeUtc;
 use chrono::{DateTime, Duration, Utc};
 use log::{info, warn};
@@ -1356,23 +1297,28 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use tauri::{AppHandle, Manager, Runtime};
 
-const FIRST_RUN_DELAY: std::time::Duration = std::time::Duration::from_secs(60);
-const RUN_INTERVAL: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct OldAudio {
+    pub meeting_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub bytes: u64,
+    pub files: Vec<String>,
+}
 
 #[derive(Debug, Default, Clone, PartialEq, Serialize)]
-pub struct RetentionSummary {
+pub struct DeleteResult {
     pub meetings: u32,
     pub bytes: u64,
-    pub meeting_ids: Vec<String>,
+    pub failed: Vec<String>,
 }
 
-pub fn is_eligible(created_at: DateTime<Utc>, started_at: Option<DateTime<Utc>>, days: u32, now: DateTime<Utc>, ignore_grace: bool) -> bool {
-    let cutoff = now - Duration::days(i64::from(days));
-    created_at < cutoff && (ignore_grace || started_at.is_some_and(|s| s < cutoff))
+pub fn is_old(created_at: DateTime<Utc>, days: u32, now: DateTime<Utc>) -> bool {
+    created_at < now - Duration::days(i64::from(days))
 }
 
-/// Everything retention may delete in one folder: real top-level `audio.<ext>` files and
-/// Conclave's own checkpoint files. Eligibility, preview size and delete all use this list.
+/// Everything the review may delete in one folder: real top-level `audio.<ext>` files and
+/// Conclave's own checkpoint files. Listing, size and delete all use this one list.
 pub fn audio_paths(folder: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = AUDIO_EXTENSIONS
         .iter()
@@ -1387,144 +1333,114 @@ fn size_of(path: &Path) -> u64 {
     fs::symlink_metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
-/// Returns the bytes freed. Errors are logged and skipped. Never recursive.
-pub fn delete_audio(folder: &Path) -> u64 {
-    let mut freed = 0;
-    for path in audio_paths(folder) {
-        let size = size_of(&path);
-        match fs::remove_file(&path) {
-            Ok(()) => freed += size,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
-            Err(e) => warn!("Retention: could not delete {}: {e}", path.display()),
-        }
-    }
-    let checkpoints = folder.join(".checkpoints");
-    if fs::symlink_metadata(&checkpoints).is_ok_and(|m| m.file_type().is_dir()) {
-        let _ = fs::remove_dir(&checkpoints); // only when empty
-    }
-    freed
-}
-
-pub async fn eligible_folders(
+pub async fn list_old_audio(
     pool: &SqlitePool,
-    days: u32,
-    started_at: Option<DateTime<Utc>>,
+    days: Option<u32>,
     now: DateTime<Utc>,
-    ignore_grace: bool,
+    recording: bool,
     base: &Path,
-) -> Result<Vec<(String, PathBuf)>, String> {
-    let rows: Vec<(String, DateTimeUtc, String)> = sqlx::query_as(
-        "SELECT id, created_at, folder_path FROM meetings WHERE keep_audio = 0 AND folder_path IS NOT NULL",
+) -> Result<Vec<OldAudio>, String> {
+    let Some(days) = days.filter(|d| *d > 0) else { return Ok(Vec::new()) };
+    if recording {
+        return Ok(Vec::new());
+    }
+    let rows: Vec<(String, String, DateTimeUtc, String)> = sqlx::query_as(
+        "SELECT id, title, created_at, folder_path FROM meetings
+         WHERE keep_audio = 0 AND folder_path IS NOT NULL ORDER BY created_at",
     )
     .fetch_all(pool)
     .await
     .map_err(|e| e.to_string())?;
     Ok(rows
         .into_iter()
-        .filter(|(_, created, _)| is_eligible(created.0, started_at, days, now, ignore_grace))
-        .filter_map(|(id, _, path)| guarded_meeting_folder(&path, base).map(|f| (id, f)))
-        .filter(|(_, folder)| !audio_paths(folder).is_empty())
+        .filter(|(_, _, created, _)| is_old(created.0, days, now))
+        .filter_map(|(id, title, created, path)| {
+            let folder = guarded_meeting_folder(&path, base)?;
+            let files = audio_paths(&folder);
+            if files.is_empty() {
+                return None;
+            }
+            Some(OldAudio {
+                meeting_id: id,
+                title,
+                created_at: created.0.to_rfc3339(),
+                bytes: files.iter().map(|f| size_of(f)).sum(),
+                files: files.iter().map(|f| f.to_string_lossy().to_string()).collect(),
+            })
+        })
         .collect())
 }
 
-pub fn summarize(folders: &[(String, PathBuf)]) -> RetentionSummary {
-    RetentionSummary {
-        meetings: folders.len() as u32,
-        bytes: folders.iter().flat_map(|(_, f)| audio_paths(f)).map(|p| size_of(&p)).sum(),
-        meeting_ids: folders.iter().map(|(id, _)| id.clone()).collect(),
-    }
-}
-
-/// "Delete now" deletes exactly what the user confirmed, and only what is still eligible.
-pub fn only_confirmed(eligible: Vec<(String, PathBuf)>, confirmed: &[String]) -> Vec<(String, PathBuf)> {
-    eligible.into_iter().filter(|(id, _)| confirmed.contains(id)).collect()
-}
-
-fn delete_all(folders: &[(String, PathBuf)]) -> RetentionSummary {
-    let bytes = folders.iter().map(|(_, f)| delete_audio(f)).sum();
-    RetentionSummary {
-        meetings: folders.len() as u32,
-        bytes,
-        meeting_ids: folders.iter().map(|(id, _)| id.clone()).collect(),
-    }
-}
-
-pub async fn run_once(pool: &SqlitePool, prefs: &RecordingPreferences, now: DateTime<Utc>, recording: bool, base: &Path) -> RetentionSummary {
-    let days = match prefs.audio_retention_days {
-        Some(d) if d > 0 => d,
-        _ => return RetentionSummary::default(),
-    };
+/// Deletes exactly the confirmed meetings that are still listed, through `remove`.
+pub async fn delete_old_audio_inner(
+    pool: &SqlitePool,
+    confirmed: &[String],
+    days: Option<u32>,
+    now: DateTime<Utc>,
+    recording: bool,
+    base: &Path,
+    remove: Remover<'_>,
+) -> Result<DeleteResult, String> {
     if recording {
-        info!("Retention: skipped, a recording is in progress");
-        return RetentionSummary::default();
-    }
-    match eligible_folders(pool, days, prefs.audio_retention_started_at, now, false, base).await {
-        Ok(folders) => {
-            let s = delete_all(&folders);
-            info!("Retention: deleted audio of {} meetings, freed {} MB", s.meetings, s.bytes / 1_000_000);
-            s
-        }
-        Err(e) => {
-            warn!("Retention: could not list meetings: {e}");
-            RetentionSummary::default()
-        }
-    }
-}
-
-/// First launch of this version: start the grace period now (spec §2.8, §8.1).
-pub async fn ensure_retention_start<R: Runtime>(app: &AppHandle<R>) {
-    let mut prefs = load_recording_preferences(app).await.unwrap_or_default();
-    if prefs.audio_retention_days.is_some() && prefs.audio_retention_started_at.is_none() {
-        prefs.audio_retention_started_at = Some(Utc::now());
-        if let Err(e) = save_recording_preferences(app, &prefs).await {
-            warn!("Retention: could not record the grace-period start: {e}");
-        }
-    }
-}
-
-async fn run_from_app<R: Runtime>(app: &AppHandle<R>) {
-    let Some(state) = app.try_state::<crate::state::AppState>() else { return };
-    let prefs = load_recording_preferences(app).await.unwrap_or_default();
-    // A missing start means nothing is eligible yet (is_eligible), so this run deletes nothing.
-    let recording = crate::audio::recording_commands::is_recording_now();
-    run_once(state.db_manager.pool(), &prefs, Utc::now(), recording, &get_default_recordings_folder()).await;
-}
-
-pub fn spawn_retention_task<R: Runtime>(app: AppHandle<R>) {
-    tauri::async_runtime::spawn(async move {
-        ensure_retention_start(&app).await;
-        tokio::time::sleep(FIRST_RUN_DELAY).await;
-        loop {
-            run_from_app(&app).await;
-            tokio::time::sleep(RUN_INTERVAL).await;
-        }
-    });
-}
-
-async fn manual_folders<R: Runtime>(app: &AppHandle<R>) -> Result<Vec<(String, PathBuf)>, String> {
-    if crate::audio::recording_commands::is_recording_now() {
         return Err("Stop the recording first.".into());
     }
+    let mut result = DeleteResult::default();
+    for item in list_old_audio(pool, days, now, false, base).await? {
+        if !confirmed.contains(&item.meeting_id) {
+            continue;
+        }
+        let paths: Vec<PathBuf> = item.files.iter().map(PathBuf::from).collect();
+        match remove(&paths) {
+            Ok(()) => {
+                if let Some(first) = paths.first().and_then(|p| p.parent()) {
+                    let checkpoints = first.join(".checkpoints");
+                    if fs::symlink_metadata(&checkpoints).is_ok_and(|m| m.file_type().is_dir()) {
+                        let _ = fs::remove_dir(&checkpoints); // only when empty
+                    }
+                }
+                if let Err(e) = sqlx::query("UPDATE meetings SET audio_deleted_at = ? WHERE id = ?")
+                    .bind(now.to_rfc3339())
+                    .bind(&item.meeting_id)
+                    .execute(pool)
+                    .await
+                {
+                    warn!("Old audio: could not record the deletion for {}: {e}", item.meeting_id);
+                }
+                result.meetings += 1;
+                result.bytes += item.bytes;
+            }
+            Err(e) => {
+                warn!("Old audio: {} not deleted: {e}", item.meeting_id);
+                result.failed.push(format!("{}: {e}", item.title));
+            }
+        }
+    }
+    info!("Old audio: moved {} recordings ({} MB) to the Recycle Bin", result.meetings, result.bytes / 1_000_000);
+    Ok(result)
+}
+
+#[tauri::command]
+pub async fn old_audio_list<R: Runtime>(app: AppHandle<R>) -> Result<Vec<OldAudio>, String> {
     let state = app.try_state::<crate::state::AppState>().ok_or("Database not ready")?;
-    let prefs = load_recording_preferences(app).await.unwrap_or_default();
-    let days = prefs.audio_retention_days.filter(|d| *d > 0).ok_or("Audio deletion is set to Never.")?;
-    eligible_folders(state.db_manager.pool(), days, None, Utc::now(), true, &get_default_recordings_folder()).await
+    let prefs = load_recording_preferences(&app).await.unwrap_or_default();
+    let recording = crate::audio::recording_commands::is_recording_now();
+    list_old_audio(state.db_manager.pool(), prefs.old_audio_days, Utc::now(), recording, &get_default_recordings_folder()).await
 }
 
 #[tauri::command]
-pub async fn audio_retention_preview<R: Runtime>(app: AppHandle<R>) -> Result<RetentionSummary, String> {
-    Ok(summarize(&manual_folders(&app).await?))
-}
-
-#[tauri::command]
-pub async fn audio_retention_delete_now<R: Runtime>(app: AppHandle<R>, meeting_ids: Vec<String>) -> Result<RetentionSummary, String> {
-    let s = delete_all(&only_confirmed(manual_folders(&app).await?, &meeting_ids));
-    info!("Retention (manual): deleted audio of {} meetings, freed {} MB", s.meetings, s.bytes / 1_000_000);
-    Ok(s)
+pub async fn delete_old_audio<R: Runtime>(app: AppHandle<R>, meeting_ids: Vec<String>) -> Result<DeleteResult, String> {
+    let state = app.try_state::<crate::state::AppState>().ok_or("Database not ready")?;
+    let prefs = load_recording_preferences(&app).await.unwrap_or_default();
+    let recording = crate::audio::recording_commands::is_recording_now();
+    delete_old_audio_inner(
+        state.db_manager.pool(), &meeting_ids, prefs.old_audio_days, Utc::now(), recording,
+        &get_default_recordings_folder(), &recycle,
+    )
+    .await
 }
 ```
 
-In `lib.rs` setup, right after the database `block_on(...)` and template seeding: `audio::retention::spawn_retention_task(_app.handle().clone());`. Register `audio::retention::audio_retention_preview, audio::retention::audio_retention_delete_now` in `generate_handler!`.
+Register `audio::retention::old_audio_list, audio::retention::delete_old_audio` in `generate_handler!`. Nothing is spawned at startup.
 
 - [ ] **Step 5: Run tests** — Step 2 command: PASS. Full workspace tests: PASS.
 
@@ -1532,7 +1448,7 @@ In `lib.rs` setup, right after the database `block_on(...)` and template seeding
 
 ```bash
 git add frontend/src-tauri/src/audio/retention.rs frontend/src-tauri/src/audio/mod.rs frontend/src-tauri/src/audio/recording_preferences.rs frontend/src-tauri/src/lib.rs
-git commit -m "feat(storage): delete meeting audio after N days with a grace period"
+git commit -m "feat(storage): list old recordings and move the confirmed ones to the Recycle Bin"
 ```
 
 ---
@@ -1548,28 +1464,31 @@ git commit -m "feat(storage): delete meeting audio after N days with a grace per
 - Test: `meeting_folder.rs` tests
 
 **Interfaces:**
-- Consumes: Task 3 guard; Task 4 `is_eligible`, prefs.
+- Consumes: Task 3 guard and `find_audio_file`; Task 1 `MeetingModel.keep_audio`, `audio_deleted_at`.
 - Produces:
-  - `#[derive(Serialize)] pub struct MeetingAudio { pub path: Option<String>, pub keep_audio: bool, pub retention_days: Option<u32>, pub removed_by_retention: bool }`
-  - `pub fn removed_by_retention(keep_audio: bool, created_at: DateTime<Utc>, prefs: &RecordingPreferences, now: DateTime<Utc>) -> bool`
+  - `#[derive(Serialize)] pub struct MeetingAudio { pub path: Option<String>, pub keep_audio: bool, pub audio_deleted_at: Option<String> }`
   - Command `get_meeting_audio(meetingId: string) -> MeetingAudio`: on success the asset protocol may read exactly `path`.
 
 - [ ] **Step 1: Write the failing test** (append to `meeting_folder.rs` tests):
 
 ```rust
-    #[test]
-    fn removed_by_retention_follows_the_job_rules() {
-        use chrono::{Duration, Utc};
-        let now = Utc::now();
-        let old = now - Duration::days(40);
-        let mut p = crate::audio::recording_preferences::RecordingPreferences::default();
-        p.audio_retention_days = Some(30);
-        p.audio_retention_started_at = Some(old);
-        assert!(removed_by_retention(false, old, &p, now));
-        assert!(!removed_by_retention(true, old, &p, now));
-        assert!(!removed_by_retention(false, now - Duration::days(3), &p, now));
-        p.audio_retention_days = None;
-        assert!(!removed_by_retention(false, old, &p, now));
+    #[tokio::test]
+    async fn meeting_audio_reports_file_pin_and_deletion() {
+        let pool = crate::database::repositories::test_pool().await;
+        let b = base();
+        let m = b.path().join("m");
+        fs::create_dir(&m).unwrap();
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, keep_audio, audio_deleted_at) VALUES ('m1', 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?, 1, '2026-11-20T10:00:00+00:00')")
+            .bind(m.to_string_lossy().to_string())
+            .execute(&pool).await.unwrap();
+        let a = meeting_audio_inner(&pool, "m1", b.path()).await.unwrap();
+        assert!(a.path.unwrap().ends_with("audio.mp4"));
+        assert!(a.keep_audio);
+        assert_eq!(a.audio_deleted_at.as_deref(), Some("2026-11-20T10:00:00+00:00"));
+        fs::remove_file(m.join("audio.mp4")).unwrap();
+        assert!(meeting_audio_inner(&pool, "m1", b.path()).await.unwrap().path.is_none());
+        assert!(meeting_audio_inner(&pool, "nope", b.path()).await.is_err());
     }
 ```
 
@@ -1578,8 +1497,7 @@ git commit -m "feat(storage): delete meeting audio after N days with a grace per
 - [ ] **Step 3: Implement** (append to `meeting_folder.rs`):
 
 ```rust
-use crate::audio::recording_preferences::{get_default_recordings_folder, load_recording_preferences, RecordingPreferences};
-use chrono::{DateTime, Utc};
+use crate::audio::recording_preferences::get_default_recordings_folder;
 use serde::Serialize;
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -1587,41 +1505,36 @@ use tauri::{AppHandle, Manager, Runtime};
 pub struct MeetingAudio {
     pub path: Option<String>,
     pub keep_audio: bool,
-    pub retention_days: Option<u32>,
-    pub removed_by_retention: bool,
+    /// Set when the user deleted the audio in the old-audio review; picks the player message.
+    pub audio_deleted_at: Option<String>,
 }
 
-/// Would the retention job have deleted this meeting's audio? Picks the player message.
-pub fn removed_by_retention(keep_audio: bool, created_at: DateTime<Utc>, prefs: &RecordingPreferences, now: DateTime<Utc>) -> bool {
-    !keep_audio
-        && prefs.audio_retention_days.filter(|d| *d > 0).is_some_and(|days| {
-            crate::audio::retention::is_eligible(created_at, prefs.audio_retention_started_at, days, now, false)
-        })
+pub(crate) async fn meeting_audio_inner(pool: &sqlx::SqlitePool, meeting_id: &str, base: &Path) -> Result<MeetingAudio, String> {
+    let meeting = crate::database::repositories::meeting::MeetingsRepository::get_meeting_metadata(pool, meeting_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Meeting not found: {meeting_id}"))?;
+    let file = meeting
+        .folder_path
+        .as_deref()
+        .and_then(|p| guarded_meeting_folder(p, base))
+        .and_then(|folder| find_audio_file(&folder));
+    Ok(MeetingAudio {
+        path: file.map(|f| f.to_string_lossy().to_string()),
+        keep_audio: meeting.keep_audio,
+        audio_deleted_at: meeting.audio_deleted_at,
+    })
 }
 
 /// Finds the meeting's audio and lets the asset protocol read that one file (spec §8.2).
 #[tauri::command]
 pub async fn get_meeting_audio<R: Runtime>(app: AppHandle<R>, meeting_id: String) -> Result<MeetingAudio, String> {
     let state = app.try_state::<crate::state::AppState>().ok_or("Database not ready")?;
-    let meeting = crate::database::repositories::meeting::MeetingsRepository::get_meeting_metadata(state.db_manager.pool(), &meeting_id)
-        .await
-        .map_err(|e| e.to_string())?
-        .ok_or_else(|| format!("Meeting not found: {meeting_id}"))?;
-    let prefs = load_recording_preferences(&app).await.unwrap_or_default();
-    let file = meeting
-        .folder_path
-        .as_deref()
-        .and_then(|p| guarded_meeting_folder(p, &get_default_recordings_folder()))
-        .and_then(|folder| find_audio_file(&folder));
-    if let Some(f) = &file {
-        app.asset_protocol_scope().allow_file(f).map_err(|e| e.to_string())?;
+    let audio = meeting_audio_inner(state.db_manager.pool(), &meeting_id, &get_default_recordings_folder()).await?;
+    if let Some(p) = &audio.path {
+        app.asset_protocol_scope().allow_file(p).map_err(|e| e.to_string())?;
     }
-    Ok(MeetingAudio {
-        path: file.map(|f| f.to_string_lossy().to_string()),
-        keep_audio: meeting.keep_audio,
-        retention_days: prefs.audio_retention_days,
-        removed_by_retention: removed_by_retention(meeting.keep_audio, meeting.created_at.0, &prefs, Utc::now()),
-    })
+    Ok(audio)
 }
 ```
 
@@ -2822,8 +2735,8 @@ git commit -m "feat(live): notes pane and line marks during a recording, kept th
 **Interfaces:**
 - Consumes: commands from Tasks 2 and 5; Tasks 7–9 components.
 - Produces:
-  - `interface MeetingAudioInfo { path: string | null; keep_audio: boolean; retention_days: number | null; removed_by_retention: boolean }`
-  - `audioMissingMessage(info: MeetingAudioInfo | null): string | null` — `null` when `path` is set or info not loaded; `"Audio deleted (older than N days)"` when `removed_by_retention && retention_days`; else `"Audio file not found"`.
+  - `interface MeetingAudioInfo { path: string | null; keep_audio: boolean; audio_deleted_at: string | null }`
+  - `audioMissingMessage(info: MeetingAudioInfo | null): string | null` — `null` when `path` is set or info not loaded; `"Audio deleted on <local date>"` when `audio_deleted_at` is set; else `"Audio file not found"`.
   - `useMeetingAudio(meetingId: string)` → `{ info, src: string | null, audioRef, playhead: number | null, duration: number | null, isPlaying, rate, setRate(r: 1 | 1.5 | 2), playFrom(seconds), togglePlay(), seek(seconds), setKeepAudio(keep: boolean), audioEvents }`. The `<audio>` element is rendered **once in `page-content.tsx`, outside every Tabs**, so switching tabs never unmounts it.
   - `useMeetingNotes(meetingId: string)` → `{ notes, loaded: boolean, addNote(text), updateNote(id, text), deleteNote(id) }` (after-meeting notes get `at: null`; edits are ignored until `loaded`; each change saves the whole list via `save_meeting_notes`; only the latest save's response is applied; on error the last confirmed list is restored and `toast.error` shown). `NotesPane` gets `disabled={!loaded}`.
   - `usePaginatedTranscripts` returns `setTranscriptMark(id: string, mark: TranscriptMark | null): Promise<void>` (invoke `set_transcript_mark`, then update local state; toast on error) and segments carry `mark`.
@@ -2836,13 +2749,13 @@ git commit -m "feat(live): notes pane and line marks during a recording, kept th
 import { audioMissingMessage } from '../../src/lib/meeting-audio';
 
 describe('audioMissingMessage', () => {
-  const base = { path: null, keep_audio: false, retention_days: 30, removed_by_retention: false };
+  const base = { path: null, keep_audio: false, audio_deleted_at: null };
   test('messages', () => {
     expect(audioMissingMessage(null)).toBeNull();
     expect(audioMissingMessage({ ...base, path: 'C:\\x\\audio.mp4' })).toBeNull();
-    expect(audioMissingMessage({ ...base, removed_by_retention: true })).toBe('Audio deleted (older than 30 days)');
+    const deleted = '2026-11-20T10:00:00+00:00';
+    expect(audioMissingMessage({ ...base, audio_deleted_at: deleted })).toBe(`Audio deleted on ${new Date(deleted).toLocaleDateString()}`);
     expect(audioMissingMessage(base)).toBe('Audio file not found');
-    expect(audioMissingMessage({ ...base, retention_days: null, removed_by_retention: true })).toBe('Audio file not found');
   });
 });
 ```
@@ -2866,13 +2779,12 @@ Extend `tests/hooks/paginated-transcripts.test.tsx` following its existing invok
 export interface MeetingAudioInfo {
   path: string | null;
   keep_audio: boolean;
-  retention_days: number | null;
-  removed_by_retention: boolean;
+  audio_deleted_at: string | null;
 }
 
 export function audioMissingMessage(info: MeetingAudioInfo | null): string | null {
   if (!info || info.path) return null;
-  if (info.removed_by_retention && info.retention_days) return `Audio deleted (older than ${info.retention_days} days)`;
+  if (info.audio_deleted_at) return `Audio deleted on ${new Date(info.audio_deleted_at).toLocaleDateString()}`;
   return 'Audio file not found';
 }
 ```
@@ -3098,61 +3010,91 @@ git commit -m "feat(meeting): notes, marks and playback on the saved meeting pag
 
 ---
 
-### Task 11: Retention settings and meeting-delete warning
+### Task 11: Old-audio review UI, reminder, settings and the meeting-delete warning
 
 **Files:**
-- Modify: `frontend/src/components/RecordingSettings.tsx`, `frontend/src/components/Sidebar/index.tsx`
-- Create: `frontend/src/lib/retention.ts`
-- Test: `frontend/tests/lib/retention.test.ts`
+- Create: `frontend/src/lib/old-audio.ts`, `frontend/src/components/OldAudio/OldAudioReview.tsx`, `frontend/src/components/OldAudio/OldAudioReminder.tsx`
+- Modify: `frontend/src/components/RecordingSettings.tsx`, `frontend/src/app/layout.tsx` (mount the reminder next to `ConditionalImportDialog`), `frontend/src/components/Sidebar/index.tsx`
+- Test: `frontend/tests/lib/old-audio.test.ts`, `frontend/tests/components/old-audio-review.test.tsx`
 
 **Interfaces:**
-- Consumes: Task 4 commands and preference fields.
-- Produces:
-  - `RETENTION_OPTIONS = [{ value: 'never', label: 'Never' }, { value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }]`
-  - `retentionToSelect(days: number | null | undefined): string` (`null` → `'never'`, `undefined` → `'30'`, other numbers → `String(n)`), `selectToRetention(v: string): number | null`
+- Consumes: Task 4 commands `old_audio_list() -> OldAudio[]`, `delete_old_audio({ meetingIds }) -> DeleteResult`; `RecordingPreferences.old_audio_days`.
+- Produces (`lib/old-audio.ts`):
+  - `interface OldAudio { meeting_id: string; title: string; created_at: string; bytes: number; files: string[] }`, `interface DeleteResult { meetings: number; bytes: number; failed: string[] }`
+  - `OLD_AUDIO_OPTIONS = [{ value: 'never', label: 'Never' }, { value: '7', label: '7 days' }, { value: '30', label: '30 days' }, { value: '90', label: '90 days' }]`
+  - `daysToSelect(days: number | null | undefined): string` (`null` → `'never'`, `undefined` → `'30'`), `selectToDays(v: string): number | null`
   - `formatMegabytes(bytes: number): string` (`"0 MB"`, `"12 MB"`, `"1.5 GB"` at ≥ 1000 MB)
+  - `toggleId(selected: string[], id: string): string[]`
+  - `shouldRemind(lastShownDay: string | null, today: string, count: number): boolean` (`count > 0 && lastShownDay !== today`)
+  - `todayKey(d = new Date()): string` (`YYYY-MM-DD`, local time)
+  - `REMINDER_DAY_KEY = 'conclave.oldAudioReminderDay'`
+- `OldAudioReview({ open, onOpenChange })`: loads `old_audio_list` when opened; nothing selected by default.
 
-- [ ] **Step 1: Failing test** — `frontend/tests/lib/retention.test.ts`:
+Behaviour (spec §2.8–2.9, §8.1): the review lists each meeting with title, local date, size and its exact file paths (small monospace text), a checkbox per meeting, "Select all" / "Select none", and a footer line "Selected recordings go to the Windows Recycle Bin. Space is freed when you empty it. Transcripts, summaries and notes stay." The **Move N to Recycle Bin** button is disabled until at least one meeting is ticked. After the call: `toast.success("Moved N recordings (X) to the Recycle Bin")`; each `failed` entry → one `toast.warning`; the list reloads. Empty list → "No recordings are older than D days." The reminder checks on mount and every 24 h and shows at most one toast per day: `"N recordings are older than D days (X)."` with action **Review** that opens the dialog.
+
+- [ ] **Step 1: Failing tests** — `frontend/tests/lib/old-audio.test.ts`:
 
 ```ts
 import { describe, expect, test } from 'bun:test';
-import { formatMegabytes, retentionToSelect, selectToRetention } from '../../src/lib/retention';
+import { daysToSelect, formatMegabytes, selectToDays, shouldRemind, todayKey, toggleId } from '../../src/lib/old-audio';
 
-describe('retention helpers', () => {
+describe('old-audio helpers', () => {
   test('select mapping', () => {
-    expect(retentionToSelect(null)).toBe('never');
-    expect(retentionToSelect(undefined)).toBe('30');
-    expect(retentionToSelect(7)).toBe('7');
-    expect(selectToRetention('never')).toBeNull();
-    expect(selectToRetention('90')).toBe(90);
+    expect(daysToSelect(null)).toBe('never');
+    expect(daysToSelect(undefined)).toBe('30');
+    expect(daysToSelect(7)).toBe('7');
+    expect(selectToDays('never')).toBeNull();
+    expect(selectToDays('90')).toBe(90);
   });
   test('sizes', () => {
     expect(formatMegabytes(0)).toBe('0 MB');
     expect(formatMegabytes(12_400_000)).toBe('12 MB');
     expect(formatMegabytes(1_500_000_000)).toBe('1.5 GB');
   });
+  test('selection toggles', () => {
+    expect(toggleId([], 'a')).toEqual(['a']);
+    expect(toggleId(['a', 'b'], 'a')).toEqual(['b']);
+  });
+  test('reminder at most once a day and only when there is something', () => {
+    expect(shouldRemind(null, '2026-11-20', 3)).toBe(true);
+    expect(shouldRemind('2026-11-20', '2026-11-20', 3)).toBe(false);
+    expect(shouldRemind('2026-11-19', '2026-11-20', 0)).toBe(false);
+    expect(todayKey(new Date(2026, 10, 5))).toBe('2026-11-05');
+  });
 });
 ```
 
-- [ ] **Step 2: Verify failure** — `cd frontend && bun test tests/lib/retention.test.ts`: FAIL.
+`frontend/tests/components/old-audio-review.test.tsx` (mock `@tauri-apps/api/core` `invoke`, `sonner`, and `components/ui/dialog` as pass-through, restoring them in `afterAll` like `summary-panel-language.test.tsx`):
+- with two items returned, nothing is checked and the delete button is disabled;
+- ticking one enables the button; clicking it calls `invoke('delete_old_audio', { meetingIds: ['m1'] })` with **only** that id;
+- "Select all" then delete sends both ids;
+- the rendered text contains each item's file paths;
+- a result with `failed: ['Standup: user declined']` shows a warning toast.
 
-- [ ] **Step 3: Implement `lib/retention.ts`**
+- [ ] **Step 2: Verify failure** — `cd frontend && bun test tests/lib/old-audio.test.ts tests/components/old-audio-review.test.tsx`: FAIL.
+
+- [ ] **Step 3: Implement `lib/old-audio.ts`**
 
 ```ts
-export const RETENTION_OPTIONS = [
+export interface OldAudio { meeting_id: string; title: string; created_at: string; bytes: number; files: string[] }
+export interface DeleteResult { meetings: number; bytes: number; failed: string[] }
+
+export const REMINDER_DAY_KEY = 'conclave.oldAudioReminderDay';
+
+export const OLD_AUDIO_OPTIONS = [
   { value: 'never', label: 'Never' },
   { value: '7', label: '7 days' },
   { value: '30', label: '30 days' },
   { value: '90', label: '90 days' },
 ] as const;
 
-export function retentionToSelect(days: number | null | undefined): string {
+export function daysToSelect(days: number | null | undefined): string {
   if (days === null) return 'never';
   if (days === undefined) return '30';
   return String(days);
 }
 
-export function selectToRetention(v: string): number | null {
+export function selectToDays(v: string): number | null {
   return v === 'never' ? null : Number(v);
 }
 
@@ -3160,70 +3102,226 @@ export function formatMegabytes(bytes: number): string {
   const mb = Math.round(bytes / 1_000_000);
   return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
 }
+
+export function toggleId(selected: string[], id: string): string[] {
+  return selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id];
+}
+
+export function shouldRemind(lastShownDay: string | null, today: string, count: number): boolean {
+  return count > 0 && lastShownDay !== today;
+}
+
+export function todayKey(d = new Date()): string {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
 ```
 
-- [ ] **Step 4: `RecordingSettings.tsx`**
-  - Interface gains `audio_retention_days: number | null; audio_retention_started_at?: string | null;`; the initial state gets `audio_retention_days: 30`.
+- [ ] **Step 4: `OldAudioReview.tsx`**
+
+```tsx
+'use client';
+import { useCallback, useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { Button } from '@/components/ui/button';
+import { formatMegabytes, toggleId, type DeleteResult, type OldAudio } from '@/lib/old-audio';
+
+export function OldAudioReview({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
+  const [items, setItems] = useState<OldAudio[] | null>(null);
+  const [selected, setSelected] = useState<string[]>([]);
+  const [busy, setBusy] = useState(false);
+
+  const load = useCallback(async () => {
+    setSelected([]);
+    try {
+      setItems(await invoke<OldAudio[]>('old_audio_list'));
+    } catch (e) {
+      setItems([]);
+      toast.error('Could not list old recordings', { description: String(e) });
+    }
+  }, []);
+
+  useEffect(() => { if (open) void load(); }, [open, load]);
+
+  const remove = async () => {
+    setBusy(true);
+    try {
+      const r = await invoke<DeleteResult>('delete_old_audio', { meetingIds: selected });
+      if (r.meetings > 0) toast.success(`Moved ${r.meetings} recordings (${formatMegabytes(r.bytes)}) to the Recycle Bin`);
+      for (const f of r.failed) toast.warning('Not moved to the Recycle Bin', { description: f });
+      await load();
+    } catch (e) {
+      toast.error('Could not delete the selected audio', { description: String(e) });
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const total = (items ?? []).filter((i) => selected.includes(i.meeting_id)).reduce((s, i) => s + i.bytes, 0);
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent className="max-w-2xl">
+        <DialogHeader>
+          <DialogTitle>Review old recordings</DialogTitle>
+          <DialogDescription>
+            Selected recordings go to the Windows Recycle Bin. Space is freed when you empty it. Transcripts, summaries and notes stay.
+          </DialogDescription>
+        </DialogHeader>
+        {items === null ? (
+          <p className="text-sm text-muted-foreground">Loading…</p>
+        ) : items.length === 0 ? (
+          <p className="text-sm text-muted-foreground">No recordings are old enough to review.</p>
+        ) : (
+          <>
+            <div className="flex gap-3 text-sm">
+              <button type="button" className="text-blue-600 dark:text-blue-400 hover:underline" onClick={() => setSelected(items.map((i) => i.meeting_id))}>Select all</button>
+              <button type="button" className="text-blue-600 dark:text-blue-400 hover:underline" onClick={() => setSelected([])}>Select none</button>
+            </div>
+            <ul className="max-h-[50vh] space-y-2 overflow-y-auto">
+              {items.map((i) => (
+                <li key={i.meeting_id} className="rounded border border-border p-2">
+                  <label className="flex cursor-pointer items-start gap-2">
+                    <input
+                      type="checkbox"
+                      className="mt-1"
+                      checked={selected.includes(i.meeting_id)}
+                      onChange={() => setSelected((s) => toggleId(s, i.meeting_id))}
+                      aria-label={`Select ${i.title}`}
+                    />
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-medium">{i.title}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {new Date(i.created_at).toLocaleDateString()} · {formatMegabytes(i.bytes)}
+                      </span>
+                      {i.files.map((f) => (
+                        <span key={f} className="block break-all font-mono text-[11px] text-muted-foreground">{f}</span>
+                      ))}
+                    </span>
+                  </label>
+                </li>
+              ))}
+            </ul>
+          </>
+        )}
+        <DialogFooter>
+          <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
+          <Button variant="destructive" disabled={busy || selected.length === 0} onClick={remove}>
+            Move {selected.length} to Recycle Bin{selected.length ? ` (${formatMegabytes(total)})` : ''}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
+```
+
+(If `Button` has no `destructive` variant, use the variant the Sidebar delete dialog uses.)
+
+- [ ] **Step 5: `OldAudioReminder.tsx`** and mount it in `app/layout.tsx` next to `<ConditionalImportDialog … />`:
+
+```tsx
+'use client';
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
+import { OldAudioReview } from './OldAudioReview';
+import { formatMegabytes, REMINDER_DAY_KEY, shouldRemind, todayKey, type OldAudio } from '@/lib/old-audio';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+export function OldAudioReminder() {
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    const check = async () => {
+      let last: string | null = null;
+      try { last = localStorage.getItem(REMINDER_DAY_KEY); } catch { /* reminder still works */ }
+      let items: OldAudio[] = [];
+      try { items = await invoke<OldAudio[]>('old_audio_list'); } catch { return; }
+      const today = todayKey();
+      if (!shouldRemind(last, today, items.length)) return;
+      try { localStorage.setItem(REMINDER_DAY_KEY, today); } catch { /* optional */ }
+      const bytes = items.reduce((s, i) => s + i.bytes, 0);
+      toast(`${items.length} recordings are older than your limit (${formatMegabytes(bytes)}).`, {
+        description: 'Nothing is deleted until you review and confirm.',
+        action: { label: 'Review', onClick: () => setOpen(true) },
+        duration: 15000,
+      });
+    };
+    void check();
+    const id = setInterval(check, DAY_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  return <OldAudioReview open={open} onOpenChange={setOpen} />;
+}
+```
+
+- [ ] **Step 6: `RecordingSettings.tsx`**
+  - Interface gains `old_audio_days: number | null;`; the initial state gets `old_audio_days: 30`.
   - Handler, same shape as `handleDetectionChange`:
 
 ```tsx
-  const handleRetentionChange = async (value: string) => {
-    const previous = preferences.audio_retention_days;
-    const audio_retention_days = selectToRetention(value);
-    setPreferences({ ...preferences, audio_retention_days });
+  const handleOldAudioChange = async (value: string) => {
+    const previous = preferences.old_audio_days;
+    const old_audio_days = selectToDays(value);
+    setPreferences({ ...preferences, old_audio_days });
     try {
-      await invoke('set_recording_preferences', { preferences: { ...preferences, audio_retention_days } });
-      toast.success(audio_retention_days === null ? 'Audio is kept forever' : `Audio is deleted after ${audio_retention_days} days`);
+      await invoke('set_recording_preferences', { preferences: { ...preferences, old_audio_days } });
+      toast.success(old_audio_days === null ? 'No reminders about old audio' : `Reminders for audio older than ${old_audio_days} days`);
     } catch (error) {
-      setPreferences((prev) => ({ ...prev, audio_retention_days: previous }));
-      toast.error('Failed to save audio deletion', { description: error instanceof Error ? error.message : String(error) });
+      setPreferences((prev) => ({ ...prev, old_audio_days: previous }));
+      toast.error('Failed to save the setting', { description: error instanceof Error ? error.message : String(error) });
     }
   };
 ```
 
-  - Delete-now: state `const [deleteNow, setDeleteNow] = useState<{ meetings: number; bytes: number; meeting_ids: string[] } | null>(null);`. Button "Delete eligible audio now…" (disabled when `audio_retention_days === null` or `isRecording`) calls `invoke<{ meetings: number; bytes: number; meeting_ids: string[] }>('audio_retention_preview')`; if `meetings === 0` → `toast.info('No audio is old enough to delete')`; else `setDeleteNow(result)`. Render `ConfirmationModal` from `components/ConfirmationModel/confirmation-modal` (same props as the Sidebar uses) with text `` `Delete the audio of ${deleteNow.meetings} meetings (${formatMegabytes(deleteNow.bytes)})? Transcripts, summaries and notes are kept. This cannot be undone.` ``; on confirm invoke `audio_retention_delete_now` with `{ meetingIds: deleteNow.meeting_ids }` (only the confirmed meetings) and `toast.success(`Freed ${formatMegabytes(r.bytes)}`)`; errors → `toast.error`.
-  - Markup: a new block after Meeting Detection, same structure:
+  - Markup after Meeting Detection, same structure; `const [reviewOpen, setReviewOpen] = useState(false);`:
 
 ```tsx
       <div className="p-4 border rounded-lg space-y-3">
         <div className="flex items-center justify-between gap-4">
           <div className="flex-1">
-            <div className="font-medium">Delete audio after</div>
-            <div className="text-sm text-muted-foreground">Transcripts, summaries and notes are kept. Pin a meeting with “Keep audio” to keep its recording.</div>
+            <div className="font-medium">Remind me about audio older than</div>
+            <div className="text-sm text-muted-foreground">Conclave never deletes audio by itself. Transcripts, summaries and notes are always kept. Pin a meeting with “Keep audio” to leave it out.</div>
           </div>
-          <Select value={retentionToSelect(preferences.audio_retention_days)} onValueChange={handleRetentionChange}>
-            <SelectTrigger className="w-56" aria-label="Delete audio after"><SelectValue /></SelectTrigger>
+          <Select value={daysToSelect(preferences.old_audio_days)} onValueChange={handleOldAudioChange}>
+            <SelectTrigger className="w-56" aria-label="Remind me about audio older than"><SelectValue /></SelectTrigger>
             <SelectContent>
-              {RETENTION_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
+              {OLD_AUDIO_OPTIONS.map((o) => <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>)}
             </SelectContent>
           </Select>
         </div>
-        <button type="button" onClick={handlePreviewDeleteNow} disabled={preferences.audio_retention_days === null || isRecording}
+        <button type="button" onClick={() => setReviewOpen(true)} disabled={preferences.old_audio_days === null || isRecording}
           className="text-sm text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50 disabled:no-underline">
-          Delete eligible audio now…
+          Review old audio…
         </button>
+        <OldAudioReview open={reviewOpen} onOpenChange={setReviewOpen} />
       </div>
 ```
 
-- [ ] **Step 5: Sidebar** — confirm text becomes `"Are you sure you want to delete this meeting and its recording? This action cannot be undone."`. In `handleDelete`, read the invoke result: `const res = await invoke<{ folder_warning?: string | null }>('api_delete_meeting', {...});` and after the success toast, `if (res?.folder_warning) toast.warning('The meeting was deleted, but its folder was kept', { description: res.folder_warning });`.
+- [ ] **Step 7: Sidebar** — confirm text becomes `"Are you sure you want to delete this meeting? Its recording folder goes to the Recycle Bin."`. In `handleDelete`, read the result: `const res = await invoke<{ folder_warning?: string | null }>('api_delete_meeting', {...});` and after the success toast, `if (res?.folder_warning) toast.warning('The meeting was deleted, but its folder was kept', { description: res.folder_warning });`.
 
-- [ ] **Step 6: Run** — `cd frontend && pnpm exec tsc --noEmit && bun test && pnpm run build`: PASS.
+- [ ] **Step 8: Run** — `cd frontend && pnpm exec tsc --noEmit && bun test && pnpm run build`: PASS.
 
-- [ ] **Step 7: Commit**
+- [ ] **Step 9: Commit**
 
 ```bash
-git add frontend/src/lib/retention.ts frontend/src/components/RecordingSettings.tsx frontend/src/components/Sidebar/index.tsx frontend/tests/lib/retention.test.ts
-git commit -m "feat(settings): delete audio after N days, delete eligible audio now, delete-folder warning"
+git add frontend/src/lib/old-audio.ts frontend/src/components/OldAudio frontend/src/components/RecordingSettings.tsx frontend/src/app/layout.tsx frontend/src/components/Sidebar/index.tsx frontend/tests/lib/old-audio.test.ts frontend/tests/components/old-audio-review.test.tsx
+git commit -m "feat(settings): review old recordings and move the chosen ones to the Recycle Bin; daily reminder"
 ```
 
 ---
+
 
 ### Task 12: Release notes and full verification
 
 **Files:**
 - Modify: `.github/workflows/release.yml` (`releaseBody`)
 
-- [ ] **Step 1: Release notes** — in `releaseBody`, after "…and a Conclave colour theme (Settings → General → Theme)." insert: " Take notes next to the live transcript and mark lines as important, action or follow-up — both go into the summary. Click a timestamp to hear that moment. Audio is deleted after 30 days by default (Settings → Recording; transcripts, summaries and notes stay; pin a meeting with Keep audio). Deleting a meeting now deletes its recording folder." Keep the rest. Run `actionlint .github/workflows/release.yml`.
+- [ ] **Step 1: Release notes** — in `releaseBody`, replace the sentence that starts "New in 0.4.0:" with: "New in 0.5.0: take notes next to the live transcript and mark lines as important, action or follow-up — both go into the summary. Click a timestamp to hear that moment. Conclave reminds you about recordings older than 30 days (Settings → Recording) and lets you review them; only the ones you tick go to the Recycle Bin, and transcripts, summaries and notes stay. Deleting a meeting moves its recording folder to the Recycle Bin." Keep the rest of the body. Then `actionlint .github/workflows/release.yml`.
 
 - [ ] **Step 2: Full verification**
 
@@ -3241,7 +3339,7 @@ All pass.
 
 ```bash
 git add .github/workflows/release.yml
-git commit -m "docs: 0.4.0 release notes for notes, marks, playback and audio retention"
+git commit -m "docs: 0.5.0 release notes for notes, marks, playback and the old-audio review"
 ```
 
-- [ ] **Step 4: Manual check on Windows (v0.4.0 test build, by the user)** — play from a timestamp, seek, 1.5×/2×; mark lines during a real call and read the summary; reload the window during a recording and see notes/marks survive; kill the app during a recording and recover; both layouts and the splitters; notes input stays above the recording controls; delete a meeting and check its folder is gone; Settings → Delete eligible audio now.
+- [ ] **Step 4: Manual check on Windows (v0.5.0 test build, by the user)** — play from a timestamp, seek, 1.5×/2×; mark lines during a real call and read the summary; reload the window during a recording and see notes/marks survive; kill the app during a recording and recover; both layouts and the splitters; notes input stays above the recording controls; delete a meeting and find its folder in the Recycle Bin; Settings → Review old audio: tick one meeting, move it, restore it from the Recycle Bin; check the daily reminder; a folder inside `conclave-recordings` with an extra file is kept on meeting delete.

@@ -160,7 +160,7 @@ Editing notes after a summary exists does not regenerate it; the user presses Re
 - `recording_preferences.json` gains `audio_retention_days: Option<u32>` (`None` = Never; default `Some(30)`) and `audio_retention_started_at`, set to now at the first launch of this version and whenever the setting changes from Never to a number of days.
 - Runs 1 minute after startup (spawned after DB init in `lib.rs` setup), then every 24 h. Reads the setting each run. Skips the whole run while a recording is in progress.
 - Candidates: `keep_audio = 0`, `folder_path` not null, `created_at` older than N days **and** `audio_retention_started_at` older than N days (grace period).
-- In each candidate folder that passes the guard (§8.3) it deletes only top-level files named `audio.<ext>` with a known audio extension (mp4, m4a, wav, mp3, ogg, flac, webm, aac) and Conclave's own files in `.checkpoints/` (then that subfolder if empty). Nothing else, never recursively.
+- In each candidate folder that passes the guard (§8.3) it deletes only top-level files named `audio.<ext>` with an import audio extension (mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — `audio/constants.rs`) and Conclave's own files in `.checkpoints/` (then that subfolder if empty). Nothing else, never recursively.
 - A missing file counts as done. Errors are logged per meeting and the job continues. Each run logs the files deleted and the MB freed.
 - `audio_retention_preview()` returns the count, total size and meeting ids of eligible audio **ignoring the grace period**; `audio_retention_delete_now(meeting_ids)` deletes exactly those meetings' audio, re-checking each is still eligible. The Settings button shows "N meetings, X MB. Delete?" first. Both use the same selection code as the job.
 
@@ -172,7 +172,7 @@ Removed: `read_audio_file`, `hooks/useAudioPlayer.ts`, `components/AudioPlayer.t
 
 ### 8.3 Folder guard
 
-One helper used by retention, meeting delete and `get_meeting_audio`: the path, canonicalized, must be an existing directory and either be inside the canonical recordings base folder or contain `metadata.json`. Anything else is refused and logged.
+One helper used by retention, meeting delete and `get_meeting_audio`: the path, canonicalized, must be an existing directory, is never the recordings base folder itself, and must either be inside the canonical recordings base folder or contain `metadata.json`. Anything else is refused and logged. Symlinks and junctions inside a meeting folder are never followed.
 
 ## 9. Error handling
 

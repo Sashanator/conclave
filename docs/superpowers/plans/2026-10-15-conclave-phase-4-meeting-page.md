@@ -23,7 +23,7 @@
 - Note: `{ id, at, text }`; `at` = seconds into the recording (`null` = added after the meeting); text trimmed, non-empty, at most 2,000 characters; id non-empty, at most 64 characters, generated as `note-<uuid>`.
 - Prompt label for marks: `[MARKED: important]` / `[MARKED: action]` / `[MARKED: followup]`. Notes block tag: `<user_notes>`; a note without a time renders as `[after the meeting]`.
 - Retention options: Never / 7 / 30 / 90 days, default 30. Settings line: "Transcripts, summaries and notes are kept."
-- Retention deletes only top-level `audio.<ext>` (ext in mp4, m4a, wav, mp3, ogg, flac, webm, aac) and Conclave's own files in `.checkpoints/` (`audio_chunk_*`, `concat_list.txt`). Never `transcripts.json`, `metadata.json` or anything else. No file operation on a meeting folder is ever recursive (`remove_dir_all` is not used): `folder_path` is supplied by the webview at save time.
+- Retention deletes only top-level `audio.<ext>` (ext from the existing `crate::audio::constants::AUDIO_EXTENSIONS`: mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma) and Conclave's own files in `.checkpoints/` (`audio_chunk_*`, `concat_list.txt`). Never `transcripts.json`, `metadata.json` or anything else. No file operation on a meeting folder is ever recursive (`remove_dir_all` is not used) and links/junctions are never followed: `folder_path` is supplied by the webview at save time.
 - Every file operation on a meeting folder goes through `guarded_meeting_folder` (Task 3).
 - localStorage keys: `conclave.meetingPageLayout`, `conclave.notesPaneCollapsed`, `conclave.live.transcriptRatio`, `conclave.threeCol.transcriptRatio`, `conclave.threeCol.notesRatio`; the existing `meetily.meetingDetails.transcriptPaneRatio` stays the sub-tab layout's key.
 - Layout values: `three-columns` (default) | `subtab`.
@@ -566,7 +566,7 @@ Inside the existing transaction, before `DELETE FROM transcripts WHERE meeting_i
 
 ```rust
     let old_marks: Vec<(Option<f64>, Option<f64>, String)> = sqlx::query_as(
-        "SELECT audio_start_time, audio_end_time, mark FROM transcripts WHERE meeting_id = ? AND mark IS NOT NULL",
+        "SELECT audio_start_time, audio_end_time, mark FROM transcripts WHERE meeting_id = ? AND mark IS NOT NULL ORDER BY audio_start_time",
     )
     .bind(&meeting_id)
     .fetch_all(&mut *tx)
@@ -756,11 +756,12 @@ git commit -m "feat(api): commands for transcript marks, meeting notes and keep-
 **Interfaces:**
 - Produces:
   - `pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf>` — canonical (`dunce`) path of an existing directory that is never the recordings base itself, and is either strictly inside the canonical base or contains `metadata.json`; `None` otherwise (logged at warn).
-  - `pub const AUDIO_EXTENSIONS: [&str; 8] = ["mp4", "m4a", "wav", "mp3", "ogg", "flac", "webm", "aac"];`
-  - `pub fn find_audio_file(folder: &Path) -> Option<PathBuf>` — first existing top-level `audio.<ext>` in `AUDIO_EXTENSIONS` order.
-  - `pub fn delete_checkpoints(checkpoints: &Path) -> u64` — deletes only `audio_chunk_*` files and `concat_list.txt`, then the folder if empty; bytes freed.
+  - `pub use crate::audio::constants::AUDIO_EXTENSIONS;` (the existing import list: mp4, m4a, wav, mp3, flac, ogg, aac, mkv, webm, wma — imports are stored as `audio.<source ext>`)
+  - `pub fn find_audio_file(folder: &Path) -> Option<PathBuf>` — first top-level `audio.<ext>` that is a real file (not a link), in `AUDIO_EXTENSIONS` order.
+  - `pub fn checkpoint_files(checkpoints: &Path) -> Vec<PathBuf>` — real files named `audio_chunk_*` or `concat_list.txt` inside a real (non-link) `.checkpoints` folder; the single source for retention's eligibility, preview size and delete.
+  - `pub fn delete_checkpoints(checkpoints: &Path) -> u64` — deletes `checkpoint_files`, then the folder if empty; bytes freed.
   - `pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];`
-  - `pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Result<(), String>` — guard, then delete **only** `audio.<ext>`, `.checkpoints/` and `MEETING_FILES`, then a non-recursive `fs::remove_dir`. Anything else left inside → `Err("… kept: it contains other files")` and the folder stays. A missing folder is `Ok(())`; a guard failure is `Err`. (`folder_path` comes from the webview at save time, so a recursive delete is never allowed.)
+  - `pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Result<(), String>` — guard, then **check first**: if the folder holds anything besides `audio.<ext>`, `MEETING_FILES` and a `.checkpoints` with only checkpoint files (or any link), delete nothing and return `Err("Recording folder kept: it contains other files …")`. Otherwise delete those files and the empty folder (non-recursive `fs::remove_dir`). A missing folder is `Ok(())`; a guard failure is `Err`. (`folder_path` comes from the webview at save time, so a recursive delete is never allowed.)
   - `pub async fn delete_meeting_and_folder(pool: &SqlitePool, meeting_id: &str, recordings_base: &Path) -> Result<Option<Option<String>>, sqlx::Error>` — `Ok(None)` = meeting not found; `Ok(Some(warning))` = meeting deleted, `warning` set when its folder was kept.
   - `api_delete_meeting` response gains `"folder_warning": string | null`.
 
@@ -839,10 +840,45 @@ mod tests {
         fs::write(elsewhere.path().join("metadata.json"), "{}").unwrap();
         fs::write(elsewhere.path().join("thesis.docx"), "precious").unwrap();
         fs::create_dir(elsewhere.path().join("photos")).unwrap();
+        fs::write(elsewhere.path().join("audio.mp4"), "theirs").unwrap();
         let err = delete_meeting_folder(elsewhere.path().to_str().unwrap(), base().path()).unwrap_err();
         assert!(err.contains("kept"));
-        assert!(elsewhere.path().join("thesis.docx").exists());
-        assert!(elsewhere.path().join("photos").exists());
+        // nothing at all was deleted
+        for f in ["thesis.docx", "photos", "metadata.json", "audio.mp4"] {
+            assert!(elsewhere.path().join(f).exists(), "{f}");
+        }
+    }
+
+    #[test]
+    fn imported_mkv_and_wma_are_found_and_deleted() {
+        let b = base();
+        let m = b.path().join("imported");
+        fs::create_dir(&m).unwrap();
+        fs::write(m.join("audio.mkv"), "x").unwrap();
+        fs::write(m.join("metadata.json"), "{}").unwrap();
+        assert_eq!(find_audio_file(&m).unwrap().file_name().unwrap(), "audio.mkv");
+        delete_meeting_folder(m.to_str().unwrap(), b.path()).unwrap();
+        assert!(!m.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn links_are_never_followed() {
+        use std::os::unix::fs::symlink;
+        let b = base();
+        let target = tempfile::tempdir().unwrap();
+        fs::write(target.path().join("audio_chunk_000.mp4"), "victim").unwrap();
+        fs::write(target.path().join("secret.mp4"), "secret").unwrap();
+        let m = b.path().join("m");
+        fs::create_dir(&m).unwrap();
+        symlink(target.path(), m.join(".checkpoints")).unwrap();
+        symlink(target.path().join("secret.mp4"), m.join("audio.mp4")).unwrap();
+        assert!(checkpoint_files(&m.join(".checkpoints")).is_empty());
+        assert_eq!(delete_checkpoints(&m.join(".checkpoints")), 0);
+        assert!(find_audio_file(&m).is_none());
+        assert!(delete_meeting_folder(m.to_str().unwrap(), b.path()).is_err()); // links are not ours
+        assert!(target.path().join("audio_chunk_000.mp4").exists());
+        assert!(target.path().join("secret.mp4").exists());
     }
 
     #[tokio::test]
@@ -875,7 +911,8 @@ use log::warn;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-pub const AUDIO_EXTENSIONS: [&str; 8] = ["mp4", "m4a", "wav", "mp3", "ogg", "flac", "webm", "aac"];
+/// The import formats (`import.rs` copies a file in as `audio.<ext>`), so every format is found.
+pub use crate::audio::constants::AUDIO_EXTENSIONS;
 
 /// Canonical path of a real meeting folder, or `None`. A meeting folder is an existing
 /// directory strictly inside the recordings base, or one that contains `metadata.json`
@@ -905,23 +942,77 @@ pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Opti
     }
 }
 
+/// A real file, not a symlink/junction (links could point anywhere on disk).
+fn is_plain_file(p: &Path) -> bool {
+    fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
+}
+
+fn is_plain_dir(p: &Path) -> bool {
+    fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir())
+}
+
 pub fn find_audio_file(folder: &Path) -> Option<PathBuf> {
     AUDIO_EXTENSIONS
         .iter()
         .map(|ext| folder.join(format!("audio.{ext}")))
-        .find(|p| p.is_file())
+        .find(|p| is_plain_file(p))
+}
+
+fn is_audio_name(name: &str) -> bool {
+    AUDIO_EXTENSIONS.iter().any(|ext| name == format!("audio.{ext}"))
+}
+
+fn is_checkpoint_name(name: &str) -> bool {
+    name.starts_with("audio_chunk_") || name == "concat_list.txt"
+}
+
+/// Conclave's own files in `.checkpoints/` (`audio_chunk_NNN.mp4`, `concat_list.txt`, see
+/// `incremental_saver.rs`). Empty when `.checkpoints` is missing or is a link.
+pub fn checkpoint_files(checkpoints: &Path) -> Vec<PathBuf> {
+    if !is_plain_dir(checkpoints) {
+        return Vec::new();
+    }
+    fs::read_dir(checkpoints)
+        .map(|rd| {
+            rd.flatten()
+                .filter(|e| e.file_type().is_ok_and(|t| t.is_file()))
+                .filter(|e| is_checkpoint_name(&e.file_name().to_string_lossy()))
+                .map(|e| e.path())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];
 
-/// Deletes only what Conclave writes into a meeting folder, then the empty folder.
-/// Never recursive: `folder_path` came from the webview when the meeting was saved.
+/// True when every entry is something Conclave writes: `audio.<ext>`, `MEETING_FILES`, and a
+/// real `.checkpoints` folder holding only checkpoint files. Links never count as ours.
+fn only_conclave_files(folder: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(folder) else { return false };
+    entries.flatten().all(|e| {
+        let name = e.file_name().to_string_lossy().to_string();
+        match e.file_type() {
+            Ok(t) if t.is_file() => is_audio_name(&name) || MEETING_FILES.contains(&name.as_str()),
+            Ok(t) if t.is_dir() && name == ".checkpoints" => {
+                let p = e.path();
+                fs::read_dir(&p).is_ok_and(|rd| rd.count() == checkpoint_files(&p).len())
+            }
+            _ => false,
+        }
+    })
+}
+
+/// Deletes a meeting folder only if it holds nothing but Conclave's files; otherwise deletes
+/// nothing at all. Never recursive: `folder_path` came from the webview when the meeting was saved.
 pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Result<(), String> {
     if !Path::new(folder_path).exists() {
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
         .ok_or_else(|| format!("Not a Conclave meeting folder, left untouched: {folder_path}"))?;
+    if !only_conclave_files(&folder) {
+        return Err(format!("Recording folder kept: it contains other files ({})", folder.display()));
+    }
     for ext in AUDIO_EXTENSIONS {
         let _ = fs::remove_file(folder.join(format!("audio.{ext}")));
     }
@@ -929,28 +1020,22 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path) -> Resul
     for name in MEETING_FILES {
         let _ = fs::remove_file(folder.join(name));
     }
-    fs::remove_dir(&folder)
-        .map_err(|_| format!("Recording folder kept: it contains other files ({})", folder.display()))
+    fs::remove_dir(&folder).map_err(|e| format!("Recording folder kept ({}): {e}", folder.display()))
 }
 
-/// Removes Conclave's own files in `.checkpoints/` (`audio_chunk_NNN.mp4`, `concat_list.txt`,
-/// see `incremental_saver.rs`), then the folder if it is empty. Returns the bytes freed.
+/// Removes `checkpoint_files`, then `.checkpoints` itself if now empty. Returns the bytes freed.
 pub fn delete_checkpoints(checkpoints: &Path) -> u64 {
     let mut freed = 0;
-    if let Ok(entries) = fs::read_dir(checkpoints) {
-        for e in entries.flatten() {
-            let name = e.file_name().to_string_lossy().to_string();
-            let ours = (name.starts_with("audio_chunk_") || name == "concat_list.txt") && e.path().is_file();
-            if ours {
-                let size = e.metadata().map(|m| m.len()).unwrap_or(0);
-                match fs::remove_file(e.path()) {
-                    Ok(()) => freed += size,
-                    Err(err) => warn!("Could not delete {}: {err}", e.path().display()),
-                }
-            }
+    for f in checkpoint_files(checkpoints) {
+        let size = fs::symlink_metadata(&f).map(|m| m.len()).unwrap_or(0);
+        match fs::remove_file(&f) {
+            Ok(()) => freed += size,
+            Err(err) => warn!("Could not delete {}: {err}", f.display()),
         }
     }
-    let _ = fs::remove_dir(checkpoints); // only succeeds when empty
+    if is_plain_dir(checkpoints) {
+        let _ = fs::remove_dir(checkpoints); // only succeeds when empty
+    }
     freed
 }
 
@@ -1027,7 +1112,7 @@ git commit -m "feat(storage): guard meeting folders; deleting a meeting deletes 
   - `pub async fn eligible_folders(pool, days, started_at, now, ignore_grace, base: &Path) -> Result<Vec<(String, PathBuf)>, String>` (meeting id, guarded folder)
   - `pub fn summarize(folders: &[(String, PathBuf)]) -> RetentionSummary`
   - `pub fn only_confirmed(eligible: Vec<(String, PathBuf)>, confirmed: &[String]) -> Vec<(String, PathBuf)>`
-  - `pub fn audio_paths(folder: &Path) -> Vec<PathBuf>` (top-level `audio.<ext>` files + `.checkpoints` dir if present)
+  - `pub fn audio_paths(folder: &Path) -> Vec<PathBuf>` (real top-level `audio.<ext>` files + `checkpoint_files(.checkpoints)`; never a directory)
   - `pub fn delete_audio(folder: &Path) -> u64` (bytes freed; errors logged)
   - `pub async fn run_once(pool, prefs: &RecordingPreferences, now, recording: bool, base: &Path) -> RetentionSummary`
   - `pub fn spawn_retention_task(app: AppHandle)`
@@ -1182,6 +1267,17 @@ mod tests {
     }
 
     #[test]
+    fn foreign_files_in_checkpoints_are_neither_counted_nor_deleted() {
+        let b = tempfile::tempdir().unwrap();
+        let f = b.path().join("m");
+        fs::create_dir_all(f.join(".checkpoints")).unwrap();
+        fs::write(f.join(".checkpoints/mine.txt"), vec![0u8; 500]).unwrap();
+        assert!(audio_paths(&f).is_empty()); // so the folder is never "eligible" forever
+        assert_eq!(delete_audio(&f), 0);
+        assert!(f.join(".checkpoints/mine.txt").exists());
+    }
+
+    #[test]
     fn delete_now_keeps_only_confirmed_ids() {
         let eligible = vec![("a".to_string(), PathBuf::from("/a")), ("b".to_string(), PathBuf::from("/b"))];
         let kept = only_confirmed(eligible, &["b".to_string(), "zzz".to_string()]);
@@ -1249,7 +1345,7 @@ Only the values 7, 30 and 90 (or `None`) are offered by the UI; any other positi
 ```rust
 //! Deletes meeting audio older than N days (spec §8.1). Transcripts, summaries, notes and
 //! the JSON files in the folder are never touched.
-use crate::audio::meeting_folder::{delete_checkpoints, guarded_meeting_folder, AUDIO_EXTENSIONS};
+use crate::audio::meeting_folder::{checkpoint_files, guarded_meeting_folder, AUDIO_EXTENSIONS};
 use crate::audio::recording_preferences::{load_recording_preferences, save_recording_preferences, RecordingPreferences, get_default_recordings_folder};
 use crate::database::models::DateTimeUtc;
 use chrono::{DateTime, Duration, Utc};
@@ -1275,41 +1371,36 @@ pub fn is_eligible(created_at: DateTime<Utc>, started_at: Option<DateTime<Utc>>,
     created_at < cutoff && (ignore_grace || started_at.is_some_and(|s| s < cutoff))
 }
 
+/// Everything retention may delete in one folder: real top-level `audio.<ext>` files and
+/// Conclave's own checkpoint files. Eligibility, preview size and delete all use this list.
 pub fn audio_paths(folder: &Path) -> Vec<PathBuf> {
     let mut paths: Vec<PathBuf> = AUDIO_EXTENSIONS
         .iter()
         .map(|ext| folder.join(format!("audio.{ext}")))
-        .filter(|p| p.is_file())
+        .filter(|p| fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file()))
         .collect();
-    let checkpoints = folder.join(".checkpoints");
-    if checkpoints.is_dir() {
-        paths.push(checkpoints);
-    }
+    paths.extend(checkpoint_files(&folder.join(".checkpoints")));
     paths
 }
 
 fn size_of(path: &Path) -> u64 {
-    if path.is_dir() {
-        fs::read_dir(path).map(|rd| rd.flatten().map(|e| size_of(&e.path())).sum()).unwrap_or(0)
-    } else {
-        fs::metadata(path).map(|m| m.len()).unwrap_or(0)
-    }
+    fs::symlink_metadata(path).map(|m| m.len()).unwrap_or(0)
 }
 
 /// Returns the bytes freed. Errors are logged and skipped. Never recursive.
 pub fn delete_audio(folder: &Path) -> u64 {
     let mut freed = 0;
     for path in audio_paths(folder) {
-        if path.is_dir() {
-            freed += delete_checkpoints(&path);
-            continue;
-        }
         let size = size_of(&path);
         match fs::remove_file(&path) {
             Ok(()) => freed += size,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
             Err(e) => warn!("Retention: could not delete {}: {e}", path.display()),
         }
+    }
+    let checkpoints = folder.join(".checkpoints");
+    if fs::symlink_metadata(&checkpoints).is_ok_and(|m| m.file_type().is_dir()) {
+        let _ = fs::remove_dir(&checkpoints); // only when empty
     }
     freed
 }
@@ -2759,7 +2850,8 @@ describe('audioMissingMessage', () => {
 Create `tests/hooks/meeting-notes.test.tsx` (same invoke-mock pattern as `paginated-transcripts.test.tsx`, rendering the hook in a tiny test component with react-test-renderer):
 - while `get_meeting_notes` is still pending, `loaded` is false and `addNote('x')` does **not** call `save_meeting_notes`;
 - after it resolves with `[{ id: 'n1', at: 3, text: 'old' }]`, `addNote('new')` saves `[old, new]` (the stored note is never lost);
-- two quick edits whose responses resolve in reverse order end with the second edit's list;
+- two quick edits: the second `save_meeting_notes` call starts only after the first resolved (saves are sequential), and the UI ends with the second edit's list;
+- save A succeeds, then save B fails: the UI shows A's list (not the list from before A);
 - a rejected save restores the last confirmed list.
 
 Extend `tests/hooks/paginated-transcripts.test.tsx` following its existing invoke-mock pattern: a test that loads one transcript `{ id: 't1', mark: 'action', ... }`, checks `segments[0].mark === 'action'`, calls `setTranscriptMark('t1', null)`, asserts the mocked invoke got `('set_transcript_mark', { transcriptId: 't1', mark: null })` and `segments[0].mark` is `null`; and a test where invoke rejects, asserting the mark stays `'action'`.
@@ -2818,6 +2910,7 @@ export function useMeetingNotes(meetingId: string) {
   const confirmedRef = useRef<MeetingNote[]>([]);  // what the backend last stored
   const loadedRef = useRef(false);
   const saveSeq = useRef(0);
+  const queue = useRef<Promise<void>>(Promise.resolve()); // saves run one at a time
 
   useEffect(() => {
     let cancelled = false;
@@ -2836,20 +2929,23 @@ export function useMeetingNotes(meetingId: string) {
     return () => { cancelled = true; };
   }, [meetingId]);
 
-  const save = useCallback(async (next: MeetingNote[]) => {
-    if (!loadedRef.current) return; // never overwrite notes we have not read yet
+  const save = useCallback((next: MeetingNote[]) => {
+    if (!loadedRef.current) return Promise.resolve(); // never overwrite notes we have not read yet
     const seq = ++saveSeq.current;
     notesRef.current = next;
     setNotes(next);
-    try {
-      const stored = await invoke<MeetingNote[]>('save_meeting_notes', { meetingId, notes: next });
-      if (seq !== saveSeq.current) return; // a newer save is in flight; its response wins
-      notesRef.current = stored; confirmedRef.current = stored; setNotes(stored);
-    } catch (e) {
-      if (seq !== saveSeq.current) return;
-      notesRef.current = confirmedRef.current; setNotes(confirmedRef.current);
-      toast.error('Could not save notes', { description: String(e) });
-    }
+    // Chained: the backend sees saves in order, and every success updates confirmedRef.
+    queue.current = queue.current.then(async () => {
+      try {
+        const stored = await invoke<MeetingNote[]>('save_meeting_notes', { meetingId, notes: next });
+        confirmedRef.current = stored;
+        if (seq === saveSeq.current) { notesRef.current = stored; setNotes(stored); }
+      } catch (e) {
+        if (seq === saveSeq.current) { notesRef.current = confirmedRef.current; setNotes(confirmedRef.current); }
+        toast.error('Could not save notes', { description: String(e) });
+      }
+    });
+    return queue.current;
   }, [meetingId]);
 
   return {

@@ -2946,6 +2946,7 @@ git commit -m "feat(live): notes pane and line marks during a recording, kept th
 - Consumes: commands from Tasks 2 and 5; Tasks 7–9 components.
 - Produces:
   - `interface MeetingAudioInfo { path: string | null; keep_audio: boolean; audio_deleted_at: string | null }`
+  - `AUDIO_DELETED_EVENT = 'conclave:audio-deleted'` (in `lib/meeting-audio.ts`; Task 11 dispatches it)
   - `audioMissingMessage(info: MeetingAudioInfo | null): string | null` — `null` when `path` is set or info not loaded; `"Audio deleted on <local date>"` when `audio_deleted_at` is set; else `"Audio file not found"`.
   - `useMeetingAudio(meetingId: string)` → `{ info, src: string | null, audioRef, playhead: number | null, duration: number | null, isPlaying, rate, setRate(r: 1 | 1.5 | 2), playFrom(seconds), togglePlay(), seek(seconds), setKeepAudio(keep: boolean), audioEvents }`. The `<audio>` element is rendered **once in `page-content.tsx`, outside every Tabs**, so switching tabs never unmounts it.
   - `useMeetingNotes(meetingId: string)` → `{ notes, loaded: boolean, addNote(text), updateNote(id, text), deleteNote(id) }` (after-meeting notes get `at: null`; edits are ignored until `loaded`; each change saves the whole list via `save_meeting_notes`; only the latest save's response is applied; on error the last confirmed list is restored and `toast.error` shown). `NotesPane` gets `disabled={!loaded}`.
@@ -2986,6 +2987,9 @@ Extend `tests/hooks/paginated-transcripts.test.tsx` following its existing invok
 `lib/meeting-audio.ts` (append):
 
 ```ts
+/** Dispatched on `window` after the old-audio review deleted audio, so an open player refetches. */
+export const AUDIO_DELETED_EVENT = 'conclave:audio-deleted';
+
 export interface MeetingAudioInfo {
   path: string | null;
   keep_audio: boolean;
@@ -3087,8 +3091,7 @@ export function useMeetingNotes(meetingId: string) {
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import type { MeetingAudioInfo } from '@/lib/meeting-audio';
-import { AUDIO_DELETED_EVENT } from '@/lib/old-audio';
+import { AUDIO_DELETED_EVENT, type MeetingAudioInfo } from '@/lib/meeting-audio';
 
 export type PlaybackRate = 1 | 1.5 | 2;
 
@@ -3242,7 +3245,7 @@ git commit -m "feat(meeting): notes, marks and playback on the saved meeting pag
   - `toggleId(selected: string[], id: string): string[]`
   - `shouldRemind(lastShownDay: string | null, today: string, count: number): boolean` (`count > 0 && lastShownDay !== today`)
   - `todayKey(d = new Date()): string` (`YYYY-MM-DD`, local time)
-  - `REMINDER_DAY_KEY = 'conclave.oldAudioReminderDay'`, `AUDIO_DELETED_EVENT = 'conclave:audio-deleted'` (dispatched on `window` after a review delete; `useMeetingAudio` (Task 10) refetches on it — Task 10 imports this constant, so create `lib/old-audio.ts` with at least this export in Task 10 if Task 11 has not run yet)
+  - `REMINDER_DAY_KEY = 'conclave.oldAudioReminderDay'`. The review dispatches `AUDIO_DELETED_EVENT` (from `lib/meeting-audio.ts`, Task 10) on `window` after a delete; `useMeetingAudio` refetches on it.
 - `OldAudioReview({ open, onOpenChange })`: loads `old_audio_list` when opened; nothing selected by default.
 
 Behaviour (spec §2.8–2.9, §8.1): the review lists each meeting with title, local date, size and its exact file paths (small monospace text), a checkbox per meeting, "Select all" / "Select none", and a footer line "Selected recordings go to the Windows Recycle Bin. Space is freed when you empty it. Transcripts, summaries and notes stay." The **Move N to Recycle Bin** button is disabled until at least one meeting is ticked. After the call: `toast.success("Moved N recordings (X) to the Recycle Bin")`; each `failed` entry → one `toast.warning`; the list reloads. Empty list → "No recordings are old enough to review." The reminder checks on mount and every 24 h and shows at most one toast per day: `"N recordings are older than D days (X)."` (D from `get_recording_preferences().old_audio_days`) with action **Review** that opens the dialog.
@@ -3296,7 +3299,6 @@ export interface OldAudio { meeting_id: string; title: string; created_at: strin
 export interface DeleteResult { meetings: number; bytes: number; failed: string[] }
 
 export const REMINDER_DAY_KEY = 'conclave.oldAudioReminderDay';
-export const AUDIO_DELETED_EVENT = 'conclave:audio-deleted';
 
 export const OLD_AUDIO_OPTIONS = [
   { value: 'never', label: 'Never' },
@@ -3342,7 +3344,8 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { AUDIO_DELETED_EVENT, formatMegabytes, toggleId, type DeleteResult, type OldAudio } from '@/lib/old-audio';
+import { formatMegabytes, toggleId, type DeleteResult, type OldAudio } from '@/lib/old-audio';
+import { AUDIO_DELETED_EVENT } from '@/lib/meeting-audio';
 
 export function OldAudioReview({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
   const [items, setItems] = useState<OldAudio[] | null>(null);

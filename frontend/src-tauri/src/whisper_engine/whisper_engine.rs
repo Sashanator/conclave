@@ -607,7 +607,6 @@ impl WhisperEngine {
         // Previous value was too aggressive and rejected valid quiet speech
         // 0.55 is balanced - prevents hallucinations while preserving quiet speech
         params.set_no_speech_thold(0.55);
-        params.set_max_len(200);
         params.set_single_segment(false);
 
         // Set thread count based on hardware (if supported by whisper.cpp)
@@ -723,8 +722,6 @@ impl WhisperEngine {
         // 0.55 is balanced - prevents hallucinations while preserving quiet speech
         params.set_no_speech_thold(0.55);
 
-        // Reasonable length limits
-        params.set_max_len(200);                 // Reasonable length
         params.set_single_segment(false);        // Allow multiple segments for better accuracy
 
         // Note: compression_ratio_threshold would be ideal but not available in current whisper-rs

@@ -160,13 +160,9 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
     for f in &files {
         recycle_checked(f, &folder, remove)?;
     }
-    if !still_guarded(&folder, recordings_base) {
-        return Err(moved_out_message(&folder));
-    }
+    ensure_still_guarded(&folder, recordings_base)?;
     recycle_if_empty(&folder.join(".checkpoints"), remove)?;
-    if !still_guarded(&folder, recordings_base) {
-        return Err(moved_out_message(&folder));
-    }
+    ensure_still_guarded(&folder, recordings_base)?;
     if !recycle_if_empty(&folder, remove)? {
         return Err(format!("Recording folder kept: new files appeared in it ({})", folder.display()));
     }
@@ -174,21 +170,22 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
 }
 
 /// Re-run before each later step: the folder may have been replaced by a link meanwhile.
-fn still_guarded(folder: &Path, recordings_base: &Path) -> bool {
-    guarded_meeting_folder(&folder.to_string_lossy(), recordings_base).as_deref() == Some(folder)
-}
-
-fn moved_out_message(folder: &Path) -> String {
-    format!("Recording folder kept: it is no longer inside the recordings folder ({})", folder.display())
+fn ensure_still_guarded(folder: &Path, recordings_base: &Path) -> Result<(), String> {
+    if guarded_meeting_folder(&folder.to_string_lossy(), recordings_base).as_deref() == Some(folder) {
+        Ok(())
+    } else {
+        Err(format!("Recording folder kept: it is no longer inside the recordings folder ({})", folder.display()))
+    }
 }
 
 /// Recycles Conclave's own checkpoint files in a guarded folder, then `.checkpoints` if empty.
 /// Other files in `.checkpoints` are left alone, so the folder stays.
-fn recycle_checkpoints(folder: &Path, remove: Remover) -> Result<(), String> {
+fn recycle_checkpoints(folder: &Path, recordings_base: &Path, remove: Remover) -> Result<(), String> {
     let checkpoints = folder.join(".checkpoints");
     for f in checkpoint_files(&checkpoints) {
         recycle_checked(&f, folder, remove)?;
     }
+    ensure_still_guarded(folder, recordings_base)?;
     recycle_if_empty(&checkpoints, remove)?;
     Ok(())
 }
@@ -201,7 +198,7 @@ pub fn cleanup_checkpoints_guarded(folder_path: &str, recordings_base: &Path, re
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
         .ok_or_else(|| format!("Checkpoints kept: it is outside the Conclave recordings folder ({folder_path})"))?;
-    recycle_checkpoints(&folder, remove)
+    recycle_checkpoints(&folder, recordings_base, remove)
 }
 
 /// Whether another meeting's folder is this one. Compared by canonical path, so a trailing
@@ -553,5 +550,32 @@ mod tests {
         cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap();
         assert_eq!(bin.names(), vec!["audio_chunk_000.mp4".to_string(), ".checkpoints".to_string()]);
         assert!(m.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swapped_for_a_link_mid_cleanup_leaves_checkpoints_outside_alone() {
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let b = base();
+        let outside = tempfile::tempdir().unwrap();
+        let m = b.path().join("m");
+        fs::create_dir_all(m.join(".checkpoints")).unwrap();
+        fs::write(m.join(".checkpoints").join("audio_chunk_000.mp4"), "x").unwrap();
+        let moved = outside.path().join("moved");
+        let bin = FakeBin::new();
+        let swapped = AtomicBool::new(false);
+        let remove = |p: &[PathBuf]| -> Result<(), String> {
+            bin.remove(p)?;
+            if !swapped.swap(true, Ordering::SeqCst) {
+                // After the last chunk the folder leaves the base; a link takes its place.
+                fs::rename(&m, &moved).unwrap();
+                symlink(&moved, &m).unwrap();
+            }
+            Ok(())
+        };
+        assert!(cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &remove).unwrap_err().contains("no longer inside"));
+        assert!(moved.join(".checkpoints").is_dir(), "a folder outside the base must keep its .checkpoints");
+        assert_eq!(bin.names(), vec!["audio_chunk_000.mp4".to_string()]);
     }
 }

@@ -50,6 +50,12 @@ export function useTranscriptStreaming(
 
       const fullText = latestSegment.text;
 
+      // If text is short enough, no need to stream
+      if (fullText.length <= INITIAL_CHARS) {
+        setStreamingSegment(null);
+        return;
+      }
+
       // Show first characters immediately
       const initialText = fullText.substring(0, Math.min(INITIAL_CHARS, fullText.length));
 
@@ -58,11 +64,6 @@ export function useTranscriptStreaming(
         fullText,
         visibleText: initialText,
       });
-
-      // If text is short enough, no need to stream
-      if (fullText.length <= INITIAL_CHARS) {
-        return;
-      }
 
       // Calculate how many characters to reveal per tick
       const totalTicks = Math.floor(DURATION_MS / INTERVAL_MS);
@@ -75,12 +76,8 @@ export function useTranscriptStreaming(
         charIndex += charsPerTick;
 
         if (charIndex >= fullText.length) {
-          // Streaming complete - show full text
-          setStreamingSegment({
-            id: latestSegment.id,
-            fullText,
-            visibleText: fullText,
-          });
+          // Streaming complete: drop the streaming line so it renders as a normal, markable line
+          setStreamingSegment(null);
 
           // Clear interval
           if (streamingIntervalRef.current) {
@@ -95,6 +92,10 @@ export function useTranscriptStreaming(
           } : null);
         }
       }, INTERVAL_MS);
+    } else {
+      // Same newest segment re-ran the effect (e.g. a mark changed). The cleanup has already stopped
+      // the reveal, so finish it here rather than leave the line truncated.
+      setStreamingSegment(null);
     }
 
     // Cleanup on unmount or when dependencies change

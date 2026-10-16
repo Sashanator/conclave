@@ -771,15 +771,17 @@ pub async fn api_delete_meeting<R: Runtime>(
 
     let pool = state.db_manager.pool();
 
-    match MeetingsRepository::delete_meeting(pool, &meeting_id).await {
-        Ok(true) => {
+    let base = crate::audio::recording_preferences::get_default_recordings_folder();
+    match crate::audio::meeting_folder::delete_meeting_and_folder(pool, &meeting_id, &base, &crate::audio::meeting_folder::recycle).await {
+        Ok(Some(folder_warning)) => {
             log_info!("Successfully deleted meeting {}", meeting_id);
             Ok(serde_json::json!({
                 "status": "success",
-                "message": "Meeting deleted successfully"
+                "message": "Meeting deleted successfully",
+                "folder_warning": folder_warning,
             }))
         }
-        Ok(false) => {
+        Ok(None) => {
             log_warn!("Meeting not found or already deleted: {}", meeting_id);
             Err(format!(
                 "Meeting not found or could not be deleted: {}",

@@ -375,19 +375,9 @@ pub async fn recover_audio_from_checkpoints(
 #[tauri::command]
 pub async fn cleanup_checkpoints(meeting_folder: String) -> Result<(), String> {
     info!("Cleaning up checkpoints for folder: {}", meeting_folder);
-
-    let folder_path = PathBuf::from(&meeting_folder);
-    let checkpoints_dir = folder_path.join(".checkpoints");
-
-    if checkpoints_dir.exists() {
-        std::fs::remove_dir_all(&checkpoints_dir)
-            .map_err(|e| format!("Failed to remove checkpoints directory: {}", e))?;
-        info!("Successfully cleaned up checkpoints directory");
-    } else {
-        info!("No checkpoints directory to clean up");
-    }
-
-    Ok(())
+    // The path comes from the webview: guarded, and only Conclave's own files go to the Recycle Bin.
+    let base = crate::audio::recording_preferences::get_default_recordings_folder();
+    super::meeting_folder::cleanup_checkpoints_guarded(&meeting_folder, &base, &super::meeting_folder::recycle)
 }
 
 /// Check if a meeting folder has audio checkpoint files

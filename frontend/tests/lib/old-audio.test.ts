@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { daysToSelect, formatMegabytes, selectToDays, shouldRemind, todayKey, toggleId } from '../../src/lib/old-audio';
+import { daysToSelect, formatMegabytes, recordingCount, selectToDays, shouldRemind, todayKey, toggleId } from '../../src/lib/old-audio';
 
 describe('old-audio helpers', () => {
   test('select mapping', () => {
@@ -8,6 +8,11 @@ describe('old-audio helpers', () => {
     expect(daysToSelect(7)).toBe('7');
     expect(selectToDays('never')).toBeNull();
     expect(selectToDays('90')).toBe(90);
+  });
+  test('recording counts are singular for one', () => {
+    expect(recordingCount(1)).toBe('1 recording');
+    expect(recordingCount(0)).toBe('0 recordings');
+    expect(recordingCount(3)).toBe('3 recordings');
   });
   test('sizes', () => {
     expect(formatMegabytes(0)).toBe('0 MB');

@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { OldAudioReview } from './OldAudioReview';
-import { formatMegabytes, REMINDER_DAY_KEY, shouldRemind, todayKey, type OldAudio } from '@/lib/old-audio';
+import { formatMegabytes, recordingCount, REMINDER_DAY_KEY, shouldRemind, todayKey, type OldAudio } from '@/lib/old-audio';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -23,7 +23,7 @@ export function OldAudioReminder() {
       let days: number | null = null;
       try { days = (await invoke<{ old_audio_days: number | null }>('get_recording_preferences')).old_audio_days; } catch { /* generic text */ }
       const age = days ? `older than ${days} days` : 'old';
-      toast(`${items.length} recordings are ${age} (${formatMegabytes(bytes)}).`, {
+      toast(`${recordingCount(items.length)} ${items.length === 1 ? 'is' : 'are'} ${age} (${formatMegabytes(bytes)}).`, {
         description: 'Nothing is deleted until you review and confirm.',
         action: { label: 'Review', onClick: () => setOpen(true) },
         duration: 15000,

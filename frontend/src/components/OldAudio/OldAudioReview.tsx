@@ -4,7 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
-import { formatMegabytes, toggleId, type DeleteResult, type OldAudio } from '@/lib/old-audio';
+import { formatMegabytes, recordingCount, toggleId, type DeleteResult, type OldAudio } from '@/lib/old-audio';
 import { AUDIO_DELETED_EVENT } from '@/lib/meeting-audio';
 
 export function OldAudioReview({ open, onOpenChange }: { open: boolean; onOpenChange: (open: boolean) => void }) {
@@ -14,6 +14,7 @@ export function OldAudioReview({ open, onOpenChange }: { open: boolean; onOpenCh
 
   const load = useCallback(async () => {
     setSelected([]);
+    setItems(null);
     try {
       setItems(await invoke<OldAudio[]>('old_audio_list'));
     } catch (e) {
@@ -28,7 +29,7 @@ export function OldAudioReview({ open, onOpenChange }: { open: boolean; onOpenCh
     setBusy(true);
     try {
       const r = await invoke<DeleteResult>('delete_old_audio', { meetingIds: selected });
-      if (r.meetings > 0) toast.success(`Moved ${r.meetings} recordings (${formatMegabytes(r.bytes)}) to the Recycle Bin`);
+      if (r.meetings > 0) toast.success(`Moved ${recordingCount(r.meetings)} (${formatMegabytes(r.bytes)}) to the Recycle Bin`);
       for (const f of r.failed) toast.warning('Not moved to the Recycle Bin', { description: f });
       window.dispatchEvent(new Event(AUDIO_DELETED_EVENT));
       await load();

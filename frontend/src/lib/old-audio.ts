@@ -25,6 +25,11 @@ export function formatMegabytes(bytes: number): string {
   return mb >= 1000 ? `${(mb / 1000).toFixed(1)} GB` : `${mb} MB`;
 }
 
+/** "1 recording" or "3 recordings" */
+export function recordingCount(n: number): string {
+  return `${n} ${n === 1 ? 'recording' : 'recordings'}`;
+}
+
 export function toggleId(selected: string[], id: string): string[] {
   return selected.includes(id) ? selected.filter((x) => x !== id) : [...selected, id];
 }

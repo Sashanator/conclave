@@ -124,6 +124,47 @@ describe('old-audio review', () => {
     expect(toast.warning).toHaveBeenCalledWith('Not moved to the Recycle Bin', { description: 'Standup: user declined' });
   });
 
+  test('a rejected delete shows an error toast and does not announce a deletion', async () => {
+    invoke.mockImplementationOnce(async () => { throw new Error('bin declined'); });
+    let dispatched = 0;
+    const listener = () => { dispatched += 1; };
+    window.addEventListener(AUDIO_DELETED_EVENT, listener);
+    try {
+      await tick(0);
+      await act(async () => {
+        deleteButton().props.onClick();
+      });
+      await flush();
+      expect(toast.error).toHaveBeenCalledWith('Could not delete the selected audio', { description: expect.stringContaining('bin declined') });
+      expect(dispatched).toBe(0);
+    } finally {
+      window.removeEventListener(AUDIO_DELETED_EVENT, listener);
+    }
+  });
+
+  test('reopening shows loading instead of the previous list', async () => {
+    invoke.mockImplementationOnce(() => new Promise(() => {}));
+    await act(async () => {
+      renderer!.update(<OldAudioReview open={false} onOpenChange={() => {}} />);
+    });
+    await act(async () => {
+      renderer!.update(<OldAudioReview open onOpenChange={() => {}} />);
+    });
+    const rendered = JSON.stringify(renderer!.toJSON());
+    expect(rendered).toContain('Loading');
+    expect(rendered).not.toContain('Standup');
+  });
+
+  test('one recording is named in the singular', async () => {
+    toast.success.mockClear();
+    await tick(0);
+    await act(async () => {
+      deleteButton().props.onClick();
+    });
+    await flush();
+    expect(toast.success).toHaveBeenCalledWith('Moved 1 recording (12 MB) to the Recycle Bin');
+  });
+
   test('a successful delete dispatches the audio-deleted event on window', async () => {
     let dispatched = 0;
     const listener = () => { dispatched += 1; };

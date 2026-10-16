@@ -149,10 +149,14 @@ impl MeetingNotesRepository {
                 .fetch_optional(pool)
                 .await?;
         Ok(match row.and_then(|(json,)| json) {
-            Some(json) => serde_json::from_str(&json).unwrap_or_else(|e| {
-                warn!("Unreadable notes for meeting {meeting_id}: {e}");
-                Vec::new()
-            }),
+            // Per note, like the save path: one bad stored entry must not hide the others.
+            Some(json) => match serde_json::from_str::<Vec<serde_json::Value>>(&json) {
+                Ok(values) => parse_notes(values),
+                Err(e) => {
+                    warn!("Unreadable notes for meeting {meeting_id}: {e}");
+                    Vec::new()
+                }
+            },
             None => Vec::new(),
         })
     }
@@ -269,6 +273,17 @@ mod tests {
         sort_notes(&mut v);
         let ids: Vec<_> = v.iter().map(|n| n.id.as_str()).collect();
         assert_eq!(ids, ["d", "b", "a", "c"]);
+    }
+
+    #[tokio::test]
+    async fn get_skips_a_bad_stored_note_and_keeps_the_good_one() {
+        let pool = crate::database::repositories::test_pool().await;
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1', 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO meeting_notes (meeting_id, notes_json, created_at, updated_at) VALUES ('m1', ?, '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z')")
+            .bind(r#"[{"id":"n1","at":"soon","text":"bad"},{"id":"n2","at":1.0,"text":"good"}]"#)
+            .execute(&pool).await.unwrap();
+        assert_eq!(MeetingNotesRepository::get(&pool, "m1").await.unwrap(), vec![note("n2", Some(1.0), "good")]);
     }
 
     #[tokio::test]

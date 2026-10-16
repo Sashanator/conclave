@@ -1,5 +1,5 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
@@ -192,8 +192,18 @@ pub struct TranscriptSegment {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[serde(default, deserialize_with = "lenient_mark", skip_serializing_if = "Option::is_none")]
     pub mark: Option<String>,
+}
+
+/// A mark that is not a string is dropped here, so it can never fail the save at stop.
+fn lenient_mark<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?.and_then(|v| v.as_str().map(str::to_string)))
+}
+
+/// Decodes the segments sent with a save. Shared by `api_save_transcript` and its tests.
+fn parse_transcript_segments(values: Vec<serde_json::Value>) -> Result<Vec<TranscriptSegment>, serde_json::Error> {
+    values.into_iter().map(serde_json::from_value).collect()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -961,10 +971,7 @@ pub async fn api_save_transcript<R: Runtime>(
     }
 
     // Convert serde_json::Value to TranscriptSegment
-    let transcripts_to_save: Vec<TranscriptSegment> = transcripts
-        .into_iter()
-        .map(serde_json::from_value)
-        .collect::<Result<Vec<_>, _>>()
+    let transcripts_to_save: Vec<TranscriptSegment> = parse_transcript_segments(transcripts)
         .map_err(|e| {
             log_error!("Failed to parse transcript segments: {}", e);
             format!("Invalid transcript data format: {}. Please check the data structure.", e)
@@ -1497,5 +1504,34 @@ mod external_url_tests {
         ] {
             assert!(validate_external_url(bad).is_err(), "accepted {bad:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod segment_parse_tests {
+    use super::parse_transcript_segments;
+    use serde_json::json;
+
+    #[test]
+    fn a_non_string_mark_is_dropped_and_the_save_still_parses() {
+        for bad in [json!(42), json!({}), json!(true), json!(null)] {
+            let segs = parse_transcript_segments(vec![json!({
+                "id": "transcript-1", "text": "hi", "timestamp": "t",
+                "audio_start_time": 1.0, "mark": bad,
+            })])
+            .unwrap_or_else(|e| panic!("save rejected by mark {bad}: {e}"));
+            assert_eq!(segs[0].mark, None);
+        }
+    }
+
+    #[test]
+    fn a_string_mark_and_a_missing_mark_decode() {
+        let segs = parse_transcript_segments(vec![
+            json!({"id": "a", "text": "x", "timestamp": "t", "mark": "action"}),
+            json!({"id": "b", "text": "y", "timestamp": "t"}),
+        ])
+        .unwrap();
+        assert_eq!(segs[0].mark.as_deref(), Some("action"));
+        assert_eq!(segs[1].mark, None);
     }
 }

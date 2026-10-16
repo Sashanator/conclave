@@ -23,6 +23,9 @@ pub struct RecordingPreferences {
     /// Meeting auto-detection: "off", "ask" (default) or "auto" (spec §5.1).
     #[serde(default = "default_meeting_detection")]
     pub meeting_detection: String,
+    /// List recordings older than this many days in the old-audio review; `None` = Never (spec §8.1).
+    #[serde(default = "default_old_audio_days")]
+    pub old_audio_days: Option<u32>,
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
@@ -30,6 +33,10 @@ pub struct RecordingPreferences {
 
 fn default_meeting_detection() -> String {
     "ask".to_string()
+}
+
+fn default_old_audio_days() -> Option<u32> {
+    Some(30)
 }
 
 impl Default for RecordingPreferences {
@@ -41,6 +48,7 @@ impl Default for RecordingPreferences {
             preferred_mic_device: None,
             preferred_system_device: None,
             meeting_detection: default_meeting_detection(),
+            old_audio_days: default_old_audio_days(),
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }
@@ -409,5 +417,24 @@ mod meeting_detection_pref_tests {
         assert_eq!(p.meeting_detection, "ask");
         assert_eq!(p.preferred_mic_device.as_deref(), Some("Shure MV7"));
         assert_eq!(p.preferred_system_device.as_deref(), Some("Speakers"));
+    }
+}
+
+#[cfg(test)]
+mod old_audio_pref_tests {
+    use super::*;
+
+    #[test]
+    fn old_file_defaults_to_30_days() {
+        let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4"}"#;
+        let p: RecordingPreferences = serde_json::from_str(json).unwrap();
+        assert_eq!(p.old_audio_days, Some(30));
+    }
+
+    #[test]
+    fn explicit_null_means_never() {
+        let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4","old_audio_days":null}"#;
+        let p: RecordingPreferences = serde_json::from_str(json).unwrap();
+        assert_eq!(p.old_audio_days, None);
     }
 }

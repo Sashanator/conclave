@@ -702,6 +702,8 @@ pub fn run() {
             api::api_save_transcript_config,
             api::api_get_transcript_api_key,
             api::api_delete_meeting,
+            audio::retention::old_audio_list,
+            audio::retention::delete_old_audio,
             api::api_get_meeting,
             api::meeting_page::set_transcript_mark,
             api::meeting_page::get_meeting_notes,

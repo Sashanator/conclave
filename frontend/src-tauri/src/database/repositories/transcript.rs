@@ -1,4 +1,7 @@
 use crate::api::{TranscriptSearchResult, TranscriptSegment};
+use crate::database::repositories::meeting_notes::{
+    sanitize_mark, sanitize_notes, MeetingNote, MeetingNotesRepository,
+};
 use chrono::Utc;
 use sqlx::{Connection, Error as SqlxError, SqlitePool};
 use tracing::{error, info};
@@ -15,6 +18,7 @@ impl TranscriptsRepository {
         meeting_title: &str,
         transcripts: &[TranscriptSegment],
         folder_path: Option<String>,
+        notes: &[MeetingNote],
     ) -> Result<String, SqlxError> {
         let meeting_id = format!("meeting-{}", Uuid::new_v4());
 
@@ -47,8 +51,8 @@ impl TranscriptsRepository {
         for segment in transcripts {
             let transcript_id = format!("transcript-{}", Uuid::new_v4());
             let result = sqlx::query(
-                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
-                 VALUES (?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, mark)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
@@ -57,6 +61,7 @@ impl TranscriptsRepository {
             .bind(segment.audio_start_time)
             .bind(segment.audio_end_time)
             .bind(segment.duration)
+            .bind(sanitize_mark(segment.mark.as_deref()))
             .execute(&mut *transaction)
             .await;
 
@@ -76,10 +81,34 @@ impl TranscriptsRepository {
             meeting_id
         );
 
+        // 3. Save the notes in the same transaction; a note never fails the save
+        let notes = sanitize_notes(notes);
+        if !notes.is_empty() {
+            if let Err(e) = MeetingNotesRepository::save(&mut *transaction, &meeting_id, &notes).await {
+                error!("Failed to save notes for meeting {}: {}", meeting_id, e);
+                transaction.rollback().await?;
+                return Err(e);
+            }
+        }
+
         // Commit the transaction
         transaction.commit().await?;
 
         Ok(meeting_id)
+    }
+
+    /// Sets or clears the mark on one transcript line. Returns false if the line does not exist.
+    pub async fn set_mark(
+        pool: &SqlitePool,
+        transcript_id: &str,
+        mark: Option<&str>,
+    ) -> Result<bool, SqlxError> {
+        let r = sqlx::query("UPDATE transcripts SET mark = ? WHERE id = ?")
+            .bind(mark)
+            .bind(transcript_id)
+            .execute(pool)
+            .await?;
+        Ok(r.rows_affected() > 0)
     }
 
     /// Searches for a query string within the transcripts.
@@ -142,5 +171,69 @@ impl TranscriptsRepository {
             }
             None => transcript.chars().take(200).collect(), // Fallback to the start of the transcript
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::repositories::meeting_notes::{MeetingNote, MeetingNotesRepository};
+
+    fn seg(text: &str, start: f64, mark: Option<&str>) -> TranscriptSegment {
+        TranscriptSegment {
+            id: "x".into(), text: text.into(), timestamp: "t".into(),
+            audio_start_time: Some(start), audio_end_time: Some(start + 1.0), duration: Some(1.0),
+            mark: mark.map(str::to_string),
+        }
+    }
+
+    #[tokio::test]
+    async fn save_transcript_stores_marks_and_notes() {
+        let pool = crate::database::repositories::test_pool().await;
+        let notes = vec![MeetingNote { id: "note-1".into(), at: Some(1.5), text: "ask".into() }];
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, Some("action")), seg("b", 2.0, None)], None, &notes).await.unwrap();
+        let marks: Vec<(Option<String>,)> = sqlx::query_as("SELECT mark FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time")
+            .bind(&id).fetch_all(&pool).await.unwrap();
+        assert_eq!(marks, vec![(Some("action".into()),), (None,)]);
+        assert_eq!(MeetingNotesRepository::get(&pool, &id).await.unwrap(), notes);
+    }
+
+    #[tokio::test]
+    async fn save_transcript_sanitizes_bad_notes_and_marks() {
+        let pool = crate::database::repositories::test_pool().await;
+        let notes = vec![
+            MeetingNote { id: "note-1".into(), at: Some(f64::NAN), text: "  ".into() },
+            MeetingNote { id: "note-2".into(), at: None, text: "z".repeat(5000) },
+        ];
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, Some("nonsense"))], None, &notes).await.unwrap();
+        let (mark,): (Option<String>,) = sqlx::query_as("SELECT mark FROM transcripts WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert_eq!(mark, None);
+        let saved = MeetingNotesRepository::get(&pool, &id).await.unwrap();
+        assert_eq!(saved.len(), 1);
+        assert_eq!(saved[0].text.chars().count(), 2000);
+    }
+
+    #[tokio::test]
+    async fn set_mark_and_keep_audio_round_trip() {
+        let pool = crate::database::repositories::test_pool().await;
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, None)], None, &[]).await.unwrap();
+        let (tid,): (String,) = sqlx::query_as("SELECT id FROM transcripts WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert!(TranscriptsRepository::set_mark(&pool, &tid, Some("important")).await.unwrap());
+        assert!(!TranscriptsRepository::set_mark(&pool, "nope", Some("important")).await.unwrap());
+        let (m,): (Option<String>,) = sqlx::query_as("SELECT mark FROM transcripts WHERE id = ?").bind(&tid).fetch_one(&pool).await.unwrap();
+        assert_eq!(m.as_deref(), Some("important"));
+        assert!(crate::database::repositories::meeting::MeetingsRepository::set_keep_audio(&pool, &id, true).await.unwrap());
+        let meta = crate::database::repositories::meeting::MeetingsRepository::get_meeting_metadata(&pool, &id).await.unwrap().unwrap();
+        assert!(meta.keep_audio);
+    }
+
+    #[tokio::test]
+    async fn delete_meeting_removes_notes() {
+        let pool = crate::database::repositories::test_pool().await;
+        let notes = vec![MeetingNote { id: "note-1".into(), at: None, text: "x".into() }];
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, None)], None, &notes).await.unwrap();
+        assert!(crate::database::repositories::meeting::MeetingsRepository::delete_meeting(&pool, &id).await.unwrap());
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_notes").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0);
     }
 }

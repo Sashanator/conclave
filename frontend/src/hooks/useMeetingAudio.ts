@@ -16,10 +16,18 @@ export function useMeetingAudio(meetingId: string) {
 
   useEffect(() => {
     let cancelled = false;
-    const load = () =>
+    let latest = 0; // only the newest lookup may apply, so an older reply cannot bring back a deleted path
+    const load = () => {
+      const lookup = ++latest;
       invoke<MeetingAudioInfo>('get_meeting_audio', { meetingId })
-        .then((i) => { if (!cancelled) setInfo(i); })
+        .then((i) => {
+          if (cancelled || lookup !== latest) return;
+          setInfo(i);
+          // The file is gone: the element unmounts, so no pause event would clear the playhead or play state.
+          if (!i.path) { setPlayhead(null); setIsPlaying(false); }
+        })
         .catch((e) => console.error('Failed to locate meeting audio:', e));
+    };
     void load();
     // The old-audio review (mounted in the layout) may delete this meeting's audio while it is open.
     window.addEventListener(AUDIO_DELETED_EVENT, load);

@@ -39,3 +39,8 @@ export function readFlag(key: string): boolean {
 export function writeFlag(key: string, value: boolean): void {
   try { localStorage.setItem(key, value ? '1' : '0'); } catch { /* optional */ }
 }
+
+/** The collapsed notes strip exists only in the desktop three-column layout; narrow windows keep the tabs (spec §6.3). */
+export function notesCollapsedOnScreen(layout: MeetingPageLayout, collapsed: boolean, isDesktop: boolean): boolean {
+  return layout === 'three-columns' && collapsed && isDesktop;
+}

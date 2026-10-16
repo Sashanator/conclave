@@ -5,6 +5,18 @@ import { toast } from 'sonner';
 import { newNote } from '@/lib/meeting-notes';
 import type { MeetingNote } from '@/types';
 
+// Module level: a page remount (leave and reopen) must not run a read ahead of a save still in flight.
+const queues = new Map<string, Promise<unknown>>();
+
+/** Runs `task` after the meeting's previous queued task, whether that one succeeded or failed. */
+function enqueue<T>(meetingId: string, task: () => Promise<T>): Promise<T> {
+  const run = (queues.get(meetingId) ?? Promise.resolve()).then(task);
+  const tail = run.catch(() => {});
+  queues.set(meetingId, tail);
+  void tail.then(() => { if (queues.get(meetingId) === tail) queues.delete(meetingId); });
+  return run;
+}
+
 export function useMeetingNotes(meetingId: string) {
   const [notes, setNotes] = useState<MeetingNote[]>([]);
   const [loaded, setLoaded] = useState(false);
@@ -12,13 +24,12 @@ export function useMeetingNotes(meetingId: string) {
   const confirmedRef = useRef<MeetingNote[]>([]);  // what the backend last stored
   const loadedRef = useRef(false);
   const saveSeq = useRef(0);
-  const queue = useRef<Promise<void>>(Promise.resolve()); // saves run one at a time
 
   useEffect(() => {
     let cancelled = false;
     loadedRef.current = false;
     setLoaded(false);
-    invoke<MeetingNote[]>('get_meeting_notes', { meetingId })
+    enqueue(meetingId, () => invoke<MeetingNote[]>('get_meeting_notes', { meetingId }))
       .then((n) => {
         if (cancelled) return;
         notesRef.current = n; confirmedRef.current = n; setNotes(n);
@@ -36,8 +47,8 @@ export function useMeetingNotes(meetingId: string) {
     const seq = ++saveSeq.current;
     notesRef.current = next;
     setNotes(next);
-    // Chained: the backend sees saves in order, and every success updates confirmedRef.
-    queue.current = queue.current.then(async () => {
+    // Queued per meeting: the backend sees saves in order, and every success updates confirmedRef.
+    return enqueue(meetingId, async () => {
       try {
         const stored = await invoke<MeetingNote[]>('save_meeting_notes', { meetingId, notes: next });
         confirmedRef.current = stored;
@@ -47,7 +58,6 @@ export function useMeetingNotes(meetingId: string) {
         toast.error('Could not save notes', { description: String(e) });
       }
     });
-    return queue.current;
   }, [meetingId]);
 
   return {

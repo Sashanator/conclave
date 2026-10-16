@@ -177,6 +177,20 @@ describe('transcript marks', () => {
     expect(state.segments[0].mark).toBeNull();
   });
 
+  test('overlapping changes to one line are sent in order and the newest choice wins', async () => {
+    await loadMarked();
+    await act(async () => { void state.setTranscriptMark('t1', null); });
+    await act(async () => { void state.setTranscriptMark('t1', 'important'); });
+    const marks = () => requests.filter(r => r.command === 'set_transcript_mark');
+    // The second change waits for the first reply, so the first cannot land after it.
+    expect(marks()).toHaveLength(1);
+    await resolve(marks()[0], undefined);
+    expect(marks()).toHaveLength(2);
+    expect(marks()[1].args).toEqual({ transcriptId: 't1', mark: 'important' });
+    await resolve(marks()[1], undefined);
+    expect(state.segments[0].mark).toBe('important');
+  });
+
   test('a rejected save keeps the previous mark', async () => {
     await loadMarked();
     await act(async () => { void state.setTranscriptMark('t1', null); });

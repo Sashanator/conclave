@@ -1,9 +1,10 @@
 'use client';
 
-import { useEffect, useState, type CSSProperties, type ReactNode } from 'react';
+import { type CSSProperties, type ReactNode } from 'react';
 import { FileText, Sparkles, StickyNote } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { SplitHandle, useSplitRatio } from '@/hooks/useSplitRatio';
+import { useIsDesktop } from '@/hooks/useIsDesktop';
 import { cn } from '@/lib/utils';
 import type { MeetingPageLayout } from '@/lib/meeting-page-layout';
 
@@ -66,15 +67,7 @@ export function MeetingDetailsSplitView({
     offset: transcriptCol.ratio,
     label: 'notes',
   });
-  const [isDesktop, setIsDesktop] = useState(true);
-
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(min-width: 768px)');
-    const updateLayout = () => setIsDesktop(mediaQuery.matches);
-    updateLayout();
-    mediaQuery.addEventListener('change', updateLayout);
-    return () => mediaQuery.removeEventListener('change', updateLayout);
-  }, []);
+  const isDesktop = useIsDesktop();
 
   // One container for all splitters: each one only moves while its own handle is dragged.
   const setContainer = (el: HTMLDivElement | null) => {

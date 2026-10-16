@@ -203,14 +203,20 @@ export function usePaginatedTranscripts({
         };
     }, [meetingId, reset, refetch]);
 
-    const setTranscriptMark = useCallback(async (id: string, mark: TranscriptMark | null) => {
-        try {
-            await invoke('set_transcript_mark', { transcriptId: id, mark });
-            setTranscripts(prev => prev.map(t => (t.id === id ? { ...t, mark } : t)));
-        } catch (err) {
-            console.error('Failed to save mark:', err);
-            toast.error('Could not save the mark', { description: String(err) });
-        }
+    // Mark requests for one line run one after another, so a slow reply cannot overwrite a newer choice.
+    const markQueues = useRef(new Map<string, Promise<void>>());
+    const setTranscriptMark = useCallback((id: string, mark: TranscriptMark | null) => {
+        const run = (markQueues.current.get(id) ?? Promise.resolve()).then(async () => {
+            try {
+                await invoke('set_transcript_mark', { transcriptId: id, mark });
+                setTranscripts(prev => prev.map(t => (t.id === id ? { ...t, mark } : t)));
+            } catch (err) {
+                console.error('Failed to save mark:', err);
+                toast.error('Could not save the mark', { description: String(err) });
+            }
+        });
+        markQueues.current.set(id, run);
+        return run;
     }, []);
 
     // Convert to segments (memoized)

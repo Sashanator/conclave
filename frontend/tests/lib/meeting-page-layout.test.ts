@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, test } from 'bun:test';
-import { parseMeetingPageLayout, readMeetingPageLayout, writeMeetingPageLayout, readStoredRatio, writeStoredRatio, readFlag, writeFlag } from '../../src/lib/meeting-page-layout';
+import { notesCollapsedOnScreen, parseMeetingPageLayout, readMeetingPageLayout, writeMeetingPageLayout, readStoredRatio, writeStoredRatio, readFlag, writeFlag } from '../../src/lib/meeting-page-layout';
 
 beforeEach(() => localStorage.clear());
 
@@ -26,5 +26,12 @@ describe('meeting page layout', () => {
     expect(readFlag('conclave.notesPaneCollapsed')).toBe(false);
     writeFlag('conclave.notesPaneCollapsed', true);
     expect(readFlag('conclave.notesPaneCollapsed')).toBe(true);
+  });
+
+  test('the collapsed notes strip shows only in the desktop three-column layout', () => {
+    expect(notesCollapsedOnScreen('three-columns', true, true)).toBe(true);
+    expect(notesCollapsedOnScreen('three-columns', true, false)).toBe(false);
+    expect(notesCollapsedOnScreen('subtab', true, true)).toBe(false);
+    expect(notesCollapsedOnScreen('three-columns', false, true)).toBe(false);
   });
 });

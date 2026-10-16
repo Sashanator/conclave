@@ -24,7 +24,8 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { readSummaryMetadata } from '@/lib/summary-content';
 import { pickTemplateIfAllowed } from '@/lib/regenerate-guard';
 import { audioMissingMessage } from '@/lib/meeting-audio';
-import { readFlag, readMeetingPageLayout, writeFlag } from '@/lib/meeting-page-layout';
+import { notesCollapsedOnScreen, readFlag, readMeetingPageLayout, writeFlag } from '@/lib/meeting-page-layout';
+import { useIsDesktop } from '@/hooks/useIsDesktop';
 
 export default function PageContent({
   meeting,
@@ -74,6 +75,8 @@ export default function PageContent({
   const audio = useMeetingAudio(meeting.id);
   const [notesCollapsed, setNotesCollapsed] = useState(() => readFlag('conclave.notesPaneCollapsed'));
   const toggleNotesCollapsed = () => setNotesCollapsed((c) => { writeFlag('conclave.notesPaneCollapsed', !c); return !c; });
+  const isDesktop = useIsDesktop();
+  const notesStripShown = notesCollapsedOnScreen(layout, notesCollapsed, isDesktop);
 
   // Ref to store the modal open function from SummaryGeneratorButtonGroup
   const openModelSettingsRef = useRef<(() => void) | null>(null);
@@ -215,7 +218,7 @@ export default function PageContent({
           }}
           layout={layout}
           notesCount={notes.notes.length}
-          notesCollapsed={layout === 'three-columns' && notesCollapsed}
+          notesCollapsed={notesStripShown}
           notes={
             <NotesPane
               disabled={!notes.loaded}
@@ -225,7 +228,7 @@ export default function PageContent({
               onUpdate={notes.updateNote}
               onDelete={notes.deleteNote}
               onTimeClick={audio.info?.path ? audio.playFrom : undefined}
-              collapsed={layout === 'three-columns' && notesCollapsed}
+              collapsed={notesStripShown}
               onToggleCollapsed={toggleNotesCollapsed}
             />
           }

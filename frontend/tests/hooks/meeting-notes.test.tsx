@@ -27,10 +27,14 @@ function View({ meetingId }: { meetingId: string }) {
   state = useMeetingNotes(meetingId);
   return <output>{state.loaded ? 'loaded' : 'loading'}:{state.notes.map(n => n.text).join(',')}</output>;
 }
+// The save queue outlives a mount (by design), so every test gets its own meeting.
+let meetingId = '';
+let meetingSeq = 0;
 beforeEach(() => {
   requests.length = 0;
   invoke.mockClear();
   toastError.mockClear();
+  meetingId = `m${++meetingSeq}`;
 });
 afterEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
@@ -46,13 +50,13 @@ async function reject(req: Request, reason: unknown) {
   await act(async () => { req.reject(reason); });
 }
 async function mountLoaded(notes: MeetingNote[] = [old]) {
-  await act(async () => { renderer = create(<View meetingId="m1" />); });
+  await act(async () => { renderer = create(<View meetingId={meetingId} />); });
   await resolve(pending('get_meeting_notes')[0], notes);
 }
 
 describe('useMeetingNotes', () => {
   test('edits are ignored until the notes are loaded', async () => {
-    await act(async () => { renderer = create(<View meetingId="m1" />); });
+    await act(async () => { renderer = create(<View meetingId={meetingId} />); });
     expect(state.loaded).toBe(false);
     await act(async () => { state.addNote('x'); });
     expect(pending('save_meeting_notes')).toHaveLength(0);
@@ -64,7 +68,7 @@ describe('useMeetingNotes', () => {
     await mountLoaded();
     await act(async () => { state.addNote('new'); });
     const save = pending('save_meeting_notes')[0];
-    expect(save.args.meetingId).toBe('m1');
+    expect(save.args.meetingId).toBe(meetingId);
     const saved = save.args.notes as MeetingNote[];
     expect(saved.map(n => n.text)).toEqual(['old', 'new']);
     expect(saved[0]).toEqual(old);
@@ -95,6 +99,23 @@ describe('useMeetingNotes', () => {
     await reject(second, new Error('disk full'));
     expect(state.notes.map(n => n.text)).toEqual(['old', 'a']);
     expect(toastError).toHaveBeenCalledTimes(1);
+  });
+
+  test('a load started on a remount waits for a save still in flight, so it reads the saved list', async () => {
+    await mountLoaded();
+    await act(async () => { state.addNote('new'); });
+    const save = pending('save_meeting_notes')[0];
+    // Leave the meeting and reopen it while the save is still running.
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await act(async () => { renderer = create(<View meetingId={meetingId} />); });
+    expect(pending('get_meeting_notes')).toHaveLength(1);
+    expect(state.loaded).toBe(false);
+    await resolve(save, save.args.notes);
+    expect(pending('get_meeting_notes')).toHaveLength(2);
+    await resolve(pending('get_meeting_notes')[1], save.args.notes);
+    expect(state.loaded).toBe(true);
+    expect(state.notes.map(n => n.text)).toEqual(['old', 'new']);
   });
 
   test('a rejected save restores the last confirmed list', async () => {

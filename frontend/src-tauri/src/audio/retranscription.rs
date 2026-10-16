@@ -2,6 +2,7 @@
 
 use crate::audio::decoder::decode_audio_file;
 use crate::audio::vad::get_speech_chunks_with_progress;
+use crate::database::repositories::meeting_notes::{carry_marks, TimedMark};
 use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
 use super::constants::AUDIO_EXTENSIONS;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
@@ -434,6 +435,18 @@ async fn run_retranscription<R: Runtime>(
         .await
         .map_err(|e| anyhow!("Failed to start transaction: {}", e))?;
 
+    let old_marks: Vec<(Option<f64>, Option<f64>, String)> = sqlx::query_as(
+        "SELECT audio_start_time, audio_end_time, mark FROM transcripts WHERE meeting_id = ? AND mark IS NOT NULL ORDER BY audio_start_time",
+    )
+    .bind(&meeting_id)
+    .fetch_all(&mut *tx)
+    .await
+    .map_err(|e| anyhow!("Failed to read marks: {}", e))?;
+    let old_marks: Vec<TimedMark> = old_marks
+        .into_iter()
+        .filter_map(|(s, e, mark)| s.map(|s| TimedMark { start: s, end: e.unwrap_or(s), mark }))
+        .collect();
+
     sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
         .bind(&meeting_id)
         .execute(&mut *tx)
@@ -455,6 +468,19 @@ async fn run_retranscription<R: Runtime>(
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
+    }
+
+    let new_times: Vec<(String, f64, f64)> = segments
+        .iter()
+        .filter_map(|s| s.audio_start_time.map(|st| (s.id.clone(), st, s.audio_end_time.unwrap_or(st))))
+        .collect();
+    for (id, mark) in carry_marks(&old_marks, &new_times) {
+        sqlx::query("UPDATE transcripts SET mark = ? WHERE id = ?")
+            .bind(mark)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| anyhow!("Failed to keep a mark: {}", e))?;
     }
 
     tx.commit().await

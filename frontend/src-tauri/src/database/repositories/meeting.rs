@@ -92,6 +92,7 @@ impl MeetingsRepository {
                     audio_start_time: t.audio_start_time,
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
+                    mark: t.mark,
                 })
                 .collect::<Vec<_>>();
 
@@ -120,12 +121,22 @@ impl MeetingsRepository {
         }
 
         let meeting: Option<MeetingModel> =
-            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path FROM meetings WHERE id = ?")
+            sqlx::query_as("SELECT id, title, created_at, updated_at, folder_path, keep_audio, audio_deleted_at FROM meetings WHERE id = ?")
                 .bind(meeting_id)
                 .fetch_optional(pool)
                 .await?;
 
         Ok(meeting)
+    }
+
+    /// Pins or unpins a meeting's audio ("Keep audio"). Returns false if the meeting does not exist.
+    pub async fn set_keep_audio(pool: &SqlitePool, meeting_id: &str, keep: bool) -> Result<bool, SqlxError> {
+        let r = sqlx::query("UPDATE meetings SET keep_audio = ? WHERE id = ?")
+            .bind(keep)
+            .bind(meeting_id)
+            .execute(pool)
+            .await?;
+        Ok(r.rows_affected() > 0)
     }
 
     /// Get meeting transcripts with pagination support
@@ -254,6 +265,12 @@ async fn delete_meeting_with_transaction(
 
     // 2. Delete from summary_processes
     sqlx::query("DELETE FROM summary_processes WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    // Explicit, not only the FK cascade (spec §5.4).
+    sqlx::query("DELETE FROM meeting_notes WHERE meeting_id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;

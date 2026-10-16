@@ -9,6 +9,11 @@ pub struct MeetingModel {
     pub created_at: DateTimeUtc,
     pub updated_at: DateTimeUtc,
     pub folder_path: Option<String>,
+    // Phase 4; `default` keeps older explicit SELECTs without these columns working.
+    #[sqlx(default)]
+    pub keep_audio: bool,
+    #[sqlx(default)]
+    pub audio_deleted_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::Type)]
@@ -35,6 +40,8 @@ pub struct Transcript {
     pub audio_start_time: Option<f64>,
     pub audio_end_time: Option<f64>,
     pub duration: Option<f64>,
+    #[sqlx(default)]
+    pub mark: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

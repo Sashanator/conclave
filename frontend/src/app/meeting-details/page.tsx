@@ -1,7 +1,7 @@
 "use client"
 import { useSidebar } from "@/components/Sidebar/SidebarProvider";
 import { useState, useEffect, useCallback, Suspense } from "react";
-import { MeetingSummary, SummaryProcessResponse, Transcript } from "@/types";
+import { MeetingSummary, SummaryProcessResponse, Transcript, TranscriptMark } from "@/types";
 import PageContent from "./page-content";
 import { useRouter, useSearchParams } from "next/navigation";
 import { invoke } from "@tauri-apps/api/core";
@@ -47,6 +47,7 @@ function MeetingDetailsContent() {
     loadMore,
     refetch,
     error: transcriptError,
+    setTranscriptMark,
   } = usePaginatedTranscripts({ meetingId: meetingId || '' });
 
   // Check if gemma3:1b model is available in Ollama
@@ -289,6 +290,7 @@ function MeetingDetailsContent() {
     totalCount={totalCount}
     loadedCount={loadedCount}
     onLoadMore={loadMore}
+    onSetTranscriptMark={setTranscriptMark}
   />;
 }
 

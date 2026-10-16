@@ -1,10 +1,10 @@
 "use client";
 
-import { Transcript, TranscriptSegmentData } from '@/types';
+import { Transcript, TranscriptMark, TranscriptSegmentData } from '@/types';
 import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
-import { useMemo } from 'react';
+import { useMemo, type ReactNode } from 'react';
 
 interface TranscriptPanelProps {
   transcripts: Transcript[];
@@ -28,6 +28,13 @@ interface TranscriptPanelProps {
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
+  audioMissingReason?: string | null;
+
+  // Marks and playback (saved meeting page)
+  onMarkChange?: (segmentId: string, mark: TranscriptMark | null) => void;
+  onPlayFrom?: (seconds: number) => void;
+  playheadSeconds?: number | null;
+  footer?: ReactNode;
 }
 
 export function TranscriptPanel({
@@ -48,6 +55,11 @@ export function TranscriptPanel({
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
+  audioMissingReason,
+  onMarkChange,
+  onPlayFrom,
+  playheadSeconds,
+  footer,
 }: TranscriptPanelProps) {
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {
@@ -61,6 +73,7 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       confidence: t.confidence,
+      mark: t.mark,
     }));
   }, [transcripts, usePagination, segments]);
 
@@ -75,6 +88,7 @@ export function TranscriptPanel({
           meetingId={meetingId}
           meetingFolderPath={meetingFolderPath}
           onRefetchTranscripts={onRefetchTranscripts}
+          audioMissingReason={audioMissingReason}
         />
       </div>
 
@@ -94,8 +108,13 @@ export function TranscriptPanel({
           totalCount={totalCount}
           loadedCount={loadedCount}
           onLoadMore={onLoadMore}
+          onMarkChange={onMarkChange}
+          onPlayFrom={onPlayFrom}
+          playheadSeconds={playheadSeconds}
         />
       </div>
+
+      {footer}
 
       {/* Custom prompt input at bottom of transcript section */}
       {!isRecording && convertedSegments.length > 0 && (

@@ -1,111 +1,100 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { FileText, Sparkles } from 'lucide-react';
+import { type CSSProperties, type ReactNode } from 'react';
+import { FileText, Sparkles, StickyNote } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-const STORAGE_KEY = 'meetily.meetingDetails.transcriptPaneRatio';
-const DEFAULT_RATIO = 0.3;
-const MIN_RATIO = 0.3;
-const MAX_RATIO = 0.5;
+import { SplitHandle, useSplitRatio } from '@/hooks/useSplitRatio';
+import { useIsDesktop } from '@/hooks/useIsDesktop';
+import { cn } from '@/lib/utils';
+import type { MeetingPageLayout } from '@/lib/meeting-page-layout';
+
+const SUBTAB_STORAGE_KEY = 'meetily.meetingDetails.transcriptPaneRatio';
 
 const TABS = [
   { value: 'transcript' as const, label: 'Transcript', icon: FileText },
+  { value: 'notes' as const, label: 'My notes', icon: StickyNote },
   { value: 'summary' as const, label: 'Summary', icon: Sparkles },
 ];
 
-function readStoredRatio(): number {
-  if (typeof window === 'undefined') return DEFAULT_RATIO;
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    const n = raw == null ? NaN : Number(raw);
-    return Number.isFinite(n) && n >= MIN_RATIO && n <= MAX_RATIO ? n : DEFAULT_RATIO;
-  } catch {
-    return DEFAULT_RATIO;
-  }
-}
-
-function writeStoredRatio(value: number): void {
-  try {
-    localStorage.setItem(STORAGE_KEY, String(value));
-  } catch {
-    // Layout persistence is optional.
-  }
-}
-
-export type MeetingDetailsTab = 'transcript' | 'summary';
+export type MeetingDetailsTab = 'transcript' | 'notes' | 'summary';
 
 interface MeetingDetailsSplitViewProps {
   transcript: ReactNode;
+  notes: ReactNode;
+  notesCount: number;
+  /** Drives the width of the notes column; the NotesPane inside draws the strip. */
+  notesCollapsed?: boolean;
   summary: ReactNode;
+  layout: MeetingPageLayout;
   activeTab: MeetingDetailsTab;
   onTabChange: (tab: MeetingDetailsTab) => void;
 }
 
+const PANE = 'mt-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden';
+const DESKTOP_SHOWN = 'md:data-[state=inactive]:flex';
+
 export function MeetingDetailsSplitView({
   transcript,
+  notes,
+  notesCount,
+  notesCollapsed = false,
   summary,
+  layout,
   activeTab,
   onTabChange,
 }: MeetingDetailsSplitViewProps) {
-  const containerRef = useRef<HTMLDivElement>(null);
-  const [ratio, setRatio] = useState(DEFAULT_RATIO);
-  const [isDesktop, setIsDesktop] = useState(true);
-  const dragging = useRef(false);
-  const clampRatio = (value: number) => Math.min(MAX_RATIO, Math.max(MIN_RATIO, value));
+  // Subtab layout: transcript | summary.
+  const subtab = useSplitRatio({
+    storageKey: SUBTAB_STORAGE_KEY,
+    defaultRatio: 0.3,
+    min: 0.3,
+    max: 0.5,
+    label: 'transcript and summary',
+  });
+  // Three columns: transcript | notes | summary. The notes splitter's offset is the transcript width.
+  const transcriptCol = useSplitRatio({
+    storageKey: 'conclave.threeCol.transcriptRatio',
+    defaultRatio: 0.3,
+    min: 0.2,
+    max: 0.5,
+    label: 'transcript',
+  });
+  const notesCol = useSplitRatio({
+    storageKey: 'conclave.threeCol.notesRatio',
+    defaultRatio: 0.2,
+    min: 0.15,
+    max: 0.35,
+    offset: transcriptCol.ratio,
+    label: 'notes',
+  });
+  const isDesktop = useIsDesktop();
 
-  useEffect(() => {
-    setRatio(readStoredRatio());
-  }, []);
+  // One container for all splitters: each one only moves while its own handle is dragged.
+  const setContainer = (el: HTMLDivElement | null) => {
+    subtab.containerRef.current = el;
+    transcriptCol.containerRef.current = el;
+    notesCol.containerRef.current = el;
+  };
+  const containerHandlers = {
+    onPointerMove: (e: React.PointerEvent) => {
+      subtab.containerHandlers.onPointerMove(e);
+      transcriptCol.containerHandlers.onPointerMove(e);
+      notesCol.containerHandlers.onPointerMove(e);
+    },
+    onPointerUp: () => {
+      subtab.containerHandlers.onPointerUp();
+      transcriptCol.containerHandlers.onPointerUp();
+      notesCol.containerHandlers.onPointerUp();
+    },
+  };
+  const containerProps = {
+    ref: setContainer,
+    onPointerMove: containerHandlers.onPointerMove,
+    onPointerUp: containerHandlers.onPointerUp,
+    onPointerCancel: containerHandlers.onPointerUp,
+  };
 
-  useEffect(() => {
-    const mediaQuery = window.matchMedia('(min-width: 768px)');
-    const updateLayout = () => setIsDesktop(mediaQuery.matches);
-    updateLayout();
-    mediaQuery.addEventListener('change', updateLayout);
-    return () => mediaQuery.removeEventListener('change', updateLayout);
-  }, []);
-
-  const onPointerDown = useCallback((event: React.PointerEvent) => {
-    event.preventDefault();
-    dragging.current = true;
-    event.currentTarget.setPointerCapture(event.pointerId);
-  }, []);
-
-  const onPointerMove = useCallback((event: React.PointerEvent) => {
-    if (!dragging.current || !containerRef.current) return;
-    const rect = containerRef.current.getBoundingClientRect();
-    setRatio(clampRatio((event.clientX - rect.left) / rect.width));
-  }, []);
-
-  const onPointerUp = useCallback(() => {
-    if (!dragging.current) return;
-    dragging.current = false;
-    setRatio((current) => {
-      writeStoredRatio(current);
-      return current;
-    });
-  }, []);
-
-  const onSeparatorKeyDown = useCallback((event: React.KeyboardEvent) => {
-    const current = ratio;
-    const next =
-      event.key === 'ArrowLeft' ? clampRatio(current - 0.05) :
-      event.key === 'ArrowRight' ? clampRatio(current + 0.05) :
-      event.key === 'Home' ? MIN_RATIO :
-      event.key === 'End' ? MAX_RATIO :
-      null;
-    if (next === null) return;
-    event.preventDefault();
-    setRatio(next);
-    writeStoredRatio(next);
-  }, [ratio]);
-
-  const transcriptPanelProps = isDesktop
-    ? { role: 'region' as const, 'aria-label': 'Transcript', tabIndex: -1 }
-    : {};
-  const summaryPanelProps = isDesktop
-    ? { role: 'region' as const, 'aria-label': 'Summary', tabIndex: -1 }
-    : {};
+  const panelProps = (label: string) => (isDesktop ? { role: 'region' as const, 'aria-label': label, tabIndex: -1 } : {});
 
   return (
     <Tabs
@@ -130,46 +119,67 @@ export function MeetingDetailsSplitView({
           })}
         </TabsList>
       </div>
-      <div
-        ref={containerRef}
-        className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row"
-        style={{ '--transcript-pane-width': `${ratio * 100}%` } as CSSProperties}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerUp}
-      >
-        <TabsContent
-          value="transcript"
-          forceMount
-          className="mt-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden md:w-[var(--transcript-pane-width)] md:flex-none md:data-[state=inactive]:flex"
-          {...transcriptPanelProps}
-        >
-          {transcript}
-        </TabsContent>
+      {layout === 'subtab' ? (
         <div
-          role="separator"
-          aria-orientation="vertical"
-          aria-valuenow={Math.round(ratio * 100)}
-          aria-valuemin={Math.round(MIN_RATIO * 100)}
-          aria-valuemax={Math.round(MAX_RATIO * 100)}
-          aria-valuetext={`Transcript panel ${Math.round(ratio * 100)} percent`}
-          aria-label="Resize transcript and summary"
-          tabIndex={0}
-          className="group relative z-10 hidden w-2 flex-shrink-0 cursor-col-resize items-stretch justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset md:flex"
-          onPointerDown={onPointerDown}
-          onKeyDown={onSeparatorKeyDown}
+          {...containerProps}
+          className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row"
+          style={{ '--transcript-pane-width': `${subtab.ratio * 100}%` } as CSSProperties}
         >
-          <div className="h-full w-px bg-border transition-[width,background-color] duration-150 ease-out group-hover:w-1 group-hover:bg-blue-400 group-active:w-1 group-active:bg-blue-500" />
+          <div className={cn(PANE, 'md:w-[var(--transcript-pane-width)] md:flex-none', activeTab === 'summary' && 'hidden md:flex')}>
+            <Tabs
+              value={activeTab === 'summary' ? 'transcript' : activeTab}
+              onValueChange={(value) => onTabChange(value as MeetingDetailsTab)}
+              className="flex min-h-0 min-w-0 flex-1 flex-col"
+            >
+              <TabsList className="hidden h-9 w-full shrink-0 rounded-none border-b border-border bg-background p-0 md:flex">
+                <TabsTrigger value="transcript" className="rounded-none border-0 bg-transparent data-[state=active]:shadow-none">Transcript</TabsTrigger>
+                <TabsTrigger value="notes" className="rounded-none border-0 bg-transparent data-[state=active]:shadow-none">My notes ({notesCount})</TabsTrigger>
+              </TabsList>
+              <TabsContent value="transcript" forceMount className={cn(PANE, 'data-[state=inactive]:hidden')} {...panelProps('Transcript')}>
+                {transcript}
+              </TabsContent>
+              <TabsContent value="notes" forceMount className={cn(PANE, 'data-[state=inactive]:hidden')} {...panelProps('My notes')}>
+                {notes}
+              </TabsContent>
+            </Tabs>
+          </div>
+          <SplitHandle {...subtab.separatorProps} />
+          <TabsContent value="summary" forceMount className={cn(PANE, 'data-[state=inactive]:hidden', DESKTOP_SHOWN)} {...panelProps('Summary')}>
+            {summary}
+          </TabsContent>
         </div>
-        <TabsContent
-          value="summary"
-          forceMount
-          className="mt-0 flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden md:data-[state=inactive]:flex"
-          {...summaryPanelProps}
+      ) : (
+        <div
+          {...containerProps}
+          className="flex flex-1 min-h-0 min-w-0 flex-col md:flex-row"
+          style={{
+            '--transcript-pane-width': `${transcriptCol.ratio * 100}%`,
+            '--notes-pane-width': `${notesCol.ratio * 100}%`,
+          } as CSSProperties}
         >
-          {summary}
-        </TabsContent>
-      </div>
+          <TabsContent
+            value="transcript"
+            forceMount
+            className={cn(PANE, 'data-[state=inactive]:hidden md:w-[var(--transcript-pane-width)] md:flex-none', DESKTOP_SHOWN)}
+            {...panelProps('Transcript')}
+          >
+            {transcript}
+          </TabsContent>
+          <SplitHandle {...transcriptCol.separatorProps} />
+          <TabsContent
+            value="notes"
+            forceMount
+            className={cn(PANE, 'data-[state=inactive]:hidden md:flex-none', !notesCollapsed && 'md:w-[var(--notes-pane-width)]', DESKTOP_SHOWN)}
+            {...panelProps('My notes')}
+          >
+            {notes}
+          </TabsContent>
+          {!notesCollapsed && <SplitHandle {...notesCol.separatorProps} />}
+          <TabsContent value="summary" forceMount className={cn(PANE, 'data-[state=inactive]:hidden', DESKTOP_SHOWN)} {...panelProps('Summary')}>
+            {summary}
+          </TabsContent>
+        </div>
+      )}
     </Tabs>
   );
 }

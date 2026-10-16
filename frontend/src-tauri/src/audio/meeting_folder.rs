@@ -2,9 +2,12 @@
 //! Conclave never deletes outside the recordings folder and never permanently: see `recycle`.
 //! Remaining window: another process running as the user could swap a path between the
 //! per-file re-check in `recycle_checked` and the Recycle Bin call for that one file.
+use crate::audio::recording_preferences::get_default_recordings_folder;
 use log::warn;
+use serde::Serialize;
 use std::fs;
 use std::path::{Path, PathBuf};
+use tauri::{AppHandle, Manager, Runtime};
 
 /// The import formats (`import.rs` copies a file in as `audio.<ext>`), so every format is found.
 pub use crate::audio::constants::AUDIO_EXTENSIONS;
@@ -238,6 +241,42 @@ pub async fn delete_meeting_and_folder(
         warn!("Meeting {meeting_id} deleted, folder kept: {w}");
     }
     Ok(Some(warning))
+}
+
+#[derive(Debug, Serialize)]
+pub struct MeetingAudio {
+    pub path: Option<String>,
+    pub keep_audio: bool,
+    /// Set when the user deleted the audio in the old-audio review; picks the player message.
+    pub audio_deleted_at: Option<String>,
+}
+
+pub(crate) async fn meeting_audio_inner(pool: &sqlx::SqlitePool, meeting_id: &str, base: &Path) -> Result<MeetingAudio, String> {
+    let meeting = crate::database::repositories::meeting::MeetingsRepository::get_meeting_metadata(pool, meeting_id)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("Meeting not found: {meeting_id}"))?;
+    let file = meeting
+        .folder_path
+        .as_deref()
+        .and_then(|p| guarded_meeting_folder(p, base))
+        .and_then(|folder| find_audio_file(&folder));
+    Ok(MeetingAudio {
+        path: file.map(|f| f.to_string_lossy().to_string()),
+        keep_audio: meeting.keep_audio,
+        audio_deleted_at: meeting.audio_deleted_at,
+    })
+}
+
+/// Finds the meeting's audio and lets the asset protocol read that one file (spec §8.2).
+#[tauri::command]
+pub async fn get_meeting_audio<R: Runtime>(app: AppHandle<R>, meeting_id: String) -> Result<MeetingAudio, String> {
+    let state = app.try_state::<crate::state::AppState>().ok_or("Database not ready")?;
+    let audio = meeting_audio_inner(state.db_manager.pool(), &meeting_id, &get_default_recordings_folder()).await?;
+    if let Some(p) = &audio.path {
+        app.asset_protocol_scope().allow_file(p).map_err(|e| e.to_string())?;
+    }
+    Ok(audio)
 }
 
 #[cfg(test)]
@@ -577,5 +616,24 @@ mod tests {
         assert!(cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &remove).unwrap_err().contains("no longer inside"));
         assert!(moved.join(".checkpoints").is_dir(), "a folder outside the base must keep its .checkpoints");
         assert_eq!(bin.names(), vec!["audio_chunk_000.mp4".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn meeting_audio_reports_file_pin_and_deletion() {
+        let pool = crate::database::repositories::test_pool().await;
+        let b = base();
+        let m = b.path().join("m");
+        fs::create_dir(&m).unwrap();
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, keep_audio, audio_deleted_at) VALUES ('m1', 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?, 1, '2026-11-20T10:00:00+00:00')")
+            .bind(m.to_string_lossy().to_string())
+            .execute(&pool).await.unwrap();
+        let a = meeting_audio_inner(&pool, "m1", b.path()).await.unwrap();
+        assert!(a.path.unwrap().ends_with("audio.mp4"));
+        assert!(a.keep_audio);
+        assert_eq!(a.audio_deleted_at.as_deref(), Some("2026-11-20T10:00:00+00:00"));
+        fs::remove_file(m.join("audio.mp4")).unwrap();
+        assert!(meeting_audio_inner(&pool, "m1", b.path()).await.unwrap().path.is_none());
+        assert!(meeting_audio_inner(&pool, "nope", b.path()).await.is_err());
     }
 }

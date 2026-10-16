@@ -10,6 +10,7 @@ import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
 import { useMemo } from 'react';
+import { annotationsLocked } from '@/lib/meeting-notes';
 
 /**
  * TranscriptPanel Component
@@ -31,9 +32,11 @@ export function TranscriptPanel({
   showModal
 }: TranscriptPanelProps) {
   // Contexts
-  const { transcripts, transcriptContainerRef, copyTranscript } = useTranscripts();
+  const { transcripts, transcriptContainerRef, copyTranscript, setTranscriptMark } = useTranscripts();
   const { transcriptModelConfig } = useConfig();
-  const { isRecording, isPaused } = useRecordingState();
+  const { isRecording, isPaused, isSaving } = useRecordingState();
+  // Marks freeze with the notes once a stop begins (the save takes a snapshot)
+  const marksLocked = annotationsLocked({ isRecording, isStopping, isProcessing: isProcessingStop, isSaving });
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
   const isLinux = useIsLinux();
 
@@ -45,6 +48,7 @@ export function TranscriptPanel({
       endTime: t.audio_end_time,
       text: t.text,
       confidence: t.confidence,
+      mark: t.mark,
     })),
     [transcripts]
   );
@@ -104,7 +108,7 @@ export function TranscriptPanel({
       {/* Transcript content */}
       <div className="pb-20">
         <div className="flex justify-center">
-          <div className="w-2/3 max-w-[750px]">
+          <div className="w-full max-w-[750px] px-6">
             <VirtualizedTranscriptView
               segments={segments}
               isRecording={isRecording}
@@ -113,6 +117,7 @@ export function TranscriptPanel({
               isStopping={isStopping}
               enableStreaming={isRecording}
               showConfidence={true}
+              onMarkChange={marksLocked ? undefined : setTranscriptMark}
             />
           </div>
         </div>

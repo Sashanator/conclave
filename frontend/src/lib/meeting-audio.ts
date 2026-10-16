@@ -10,3 +10,18 @@ export function findActiveSegmentId(segments: TranscriptSegmentData[], t: number
   }
   return null;
 }
+
+/** Dispatched on `window` after the old-audio review deleted audio, so an open player refetches. */
+export const AUDIO_DELETED_EVENT = 'conclave:audio-deleted';
+
+export interface MeetingAudioInfo {
+  path: string | null;
+  keep_audio: boolean;
+  audio_deleted_at: string | null;
+}
+
+export function audioMissingMessage(info: MeetingAudioInfo | null): string | null {
+  if (!info || info.path) return null;
+  if (info.audio_deleted_at) return `Audio deleted on ${new Date(info.audio_deleted_at).toLocaleDateString()}`;
+  return 'Audio file not found';
+}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { findActiveSegmentId } from '../../src/lib/meeting-audio';
+import { audioMissingMessage, findActiveSegmentId } from '../../src/lib/meeting-audio';
 
 const segs = [
   { id: 'a', timestamp: 0, endTime: 4, text: 'a' },
@@ -18,5 +18,16 @@ describe('findActiveSegmentId', () => {
     expect(findActiveSegmentId(segs, 13)).toBeNull();
     expect(findActiveSegmentId(segs, null)).toBeNull();
     expect(findActiveSegmentId([], 1)).toBeNull();
+  });
+});
+
+describe('audioMissingMessage', () => {
+  const base = { path: null, keep_audio: false, audio_deleted_at: null };
+  test('messages', () => {
+    expect(audioMissingMessage(null)).toBeNull();
+    expect(audioMissingMessage({ ...base, path: 'C:\\x\\audio.mp4' })).toBeNull();
+    const deleted = '2026-11-20T10:00:00+00:00';
+    expect(audioMissingMessage({ ...base, audio_deleted_at: deleted })).toBe(`Audio deleted on ${new Date(deleted).toLocaleDateString()}`);
+    expect(audioMissingMessage(base)).toBe('Audio file not found');
   });
 });

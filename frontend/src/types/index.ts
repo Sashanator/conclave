@@ -16,6 +16,15 @@ export interface Transcript {
   audio_start_time?: number; // Seconds from recording start (e.g., 125.3)
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
+  mark?: TranscriptMark | null;
+}
+
+export type TranscriptMark = 'important' | 'action' | 'followup';
+
+export interface MeetingNote {
+  id: string;
+  at: number | null; // seconds into the recording; null = added after the meeting
+  text: string;
 }
 
 export interface TranscriptUpdate {
@@ -130,6 +139,7 @@ export interface MeetingMetadata {
   created_at: string;
   updated_at: string;
   folder_path?: string;
+  keep_audio?: boolean;
 }
 
 export interface PaginatedTranscriptsResponse {
@@ -145,4 +155,5 @@ export interface TranscriptSegmentData {
   endTime?: number; // audio_end_time in seconds
   text: string;
   confidence?: number;
+  mark?: TranscriptMark | null;
 }

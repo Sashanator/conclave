@@ -23,6 +23,9 @@ pub struct RecordingPreferences {
     /// Meeting auto-detection: "off", "ask" (default) or "auto" (spec §5.1).
     #[serde(default = "default_meeting_detection")]
     pub meeting_detection: String,
+    /// List recordings older than this many days in the old-audio review; `None` = Never (spec §8.1).
+    #[serde(default = "default_old_audio_days")]
+    pub old_audio_days: Option<u32>,
     #[cfg(target_os = "macos")]
     #[serde(default)]
     pub system_audio_backend: Option<String>,
@@ -30,6 +33,18 @@ pub struct RecordingPreferences {
 
 fn default_meeting_detection() -> String {
     "ask".to_string()
+}
+
+fn default_old_audio_days() -> Option<u32> {
+    Some(30)
+}
+
+/// Only Never (`None`), 7, 30 and 90 are offered in Settings; any other stored value falls back to 30.
+pub fn sanitize_old_audio_days(days: Option<u32>) -> Option<u32> {
+    match days {
+        None | Some(7) | Some(30) | Some(90) => days,
+        Some(_) => default_old_audio_days(),
+    }
 }
 
 impl Default for RecordingPreferences {
@@ -41,6 +56,7 @@ impl Default for RecordingPreferences {
             preferred_mic_device: None,
             preferred_system_device: None,
             meeting_detection: default_meeting_detection(),
+            old_audio_days: default_old_audio_days(),
             #[cfg(target_os = "macos")]
             system_audio_backend: Some("coreaudio".to_string()),
         }
@@ -114,7 +130,7 @@ pub async fn load_recording_preferences<R: Runtime>(
     };
 
     // Try to get the preferences from store
-    let prefs = if let Some(value) = store.get("preferences") {
+    let mut prefs = if let Some(value) = store.get("preferences") {
         match serde_json::from_value::<RecordingPreferences>(value.clone()) {
             // `mut` is used only on macOS.
             #[allow(unused_mut)]
@@ -137,6 +153,9 @@ pub async fn load_recording_preferences<R: Runtime>(
         info!("No stored preferences found, using defaults");
         RecordingPreferences::default()
     };
+
+    // Read-side check: the webview can store any number, but the review only uses the offered values.
+    prefs.old_audio_days = sanitize_old_audio_days(prefs.old_audio_days);
 
     info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}",
           prefs.save_folder, prefs.auto_save, prefs.file_format,
@@ -409,5 +428,35 @@ mod meeting_detection_pref_tests {
         assert_eq!(p.meeting_detection, "ask");
         assert_eq!(p.preferred_mic_device.as_deref(), Some("Shure MV7"));
         assert_eq!(p.preferred_system_device.as_deref(), Some("Speakers"));
+    }
+}
+
+#[cfg(test)]
+mod old_audio_pref_tests {
+    use super::*;
+
+    #[test]
+    fn old_file_defaults_to_30_days() {
+        let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4"}"#;
+        let p: RecordingPreferences = serde_json::from_str(json).unwrap();
+        assert_eq!(p.old_audio_days, Some(30));
+    }
+
+    #[test]
+    fn only_never_7_30_and_90_survive_and_anything_else_is_30() {
+        assert_eq!(sanitize_old_audio_days(None), None);
+        for d in [7, 30, 90] {
+            assert_eq!(sanitize_old_audio_days(Some(d)), Some(d));
+        }
+        for d in [0, 1, 8, 4_000_000_000, u32::MAX] {
+            assert_eq!(sanitize_old_audio_days(Some(d)), Some(30));
+        }
+    }
+
+    #[test]
+    fn explicit_null_means_never() {
+        let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4","old_audio_days":null}"#;
+        let p: RecordingPreferences = serde_json::from_str(json).unwrap();
+        assert_eq!(p.old_audio_days, None);
     }
 }

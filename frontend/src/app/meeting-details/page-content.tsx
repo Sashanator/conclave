@@ -1,13 +1,15 @@
 "use client";
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { MeetingSummary, SummaryProcessResponse } from '@/types';
+import { MeetingSummary, SummaryProcessResponse, TranscriptMark } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { MeetingDetailsSplitView, type MeetingDetailsTab } from '@/components/MeetingDetails/MeetingDetailsSplitView';
+import { AudioPlayerBar } from '@/components/MeetingDetails/AudioPlayerBar';
+import { NotesPane } from '@/components/MeetingNotes/NotesPane';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
 // Custom hooks
@@ -16,9 +18,14 @@ import { useSummaryGeneration } from '@/hooks/meeting-details/useSummaryGenerati
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
+import { useMeetingNotes } from '@/hooks/useMeetingNotes';
+import { useMeetingAudio } from '@/hooks/useMeetingAudio';
 import { useConfig } from '@/contexts/ConfigContext';
 import { readSummaryMetadata } from '@/lib/summary-content';
 import { pickTemplateIfAllowed } from '@/lib/regenerate-guard';
+import { audioMissingMessage } from '@/lib/meeting-audio';
+import { notesCollapsedOnScreen, readFlag, readMeetingPageLayout, writeFlag } from '@/lib/meeting-page-layout';
+import { useIsDesktop } from '@/hooks/useIsDesktop';
 
 export default function PageContent({
   meeting,
@@ -35,6 +42,7 @@ export default function PageContent({
   totalCount,
   loadedCount,
   onLoadMore,
+  onSetTranscriptMark,
 }: {
   meeting: any;
   summaryData: MeetingSummary | null;
@@ -50,6 +58,7 @@ export default function PageContent({
   totalCount?: number;
   loadedCount?: number;
   onLoadMore?: () => void;
+  onSetTranscriptMark?: (id: string, mark: TranscriptMark | null) => Promise<void>;
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
@@ -61,6 +70,13 @@ export default function PageContent({
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const isRecording = false;
   const [activeTab, setActiveTab] = useState<MeetingDetailsTab>('transcript');
+  const layout = useMemo(readMeetingPageLayout, []);
+  const notes = useMeetingNotes(meeting.id);
+  const audio = useMeetingAudio(meeting.id);
+  const [notesCollapsed, setNotesCollapsed] = useState(() => readFlag('conclave.notesPaneCollapsed'));
+  const toggleNotesCollapsed = () => setNotesCollapsed((c) => { writeFlag('conclave.notesPaneCollapsed', !c); return !c; });
+  const isDesktop = useIsDesktop();
+  const notesStripShown = notesCollapsedOnScreen(layout, notesCollapsed, isDesktop);
 
   // Ref to store the modal open function from SummaryGeneratorButtonGroup
   const openModelSettingsRef = useRef<(() => void) | null>(null);
@@ -200,6 +216,22 @@ export default function PageContent({
             manuallySelectedTabMeetingIdsRef.current.add(meeting.id);
             setActiveTab(tab);
           }}
+          layout={layout}
+          notesCount={notes.notes.length}
+          notesCollapsed={notesStripShown}
+          notes={
+            <NotesPane
+              disabled={!notes.loaded}
+              disabledHint="Loading notes…"
+              notes={notes.notes}
+              onAdd={notes.addNote}
+              onUpdate={notes.updateNote}
+              onDelete={notes.deleteNote}
+              onTimeClick={audio.info?.path ? audio.playFrom : undefined}
+              collapsed={notesStripShown}
+              onToggleCollapsed={toggleNotesCollapsed}
+            />
+          }
           transcript={
             <TranscriptPanel
               transcripts={meetingData.transcripts}
@@ -219,6 +251,11 @@ export default function PageContent({
               meetingId={meeting.id}
               meetingFolderPath={meeting.folder_path}
               onRefetchTranscripts={onRefetchTranscripts}
+              audioMissingReason={audioMissingMessage(audio.info)}
+              onMarkChange={onSetTranscriptMark}
+              onPlayFrom={audio.info?.path ? audio.playFrom : undefined}
+              playheadSeconds={audio.playhead}
+              footer={<AudioPlayerBar audio={audio} />}
             />
           }
           summary={
@@ -261,6 +298,8 @@ export default function PageContent({
             />
           }
         />
+        {/* One element for the whole page, outside every tab, so switching tabs keeps playback. */}
+        {audio.src && <audio ref={audio.audioRef} src={audio.src} preload="metadata" className="hidden" {...audio.audioEvents} />}
       </div>
     </motion.div>
   );

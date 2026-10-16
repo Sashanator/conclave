@@ -1,6 +1,7 @@
 import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { Transcript, MeetingMetadata, PaginatedTranscriptsResponse, TranscriptSegmentData } from "@/types";
+import { toast } from "sonner";
+import { Transcript, MeetingMetadata, PaginatedTranscriptsResponse, TranscriptSegmentData, TranscriptMark } from "@/types";
 
 const DEFAULT_PAGE_SIZE = 100;
 
@@ -25,6 +26,7 @@ interface UsePaginatedTranscriptsReturn {
     loadMore: () => Promise<void>;
     reset: () => void;
     refetch: () => Promise<void>;
+    setTranscriptMark: (id: string, mark: TranscriptMark | null) => Promise<void>;
 }
 
 /**
@@ -37,6 +39,7 @@ function convertTranscriptsToSegments(transcripts: Transcript[]): TranscriptSegm
         endTime: t.audio_end_time,
         text: t.text,
         confidence: t.confidence,
+        mark: t.mark ?? null,
     }));
 }
 
@@ -200,6 +203,22 @@ export function usePaginatedTranscripts({
         };
     }, [meetingId, reset, refetch]);
 
+    // Mark requests for one line run one after another, so a slow reply cannot overwrite a newer choice.
+    const markQueues = useRef(new Map<string, Promise<void>>());
+    const setTranscriptMark = useCallback((id: string, mark: TranscriptMark | null) => {
+        const run = (markQueues.current.get(id) ?? Promise.resolve()).then(async () => {
+            try {
+                await invoke('set_transcript_mark', { transcriptId: id, mark });
+                setTranscripts(prev => prev.map(t => (t.id === id ? { ...t, mark } : t)));
+            } catch (err) {
+                console.error('Failed to save mark:', err);
+                toast.error('Could not save the mark', { description: String(err) });
+            }
+        });
+        markQueues.current.set(id, run);
+        return run;
+    }, []);
+
     // Convert to segments (memoized)
     const segments = useMemo(() =>
         convertTranscriptsToSegments(transcripts),
@@ -219,5 +238,6 @@ export function usePaginatedTranscripts({
         loadMore,
         reset,
         refetch,
+        setTranscriptMark,
     };
 }

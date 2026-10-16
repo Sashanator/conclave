@@ -241,6 +241,42 @@ pub(crate) struct GeneratedMeetingSummary {
     pub reasoning_stripped: bool,
 }
 
+pub(crate) fn build_final_prompts(
+    template: &Template,
+    language_name: &str,
+    content: &str,
+    original_text: &str,
+    chunked: bool,
+    custom_prompt: &str,
+    notes_block: Option<&str>,
+) -> (String, String) {
+    use crate::summary::user_notes::{marked_lines_block, transcript_has_marks, NOTES_INSTRUCTION};
+    let mut system = template.render_system_prompt(language_name);
+    // Look at the original transcript: after chunking, `content` is model-written summaries.
+    if notes_block.is_some() || transcript_has_marks(original_text) {
+        system.push_str(NOTES_INSTRUCTION);
+    }
+    let mut user = format!("<transcript_chunks>\n{content}\n</transcript_chunks>\n");
+    if chunked {
+        if let Some(block) = marked_lines_block(original_text) {
+            user.push('\n');
+            user.push_str(&block);
+            user.push('\n');
+        }
+    }
+    if let Some(block) = notes_block {
+        user.push('\n');
+        user.push_str(block);
+        user.push('\n');
+    }
+    if !custom_prompt.is_empty() {
+        user.push_str("\n\nUser Provided Context:\n\n<user_context>\n");
+        user.push_str(custom_prompt);
+        user.push_str("\n</user_context>");
+    }
+    (system, user)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn generate_meeting_summary(
     client: &Client,
@@ -249,6 +285,7 @@ pub(crate) async fn generate_meeting_summary(
     api_key: &str,
     text: &str,
     custom_prompt: &str,
+    notes_block: Option<&str>,
     template: &Template,
     language_name: &str,
     token_threshold: usize,
@@ -269,10 +306,12 @@ pub(crate) async fn generate_meeting_summary(
     let mut content_to_summarize = text.to_string();
     let successful_chunk_count;
     let mut reasoning_stripped = false;
+    let mut chunked = false;
 
     if (provider == &LLMProvider::Ollama || provider == &LLMProvider::BuiltInAI)
         && total_tokens >= token_threshold
     {
+        chunked = true;
         let chunks = chunk_text(text, token_threshold - 300, 100);
         let num_chunks = chunks.len();
         let mut chunk_summaries = Vec::with_capacity(num_chunks);
@@ -364,14 +403,9 @@ pub(crate) async fn generate_meeting_summary(
     }
 
     info!("Generating final markdown report with template: {}", template.name);
-    let final_system_prompt = template.render_system_prompt(language_name);
-    let mut final_user_prompt =
-        format!("<transcript_chunks>\n{content_to_summarize}\n</transcript_chunks>\n");
-    if !custom_prompt.is_empty() {
-        final_user_prompt.push_str("\n\nUser Provided Context:\n\n<user_context>\n");
-        final_user_prompt.push_str(custom_prompt);
-        final_user_prompt.push_str("\n</user_context>");
-    }
+    let (final_system_prompt, final_user_prompt) = build_final_prompts(
+        template, language_name, &content_to_summarize, text, chunked, custom_prompt, notes_block,
+    );
     let completion = generate_summary(
         client, provider, model_name, api_key, &final_system_prompt, &final_user_prompt,
         ollama_endpoint, custom_openai_endpoint, max_tokens, temperature, top_p,
@@ -504,6 +538,36 @@ mod tests {
                 Err("Translation returned no visible summary content after reasoning removal".to_string())
             );
         }
+    }
+
+    #[test]
+    fn final_prompts_add_notes_only_when_present() {
+        let t: crate::summary::templates::Template =
+            serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None);
+        assert!(!sys.contains("marked transcript lines"));
+        assert!(!user.contains("<user_notes>"));
+
+        let marked = "[00:01] [MARKED: action] hi";
+        let (sys, user) = build_final_prompts(&t, "English", marked, marked, false, "", None);
+        assert!(sys.contains("marked transcript lines"));
+        assert!(!user.contains("<user_notes>"));
+        assert!(!user.contains("<marked_lines>")); // not chunked: the lines are already in the transcript
+
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "ctx", Some("<user_notes>\n[00:01] x\n</user_notes>"));
+        assert!(sys.contains("marked transcript lines"));
+        assert!(user.contains("</transcript_chunks>\n\n<user_notes>"));
+        assert!(user.contains("<user_context>\nctx"));
+    }
+
+    #[test]
+    fn chunked_summaries_still_get_the_marked_lines() {
+        let t: crate::summary::templates::Template =
+            serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
+        let original = "[00:01] hi\n[00:05] [MARKED: action] send deck";
+        let (sys, user) = build_final_prompts(&t, "English", "Chunk summary without marks", original, true, "", None);
+        assert!(sys.contains("marked transcript lines"));
+        assert!(user.contains("<marked_lines>\n[00:05] [MARKED: action] send deck\n</marked_lines>"));
     }
 
     #[test]

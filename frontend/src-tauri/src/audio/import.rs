@@ -20,6 +20,7 @@ use uuid::Uuid;
 use super::audio_processing::create_meeting_folder;
 use super::common::{create_transcript_segments, split_segment_at_silence, write_transcripts_json};
 use super::constants::AUDIO_EXTENSIONS;
+use super::meeting_folder::discard_import_folder;
 use super::recording_preferences::get_default_recordings_folder;
 
 /// Global flag to track if import is in progress
@@ -367,7 +368,7 @@ async fn run_import<R: Runtime>(
     // Check for cancellation
     if IMPORT_CANCELLED.load(Ordering::SeqCst) {
         // Cleanup: remove the meeting folder
-        let _ = std::fs::remove_dir_all(&meeting_folder);
+        discard_import_folder(&meeting_folder, &base_folder);
         return Err(anyhow!("Import cancelled"));
     }
 
@@ -398,7 +399,7 @@ async fn run_import<R: Runtime>(
 
     // Check for cancellation
     if IMPORT_CANCELLED.load(Ordering::SeqCst) {
-        let _ = std::fs::remove_dir_all(&meeting_folder);
+        discard_import_folder(&meeting_folder, &base_folder);
         return Err(anyhow!("Import cancelled"));
     }
 
@@ -424,7 +425,7 @@ async fn run_import<R: Runtime>(
 
     // Check for cancellation
     if IMPORT_CANCELLED.load(Ordering::SeqCst) {
-        let _ = std::fs::remove_dir_all(&meeting_folder);
+        discard_import_folder(&meeting_folder, &base_folder);
         return Err(anyhow!("Import cancelled"));
     }
 
@@ -502,7 +503,7 @@ async fn run_import<R: Runtime>(
 
     // Check for cancellation
     if IMPORT_CANCELLED.load(Ordering::SeqCst) {
-        let _ = std::fs::remove_dir_all(&meeting_folder);
+        discard_import_folder(&meeting_folder, &base_folder);
         return Err(anyhow!("Import cancelled"));
     }
 
@@ -551,7 +552,7 @@ async fn run_import<R: Runtime>(
 
     for (i, segment) in processable_segments.iter().enumerate() {
         if IMPORT_CANCELLED.load(Ordering::SeqCst) {
-            let _ = std::fs::remove_dir_all(&meeting_folder);
+            discard_import_folder(&meeting_folder, &base_folder);
             return Err(anyhow!("Import cancelled"));
         }
 
@@ -624,7 +625,7 @@ async fn run_import<R: Runtime>(
 
     // Check for cancellation
     if IMPORT_CANCELLED.load(Ordering::SeqCst) {
-        let _ = std::fs::remove_dir_all(&meeting_folder);
+        discard_import_folder(&meeting_folder, &base_folder);
         return Err(anyhow!("Import cancelled"));
     }
 
@@ -1182,6 +1183,7 @@ mod tests {
                 audio_start_time: Some(0.0),
                 audio_end_time: Some(1.5),
                 duration: Some(1.5),
+                mark: None,
             },
             TranscriptSegment {
                 id: "t-2".to_string(),
@@ -1190,6 +1192,7 @@ mod tests {
                 audio_start_time: Some(2.0),
                 audio_end_time: Some(3.5),
                 duration: Some(1.5),
+                mark: None,
             },
         ];
 

@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 
 import { readMeetingSummaryLanguage } from '@/lib/summary-language-preferences';
 import { parseSummaryContent, readSummaryMetadata } from '@/lib/summary-content';
+import { formatSummaryTranscript } from '@/lib/meeting-notes';
 
 // Only the meeting's own choice is sent; Rust resolves the rest from the cached or detected language.
 async function readChosenSummaryLanguage(meetingId: string): Promise<string | null> {
@@ -345,21 +346,9 @@ export function useSummaryGeneration({
     }
   }, []);
 
-  const buildSummaryTranscriptPayload = useCallback((allTranscripts: Transcript[]) => {
-    const formatTime = (seconds: number | undefined, fallbackTimestamp: string): string => {
-      if (seconds === undefined) {
-        return fallbackTimestamp;
-      }
-      const totalSecs = Math.floor(seconds);
-      return `[${Math.floor(totalSecs / 60).toString().padStart(2, '0')}:${(totalSecs % 60).toString().padStart(2, '0')}]`;
-    };
-
-    return {
-      transcriptText: allTranscripts
-        .map((transcript) => `${formatTime(transcript.audio_start_time, transcript.timestamp)} ${transcript.text}`)
-        .join('\n'),
-    };
-  }, []);
+  const buildSummaryTranscriptPayload = useCallback((allTranscripts: Transcript[]) => ({
+    transcriptText: formatSummaryTranscript(allTranscripts),
+  }), []);
 
   const showPreflightError = useCallback((message: string) => {
     setSummaryError(message);

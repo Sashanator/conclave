@@ -51,6 +51,12 @@ pub mod retranscription;
 // Import module (import external audio files as new meetings)
 pub mod import;
 
+// Meeting folder guard and Recycle Bin deletes (spec 8.3)
+pub mod meeting_folder;
+
+// Old-audio review: list old recordings, recycle the confirmed ones (spec 8.1)
+pub mod retention;
+
 pub use devices::{
     default_input_device, default_output_device, get_device_and_config, list_audio_devices,
     parse_audio_device, trigger_audio_permission,

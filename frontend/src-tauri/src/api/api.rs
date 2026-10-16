@@ -1,5 +1,5 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
@@ -8,7 +8,7 @@ use crate::{
     database::{
         models::MeetingModel,
         repositories::{
-            meeting::MeetingsRepository, setting::SettingsRepository,
+            meeting::MeetingsRepository, meeting_notes::parse_notes, setting::SettingsRepository,
             transcript::TranscriptsRepository,
         },
     },
@@ -137,6 +137,8 @@ pub struct MeetingTranscript {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mark: Option<String>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -148,6 +150,8 @@ pub struct MeetingMetadata {
     pub updated_at: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub folder_path: Option<String>,
+    #[serde(default)]
+    pub keep_audio: bool,
 }
 
 /// Paginated transcripts response with total count
@@ -188,6 +192,18 @@ pub struct TranscriptSegment {
     pub audio_end_time: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub duration: Option<f64>,
+    #[serde(default, deserialize_with = "lenient_mark", skip_serializing_if = "Option::is_none")]
+    pub mark: Option<String>,
+}
+
+/// A mark that is not a string is dropped here, so it can never fail the save at stop.
+fn lenient_mark<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?.and_then(|v| v.as_str().map(str::to_string)))
+}
+
+/// Decodes the segments sent with a save. Shared by `api_save_transcript` and its tests.
+fn parse_transcript_segments(values: Vec<serde_json::Value>) -> Result<Vec<TranscriptSegment>, serde_json::Error> {
+    values.into_iter().map(serde_json::from_value).collect()
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -755,15 +771,17 @@ pub async fn api_delete_meeting<R: Runtime>(
 
     let pool = state.db_manager.pool();
 
-    match MeetingsRepository::delete_meeting(pool, &meeting_id).await {
-        Ok(true) => {
+    let base = crate::audio::recording_preferences::get_default_recordings_folder();
+    match crate::audio::meeting_folder::delete_meeting_and_folder(pool, &meeting_id, &base, &crate::audio::meeting_folder::recycle).await {
+        Ok(Some(folder_warning)) => {
             log_info!("Successfully deleted meeting {}", meeting_id);
             Ok(serde_json::json!({
                 "status": "success",
-                "message": "Meeting deleted successfully"
+                "message": "Meeting deleted successfully",
+                "folder_warning": folder_warning,
             }))
         }
-        Ok(false) => {
+        Ok(None) => {
             log_warn!("Meeting not found or already deleted: {}", meeting_id);
             Err(format!(
                 "Meeting not found or could not be deleted: {}",
@@ -828,6 +846,7 @@ pub async fn api_get_meeting_metadata<R: Runtime>(
                 created_at: meeting.created_at.0.to_rfc3339(),
                 updated_at: meeting.updated_at.0.to_rfc3339(),
                 folder_path: meeting.folder_path,
+                keep_audio: meeting.keep_audio,
             })
         }
         Ok(None) => {
@@ -878,6 +897,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_start_time: t.audio_start_time,
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
+                    mark: t.mark,
                 })
                 .collect::<Vec<_>>();
 
@@ -933,6 +953,7 @@ pub async fn api_save_transcript<R: Runtime>(
     meeting_title: String,
     transcripts: Vec<serde_json::Value>,
     folder_path: Option<String>,
+    notes: Option<Vec<serde_json::Value>>,
     auth_token: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
@@ -952,10 +973,7 @@ pub async fn api_save_transcript<R: Runtime>(
     }
 
     // Convert serde_json::Value to TranscriptSegment
-    let transcripts_to_save: Vec<TranscriptSegment> = transcripts
-        .into_iter()
-        .map(serde_json::from_value)
-        .collect::<Result<Vec<_>, _>>()
+    let transcripts_to_save: Vec<TranscriptSegment> = parse_transcript_segments(transcripts)
         .map_err(|e| {
             log_error!("Failed to parse transcript segments: {}", e);
             format!("Invalid transcript data format: {}. Please check the data structure.", e)
@@ -978,6 +996,7 @@ pub async fn api_save_transcript<R: Runtime>(
         &meeting_title,
         &transcripts_to_save,
         folder_path,
+        &parse_notes(notes.unwrap_or_default()),
     )
     .await
     {
@@ -1487,5 +1506,34 @@ mod external_url_tests {
         ] {
             assert!(validate_external_url(bad).is_err(), "accepted {bad:?}");
         }
+    }
+}
+
+#[cfg(test)]
+mod segment_parse_tests {
+    use super::parse_transcript_segments;
+    use serde_json::json;
+
+    #[test]
+    fn a_non_string_mark_is_dropped_and_the_save_still_parses() {
+        for bad in [json!(42), json!({}), json!(true), json!(null)] {
+            let segs = parse_transcript_segments(vec![json!({
+                "id": "transcript-1", "text": "hi", "timestamp": "t",
+                "audio_start_time": 1.0, "mark": bad,
+            })])
+            .unwrap_or_else(|e| panic!("save rejected by mark {bad}: {e}"));
+            assert_eq!(segs[0].mark, None);
+        }
+    }
+
+    #[test]
+    fn a_string_mark_and_a_missing_mark_decode() {
+        let segs = parse_transcript_segments(vec![
+            json!({"id": "a", "text": "x", "timestamp": "t", "mark": "action"}),
+            json!({"id": "b", "text": "y", "timestamp": "t"}),
+        ])
+        .unwrap();
+        assert_eq!(segs[0].mark.as_deref(), Some("action"));
+        assert_eq!(segs[1].mark, None);
     }
 }

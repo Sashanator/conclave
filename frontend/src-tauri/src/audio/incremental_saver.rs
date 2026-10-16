@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use anyhow::{Result, anyhow};
 use log::{info, warn, error};
 use super::encode::encode_single_audio;
@@ -6,6 +6,7 @@ use super::recording_state::AudioChunk;
 use serde::{Serialize, Deserialize};
 
 use super::ffmpeg::find_ffmpeg_path;
+use super::meeting_folder::{delete_checkpoint_files, guarded_meeting_folder, is_plain_dir};
 
 /// Audio data without device type (we only store mixed audio)
 #[derive(Clone)]
@@ -132,16 +133,25 @@ impl IncrementalAudioSaver {
         let final_audio_path = self.meeting_folder.join("audio.mp4");
         self.merge_checkpoints(&final_audio_path).await?;
 
-        // Clean up checkpoints directory
-        info!("Cleaning up {} checkpoint files", self.checkpoint_count);
-        if let Err(e) = std::fs::remove_dir_all(&self.checkpoints_dir) {
-            warn!("Failed to clean up checkpoints directory: {}", e);
-            // Non-fatal - user can manually delete
-        }
+        self.remove_merged_checkpoints(&crate::audio::recording_preferences::get_default_recordings_folder());
 
         info!("Finalized recording: {}", final_audio_path.display());
 
         Ok(final_audio_path)
+    }
+
+    /// Deletes Conclave's own chunk files after a merge, only inside the meeting folder when it
+    /// passes the guard against `recordings_base`. Non-fatal: the user can delete them by hand.
+    fn remove_merged_checkpoints(&self, recordings_base: &Path) {
+        info!("Cleaning up {} checkpoint files", self.checkpoint_count);
+        match guarded_meeting_folder(&self.meeting_folder.to_string_lossy(), recordings_base) {
+            Some(folder) => {
+                if let Err(e) = delete_checkpoint_files(&folder) {
+                    warn!("Failed to clean up checkpoints directory: {}", e);
+                }
+            }
+            None => warn!("Checkpoints kept: the meeting folder is outside the recordings folder"),
+        }
     }
 
     /// Merge all checkpoint files into final audio.mp4 using FFmpeg concat
@@ -244,11 +254,13 @@ pub async fn recover_audio_from_checkpoints(
 ) -> Result<AudioRecoveryStatus, String> {
     info!("Starting audio recovery for folder: {}", meeting_folder);
 
-    let folder_path = PathBuf::from(&meeting_folder);
+    // The folder comes from the webview: it must pass the guard before anything is read or written.
+    let folder_path = guarded_meeting_folder(&meeting_folder, &crate::audio::recording_preferences::get_default_recordings_folder())
+        .ok_or_else(|| format!("Recovery refused: {meeting_folder} is not a meeting folder in the recordings folder"))?;
     let checkpoints_dir = folder_path.join(".checkpoints");
 
-    // Check if checkpoints directory exists
-    if !checkpoints_dir.exists() {
+    // Check if checkpoints directory exists (a link is not ours to read or write through)
+    if !is_plain_dir(&checkpoints_dir) {
         info!("No checkpoints directory found at: {}", checkpoints_dir.display());
         return Ok(AudioRecoveryStatus {
             status: "none".to_string(),
@@ -375,19 +387,9 @@ pub async fn recover_audio_from_checkpoints(
 #[tauri::command]
 pub async fn cleanup_checkpoints(meeting_folder: String) -> Result<(), String> {
     info!("Cleaning up checkpoints for folder: {}", meeting_folder);
-
-    let folder_path = PathBuf::from(&meeting_folder);
-    let checkpoints_dir = folder_path.join(".checkpoints");
-
-    if checkpoints_dir.exists() {
-        std::fs::remove_dir_all(&checkpoints_dir)
-            .map_err(|e| format!("Failed to remove checkpoints directory: {}", e))?;
-        info!("Successfully cleaned up checkpoints directory");
-    } else {
-        info!("No checkpoints directory to clean up");
-    }
-
-    Ok(())
+    // The path comes from the webview: guarded, and only Conclave's own chunk files are deleted.
+    let base = crate::audio::recording_preferences::get_default_recordings_folder();
+    super::meeting_folder::cleanup_checkpoints_guarded(&meeting_folder, &base)
 }
 
 /// Check if a meeting folder has audio checkpoint files
@@ -451,7 +453,10 @@ mod tests {
         let final_path = saver.finalize().await.unwrap();
         assert!(final_path.exists());
 
-        // Verify checkpoints directory deleted
+        // The temp folder is outside the recordings folder, so the guard keeps the chunks...
+        assert!(meeting_folder.join(".checkpoints").exists());
+        // ...and inside a base that contains it, the merged chunks and the empty folder go.
+        saver.remove_merged_checkpoints(temp_dir.path());
         assert!(!meeting_folder.join(".checkpoints").exists());
     }
 
@@ -471,5 +476,16 @@ mod tests {
         let result = saver.finalize().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No audio checkpoints"));
+    }
+    #[tokio::test]
+    async fn recovery_refuses_a_folder_outside_the_recordings_folder() {
+        let outside = tempdir().unwrap();
+        let cp = outside.path().join(".checkpoints");
+        std::fs::create_dir_all(&cp).unwrap();
+        std::fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
+        let result = recover_audio_from_checkpoints(outside.path().to_string_lossy().to_string(), 48000).await;
+        assert!(result.is_err());
+        assert!(!cp.join("concat_list.txt").exists());
+        assert!(!outside.path().join("audio.mp4").exists());
     }
 }

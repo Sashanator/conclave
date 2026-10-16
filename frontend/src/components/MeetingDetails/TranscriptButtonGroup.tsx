@@ -15,6 +15,8 @@ interface TranscriptButtonGroupProps {
   meetingId?: string;
   meetingFolderPath?: string | null;
   onRefetchTranscripts?: () => Promise<void>;
+  /** Why the audio cannot be re-transcribed; disables Enhance and explains why on hover. */
+  audioMissingReason?: string | null;
 }
 
 
@@ -25,6 +27,7 @@ export function TranscriptButtonGroup({
   meetingId,
   meetingFolderPath,
   onRefetchTranscripts,
+  audioMissingReason,
 }: TranscriptButtonGroupProps) {
   const { betaFeatures } = useConfig();
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
@@ -74,7 +77,8 @@ export function TranscriptButtonGroup({
             onClick={() => {
               setShowRetranscribeDialog(true);
             }}
-            title="Retranscribe to enhance your recorded audio"
+            disabled={transcriptCount === 0 || !!audioMissingReason}
+            title={audioMissingReason ?? 'Retranscribe to enhance your recorded audio'}
           >
             <RefreshCw className="@[22rem]:mr-2" size={18} />
             <span className="hidden @[22rem]:inline">Enhance</span>

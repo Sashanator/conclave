@@ -433,6 +433,14 @@ impl SummaryService {
         );
         info!("📝 Summary language: {} ({}){}", language.name, language.code, if language.fallback { ", fallback" } else { "" });
 
+        let notes = crate::database::repositories::meeting_notes::MeetingNotesRepository::get(&pool, &meeting_id)
+            .await
+            .unwrap_or_else(|e| {
+                warn!("Could not read notes for {}: {}", meeting_id, e);
+                Vec::new()
+            });
+        let notes_block = crate::summary::user_notes::render_notes_block(&notes);
+
         let result = generate_meeting_summary(
             &client,
             &provider,
@@ -440,6 +448,7 @@ impl SummaryService {
             &final_api_key,
             &text,
             &custom_prompt,
+            notes_block.as_deref(),
             &template,
             language.name,
             token_threshold,

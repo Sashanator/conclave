@@ -278,14 +278,6 @@ fn get_transcription_status() -> TranscriptionStatus {
 }
 
 #[tauri::command]
-fn read_audio_file(file_path: String) -> Result<Vec<u8>, String> {
-    match std::fs::read(&file_path) {
-        Ok(data) => Ok(data),
-        Err(e) => Err(format!("Failed to read audio file: {}", e)),
-    }
-}
-
-#[tauri::command]
 async fn save_transcript(file_path: String, content: String) -> Result<(), String> {
     log_info!("Saving transcript to: {}", file_path);
 
@@ -614,7 +606,6 @@ pub fn run() {
             banner::meeting_banner_action,
             meeting_detector::get_meeting_detection_status,
             meeting_detector::set_recording_post_processing,
-            read_audio_file,
             save_transcript,
             whisper_engine::commands::whisper_init,
             whisper_engine::commands::whisper_get_available_models,
@@ -669,6 +660,7 @@ pub fn run() {
             audio::recording_commands::is_recording_paused,
             audio::recording_commands::get_recording_state,
             audio::recording_commands::get_meeting_folder_path,
+            audio::meeting_folder::get_meeting_audio,
             // Reload sync commands (retrieve transcript history and meeting name)
             audio::recording_commands::get_transcript_history,
             audio::recording_commands::get_recording_meeting_name,
@@ -702,7 +694,13 @@ pub fn run() {
             api::api_save_transcript_config,
             api::api_get_transcript_api_key,
             api::api_delete_meeting,
+            audio::retention::old_audio_list,
+            audio::retention::delete_old_audio,
             api::api_get_meeting,
+            api::meeting_page::set_transcript_mark,
+            api::meeting_page::get_meeting_notes,
+            api::meeting_page::save_meeting_notes,
+            api::meeting_page::set_keep_audio,
             api::api_get_meeting_metadata,
             api::api_get_meeting_transcripts,
             api::api_save_meeting_title,

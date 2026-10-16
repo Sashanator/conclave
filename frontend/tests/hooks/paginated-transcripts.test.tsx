@@ -156,3 +156,45 @@ describe('paginated transcript request ownership', () => {
     expect(requests).toHaveLength(1);
   });
 });
+
+describe('transcript marks', () => {
+  async function loadMarked() {
+    await show('A');
+    await resolve(request('metadata', 'A'), metadata('A'));
+    await resolve(request('transcripts', 'A'), {
+      transcripts: [{ id: 't1', text: 'send the deck', timestamp: '00:00', audio_start_time: 0, mark: 'action' }],
+      total_count: 1, has_more: false,
+    } as PaginatedTranscriptsResponse);
+    expect(state.segments[0].mark).toBe('action');
+  }
+
+  test('setTranscriptMark saves the mark and updates the segment', async () => {
+    await loadMarked();
+    await act(async () => { void state.setTranscriptMark('t1', null); });
+    const save = requests.find(r => r.command === 'set_transcript_mark')!;
+    expect(save.args).toEqual({ transcriptId: 't1', mark: null });
+    await resolve(save, undefined);
+    expect(state.segments[0].mark).toBeNull();
+  });
+
+  test('overlapping changes to one line are sent in order and the newest choice wins', async () => {
+    await loadMarked();
+    await act(async () => { void state.setTranscriptMark('t1', null); });
+    await act(async () => { void state.setTranscriptMark('t1', 'important'); });
+    const marks = () => requests.filter(r => r.command === 'set_transcript_mark');
+    // The second change waits for the first reply, so the first cannot land after it.
+    expect(marks()).toHaveLength(1);
+    await resolve(marks()[0], undefined);
+    expect(marks()).toHaveLength(2);
+    expect(marks()[1].args).toEqual({ transcriptId: 't1', mark: 'important' });
+    await resolve(marks()[1], undefined);
+    expect(state.segments[0].mark).toBe('important');
+  });
+
+  test('a rejected save keeps the previous mark', async () => {
+    await loadMarked();
+    await act(async () => { void state.setTranscriptMark('t1', null); });
+    await act(async () => { requests.find(r => r.command === 'set_transcript_mark')!.reject(new Error('db locked')); });
+    expect(state.segments[0].mark).toBe('action');
+  });
+});

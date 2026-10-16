@@ -338,6 +338,7 @@ async fn run_retranscription<R: Runtime>(
     info!("Processing {} segments (after splitting)", processable_count);
 
     // Process each speech segment with progress updates
+    let mut policy = crate::whisper_engine::language_policy::LanguagePolicy::new(crate::get_allowed_languages_internal());
     let mut all_transcripts: Vec<(String, f64, f64)> = Vec::new(); // (text, start_ms, end_ms)
     let mut total_confidence = 0.0f32;
 
@@ -380,7 +381,7 @@ async fn run_retranscription<R: Runtime>(
         } else {
             let engine = whisper_engine.as_ref().unwrap();
             let (text, conf, _) = engine
-                .transcribe_audio_with_confidence(segment.samples.clone(), language.clone())
+                .transcribe_audio_with_confidence(segment.samples.clone(), language.clone(), Some(&mut policy))
                 .await
                 .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;
             (text, conf)

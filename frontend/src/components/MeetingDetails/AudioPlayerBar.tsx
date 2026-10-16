@@ -34,7 +34,7 @@ export function AudioPlayerBar({ audio }: { audio: ReturnType<typeof useMeetingA
           </button>
         </>
       )}
-      <label className="flex items-center gap-1.5 whitespace-nowrap" title="Never delete this meeting's audio automatically">
+      <label className="flex items-center gap-1.5 whitespace-nowrap" title="Leave this meeting out of the old-audio review">
         <Pin className="h-3.5 w-3.5" aria-hidden="true" />
         Keep audio
         <Switch checked={audio.info.keep_audio} onCheckedChange={(v) => void audio.setKeepAudio(v)} aria-label="Keep audio" />

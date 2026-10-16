@@ -332,7 +332,7 @@ const Sidebar: React.FC = () => {
 
       // Show success toast
       toast.success("Meeting deleted successfully", {
-        description: "All associated data has been removed"
+        description: res?.folder_warning ? undefined : "All associated data has been removed"
       });
       if (res?.folder_warning) {
         toast.warning("The meeting was deleted, but its folder was kept", { description: res.folder_warning });

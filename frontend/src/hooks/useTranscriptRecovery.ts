@@ -173,13 +173,15 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         audio_start_time: (t as any).audio_start_time,
         audio_end_time: (t as any).audio_end_time,
         duration: (t as any).duration,
+        mark: metadata.marks?.[String((t as any).sequence_id)] ?? null,
       }));
 
       // 6. Save to backend database using existing save utilities
       const saveResponse = await storageService.saveMeeting(
         metadata.title,
         formattedTranscripts,
-        folderPath ?? null
+        folderPath ?? null,
+        metadata.notes ?? []
       );
 
       const savedMeetingId = saveResponse.meeting_id;

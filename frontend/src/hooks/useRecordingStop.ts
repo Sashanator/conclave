@@ -53,6 +53,7 @@ export function useRecordingStop(
 
   const {
     transcriptsRef,
+    notesRef,
     flushBuffer,
     clearTranscripts,
     meetingTitle,
@@ -256,7 +257,8 @@ export function useRecordingStop(
           const responseData = await storageService.saveMeeting(
             savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
             freshTranscripts,
-            folderPath
+            folderPath,
+            [...notesRef.current]
           );
 
           const meetingId = responseData.meeting_id;
@@ -378,6 +380,7 @@ export function useRecordingStop(
     setIsRecordingDisabled,
     setStatus,
     transcriptsRef,
+    notesRef,
     flushBuffer,
     clearTranscripts,
     meetingTitle,

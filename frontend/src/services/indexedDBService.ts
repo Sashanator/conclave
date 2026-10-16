@@ -4,6 +4,8 @@
  * to enable recovery after app crashes or unexpected closures.
  */
 
+import type { MeetingNote, TranscriptMark } from '@/types';
+
 // Database schema interfaces
 export interface MeetingMetadata {
   meetingId: string;          // Primary key: "meeting-{timestamp}"
@@ -13,6 +15,8 @@ export interface MeetingMetadata {
   transcriptCount: number;    // Number of transcript segments
   savedToSQLite: boolean;     // Flag: saved to backend DB
   folderPath?: string;        // Path to recording folder
+  notes?: MeetingNote[];                       // Live notes, kept across reload
+  marks?: Record<string, TranscriptMark>;      // Line marks keyed by sequence_id
 }
 
 export interface StoredTranscript {
@@ -112,6 +116,30 @@ class IndexedDBService {
     } catch (error) {
       console.warn('Failed to save meeting metadata to IndexedDB:', error);
       // Fail silently - don't interrupt recording
+    }
+  }
+
+  /**
+   * Read-modify-write in one transaction (spec §5.1). Fails silently like saveTranscript.
+   */
+  async patchMeetingMetadata(meetingId: string, patch: Partial<MeetingMetadata>): Promise<void> {
+    try {
+      if (!this.db) await this.init();
+      const tx = this.db!.transaction(['meetings'], 'readwrite');
+      const store = tx.objectStore('meetings');
+      await new Promise<void>((resolve, reject) => {
+        const get = store.get(meetingId);
+        get.onsuccess = () => {
+          const meeting = get.result as MeetingMetadata | undefined;
+          if (!meeting) { resolve(); return; }
+          const put = store.put({ ...meeting, ...patch, meetingId, lastUpdated: Date.now() });
+          put.onsuccess = () => resolve();
+          put.onerror = () => reject(put.error);
+        };
+        get.onerror = () => reject(get.error);
+      });
+    } catch (error) {
+      console.warn('Failed to update meeting in IndexedDB:', error);
     }
   }
 

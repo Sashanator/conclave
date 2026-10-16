@@ -1,16 +1,23 @@
 'use client';
 
-import React, { createContext, useContext, useState, useEffect, useRef, useCallback, ReactNode, MutableRefObject } from 'react';
-import { Transcript, TranscriptUpdate } from '@/types';
+import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useReducer, ReactNode, MutableRefObject } from 'react';
+import { MeetingNote, Transcript, TranscriptMark, TranscriptUpdate } from '@/types';
 import { toast } from 'sonner';
 import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
+import { applyMarks, collectMarks, newNote } from '@/lib/meeting-notes';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
   transcriptsRef: MutableRefObject<Transcript[]>
+  notes: MeetingNote[];
+  notesRef: MutableRefObject<MeetingNote[]>;
+  addNote: (text: string, at: number | null) => void;
+  updateNote: (id: string, text: string) => void;
+  deleteNote: (id: string) => void;
+  setTranscriptMark: (transcriptId: string, mark: TranscriptMark | null) => void;
   addTranscript: (update: TranscriptUpdate) => void;
   copyTranscript: () => void;
   flushBuffer: () => void;
@@ -28,12 +35,16 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const [transcripts, setTranscripts] = useState<Transcript[]>([]);
   const [meetingTitle, setMeetingTitle] = useState('+ New Call');
   const [currentMeetingId, setCurrentMeetingId] = useState<string | null>(null);
+  const [notes, setNotes] = useState<MeetingNote[]>([]);
 
   // Recording state context - provides backend-synced state
   const recordingState = useRecordingState();
 
   // Refs for transcript management
   const transcriptsRef = useRef<Transcript[]>(transcripts);
+  const notesRef = useRef<MeetingNote[]>(notes);
+  // Bumped on every note or mark change; the effect below saves them to the recovery record
+  const [annotationsVersion, bumpAnnotations] = useReducer((x: number) => x + 1, 0);
   const isUserAtBottomRef = useRef<boolean>(true);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
@@ -42,6 +53,18 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     transcriptsRef.current = transcripts;
   }, [transcripts]);
+
+  useEffect(() => {
+    notesRef.current = notes;
+  }, [notes]);
+
+  // Save notes and marks to the recovery record. Declared after the ref syncs so the refs are current.
+  useEffect(() => {
+    if (annotationsVersion === 0) return;
+    const id = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
+    if (!id) return;
+    indexedDBService.patchMeetingMetadata(id, { notes: notesRef.current, marks: collectMarks(transcriptsRef.current) });
+  }, [annotationsVersion]);
 
   // Smart auto-scroll: Track user scroll position
   useEffect(() => {
@@ -128,11 +151,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
               const { invoke } = await import('@tauri-apps/api/core');
               const folderPath = await invoke<string>('get_meeting_folder_path');
               if (folderPath) {
-                const metadata = await indexedDBService.getMeetingMetadata(meetingId);
-                if (metadata) {
-                  metadata.folderPath = folderPath;
-                  await indexedDBService.saveMeetingMetadata(metadata);
-                }
+                await indexedDBService.patchMeetingMetadata(meetingId, { folderPath });
               }
             } catch (error) {
               // Non-fatal - will be set on stop if recording completes normally
@@ -145,14 +164,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         // Listen for recording-stopped event
         unlistenRecordingStopped = await recordingService.onRecordingStopped(async (payload) => {
           try {
-            if (currentMeetingId) {
+            if (currentMeetingId && payload.folder_path) {
               // Update folder path in IndexedDB
-              const metadata = await indexedDBService.getMeetingMetadata(currentMeetingId);
-
-              if (metadata && payload.folder_path) {
-                metadata.folderPath = payload.folder_path;
-                await indexedDBService.saveMeetingMetadata(metadata);
-              }
+              await indexedDBService.patchMeetingMetadata(currentMeetingId, { folderPath: payload.folder_path });
             }
           } catch (error) {
             console.error('Failed to update meeting metadata on stop:', error);
@@ -385,7 +399,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             duration: segment.duration,
           }));
 
-          setTranscripts(formattedTranscripts);
+          // Notes and marks live only in the recovery record, not in the backend
+          const recoveryId = sessionStorage.getItem('indexeddb_current_meeting_id');
+          const saved = recoveryId ? await indexedDBService.getMeetingMetadata(recoveryId) : null;
+          setTranscripts(applyMarks(formattedTranscripts, saved?.marks));
+          setNotes(saved?.notes ?? []);
           console.log('[Reload Sync] ✅ Transcript history synced successfully');
 
           // Fetch meeting name from backend
@@ -480,9 +498,31 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const addNote = useCallback((text: string, at: number | null) => {
+    const note = newNote(text, at);
+    setNotes(prev => [...prev, note]);
+    bumpAnnotations();
+  }, []);
+
+  const updateNote = useCallback((id: string, text: string) => {
+    setNotes(prev => prev.map(n => (n.id === id ? { ...n, text } : n)));
+    bumpAnnotations();
+  }, []);
+
+  const deleteNote = useCallback((id: string) => {
+    setNotes(prev => prev.filter(n => n.id !== id));
+    bumpAnnotations();
+  }, []);
+
+  const setTranscriptMark = useCallback((transcriptId: string, mark: TranscriptMark | null) => {
+    setTranscripts(prev => prev.map(t => (t.id === transcriptId ? { ...t, mark } : t)));
+    bumpAnnotations();
+  }, []);
+
   // Clear transcripts (used when starting new recording)
   const clearTranscripts = useCallback(() => {
     setTranscripts([]);
+    setNotes([]);
     // Don't clear currentMeetingId here - it will be set by recording-started event
   }, []);
 
@@ -512,6 +552,12 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const value: TranscriptContextType = {
     transcripts,
     transcriptsRef,
+    notes,
+    notesRef,
+    addNote,
+    updateNote,
+    deleteNote,
+    setTranscriptMark,
     addTranscript,
     copyTranscript,
     flushBuffer,

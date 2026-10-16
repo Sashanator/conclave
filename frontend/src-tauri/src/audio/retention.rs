@@ -1,7 +1,7 @@
 //! Old-audio review (spec §8.1): lists recordings older than N days and moves exactly the
 //! confirmed ones to the Recycle Bin. Never runs by itself; never touches transcripts,
 //! summaries, notes or the JSON files in the folder.
-use crate::audio::meeting_folder::{audio_files, checkpoint_files, ensure_still_guarded, guarded_meeting_folder, recycle, recycle_checked, recycle_if_empty, Remover};
+use crate::audio::meeting_folder::{audio_files, checkpoint_files, ensure_still_guarded, guarded_meeting_folder, recycle, remove_checked, remove_if_empty, Remover};
 use crate::audio::recording_preferences::{get_default_recordings_folder, load_recording_preferences};
 use crate::database::models::DateTimeUtc;
 use chrono::{DateTime, Duration, Utc};
@@ -161,7 +161,7 @@ pub async fn delete_old_audio_inner(
         let mut error = None;
         for f in audio_paths(&folder) {
             let size = size_of(&f);
-            match recycle_checked(&f, &folder, remove) {
+            match remove_checked(&f, &folder, remove) {
                 Ok(()) => result.bytes += size,
                 Err(e) => {
                     error = Some(e);
@@ -174,7 +174,7 @@ pub async fn delete_old_audio_inner(
             result.failed.push(format!("{}: {e}", item.title));
             continue;
         }
-        if let Err(e) = recycle_if_empty(&folder.join(".checkpoints"), remove) {
+        if let Err(e) = remove_if_empty(&folder.join(".checkpoints"), remove) {
             warn!("Old audio: could not recycle the empty .checkpoints of {}: {e}", item.meeting_id);
             result.failed.push(format!("{}: could not move its empty .checkpoints folder: {e}", item.title));
         }

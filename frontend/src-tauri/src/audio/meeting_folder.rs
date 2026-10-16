@@ -1,7 +1,9 @@
 //! The one place that decides whether a meeting folder may be read or deleted (spec §8.3).
-//! Conclave never deletes outside the recordings folder and never permanently: see `recycle`.
+//! Conclave never deletes outside the recordings folder. Everything the user owns goes to the
+//! Recycle Bin (`recycle`); only Conclave's own temporary files are removed permanently (see
+//! `delete_checkpoint_files` and `discard_import_folder`).
 //! Remaining window: another process running as the user could swap a path between the
-//! per-file re-check in `recycle_checked` and the Recycle Bin call for that one file.
+//! per-file re-check in `remove_checked` and the Recycle Bin call for that one file.
 use crate::audio::recording_preferences::get_default_recordings_folder;
 use log::warn;
 use serde::Serialize;
@@ -124,7 +126,7 @@ pub fn checkpoint_files(checkpoints: &Path) -> Vec<PathBuf> {
 
 /// Re-checks one file right before recycling it: a real file whose parent resolves to exactly
 /// the (canonical) meeting folder or its `.checkpoints`.
-pub fn recycle_checked(path: &Path, folder: &Path, remove: Remover) -> Result<(), String> {
+pub fn remove_checked(path: &Path, folder: &Path, remove: Remover) -> Result<(), String> {
     let parent_ok = path
         .parent()
         .and_then(|p| dunce::canonicalize(p).ok())
@@ -136,7 +138,7 @@ pub fn recycle_checked(path: &Path, folder: &Path, remove: Remover) -> Result<()
 }
 
 /// Recycles a real, empty directory. `Ok(false)` if it is missing, a link or not empty.
-pub fn recycle_if_empty(dir: &Path, remove: Remover) -> Result<bool, String> {
+pub fn remove_if_empty(dir: &Path, remove: Remover) -> Result<bool, String> {
     let empty = is_plain_dir(dir) && fs::read_dir(dir).is_ok_and(|mut rd| rd.next().is_none());
     if !empty {
         return Ok(false);
@@ -178,12 +180,12 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
     let files = conclave_files(&folder)
         .ok_or_else(|| format!("Recording folder kept: it contains other files ({})", folder.display()))?;
     for f in &files {
-        recycle_checked(f, &folder, remove)?;
+        remove_checked(f, &folder, remove)?;
     }
     ensure_still_guarded(&folder, recordings_base, "Recording folder")?;
-    recycle_if_empty(&folder.join(".checkpoints"), remove)?;
+    remove_if_empty(&folder.join(".checkpoints"), remove)?;
     ensure_still_guarded(&folder, recordings_base, "Recording folder")?;
-    if !recycle_if_empty(&folder, remove)? {
+    if !remove_if_empty(&folder, remove)? {
         return Err(format!("Recording folder kept: new files appeared in it ({})", folder.display()));
     }
     Ok(())
@@ -199,27 +201,59 @@ pub(crate) fn ensure_still_guarded(folder: &Path, recordings_base: &Path, what: 
     }
 }
 
-/// Recycles Conclave's own checkpoint files in a guarded folder, then `.checkpoints` if empty.
-/// Other files in `.checkpoints` are left alone, so the folder stays.
-fn recycle_checkpoints(folder: &Path, recordings_base: &Path, remove: Remover) -> Result<(), String> {
-    let checkpoints = folder.join(".checkpoints");
-    for f in checkpoint_files(&checkpoints) {
-        recycle_checked(&f, folder, remove)?;
+/// Permanent removal, for Conclave's own temporary files only (`delete_checkpoint_files`,
+/// `discard_import_folder`). `remove_dir` refuses a non-empty folder, so nothing is recursive.
+fn remove_permanently(paths: &[PathBuf]) -> Result<(), String> {
+    for p in paths {
+        let removed = if is_plain_dir(p) { fs::remove_dir(p) } else { fs::remove_file(p) };
+        removed.map_err(|e| format!("Could not delete {}: {e}", p.display()))?;
     }
-    ensure_still_guarded(folder, recordings_base, "Checkpoints")?;
-    recycle_if_empty(&checkpoints, remove)?;
     Ok(())
 }
 
-/// Checkpoint cleanup for the `cleanup_checkpoints` command: same guard and one-at-a-time
-/// Recycle Bin rules as a meeting delete. A missing folder is `Ok(())`.
-pub fn cleanup_checkpoints_guarded(folder_path: &str, recordings_base: &Path, remove: Remover) -> Result<(), String> {
+/// Permanently deletes Conclave's own chunk files in a guarded folder, then `.checkpoints` if
+/// empty. Other files in `.checkpoints` are left alone, so the folder stays. `folder` must be
+/// the canonical path from `guarded_meeting_folder`.
+pub fn delete_checkpoint_files(folder: &Path) -> Result<(), String> {
+    let checkpoints = folder.join(".checkpoints");
+    for f in checkpoint_files(&checkpoints) {
+        remove_checked(&f, folder, &remove_permanently)?;
+    }
+    // Compare canonical paths: `is_plain_dir` follows a folder swapped for a link after the guard.
+    if dunce::canonicalize(&checkpoints).is_ok_and(|c| c == checkpoints) {
+        remove_if_empty(&checkpoints, &remove_permanently)?;
+    }
+    Ok(())
+}
+
+/// Checkpoint cleanup for the `cleanup_checkpoints` command: same guard as a meeting delete, but
+/// permanent, since these are Conclave's own merged chunks. A missing folder is `Ok(())`.
+pub fn cleanup_checkpoints_guarded(folder_path: &str, recordings_base: &Path) -> Result<(), String> {
     if !Path::new(folder_path).exists() {
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
         .ok_or_else(|| format!("Checkpoints kept: it is outside the Conclave recordings folder ({folder_path})"))?;
-    recycle_checkpoints(&folder, recordings_base, remove)
+    delete_checkpoint_files(&folder)
+}
+
+/// Import cleanup after a cancel or failure. Permanently removes the files `import.rs` wrote into
+/// the meeting folder it just created (the audio copy, the transcript and metadata files and their
+/// `.tmp` siblings), then the folder if it is empty. Anything else keeps the folder. Non-fatal:
+/// problems are logged, as before.
+pub fn discard_import_folder(folder: &Path, recordings_base: &Path) {
+    let Some(folder) = guarded_meeting_folder(&folder.to_string_lossy(), recordings_base) else { return };
+    let mut files = audio_files(&folder);
+    files.extend(MEETING_FILES.iter().map(|n| folder.join(n)));
+    let removed = files
+        .iter()
+        .filter(|p| is_plain_file(p))
+        .try_for_each(|p| remove_checked(p, &folder, &remove_permanently));
+    match removed.and_then(|()| remove_if_empty(&folder, &remove_permanently)) {
+        Ok(true) => {}
+        Ok(false) => warn!("Import cleanup left {}: it still holds other files", folder.display()),
+        Err(e) => warn!("Import cleanup left {}: {e}", folder.display()),
+    }
 }
 
 /// Whether another meeting's folder is this one. Compared by canonical path, so a trailing
@@ -482,7 +516,7 @@ mod tests {
         assert!(find_audio_file(&m).is_none());
         let bin = FakeBin::new();
         assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_err());
-        assert!(recycle_checked(&m.join(".checkpoints").join("audio_chunk_000.mp4"), &dunce::canonicalize(&m).unwrap(), &|p| bin.remove(p)).is_err());
+        assert!(remove_checked(&m.join(".checkpoints").join("audio_chunk_000.mp4"), &dunce::canonicalize(&m).unwrap(), &|p| bin.remove(p)).is_err());
         assert!(bin.names().is_empty());
         assert!(target.path().join("audio_chunk_000.mp4").exists());
         assert!(target.path().join("secret.mp4").exists());
@@ -608,15 +642,13 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         fs::create_dir_all(outside.path().join(".checkpoints")).unwrap();
         fs::write(outside.path().join(".checkpoints").join("audio_chunk_000.mp4"), "x").unwrap();
-        let bin = FakeBin::new();
-        assert!(cleanup_checkpoints_guarded(outside.path().to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_err());
+        assert!(cleanup_checkpoints_guarded(outside.path().to_str().unwrap(), b.path()).is_err());
         assert!(outside.path().join(".checkpoints").join("audio_chunk_000.mp4").exists());
-        assert!(bin.names().is_empty());
-        assert!(cleanup_checkpoints_guarded(b.path().join("nope").to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_ok());
+        assert!(cleanup_checkpoints_guarded(b.path().join("nope").to_str().unwrap(), b.path()).is_ok());
     }
 
     #[test]
-    fn checkpoint_cleanup_recycles_only_conclave_chunks_inside_the_base() {
+    fn checkpoint_cleanup_deletes_only_conclave_chunks_inside_the_base() {
         let b = base();
         let m = b.path().join("m");
         let cp = m.join(".checkpoints");
@@ -626,51 +658,150 @@ mod tests {
         }
         fs::write(cp.join("keep.txt"), "mine").unwrap();
         fs::write(m.join("audio.mp4"), "x").unwrap();
-        let bin = FakeBin::new();
-        cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap();
-        assert_eq!(bin.names().len(), 3);
+        cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path()).unwrap();
+        for f in ["audio_chunk_000.mp4", "audio_chunk_001.mp4", "concat_list.txt"] {
+            assert!(!cp.join(f).exists(), "{f}");
+        }
         assert!(cp.join("keep.txt").exists()); // a foreign file keeps .checkpoints
         assert!(m.join("audio.mp4").exists());
     }
 
     #[test]
-    fn checkpoint_cleanup_recycles_checkpoints_once_it_is_empty() {
+    fn checkpoint_cleanup_deletes_checkpoints_once_it_is_empty() {
         let b = base();
         let m = b.path().join("m");
         let cp = m.join(".checkpoints");
         fs::create_dir_all(&cp).unwrap();
         fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
-        let bin = FakeBin::new();
-        cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap();
-        assert_eq!(bin.names(), vec!["audio_chunk_000.mp4".to_string(), ".checkpoints".to_string()]);
+        cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path()).unwrap();
+        assert!(!cp.exists());
+        assert!(m.is_dir());
+    }
+
+    #[test]
+    fn delete_checkpoint_files_removes_chunks_and_concat_list_then_the_empty_checkpoints() {
+        let b = base();
+        let m = b.path().join("m");
+        fs::create_dir(&m).unwrap();
+        let m = dunce::canonicalize(&m).unwrap();
+        let cp = m.join(".checkpoints");
+        fs::create_dir_all(&cp).unwrap();
+        for f in ["audio_chunk_000.mp4", "audio_chunk_001.mp4", "concat_list.txt"] {
+            fs::write(cp.join(f), "x").unwrap();
+        }
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        delete_checkpoint_files(&m).unwrap();
+        assert!(!cp.exists());
+        assert!(m.join("audio.mp4").exists());
+    }
+
+    #[test]
+    fn delete_checkpoint_files_keeps_an_unknown_file_and_its_folder() {
+        let b = base();
+        let m = dunce::canonicalize(b.path()).unwrap();
+        let cp = m.join(".checkpoints");
+        fs::create_dir_all(&cp).unwrap();
+        fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
+        fs::write(cp.join("keep.txt"), "mine").unwrap();
+        delete_checkpoint_files(&m).unwrap();
+        assert!(!cp.join("audio_chunk_000.mp4").exists());
+        assert!(cp.join("keep.txt").exists());
+        assert!(cp.is_dir());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_checkpoint_files_never_follows_a_symlinked_chunk_or_checkpoints() {
+        use std::os::unix::fs::symlink;
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("secret.mp4"), "secret").unwrap();
+        // A link named like a chunk, inside a real .checkpoints.
+        let b = base();
+        let m = dunce::canonicalize(b.path()).unwrap();
+        let cp = m.join(".checkpoints");
+        fs::create_dir_all(&cp).unwrap();
+        fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
+        symlink(outside.path().join("secret.mp4"), cp.join("audio_chunk_001.mp4")).unwrap();
+        delete_checkpoint_files(&m).unwrap();
+        assert!(!cp.join("audio_chunk_000.mp4").exists());
+        assert!(fs::symlink_metadata(cp.join("audio_chunk_001.mp4")).unwrap().file_type().is_symlink());
+        assert_eq!(fs::read_to_string(outside.path().join("secret.mp4")).unwrap(), "secret");
+
+        // A .checkpoints that is a link to a real folder holding chunks.
+        let b2 = base();
+        let m2 = dunce::canonicalize(b2.path()).unwrap();
+        let target = outside.path().join("target");
+        fs::create_dir(&target).unwrap();
+        fs::write(target.join("audio_chunk_000.mp4"), "theirs").unwrap();
+        symlink(&target, m2.join(".checkpoints")).unwrap();
+        delete_checkpoint_files(&m2).unwrap();
+        assert_eq!(fs::read_to_string(target.join("audio_chunk_000.mp4")).unwrap(), "theirs");
+        assert!(fs::symlink_metadata(m2.join(".checkpoints")).unwrap().file_type().is_symlink());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn delete_checkpoint_files_never_removes_a_checkpoints_reached_through_a_swapped_link() {
+        use std::os::unix::fs::symlink;
+        // The folder was a real folder inside the base at the guard, then became a link to outside.
+        let b = base();
+        let outside = tempfile::tempdir().unwrap();
+        let moved = outside.path().join("moved");
+        fs::create_dir_all(moved.join(".checkpoints")).unwrap();
+        let m = b.path().join("m");
+        symlink(&moved, &m).unwrap();
+        // An empty .checkpoints outside must not be removed through the link.
+        delete_checkpoint_files(&m).unwrap();
+        assert!(moved.join(".checkpoints").is_dir());
+        // Chunks outside must not be removed either.
+        fs::write(moved.join(".checkpoints").join("audio_chunk_000.mp4"), "x").unwrap();
+        assert!(delete_checkpoint_files(&m).is_err());
+        assert!(moved.join(".checkpoints").join("audio_chunk_000.mp4").exists());
+    }
+
+    #[test]
+    fn import_cleanup_removes_the_files_it_wrote_and_the_folder() {
+        let b = base();
+        let m = b.path().join("Import_2026-10-16_10-00");
+        fs::create_dir(&m).unwrap();
+        for f in ["audio.mp3", "transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"] {
+            fs::write(m.join(f), "x").unwrap();
+        }
+        discard_import_folder(&m, b.path());
+        assert!(!m.exists());
+    }
+
+    #[test]
+    fn import_cleanup_keeps_a_folder_with_an_extra_file() {
+        let b = base();
+        let m = b.path().join("Import_2026-10-16_10-00");
+        fs::create_dir(&m).unwrap();
+        fs::write(m.join("audio.mp3"), "x").unwrap();
+        fs::write(m.join("metadata.json"), "{}").unwrap();
+        fs::write(m.join("thesis.docx"), "precious").unwrap();
+        discard_import_folder(&m, b.path());
+        assert!(m.join("thesis.docx").exists());
+        assert!(!m.join("audio.mp3").exists());
+        assert!(!m.join("metadata.json").exists());
         assert!(m.is_dir());
     }
 
     #[cfg(unix)]
     #[test]
-    fn a_folder_swapped_for_a_link_mid_cleanup_leaves_checkpoints_outside_alone() {
+    fn import_cleanup_never_follows_a_link_and_refuses_a_folder_outside_the_base() {
         use std::os::unix::fs::symlink;
-        use std::sync::atomic::{AtomicBool, Ordering};
         let b = base();
         let outside = tempfile::tempdir().unwrap();
-        let m = b.path().join("m");
-        fs::create_dir_all(m.join(".checkpoints")).unwrap();
-        fs::write(m.join(".checkpoints").join("audio_chunk_000.mp4"), "x").unwrap();
-        let moved = outside.path().join("moved");
-        let bin = FakeBin::new();
-        let swapped = AtomicBool::new(false);
-        let remove = |p: &[PathBuf]| -> Result<(), String> {
-            bin.remove(p)?;
-            if !swapped.swap(true, Ordering::SeqCst) {
-                // After the last chunk the folder leaves the base; a link takes its place.
-                fs::rename(&m, &moved).unwrap();
-                symlink(&moved, &m).unwrap();
-            }
-            Ok(())
-        };
-        assert!(cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &remove).unwrap_err().starts_with("Checkpoints kept: it is no longer inside"));
-        assert!(moved.join(".checkpoints").is_dir(), "a folder outside the base must keep its .checkpoints");
-        assert_eq!(bin.names(), vec!["audio_chunk_000.mp4".to_string()]);
+        fs::write(outside.path().join("victim.json"), "mine").unwrap();
+        let m = b.path().join("Import_2026-10-16_10-00");
+        fs::create_dir(&m).unwrap();
+        symlink(outside.path().join("victim.json"), m.join("metadata.json")).unwrap();
+        discard_import_folder(&m, b.path());
+        assert_eq!(fs::read_to_string(outside.path().join("victim.json")).unwrap(), "mine");
+        assert!(m.join("metadata.json").exists()); // the link stays, so the folder stays
+        fs::write(outside.path().join("audio.mp3"), "theirs").unwrap();
+        discard_import_folder(outside.path(), b.path());
+        assert!(outside.path().join("audio.mp3").exists());
     }
 
     #[tokio::test]

@@ -43,11 +43,14 @@ export function TranscriptMarkButton({ text, mark, onChange }: Props) {
           </p>
         </div>
       </PopoverAnchor>
-      {/* Radix would focus its (absent) trigger on close; send focus back to the line instead */}
+      {/* Radix would focus its (absent) trigger on close; send focus back to the line, unless the user moved it elsewhere */}
       <PopoverContent
         className="w-auto p-1"
         align="start"
-        onCloseAutoFocus={(e) => { e.preventDefault(); anchorRef.current?.focus(); }}
+        onCloseAutoFocus={(e) => {
+          e.preventDefault();
+          if (document.activeElement === document.body) anchorRef.current?.focus();
+        }}
       >
         <div role="menu" className="flex gap-1">
           {MARKS.map((m) => (

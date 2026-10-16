@@ -81,6 +81,17 @@ describe('TranscriptMarkButton', () => {
     expect(focus).toHaveBeenCalled();
   });
 
+  test('closing does not steal focus from an element the user moved to', () => {
+    const { r, focus } = render(null);
+    act(() => r.root.findByProps({ 'aria-haspopup': 'menu' }).props.onClick());
+    const input = document.createElement('input');
+    document.body.appendChild(input);
+    input.focus();
+    act(() => closeFocus.handler!({ preventDefault() {} }));
+    input.remove();
+    expect(focus).not.toHaveBeenCalled();
+  });
+
   test('the line label names the current mark', () => {
     const label = (mark: 'important' | null) =>
       render(mark).r.root.findByProps({ 'aria-haspopup': 'menu' }).props['aria-label'];

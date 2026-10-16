@@ -39,6 +39,14 @@ fn default_old_audio_days() -> Option<u32> {
     Some(30)
 }
 
+/// Only Never (`None`), 7, 30 and 90 are offered in Settings; any other stored value falls back to 30.
+pub fn sanitize_old_audio_days(days: Option<u32>) -> Option<u32> {
+    match days {
+        None | Some(7) | Some(30) | Some(90) => days,
+        Some(_) => default_old_audio_days(),
+    }
+}
+
 impl Default for RecordingPreferences {
     fn default() -> Self {
         Self {
@@ -122,7 +130,7 @@ pub async fn load_recording_preferences<R: Runtime>(
     };
 
     // Try to get the preferences from store
-    let prefs = if let Some(value) = store.get("preferences") {
+    let mut prefs = if let Some(value) = store.get("preferences") {
         match serde_json::from_value::<RecordingPreferences>(value.clone()) {
             // `mut` is used only on macOS.
             #[allow(unused_mut)]
@@ -145,6 +153,9 @@ pub async fn load_recording_preferences<R: Runtime>(
         info!("No stored preferences found, using defaults");
         RecordingPreferences::default()
     };
+
+    // Read-side check: the webview can store any number, but the review only uses the offered values.
+    prefs.old_audio_days = sanitize_old_audio_days(prefs.old_audio_days);
 
     info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}",
           prefs.save_folder, prefs.auto_save, prefs.file_format,
@@ -429,6 +440,17 @@ mod old_audio_pref_tests {
         let json = r#"{"save_folder":"C:\\rec","auto_save":true,"file_format":"mp4"}"#;
         let p: RecordingPreferences = serde_json::from_str(json).unwrap();
         assert_eq!(p.old_audio_days, Some(30));
+    }
+
+    #[test]
+    fn only_never_7_30_and_90_survive_and_anything_else_is_30() {
+        assert_eq!(sanitize_old_audio_days(None), None);
+        for d in [7, 30, 90] {
+            assert_eq!(sanitize_old_audio_days(Some(d)), Some(d));
+        }
+        for d in [0, 1, 8, 4_000_000_000, u32::MAX] {
+            assert_eq!(sanitize_old_audio_days(Some(d)), Some(30));
+        }
     }
 
     #[test]

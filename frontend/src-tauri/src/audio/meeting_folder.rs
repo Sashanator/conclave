@@ -204,7 +204,7 @@ pub fn cleanup_checkpoints_guarded(folder_path: &str, recordings_base: &Path, re
 /// Whether another meeting's folder is this one. Compared by canonical path, so a trailing
 /// slash, a `..` or a link to the same folder still counts. Rows that cannot be resolved are
 /// skipped; the deleted meeting itself is excluded by id.
-pub(crate) async fn used_by_another_meeting(pool: &sqlx::SqlitePool, meeting_id: &str, folder_path: &str) -> Result<bool, sqlx::Error> {
+async fn used_by_another_meeting(pool: &sqlx::SqlitePool, meeting_id: &str, folder_path: &str) -> Result<bool, sqlx::Error> {
     let Ok(folder) = dunce::canonicalize(folder_path) else { return Ok(false) };
     let rows: Vec<(String,)> = sqlx::query_as("SELECT folder_path FROM meetings WHERE id <> ? AND folder_path IS NOT NULL")
         .bind(meeting_id)

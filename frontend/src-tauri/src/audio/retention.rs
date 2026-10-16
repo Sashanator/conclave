@@ -1,7 +1,7 @@
 //! Old-audio review (spec §8.1): lists recordings older than N days and moves exactly the
 //! confirmed ones to the Recycle Bin. Never runs by itself; never touches transcripts,
 //! summaries, notes or the JSON files in the folder.
-use crate::audio::meeting_folder::{audio_files, checkpoint_files, guarded_meeting_folder, recycle, recycle_checked, recycle_if_empty, Remover};
+use crate::audio::meeting_folder::{audio_files, checkpoint_files, ensure_still_guarded, guarded_meeting_folder, recycle, recycle_checked, recycle_if_empty, Remover};
 use crate::audio::recording_preferences::{get_default_recordings_folder, load_recording_preferences};
 use crate::database::models::DateTimeUtc;
 use chrono::{DateTime, Duration, Utc};
@@ -168,6 +168,11 @@ pub async fn delete_old_audio_inner(
                     break;
                 }
             }
+        }
+        // The file loop may have waited on the Bin: the folder can have been swapped for a link since the check above.
+        if let Err(e) = ensure_still_guarded(&folder, base, "Recording folder") {
+            result.failed.push(format!("{}: {e}", item.title));
+            continue;
         }
         if let Err(e) = recycle_if_empty(&folder.join(".checkpoints"), remove) {
             warn!("Old audio: could not recycle the empty .checkpoints of {}: {e}", item.meeting_id);
@@ -442,6 +447,34 @@ mod tests {
         assert_eq!(r.failed.len(), 1);
         assert!(r.failed[0].contains(".checkpoints"));
         assert!(deleted_at(&pool, "one").await.is_some());
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_folder_swapped_for_a_link_mid_delete_keeps_its_checkpoints_outside() {
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let pool = test_pool().await;
+        let b = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let f = folder(b.path(), "one");
+        insert(&pool, "one", now() - Duration::days(40), Some(&f), false).await;
+        let moved = outside.path().join("moved");
+        let bin = FakeBin::new();
+        let swapped = AtomicBool::new(false);
+        let remove = |p: &[PathBuf]| {
+            let r = bin.remove(p);
+            if !swapped.swap(true, Ordering::SeqCst) {
+                // The folder leaves the base after the first file; a link takes its place.
+                fs::rename(&f, &moved).unwrap();
+                symlink(&moved, &f).unwrap();
+            }
+            r
+        };
+        let r = delete_old_audio_inner(&pool, &["one".into()], Some(30), now(), &|| false, b.path(), &remove).await.unwrap();
+        assert_eq!(r.meetings, 0);
+        assert!(r.failed.iter().any(|m| m.starts_with("Meeting one:") && m.contains("Recording folder kept")), "{:?}", r.failed);
+        assert!(moved.join(".checkpoints").is_dir(), "a folder outside the base must keep its .checkpoints");
     }
 
     #[tokio::test]

@@ -163,9 +163,9 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
     for f in &files {
         recycle_checked(f, &folder, remove)?;
     }
-    ensure_still_guarded(&folder, recordings_base)?;
+    ensure_still_guarded(&folder, recordings_base, "Recording folder")?;
     recycle_if_empty(&folder.join(".checkpoints"), remove)?;
-    ensure_still_guarded(&folder, recordings_base)?;
+    ensure_still_guarded(&folder, recordings_base, "Recording folder")?;
     if !recycle_if_empty(&folder, remove)? {
         return Err(format!("Recording folder kept: new files appeared in it ({})", folder.display()));
     }
@@ -173,11 +173,12 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
 }
 
 /// Re-run before each later step: the folder may have been replaced by a link meanwhile.
-fn ensure_still_guarded(folder: &Path, recordings_base: &Path) -> Result<(), String> {
+/// `what` names the kept thing in the error ("Recording folder" or "Checkpoints").
+pub(crate) fn ensure_still_guarded(folder: &Path, recordings_base: &Path, what: &str) -> Result<(), String> {
     if guarded_meeting_folder(&folder.to_string_lossy(), recordings_base).as_deref() == Some(folder) {
         Ok(())
     } else {
-        Err(format!("Recording folder kept: it is no longer inside the recordings folder ({})", folder.display()))
+        Err(format!("{what} kept: it is no longer inside the recordings folder ({})", folder.display()))
     }
 }
 
@@ -188,7 +189,7 @@ fn recycle_checkpoints(folder: &Path, recordings_base: &Path, remove: Remover) -
     for f in checkpoint_files(&checkpoints) {
         recycle_checked(&f, folder, remove)?;
     }
-    ensure_still_guarded(folder, recordings_base)?;
+    ensure_still_guarded(folder, recordings_base, "Checkpoints")?;
     recycle_if_empty(&checkpoints, remove)?;
     Ok(())
 }
@@ -613,9 +614,21 @@ mod tests {
             }
             Ok(())
         };
-        assert!(cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &remove).unwrap_err().contains("no longer inside"));
+        assert!(cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &remove).unwrap_err().starts_with("Checkpoints kept: it is no longer inside"));
         assert!(moved.join(".checkpoints").is_dir(), "a folder outside the base must keep its .checkpoints");
         assert_eq!(bin.names(), vec!["audio_chunk_000.mp4".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn meeting_audio_never_exposes_a_folder_outside_the_base() {
+        let pool = crate::database::repositories::test_pool().await;
+        let b = base();
+        let outside = base();
+        fs::write(outside.path().join("audio.mp4"), "x").unwrap();
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, keep_audio) VALUES ('m1', 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?, 0)")
+            .bind(outside.path().to_string_lossy().to_string())
+            .execute(&pool).await.unwrap();
+        assert!(meeting_audio_inner(&pool, "m1", b.path()).await.unwrap().path.is_none());
     }
 
     #[tokio::test]

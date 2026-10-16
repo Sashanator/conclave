@@ -7,6 +7,7 @@ import { invoke } from "@tauri-apps/api/core"
 import { useConfig, NotificationSettings } from "@/contexts/ConfigContext"
 import { useTheme } from "@/contexts/ThemeContext"
 import { parseThemePreference } from "@/lib/theme"
+import { MeetingPageLayout, parseMeetingPageLayout, readMeetingPageLayout, writeMeetingPageLayout } from "@/lib/meeting-page-layout"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 export function PreferenceSettings() {
@@ -22,6 +23,9 @@ export function PreferenceSettings() {
   const [notificationsEnabled, setNotificationsEnabled] = useState<boolean | null>(null);
   const [isInitialLoad, setIsInitialLoad] = useState(true);
   const [previousNotificationsEnabled, setPreviousNotificationsEnabled] = useState<boolean | null>(null);
+  const [layout, setLayout] = useState<MeetingPageLayout>('three-columns');
+
+  useEffect(() => setLayout(readMeetingPageLayout()), []);
 
   // Lazy load preferences on mount (only loads if not already cached)
   useEffect(() => {
@@ -130,6 +134,21 @@ export function PreferenceSettings() {
               <SelectItem value="light">Light</SelectItem>
               <SelectItem value="dark">Dark</SelectItem>
               <SelectItem value="conclave">Conclave</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <div className="flex items-center justify-between mt-6">
+          <div>
+            <h3 className="text-lg font-semibold text-foreground mb-2">Meeting page layout</h3>
+            <p className="text-sm text-muted-foreground">Where your notes sit on a saved meeting</p>
+          </div>
+          <Select value={layout} onValueChange={(v) => { const next = parseMeetingPageLayout(v); setLayout(next); writeMeetingPageLayout(next); }}>
+            <SelectTrigger className="w-56" aria-label="Meeting page layout">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="three-columns">Three columns</SelectItem>
+              <SelectItem value="subtab">Notes as a tab</SelectItem>
             </SelectContent>
           </Select>
         </div>

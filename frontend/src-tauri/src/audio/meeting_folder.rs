@@ -42,8 +42,13 @@ pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Opti
     if folder_path.trim().is_empty() {
         return None;
     }
-    let plain_dir = fs::symlink_metadata(folder_path)
-        .is_ok_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink() && !is_reparse_point(&m));
+    // Lexical leaf: a trailing separator would make lstat follow a link, so it is dropped here.
+    // std reports junctions as symlinks on Windows (`is_symlink` covers mount points), so
+    // `!is_symlink()` refuses them too, without an attribute check that would refuse cloud folders.
+    let leaf = Path::new(folder_path);
+    let plain_dir = leaf.parent().zip(leaf.file_name()).is_some_and(|(parent, name)| {
+        fs::symlink_metadata(parent.join(name)).is_ok_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink())
+    });
     let (Ok(folder), Ok(base)) = (dunce::canonicalize(folder_path), dunce::canonicalize(recordings_base)) else {
         warn!("Meeting folder guard: cannot resolve {folder_path}");
         return None;
@@ -56,25 +61,12 @@ pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Opti
     }
 }
 
-/// Junctions are not symlinks to std, so they are caught by the reparse-point attribute.
-#[cfg(windows)]
-fn is_reparse_point(m: &fs::Metadata) -> bool {
-    use std::os::windows::fs::MetadataExt;
-    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
-    m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
-}
-
-#[cfg(not(windows))]
-fn is_reparse_point(_: &fs::Metadata) -> bool {
-    false
-}
-
 /// A real file, not a symlink/junction (links could point anywhere on disk).
 fn is_plain_file(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
 }
 
-fn is_plain_dir(p: &Path) -> bool {
+pub(crate) fn is_plain_dir(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_dir())
 }
 
@@ -226,14 +218,24 @@ pub fn delete_checkpoint_files(folder: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A real, non-empty top-level `audio.<ext>`: the proof that the chunks were merged.
+fn has_merged_audio(folder: &Path) -> bool {
+    audio_files(folder).iter().any(|p| is_plain_file(p) && fs::symlink_metadata(p).is_ok_and(|m| m.len() > 0))
+}
+
 /// Checkpoint cleanup for the `cleanup_checkpoints` command: same guard as a meeting delete, but
-/// permanent, since these are Conclave's own merged chunks. A missing folder is `Ok(())`.
+/// permanent, since these are Conclave's own merged chunks. The chunks may go only once a merged
+/// audio file is in the folder; otherwise they are the only copy and nothing is touched.
+/// A missing folder is `Ok(())`.
 pub fn cleanup_checkpoints_guarded(folder_path: &str, recordings_base: &Path) -> Result<(), String> {
     if !Path::new(folder_path).exists() {
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
         .ok_or_else(|| format!("Checkpoints kept: it is outside the Conclave recordings folder ({folder_path})"))?;
+    if !has_merged_audio(&folder) {
+        return Err(format!("Checkpoints kept: no merged audio file in the meeting folder ({folder_path})"));
+    }
     delete_checkpoint_files(&folder)
 }
 
@@ -409,6 +411,17 @@ mod tests {
         fs::create_dir(&m).unwrap();
         std::os::unix::fs::symlink(&m, b.path().join("sneaky")).unwrap();
         assert!(guarded_meeting_folder(b.path().join("sneaky").to_str().unwrap(), b.path()).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_refuses_a_trailing_slash_spelling_of_a_link_folder() {
+        let b = base();
+        let m = b.path().join("m");
+        fs::create_dir(&m).unwrap();
+        let spelled = format!("{}/", b.path().join("sneaky").display());
+        std::os::unix::fs::symlink(&m, b.path().join("sneaky")).unwrap();
+        assert!(guarded_meeting_folder(&spelled, b.path()).is_none());
     }
 
     #[test]
@@ -667,12 +680,46 @@ mod tests {
     }
 
     #[test]
+    fn checkpoint_cleanup_refuses_a_folder_without_merged_audio() {
+        let b = base();
+        let m = b.path().join("m");
+        let cp = m.join(".checkpoints");
+        fs::create_dir_all(&cp).unwrap();
+        fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
+        fs::write(cp.join("concat_list.txt"), "x").unwrap();
+        // Chunks with no audio file are the only copy of the recording: nothing is deleted.
+        assert!(cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path()).is_err());
+        assert!(cp.join("audio_chunk_000.mp4").exists());
+        assert!(cp.join("concat_list.txt").exists());
+        // An empty audio file is not a merge either.
+        fs::write(m.join("audio.mp4"), "").unwrap();
+        assert!(cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path()).is_err());
+        assert!(cp.join("audio_chunk_000.mp4").exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn checkpoint_cleanup_does_not_accept_a_linked_audio_file_as_merged() {
+        let b = base();
+        let m = b.path().join("m");
+        let cp = m.join(".checkpoints");
+        fs::create_dir_all(&cp).unwrap();
+        fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        fs::write(outside.path().join("theirs.mp4"), "merged").unwrap();
+        std::os::unix::fs::symlink(outside.path().join("theirs.mp4"), m.join("audio.mp4")).unwrap();
+        assert!(cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path()).is_err());
+        assert!(cp.join("audio_chunk_000.mp4").exists());
+    }
+
+    #[test]
     fn checkpoint_cleanup_deletes_checkpoints_once_it_is_empty() {
         let b = base();
         let m = b.path().join("m");
         let cp = m.join(".checkpoints");
         fs::create_dir_all(&cp).unwrap();
         fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
+        fs::write(m.join("audio.mp4"), "merged").unwrap();
         cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path()).unwrap();
         assert!(!cp.exists());
         assert!(m.is_dir());

@@ -5,17 +5,27 @@ import { act, create } from 'react-test-renderer';
 const originalPopover = { ...await import('../../src/components/ui/popover') };
 afterAll(() => mock.module('../../src/components/ui/popover', () => originalPopover));
 const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
+// Captures the close-focus handler so the test can fire it the way Radix does on close.
+const closeFocus: { handler?: (e: { preventDefault(): void }) => void } = {};
 mock.module('../../src/components/ui/popover', () => ({
   Popover: ({ open, children }: { open: boolean; children?: ReactNode }) => <div data-open={String(open)}>{children}</div>,
   PopoverAnchor: pass, PopoverTrigger: pass,
-  PopoverContent: pass,
+  PopoverContent: ({ children, onCloseAutoFocus }: { children?: ReactNode; onCloseAutoFocus?: (e: { preventDefault(): void }) => void }) => {
+    closeFocus.handler = onCloseAutoFocus;
+    return <>{children}</>;
+  },
 }));
 const { TranscriptMarkButton } = await import('../../src/components/TranscriptMarkButton');
 
 function render(mark: 'important' | 'action' | 'followup' | null, onChange = mock(() => {})) {
   let r!: ReturnType<typeof create>;
-  act(() => { r = create(<TranscriptMarkButton text="send the deck" mark={mark} onChange={onChange} />); });
-  return { r, onChange };
+  const focus = mock(() => {});
+  act(() => {
+    r = create(<TranscriptMarkButton text="send the deck" mark={mark} onChange={onChange} />, {
+      createNodeMock: () => ({ focus }),
+    });
+  });
+  return { r, onChange, focus };
 }
 const isOpen = (r: ReturnType<typeof create>) => r.root.findByProps({ 'data-open': 'true' }) !== undefined;
 
@@ -60,5 +70,21 @@ describe('TranscriptMarkButton', () => {
   test('shows the mark icon before the text', () => {
     const { r } = render('important');
     expect(JSON.stringify(r.toJSON())).toContain('⭐');
+  });
+
+  test('closing the popover returns keyboard focus to the line', () => {
+    const { r, focus } = render(null);
+    act(() => r.root.findByProps({ 'aria-haspopup': 'menu' }).props.onClick());
+    const preventDefault = mock(() => {});
+    act(() => closeFocus.handler!({ preventDefault }));
+    expect(preventDefault).toHaveBeenCalled();
+    expect(focus).toHaveBeenCalled();
+  });
+
+  test('the line label names the current mark', () => {
+    const label = (mark: 'important' | null) =>
+      render(mark).r.root.findByProps({ 'aria-haspopup': 'menu' }).props['aria-label'];
+    expect(label('important')).toBe('Important: send the deck. Change mark');
+    expect(label(null)).toBe('Mark line: send the deck');
   });
 });

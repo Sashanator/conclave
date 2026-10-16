@@ -1,5 +1,5 @@
 'use client';
-import { useState } from 'react';
+import { useRef, useState } from 'react';
 import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover';
 import { MARKS, toggleMark } from '@/lib/meeting-notes';
 import type { TranscriptMark } from '@/types';
@@ -12,7 +12,8 @@ interface Props {
 
 export function TranscriptMarkButton({ text, mark, onChange }: Props) {
   const [open, setOpen] = useState(false);
-  const icon = MARKS.find((m) => m.value === mark)?.icon;
+  const anchorRef = useRef<HTMLDivElement>(null);
+  const current = MARKS.find((m) => m.value === mark);
 
   const openUnlessSelecting = () => {
     if (window.getSelection()?.toString()) return; // the user is copying text
@@ -23,11 +24,12 @@ export function TranscriptMarkButton({ text, mark, onChange }: Props) {
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverAnchor asChild>
         <div
+          ref={anchorRef}
           role="button"
           tabIndex={0}
           aria-haspopup="menu"
           aria-expanded={open}
-          aria-label={`Mark line: ${text}`}
+          aria-label={current ? `${current.label}: ${text}. Change mark` : `Mark line: ${text}`}
           onClick={openUnlessSelecting}
           onKeyDown={(e) => {
             if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); setOpen(true); }
@@ -36,12 +38,17 @@ export function TranscriptMarkButton({ text, mark, onChange }: Props) {
           className={`cursor-pointer select-text ${mark ? 'bg-amber-50 dark:bg-amber-950/30 rounded px-1 -mx-1' : ''}`}
         >
           <p className="text-base text-foreground leading-relaxed">
-            {icon && <span aria-hidden="true" className="mr-1">{icon}</span>}
+            {current && <span aria-hidden="true" className="mr-1">{current.icon}</span>}
             {text}
           </p>
         </div>
       </PopoverAnchor>
-      <PopoverContent className="w-auto p-1" align="start">
+      {/* Radix would focus its (absent) trigger on close; send focus back to the line instead */}
+      <PopoverContent
+        className="w-auto p-1"
+        align="start"
+        onCloseAutoFocus={(e) => { e.preventDefault(); anchorRef.current?.focus(); }}
+      >
         <div role="menu" className="flex gap-1">
           {MARKS.map((m) => (
             <button

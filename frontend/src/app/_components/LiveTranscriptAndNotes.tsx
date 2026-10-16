@@ -7,10 +7,12 @@ import { readFlag, writeFlag } from '@/lib/meeting-page-layout';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { ModalType } from '@/hooks/useModalState';
+import { annotationsLocked } from '@/lib/meeting-notes';
 
 export function LiveTranscriptAndNotes(props: { isProcessingStop: boolean; isStopping: boolean; showModal: (name: ModalType, message?: string) => void }) {
   const { notes, addNote, updateNote, deleteNote } = useTranscripts();
-  const { isRecording, activeDuration } = useRecordingState();
+  const { isRecording, isSaving, activeDuration } = useRecordingState();
+  const locked = annotationsLocked({ isRecording, isStopping: props.isStopping, isProcessing: props.isProcessingStop, isSaving });
   const [collapsed, setCollapsed] = useState(() => readFlag('conclave.notesPaneCollapsed'));
   const split = useSplitRatio({ storageKey: 'conclave.live.transcriptRatio', defaultRatio: 0.7, min: 0.5, max: 0.8, label: 'transcript and notes' });
   const toggle = () => setCollapsed((c) => { writeFlag('conclave.notesPaneCollapsed', !c); return !c; });
@@ -28,8 +30,9 @@ export function LiveTranscriptAndNotes(props: { isProcessingStop: boolean; isSto
         onDelete={deleteNote}
         collapsed={collapsed}
         onToggleCollapsed={toggle}
-        disabled={!isRecording}
-        disabledHint="Notes start with a recording"
+        locked={locked}
+        disabled={locked || activeDuration === null}
+        disabledHint={!isRecording ? 'Notes start with a recording' : locked ? 'Saving the meeting' : 'Starting the recording'}
       />
     </div>
   );

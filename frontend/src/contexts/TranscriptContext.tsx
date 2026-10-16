@@ -7,7 +7,7 @@ import { useRecordingState } from './RecordingStateContext';
 import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
-import { applyMarks, collectMarks, newNote } from '@/lib/meeting-notes';
+import { applyMarks, marksToPersist, mergeNotes, newNote } from '@/lib/meeting-notes';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
@@ -45,6 +45,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const notesRef = useRef<MeetingNote[]>(notes);
   // Bumped on every note or mark change; the effect below saves them to the recovery record
   const [annotationsVersion, bumpAnnotations] = useReducer((x: number) => x + 1, 0);
+  // Recovery record: the meeting whose notes/marks were restored on this load, the marks last
+  // written (kept for lines not loaded yet), and the meeting whose record is safe to write to
+  const restoredIdRef = useRef<string | null>(null);
+  const persistedMarksRef = useRef<Record<string, TranscriptMark>>({});
+  const readyIdRef = useRef<string | null>(null);
   const isUserAtBottomRef = useRef<boolean>(true);
   const transcriptContainerRef = useRef<HTMLDivElement>(null);
   const finalFlushRef = useRef<(() => void) | null>(null);
@@ -59,11 +64,14 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   }, [notes]);
 
   // Save notes and marks to the recovery record. Declared after the ref syncs so the refs are current.
+  // Waits for this meeting's record to be loaded, so a write can never replace saved annotations with an empty list.
   useEffect(() => {
     if (annotationsVersion === 0) return;
     const id = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
-    if (!id) return;
-    indexedDBService.patchMeetingMetadata(id, { notes: notesRef.current, marks: collectMarks(transcriptsRef.current) });
+    if (!id || readyIdRef.current !== id) return;
+    const marks = marksToPersist(persistedMarksRef.current, transcriptsRef.current);
+    persistedMarksRef.current = marks;
+    indexedDBService.patchMeetingMetadata(id, { notes: notesRef.current, marks });
   }, [annotationsVersion]);
 
   // Smart auto-scroll: Track user scroll position
@@ -144,6 +152,11 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
             // Synchronize meeting title to state (fixes tray stop title issue)
             setMeetingTitle(effectiveTitle);
+
+            // A new meeting has nothing to restore, so its record is safe to write from now on
+            readyIdRef.current = meetingId;
+            persistedMarksRef.current = {};
+            bumpAnnotations();
 
             // Fetch folder path from backend and update metadata
             // This ensures folder path is persisted even if app crashes
@@ -399,11 +412,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             duration: segment.duration,
           }));
 
-          // Notes and marks live only in the recovery record, not in the backend
-          const recoveryId = sessionStorage.getItem('indexeddb_current_meeting_id');
-          const saved = recoveryId ? await indexedDBService.getMeetingMetadata(recoveryId) : null;
-          setTranscripts(applyMarks(formattedTranscripts, saved?.marks));
-          setNotes(saved?.notes ?? []);
+          // Marks live only in the recovery record; the restore effect below loads them
+          setTranscripts(applyMarks(formattedTranscripts, persistedMarksRef.current));
           console.log('[Reload Sync] ✅ Transcript history synced successfully');
 
           // Fetch meeting name from backend
@@ -421,6 +431,23 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
 
     syncFromBackend();
   }, [recordingState.isRecording]); // Run when recording state changes
+
+  // Reload during a recording: the backend knows nothing of notes or marks, so load them from the
+  // recovery record once per meeting. Independent of the history sync above, which may fail or lag.
+  useEffect(() => {
+    const id = sessionStorage.getItem('indexeddb_current_meeting_id');
+    if (!recordingState.isRecording || !id || restoredIdRef.current === id) return;
+    restoredIdRef.current = id;
+    indexedDBService.getMeetingMetadata(id).then((saved) => {
+      // A record that is no longer the current meeting (the user started another) is not applied
+      if (!saved || sessionStorage.getItem('indexeddb_current_meeting_id') !== id) return;
+      persistedMarksRef.current = saved.marks ?? {};
+      setNotes(prev => mergeNotes(prev, saved.notes ?? []));
+      setTranscripts(prev => applyMarks(prev, saved.marks));
+      readyIdRef.current = id;
+      bumpAnnotations();
+    });
+  }, [recordingState.isRecording]);
 
   // Manual transcript update handler (for RecordingControls component)
   const addTranscript = useCallback((update: TranscriptUpdate) => {

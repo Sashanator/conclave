@@ -10,6 +10,7 @@ import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
 import { useMemo } from 'react';
+import { annotationsLocked } from '@/lib/meeting-notes';
 
 /**
  * TranscriptPanel Component
@@ -33,7 +34,9 @@ export function TranscriptPanel({
   // Contexts
   const { transcripts, transcriptContainerRef, copyTranscript, setTranscriptMark } = useTranscripts();
   const { transcriptModelConfig } = useConfig();
-  const { isRecording, isPaused } = useRecordingState();
+  const { isRecording, isPaused, isSaving } = useRecordingState();
+  // Marks freeze with the notes once a stop begins (the save takes a snapshot)
+  const marksLocked = annotationsLocked({ isRecording, isStopping, isProcessing: isProcessingStop, isSaving });
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
   const isLinux = useIsLinux();
 
@@ -114,7 +117,7 @@ export function TranscriptPanel({
               isStopping={isStopping}
               enableStreaming={isRecording}
               showConfidence={true}
-              onMarkChange={setTranscriptMark}
+              onMarkChange={marksLocked ? undefined : setTranscriptMark}
             />
           </div>
         </div>

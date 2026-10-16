@@ -11,7 +11,7 @@ import { TranscriptMarkButton } from "./TranscriptMarkButton";
 import { motion, AnimatePresence } from "framer-motion";
 import { TranscriptMark, TranscriptSegmentData } from "@/types";
 import { findActiveSegmentId } from "@/lib/meeting-audio";
-import { formatRecordingTime as formatMmSs } from "@/lib/meeting-notes";
+import { formatRecordingTime as formatMmSs, MARKS } from "@/lib/meeting-notes";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -135,7 +135,10 @@ const TranscriptSegment = memo(function TranscriptSegment({
                     ) : onMarkChange ? (
                         <TranscriptMarkButton text={displayText} mark={mark} onChange={onMarkChange} />
                     ) : (
-                        <p className="text-base text-foreground leading-relaxed">{displayText}</p>
+                        <p className="text-base text-foreground leading-relaxed">
+                            {mark && <span aria-hidden="true" className="mr-1">{MARKS.find((m) => m.value === mark)?.icon}</span>}
+                            {displayText}
+                        </p>
                     )}
                 </div>
             </div>

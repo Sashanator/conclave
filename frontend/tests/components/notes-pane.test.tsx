@@ -56,3 +56,13 @@ describe('NotesPane', () => {
     expect(JSON.stringify(d.r.toJSON())).toContain('Notes start with a recording');
   });
 });
+
+describe('NotesPane while locked (stop in progress)', () => {
+  test('no edit, delete or new note once locked', () => {
+    const { r, props } = render({ locked: true });
+    expect(r.root.findByProps({ 'aria-label': 'New note' }).props.disabled).toBe(true);
+    expect(r.root.findAllByProps({ 'aria-label': 'Delete note: ask about Q2 budget' }).length).toBe(0);
+    expect(r.root.findByProps({ 'aria-label': 'Edit note: ask about Q2 budget' }).props.disabled).toBe(true);
+    expect(props.onDelete).not.toHaveBeenCalled();
+  });
+});

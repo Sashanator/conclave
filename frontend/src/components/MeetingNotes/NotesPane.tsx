@@ -14,15 +14,17 @@ interface NotesPaneProps {
   onToggleCollapsed: () => void;
   disabled?: boolean;
   disabledHint?: string;
+  /** Freezes edits and deletes; set while a stop is saving the snapshot. */
+  locked?: boolean;
 }
 
-function NoteRow({ note, onUpdate, onDelete, onTimeClick }: { note: MeetingNote } & Pick<NotesPaneProps, 'onUpdate' | 'onDelete' | 'onTimeClick'>) {
+function NoteRow({ note, onUpdate, onDelete, onTimeClick, locked }: { note: MeetingNote; locked?: boolean } & Pick<NotesPaneProps, 'onUpdate' | 'onDelete' | 'onTimeClick'>) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(note.text);
   const commit = () => {
     setEditing(false);
     const cleaned = cleanNoteText(draft);
-    if (cleaned.ok && cleaned.text !== note.text) onUpdate(note.id, cleaned.text);
+    if (!locked && cleaned.ok && cleaned.text !== note.text) onUpdate(note.id, cleaned.text);
     else setDraft(note.text);
   };
   const time = note.at === null ? 'added later' : formatRecordingTime(note.at);
@@ -34,7 +36,7 @@ function NoteRow({ note, onUpdate, onDelete, onTimeClick }: { note: MeetingNote 
       ) : (
         <span className="text-xs text-muted-foreground mt-0.5 min-w-[44px]">{time}</span>
       )}
-      {editing ? (
+      {editing && !locked ? (
         <textarea
           autoFocus
           aria-label="Edit note"
@@ -49,18 +51,20 @@ function NoteRow({ note, onUpdate, onDelete, onTimeClick }: { note: MeetingNote 
           }}
         />
       ) : (
-        <button type="button" className="flex-1 whitespace-pre-wrap break-words text-left text-sm text-foreground"
-          aria-label={`Edit note: ${note.text}`} onClick={() => setEditing(true)}>{note.text}</button>
+        <button type="button" className="flex-1 whitespace-pre-wrap break-words text-left text-sm text-foreground disabled:cursor-default"
+          aria-label={`Edit note: ${note.text}`} disabled={locked} onClick={() => setEditing(true)}>{note.text}</button>
       )}
-      <button type="button" className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-muted-foreground hover:text-foreground"
-        aria-label={`Delete note: ${note.text}`} onClick={() => onDelete(note.id)}>
-        <X className="h-4 w-4" />
-      </button>
+      {!locked && (
+        <button type="button" className="opacity-0 group-hover:opacity-100 focus:opacity-100 text-muted-foreground hover:text-foreground"
+          aria-label={`Delete note: ${note.text}`} onClick={() => onDelete(note.id)}>
+          <X className="h-4 w-4" />
+        </button>
+      )}
     </li>
   );
 }
 
-export function NotesPane({ notes, onAdd, onUpdate, onDelete, onTimeClick, collapsed, onToggleCollapsed, disabled, disabledHint }: NotesPaneProps) {
+export function NotesPane({ notes, onAdd, onUpdate, onDelete, onTimeClick, collapsed, onToggleCollapsed, disabled, disabledHint, locked }: NotesPaneProps) {
   const [draft, setDraft] = useState('');
 
   if (collapsed) {
@@ -92,13 +96,13 @@ export function NotesPane({ notes, onAdd, onUpdate, onDelete, onTimeClick, colla
       </div>
       <ul className="flex-1 overflow-y-auto px-3">
         {sortNotes(notes).map((n) => (
-          <NoteRow key={n.id} note={n} onUpdate={onUpdate} onDelete={onDelete} onTimeClick={onTimeClick} />
+          <NoteRow key={n.id} note={n} onUpdate={onUpdate} onDelete={onDelete} onTimeClick={onTimeClick} locked={locked} />
         ))}
       </ul>
       <div className="border-t border-border p-2 pb-24">
         <textarea
           aria-label="New note"
-          disabled={disabled}
+          disabled={disabled || locked}
           maxLength={NOTE_MAX_CHARS}
           placeholder={disabled ? disabledHint : 'Type a note, press Enter'}
           className="w-full resize-none rounded-md border border-input bg-background px-3 py-2 text-sm min-h-[60px] disabled:opacity-60"

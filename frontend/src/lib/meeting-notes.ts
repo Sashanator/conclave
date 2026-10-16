@@ -65,3 +65,27 @@ export function applyMarks(transcripts: Transcript[], marks: Record<string, Tran
     return mark ? { ...t, mark } : t;
   });
 }
+
+/** Restored notes join any added while the restore loaded; a note already in state wins. */
+export function mergeNotes(current: MeetingNote[], restored: MeetingNote[]): MeetingNote[] {
+  const present = new Set(current.map((n) => n.id));
+  return [...restored.filter((n) => !present.has(n.id)), ...current];
+}
+
+/**
+ * Marks to write to the recovery record. A saved mark for a line not loaded yet is kept, so a write
+ * made before the backend history arrives cannot drop it.
+ */
+export function marksToPersist(saved: Record<string, TranscriptMark>, transcripts: Transcript[]): Record<string, TranscriptMark> {
+  const loaded = new Set(transcripts.filter((t) => t.sequence_id !== undefined).map((t) => String(t.sequence_id)));
+  const kept: Record<string, TranscriptMark> = {};
+  for (const [key, mark] of Object.entries(saved)) {
+    if (!loaded.has(key)) kept[key] = mark;
+  }
+  return { ...kept, ...collectMarks(transcripts) };
+}
+
+/** Notes and marks freeze once a stop begins: the save takes a snapshot, so later edits would be lost. */
+export function annotationsLocked(s: { isRecording: boolean; isStopping: boolean; isProcessing: boolean; isSaving: boolean }): boolean {
+  return !s.isRecording || s.isStopping || s.isProcessing || s.isSaving;
+}

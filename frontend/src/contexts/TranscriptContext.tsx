@@ -438,6 +438,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     const id = sessionStorage.getItem('indexeddb_current_meeting_id');
     if (!recordingState.isRecording || !id || restoredIdRef.current === id) return;
     restoredIdRef.current = id;
+    setCurrentMeetingId(id);
     indexedDBService.getMeetingMetadata(id).then((saved) => {
       // A record that is no longer the current meeting (the user started another) is not applied
       if (!saved || sessionStorage.getItem('indexeddb_current_meeting_id') !== id) return;
@@ -446,6 +447,10 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       setTranscripts(prev => applyMarks(prev, saved.marks));
       readyIdRef.current = id;
       bumpAnnotations();
+    }).catch((err) => {
+      // Not ready, so the record is not written over; the next isRecording change retries
+      console.error('[Restore] Could not load notes and marks:', err);
+      restoredIdRef.current = null;
     });
   }, [recordingState.isRecording]);
 

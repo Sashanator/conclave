@@ -120,6 +120,10 @@ dashmap = "6.1.0"
 # Directories
 dirs = "5.0.1"
 
+# Meeting folders: plain canonical paths (dunce) and Recycle Bin deletes (trash)
+dunce = "1.0.5"
+trash = "5.2"
+
 # Additional dependencies for notification system
 url = "2.5.0"
 

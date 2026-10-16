@@ -40,10 +40,21 @@ pub fn create_meeting_folder(
     let timestamp = Utc::now().format("%Y-%m-%d_%H-%M").to_string();
     let sanitized_name = sanitize_filename(meeting_name);
     let folder_name = format!("{}_{}", sanitized_name, timestamp);
-    let meeting_folder = base_path.join(folder_name);
-
-    // Create main meeting folder
-    std::fs::create_dir_all(&meeting_folder)?;
+    std::fs::create_dir_all(base_path)?;
+    // `create_dir` (not `_all`) fails on an existing folder, so two meetings never share one;
+    // the name only has minute resolution.
+    let mut meeting_folder = base_path.join(&folder_name);
+    let mut n = 2;
+    loop {
+        match std::fs::create_dir(&meeting_folder) {
+            Ok(()) => break,
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists && n <= 99 => {
+                meeting_folder = base_path.join(format!("{folder_name}_{n}"));
+                n += 1;
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 
     // Only create .checkpoints subdirectory if requested (when auto_save is true)
     if create_checkpoints_dir {
@@ -736,4 +747,19 @@ pub fn write_transcript_json_to_file(
     std::fs::write(&file_path, json_string)?;
 
     Ok(file_path.to_string_lossy().to_string())
+}
+
+#[cfg(test)]
+mod meeting_folder_name_tests {
+    use super::*;
+
+    #[test]
+    fn two_meetings_never_share_a_folder() {
+        let base = tempfile::tempdir().unwrap();
+        let a = create_meeting_folder(&base.path().to_path_buf(), "Standup", true).unwrap();
+        let b = create_meeting_folder(&base.path().to_path_buf(), "Standup", false).unwrap();
+        assert_ne!(a, b);
+        assert!(a.is_dir() && b.is_dir());
+        assert!(a.join(".checkpoints").is_dir());
+    }
 }

@@ -32,22 +32,39 @@ pub fn recycle(paths: &[PathBuf]) -> Result<(), String> {
         .map_err(|_| "The Recycle Bin call failed unexpectedly".to_string())?
 }
 
-/// Canonical path of a meeting folder strictly inside the recordings base, or `None`.
-/// Canonicalizing first resolves `..` and links, so nothing outside the base can qualify.
+/// Canonical path of a meeting folder that is a direct child of the recordings base, or `None`.
+/// The folder itself must not be a symlink or (on Windows) a junction; the base may be reached
+/// through a link, since it is resolved. Meeting folders are always direct children (see
+/// `create_meeting_folder`), so a link or a nested folder never qualifies.
 pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Option<PathBuf> {
     if folder_path.trim().is_empty() {
         return None;
     }
+    let plain_dir = fs::symlink_metadata(folder_path)
+        .is_ok_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink() && !is_reparse_point(&m));
     let (Ok(folder), Ok(base)) = (dunce::canonicalize(folder_path), dunce::canonicalize(recordings_base)) else {
         warn!("Meeting folder guard: cannot resolve {folder_path}");
         return None;
     };
-    if folder.is_dir() && folder != base && folder.starts_with(&base) {
+    if plain_dir && folder.parent() == Some(base.as_path()) {
         Some(folder)
     } else {
-        warn!("Meeting folder guard: refusing {} (not inside {})", folder.display(), base.display());
+        warn!("Meeting folder guard: refusing {} (not a folder directly inside {})", folder.display(), base.display());
         None
     }
+}
+
+/// Junctions are not symlinks to std, so they are caught by the reparse-point attribute.
+#[cfg(windows)]
+fn is_reparse_point(m: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(not(windows))]
+fn is_reparse_point(_: &fs::Metadata) -> bool {
+    false
 }
 
 /// A real file, not a symlink/junction (links could point anywhere on disk).
@@ -340,6 +357,43 @@ mod tests {
         let outside = tempfile::tempdir().unwrap();
         std::os::unix::fs::symlink(outside.path(), b.path().join("sneaky")).unwrap();
         assert!(guarded_meeting_folder(b.path().join("sneaky").to_str().unwrap(), b.path()).is_none());
+    }
+
+    #[test]
+    fn guard_accepts_a_direct_child_folder() {
+        let b = base();
+        let m = b.path().join("Standup_2026-10-15_10-00");
+        fs::create_dir(&m).unwrap();
+        assert!(guarded_meeting_folder(m.to_str().unwrap(), b.path()).is_some());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_rejects_a_link_inside_the_base_that_points_to_a_folder_inside_it() {
+        let b = base();
+        let m = b.path().join("m");
+        fs::create_dir(&m).unwrap();
+        std::os::unix::fs::symlink(&m, b.path().join("sneaky")).unwrap();
+        assert!(guarded_meeting_folder(b.path().join("sneaky").to_str().unwrap(), b.path()).is_none());
+    }
+
+    #[test]
+    fn guard_rejects_a_nested_folder() {
+        let b = base();
+        let nested = b.path().join("sub").join("M");
+        fs::create_dir_all(&nested).unwrap();
+        assert!(guarded_meeting_folder(nested.to_str().unwrap(), b.path()).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guard_accepts_a_base_reached_through_a_link() {
+        let real = base();
+        fs::create_dir(real.path().join("m")).unwrap();
+        let holder = base();
+        let link_base = holder.path().join("Recordings");
+        std::os::unix::fs::symlink(real.path(), &link_base).unwrap();
+        assert!(guarded_meeting_folder(link_base.join("m").to_str().unwrap(), &link_base).is_some());
     }
 
     #[test]

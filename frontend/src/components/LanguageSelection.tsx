@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Globe } from 'lucide-react';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
-import { addLanguage, removeLanguage } from '@/lib/allowed-languages';
+import { MAX_ALLOWED_LANGUAGES, addLanguage, removeLanguage } from '@/lib/allowed-languages';
 
 export interface Language {
   code: string;
@@ -194,8 +194,8 @@ export function LanguageSelection({
           ))}
         </select>
 
-        {/* Languages spoken in the meetings: auto mode picks only among these */}
-        {selectedLanguage === 'auto' && !isParakeet && (
+        {/* Languages spoken in the meetings: used whenever auto detection runs */}
+        {!isParakeet && (
           <div className="space-y-2 pt-2">
             <h5 className="text-sm font-medium text-foreground">Languages spoken in your meetings</h5>
             <div className="flex flex-wrap gap-2">
@@ -219,23 +219,25 @@ export function LanguageSelection({
                 );
               })}
             </div>
-            <select
-              aria-label="Add language"
-              value=""
-              onChange={(e) => {
-                if (e.target.value) setAllowedLanguages(addLanguage(allowedLanguages, e.target.value));
-              }}
-              className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
-            >
-              <option value="">Add language…</option>
-              {addableLanguages.map((language) => (
-                <option key={language.code} value={language.code}>
-                  {language.name} ({language.code})
-                </option>
-              ))}
-            </select>
+            {allowedLanguages.length < MAX_ALLOWED_LANGUAGES && (
+              <select
+                aria-label="Add language"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) setAllowedLanguages(addLanguage(allowedLanguages, e.target.value));
+                }}
+                className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">Add language…</option>
+                {addableLanguages.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.name} ({language.code})
+                  </option>
+                ))}
+              </select>
+            )}
             <p className="text-xs text-muted-foreground">
-              Whisper only chooses among these languages. Leave empty to let it pick any language.
+              Used whenever the language is Auto Detect, including Re-transcribe and Import. Whisper only chooses among these languages. Leave empty to let it pick any language.
             </p>
           </div>
         )}

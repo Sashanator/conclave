@@ -8,6 +8,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { BetaFeatures, BetaFeatureKey, loadBetaFeatures, saveBetaFeatures } from '@/types/betaFeatures';
 import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { parseAllowedLanguages } from '@/lib/allowed-languages';
+import { toast } from 'sonner';
 
 export interface OllamaModel {
   name: string;
@@ -236,11 +237,16 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     }
   }, []); 
 
-  // Sync allowed languages to Rust on mount
+  // Sync allowed languages to Rust on mount; if Rust rejects them, reset so the UI never shows unused languages
   useEffect(() => {
     invoke('set_allowed_languages', { languages: allowedLanguages })
       .catch(err => {
         console.error('[ConfigContext] Failed to sync allowed languages to Rust on startup:', err);
+        setAllowedLanguages([]);
+        localStorage.setItem('allowedLanguages', '[]');
+        invoke('set_allowed_languages', { languages: [] }).catch(resetErr =>
+          console.error('[ConfigContext] Failed to reset allowed languages in Rust:', resetErr)
+        );
       });
   }, []);
 
@@ -497,15 +503,19 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
-  // Wrapper for setAllowedLanguages that persists to localStorage and syncs to Rust
-  const handleSetAllowedLanguages = useCallback((languages: string[]) => {
+  // Wrapper for setAllowedLanguages: Rust validates first; state and localStorage change only on success
+  const handleSetAllowedLanguages = useCallback(async (languages: string[]) => {
+    try {
+      await invoke('set_allowed_languages', { languages });
+    } catch (err) {
+      console.error('Failed to sync allowed languages to Rust:', err);
+      toast.error("Couldn't save meeting languages", { description: String(err) });
+      return;
+    }
     setAllowedLanguages(languages);
     if (typeof window !== 'undefined') {
       localStorage.setItem('allowedLanguages', JSON.stringify(languages));
     }
-    invoke('set_allowed_languages', { languages }).catch(err =>
-      console.error('Failed to sync allowed languages to Rust:', err)
-    );
   }, []);
 
   const value: ConfigContextType = useMemo(() => ({

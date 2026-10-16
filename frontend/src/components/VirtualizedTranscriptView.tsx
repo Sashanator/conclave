@@ -7,8 +7,11 @@ import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
 import { ConfidenceIndicator } from "./ConfidenceIndicator";
 import { Tooltip, TooltipContent, TooltipTrigger } from "./ui/tooltip";
 import { RecordingStatusBar } from "./RecordingStatusBar";
+import { TranscriptMarkButton } from "./TranscriptMarkButton";
 import { motion, AnimatePresence } from "framer-motion";
-import { TranscriptSegmentData } from "@/types";
+import { TranscriptMark, TranscriptSegmentData } from "@/types";
+import { findActiveSegmentId } from "@/lib/meeting-audio";
+import { formatRecordingTime as formatMmSs } from "@/lib/meeting-notes";
 
 export interface VirtualizedTranscriptViewProps {
     /** Transcript segments to display */
@@ -34,6 +37,12 @@ export interface VirtualizedTranscriptViewProps {
     totalCount?: number;
     loadedCount?: number;
     onLoadMore?: () => void;
+
+    // Marks and playback (meeting page); all optional, lines render as before without them
+    onMarkChange?: (segmentId: string, mark: TranscriptMark | null) => void;
+    onPlayFrom?: (seconds: number) => void;
+    /** Playhead position in seconds; the segment under it is highlighted */
+    playheadSeconds?: number | null;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -71,6 +80,10 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence,
     isStreaming,
     showConfidence,
+    mark,
+    isActive,
+    onMarkChange,
+    onPlay,
 }: {
     id: string;
     timestamp: number;
@@ -78,18 +91,36 @@ const TranscriptSegment = memo(function TranscriptSegment({
     confidence?: number;
     isStreaming: boolean;
     showConfidence: boolean;
+    mark?: TranscriptMark | null;
+    isActive: boolean;
+    onMarkChange?: (mark: TranscriptMark | null) => void;
+    onPlay?: () => void;
 }) {
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
     return (
-        <div id={`segment-${id}`} className="mb-3">
+        <div id={`segment-${id}`} className={`mb-3 ${isActive ? 'ring-1 ring-blue-400 rounded' : ''}`}>
             <div className="flex items-start gap-2">
                 <Tooltip>
-                    <TooltipTrigger>
-                        <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px]">
-                            {formatRecordingTime(timestamp)}
-                        </span>
-                    </TooltipTrigger>
+                    {onPlay ? (
+                        // asChild: the trigger is the button itself (a button inside a button is invalid)
+                        <TooltipTrigger asChild>
+                            <button
+                                type="button"
+                                onClick={onPlay}
+                                aria-label={`Play from ${formatMmSs(timestamp)}`}
+                                className="text-xs text-blue-600 dark:text-blue-400 hover:underline mt-1 flex-shrink-0 min-w-[50px] text-left"
+                            >
+                                {formatRecordingTime(timestamp)}
+                            </button>
+                        </TooltipTrigger>
+                    ) : (
+                        <TooltipTrigger>
+                            <span className="text-xs text-muted-foreground mt-1 flex-shrink-0 min-w-[50px]">
+                                {formatRecordingTime(timestamp)}
+                            </span>
+                        </TooltipTrigger>
+                    )}
                     <TooltipContent>
                         {confidence !== undefined && showConfidence && (
                             <ConfidenceIndicator confidence={confidence} showIndicator={showConfidence} />
@@ -101,6 +132,8 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         <div className="bg-muted border border-border rounded-lg px-3 py-2">
                             <p className="text-base text-foreground leading-relaxed">{displayText}</p>
                         </div>
+                    ) : onMarkChange ? (
+                        <TranscriptMarkButton text={displayText} mark={mark} onChange={onMarkChange} />
                     ) : (
                         <p className="text-base text-foreground leading-relaxed">{displayText}</p>
                     )}
@@ -124,6 +157,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     totalCount = 0,
     loadedCount = 0,
     onLoadMore,
+    onMarkChange,
+    onPlayFrom,
+    playheadSeconds,
 }) => {
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -163,6 +199,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         isRecording,
         enableStreaming
     );
+
+    const activeId = findActiveSegmentId(segments, playheadSeconds);
 
     // Infinite scroll: IntersectionObserver to trigger loading more
     useEffect(() => {
@@ -296,6 +334,10 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        mark={segment.mark}
+                                        isActive={segment.id === activeId}
+                                        onMarkChange={onMarkChange ? (m) => onMarkChange(segment.id, m) : undefined}
+                                        onPlay={onPlayFrom ? () => onPlayFrom(segment.timestamp) : undefined}
                                     />
                                 </div>
                             );
@@ -352,6 +394,10 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         confidence={segment.confidence}
                                         isStreaming={isStreaming}
                                         showConfidence={showConfidence}
+                                        mark={segment.mark}
+                                        isActive={segment.id === activeId}
+                                        onMarkChange={onMarkChange ? (m) => onMarkChange(segment.id, m) : undefined}
+                                        onPlay={onPlayFrom ? () => onPlayFrom(segment.timestamp) : undefined}
                                     />
                                 </motion.div>
                             );

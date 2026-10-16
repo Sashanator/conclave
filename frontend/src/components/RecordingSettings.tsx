@@ -7,6 +7,8 @@ import { DeviceSelection, SelectedDevices } from '@/components/DeviceSelection';
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useConfig } from '@/contexts/ConfigContext';
+import { OldAudioReview } from '@/components/OldAudio/OldAudioReview';
+import { daysToSelect, OLD_AUDIO_OPTIONS, selectToDays } from '@/lib/old-audio';
 
 export interface RecordingPreferences {
   save_folder: string;
@@ -15,6 +17,7 @@ export interface RecordingPreferences {
   preferred_mic_device: string | null;
   preferred_system_device: string | null;
   meeting_detection: 'off' | 'ask' | 'auto';
+  old_audio_days: number | null;
 }
 
 const DETECTION_OPTIONS = [
@@ -34,12 +37,14 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     file_format: 'mp4',
     preferred_mic_device: null,
     preferred_system_device: null,
-    meeting_detection: 'ask'
+    meeting_detection: 'ask',
+    old_audio_days: 30,
   });
   const [detectionStatus, setDetectionStatus] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
+  const [reviewOpen, setReviewOpen] = useState(false);
   const { isRecording } = useRecordingState();
   const { setSelectedDevices } = useConfig();
 
@@ -124,6 +129,19 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       toast.error('Failed to save meeting detection', {
         description: error instanceof Error ? error.message : String(error)
       });
+    }
+  };
+
+  const handleOldAudioChange = async (value: string) => {
+    const previous = preferences.old_audio_days;
+    const old_audio_days = selectToDays(value);
+    setPreferences({ ...preferences, old_audio_days });
+    try {
+      await invoke('set_recording_preferences', { preferences: { ...preferences, old_audio_days } });
+      toast.success(old_audio_days === null ? 'No reminders about old audio' : `Reminders for audio older than ${old_audio_days} days`);
+    } catch (error) {
+      setPreferences((prev) => ({ ...prev, old_audio_days: previous }));
+      toast.error('Failed to save the setting', { description: error instanceof Error ? error.message : String(error) });
     }
   };
 
@@ -278,6 +296,35 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
         {detectionStatus && (
           <p className="text-sm text-amber-700 dark:text-amber-400 mt-2">{detectionStatus}</p>
         )}
+      </div>
+
+      {/* Old audio reminder */}
+      <div className="p-4 border rounded-lg space-y-3">
+        <div className="flex items-center justify-between gap-4">
+          <div className="flex-1">
+            <div className="font-medium">Remind me about audio older than</div>
+            <div className="text-sm text-muted-foreground">Conclave never deletes audio by itself. Transcripts, summaries and notes are always kept. Pin a meeting with “Keep audio” to leave it out.</div>
+          </div>
+          <Select value={daysToSelect(preferences.old_audio_days)} onValueChange={handleOldAudioChange}>
+            <SelectTrigger className="w-56" aria-label="Remind me about audio older than">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {OLD_AUDIO_OPTIONS.map((o) => (
+                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+        <button
+          type="button"
+          onClick={() => setReviewOpen(true)}
+          disabled={preferences.old_audio_days === null || isRecording}
+          className="text-sm text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50 disabled:no-underline"
+        >
+          Review old audio…
+        </button>
+        <OldAudioReview open={reviewOpen} onOpenChange={setReviewOpen} />
       </div>
 
       {/* Device Preferences */}

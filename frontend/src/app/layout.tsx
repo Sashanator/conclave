@@ -22,6 +22,7 @@ import { DownloadProgressToastProvider } from '@/components/shared/DownloadProgr
 import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcessingProvider'
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
+import { OldAudioReminder } from '@/components/OldAudio/OldAudioReminder'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
 import { usePathname } from 'next/navigation'
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext'
@@ -271,6 +272,7 @@ function AppShell({
                               handleImportDialogClose={handleImportDialogClose}
                               importFilePath={importFilePath}
                             />
+                            <OldAudioReminder />
                           </ImportDialogProvider>
                         </RecordingPostProcessingProvider>
                       </TooltipProvider>

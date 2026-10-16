@@ -160,13 +160,60 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
     for f in &files {
         recycle_checked(f, &folder, remove)?;
     }
+    if !still_guarded(&folder, recordings_base) {
+        return Err(moved_out_message(&folder));
+    }
     recycle_if_empty(&folder.join(".checkpoints"), remove)?;
-    if guarded_meeting_folder(&folder.to_string_lossy(), recordings_base).as_ref() != Some(&folder)
-        || !recycle_if_empty(&folder, remove)?
-    {
+    if !still_guarded(&folder, recordings_base) {
+        return Err(moved_out_message(&folder));
+    }
+    if !recycle_if_empty(&folder, remove)? {
         return Err(format!("Recording folder kept: new files appeared in it ({})", folder.display()));
     }
     Ok(())
+}
+
+/// Re-run before each later step: the folder may have been replaced by a link meanwhile.
+fn still_guarded(folder: &Path, recordings_base: &Path) -> bool {
+    guarded_meeting_folder(&folder.to_string_lossy(), recordings_base).as_deref() == Some(folder)
+}
+
+fn moved_out_message(folder: &Path) -> String {
+    format!("Recording folder kept: it is no longer inside the recordings folder ({})", folder.display())
+}
+
+/// Recycles Conclave's own checkpoint files in a guarded folder, then `.checkpoints` if empty.
+/// Other files in `.checkpoints` are left alone, so the folder stays.
+fn recycle_checkpoints(folder: &Path, remove: Remover) -> Result<(), String> {
+    let checkpoints = folder.join(".checkpoints");
+    for f in checkpoint_files(&checkpoints) {
+        recycle_checked(&f, folder, remove)?;
+    }
+    recycle_if_empty(&checkpoints, remove)?;
+    Ok(())
+}
+
+/// Checkpoint cleanup for the `cleanup_checkpoints` command: same guard and one-at-a-time
+/// Recycle Bin rules as a meeting delete. A missing folder is `Ok(())`.
+pub fn cleanup_checkpoints_guarded(folder_path: &str, recordings_base: &Path, remove: Remover) -> Result<(), String> {
+    if !Path::new(folder_path).exists() {
+        return Ok(());
+    }
+    let folder = guarded_meeting_folder(folder_path, recordings_base)
+        .ok_or_else(|| format!("Checkpoints kept: it is outside the Conclave recordings folder ({folder_path})"))?;
+    recycle_checkpoints(&folder, remove)
+}
+
+/// Whether another meeting's folder is this one. Compared by canonical path, so a trailing
+/// slash, a `..` or a link to the same folder still counts. Rows that cannot be resolved are
+/// skipped; the deleted meeting itself is excluded by id.
+async fn used_by_another_meeting(pool: &sqlx::SqlitePool, meeting_id: &str, folder_path: &str) -> Result<bool, sqlx::Error> {
+    let Ok(folder) = dunce::canonicalize(folder_path) else { return Ok(false) };
+    let rows: Vec<(String,)> = sqlx::query_as("SELECT folder_path FROM meetings WHERE id <> ? AND folder_path IS NOT NULL")
+        .bind(meeting_id)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows.iter().any(|(p,)| dunce::canonicalize(p).is_ok_and(|c| c == folder)))
 }
 
 /// DB delete first, then the folder; the meeting stays deleted if the folder cannot be.
@@ -183,17 +230,12 @@ pub async fn delete_meeting_and_folder(
     }
     let warning = match folder_path {
         None => None,
-        Some(p) => {
-            let (others,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings WHERE folder_path = ?")
-                .bind(&p)
-                .fetch_one(pool)
-                .await?;
-            if others > 0 {
-                Some(format!("Recording folder kept: another meeting uses it ({p})"))
-            } else {
-                delete_meeting_folder(&p, recordings_base, remove).err()
-            }
-        }
+        // The row is already gone, so a failed check must keep the folder and say so.
+        Some(p) => match used_by_another_meeting(pool, meeting_id, &p).await {
+            Ok(false) => delete_meeting_folder(&p, recordings_base, remove).err(),
+            Ok(true) => Some(format!("Recording folder kept: another meeting uses it ({p})")),
+            Err(e) => Some(format!("Recording folder kept: could not check whether another meeting uses it ({p}): {e}")),
+        },
     };
     if let Some(w) = &warning {
         warn!("Meeting {meeting_id} deleted, folder kept: {w}");
@@ -391,5 +433,125 @@ mod tests {
         assert!(w.contains("another meeting"));
         assert!(m.join("audio.mp4").exists());
         assert!(bin.names().is_empty());
+    }
+
+    /// Inserts a meeting with the exact folder string the webview would send.
+    async fn meeting_at(pool: &sqlx::SqlitePool, id: &str, folder: &str) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES (?, 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?)")
+            .bind(id).bind(folder)
+            .execute(pool).await.unwrap();
+    }
+
+    /// Meeting `a` owns `m`; meeting `b` stores the same folder as `spelling`. Deleting `a` keeps it.
+    async fn shared_under_spelling_is_kept(base: &Path, m: &Path, spelling: &str) {
+        let pool = crate::database::repositories::test_pool().await;
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        meeting_at(&pool, "a", m.to_str().unwrap()).await;
+        meeting_at(&pool, "b", spelling).await;
+        let bin = FakeBin::new();
+        let w = delete_meeting_and_folder(&pool, "a", base, &|p| bin.remove(p)).await.unwrap().unwrap().unwrap();
+        assert!(w.contains("another meeting"), "{spelling}: {w}");
+        assert!(m.join("audio.mp4").exists());
+        assert!(bin.names().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_folder_shared_by_a_trailing_slash_spelling_is_kept() {
+        let b = base();
+        let m = b.path().join("Standup_2026-10-15_10-00");
+        fs::create_dir(&m).unwrap();
+        let spelling = format!("{}{}", m.display(), std::path::MAIN_SEPARATOR);
+        shared_under_spelling_is_kept(b.path(), &m, &spelling).await;
+    }
+
+    #[tokio::test]
+    async fn a_folder_shared_by_a_dotdot_spelling_is_kept() {
+        let b = base();
+        let m = b.path().join("Standup_2026-10-15_10-00");
+        fs::create_dir(&m).unwrap();
+        let spelling = m.join("..").join("Standup_2026-10-15_10-00");
+        shared_under_spelling_is_kept(b.path(), &m, spelling.to_str().unwrap()).await;
+    }
+
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn a_folder_shared_through_a_link_inside_the_base_is_kept() {
+        let b = base();
+        let m = b.path().join("Standup_2026-10-15_10-00");
+        fs::create_dir(&m).unwrap();
+        let link = b.path().join("sneaky");
+        std::os::unix::fs::symlink(&m, &link).unwrap();
+        shared_under_spelling_is_kept(b.path(), &m, link.to_str().unwrap()).await;
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_folder_swapped_for_a_link_mid_delete_leaves_checkpoints_outside_alone() {
+        use std::os::unix::fs::symlink;
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let b = base();
+        let outside = tempfile::tempdir().unwrap();
+        let m = b.path().join("m");
+        fs::create_dir_all(m.join(".checkpoints")).unwrap();
+        fs::write(m.join(".checkpoints").join("audio_chunk_000.mp4"), "x").unwrap();
+        let moved = outside.path().join("moved");
+        let bin = FakeBin::new();
+        let swapped = AtomicBool::new(false);
+        let remove = |p: &[PathBuf]| -> Result<(), String> {
+            bin.remove(p)?;
+            if !swapped.swap(true, Ordering::SeqCst) {
+                // The folder leaves the base after the first file; a link takes its place.
+                fs::rename(&m, &moved).unwrap();
+                symlink(&moved, &m).unwrap();
+            }
+            Ok(())
+        };
+        assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &remove).unwrap_err().contains("no longer inside"));
+        assert!(moved.join(".checkpoints").is_dir(), "a folder outside the base must keep its .checkpoints");
+        assert_eq!(bin.names(), vec!["audio_chunk_000.mp4".to_string()]);
+    }
+
+    #[test]
+    fn checkpoint_cleanup_leaves_a_folder_outside_the_base_intact() {
+        let b = base();
+        let outside = tempfile::tempdir().unwrap();
+        fs::create_dir_all(outside.path().join(".checkpoints")).unwrap();
+        fs::write(outside.path().join(".checkpoints").join("audio_chunk_000.mp4"), "x").unwrap();
+        let bin = FakeBin::new();
+        assert!(cleanup_checkpoints_guarded(outside.path().to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_err());
+        assert!(outside.path().join(".checkpoints").join("audio_chunk_000.mp4").exists());
+        assert!(bin.names().is_empty());
+        assert!(cleanup_checkpoints_guarded(b.path().join("nope").to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_ok());
+    }
+
+    #[test]
+    fn checkpoint_cleanup_recycles_only_conclave_chunks_inside_the_base() {
+        let b = base();
+        let m = b.path().join("m");
+        let cp = m.join(".checkpoints");
+        fs::create_dir_all(&cp).unwrap();
+        for f in ["audio_chunk_000.mp4", "audio_chunk_001.mp4", "concat_list.txt"] {
+            fs::write(cp.join(f), "x").unwrap();
+        }
+        fs::write(cp.join("keep.txt"), "mine").unwrap();
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        let bin = FakeBin::new();
+        cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap();
+        assert_eq!(bin.names().len(), 3);
+        assert!(cp.join("keep.txt").exists()); // a foreign file keeps .checkpoints
+        assert!(m.join("audio.mp4").exists());
+    }
+
+    #[test]
+    fn checkpoint_cleanup_recycles_checkpoints_once_it_is_empty() {
+        let b = base();
+        let m = b.path().join("m");
+        let cp = m.join(".checkpoints");
+        fs::create_dir_all(&cp).unwrap();
+        fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
+        let bin = FakeBin::new();
+        cleanup_checkpoints_guarded(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap();
+        assert_eq!(bin.names(), vec!["audio_chunk_000.mp4".to_string(), ".checkpoints".to_string()]);
+        assert!(m.is_dir());
     }
 }

@@ -199,8 +199,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
       await indexedDBService.markMeetingSaved(meetingId);
 
 
-      // 8. Clean up checkpoint files
-      if (folderPath) {
+      // 8. Clean up checkpoint files, only once they are merged: unmerged chunks are the only copy
+      if (folderPath && audioRecoveryStatus?.status === 'success') {
         try {
           await invoke('cleanup_checkpoints', { meetingFolder: folderPath });
         } catch (error) {

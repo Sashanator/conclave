@@ -6,7 +6,7 @@ use super::recording_state::AudioChunk;
 use serde::{Serialize, Deserialize};
 
 use super::ffmpeg::find_ffmpeg_path;
-use super::meeting_folder::{delete_checkpoint_files, guarded_meeting_folder};
+use super::meeting_folder::{delete_checkpoint_files, guarded_meeting_folder, is_plain_dir};
 
 /// Audio data without device type (we only store mixed audio)
 #[derive(Clone)]
@@ -254,11 +254,13 @@ pub async fn recover_audio_from_checkpoints(
 ) -> Result<AudioRecoveryStatus, String> {
     info!("Starting audio recovery for folder: {}", meeting_folder);
 
-    let folder_path = PathBuf::from(&meeting_folder);
+    // The folder comes from the webview: it must pass the guard before anything is read or written.
+    let folder_path = guarded_meeting_folder(&meeting_folder, &crate::audio::recording_preferences::get_default_recordings_folder())
+        .ok_or_else(|| format!("Recovery refused: {meeting_folder} is not a meeting folder in the recordings folder"))?;
     let checkpoints_dir = folder_path.join(".checkpoints");
 
-    // Check if checkpoints directory exists
-    if !checkpoints_dir.exists() {
+    // Check if checkpoints directory exists (a link is not ours to read or write through)
+    if !is_plain_dir(&checkpoints_dir) {
         info!("No checkpoints directory found at: {}", checkpoints_dir.display());
         return Ok(AudioRecoveryStatus {
             status: "none".to_string(),
@@ -474,5 +476,16 @@ mod tests {
         let result = saver.finalize().await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("No audio checkpoints"));
+    }
+    #[tokio::test]
+    async fn recovery_refuses_a_folder_outside_the_recordings_folder() {
+        let outside = tempdir().unwrap();
+        let cp = outside.path().join(".checkpoints");
+        std::fs::create_dir_all(&cp).unwrap();
+        std::fs::write(cp.join("audio_chunk_000.mp4"), "x").unwrap();
+        let result = recover_audio_from_checkpoints(outside.path().to_string_lossy().to_string(), 48000).await;
+        assert!(result.is_err());
+        assert!(!cp.join("concat_list.txt").exists());
+        assert!(!outside.path().join("audio.mp4").exists());
     }
 }

@@ -1,2 +1,9 @@
 pub mod sentences;
 pub mod levels;
+pub mod models;
+pub mod settings;
+
+/// The feature runs only when it is switched on and its models are present.
+pub fn is_active() -> bool {
+    settings::is_enabled() && models::models_ready()
+}

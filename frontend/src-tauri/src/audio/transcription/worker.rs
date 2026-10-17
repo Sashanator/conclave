@@ -5,9 +5,10 @@
 use super::engine::TranscriptionEngine;
 use super::provider::TranscriptionError;
 use crate::audio::AudioChunk;
+use crate::speakers::levels;
 use crate::speakers::sentences::{to_meeting_time, Sentence};
 use crate::whisper_engine::language_policy::LanguagePolicy;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -47,7 +48,7 @@ pub struct TranscriptUpdate {
     // Timed sentences in meeting seconds; None when their timing is unusable
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sentences: Option<Vec<Sentence>>,
-    // Speaker index from the live "You" label; always None until speaker labelling fills it
+    // Speaker index from the live "You" label (0), None for Others or when speaker identification is off
     #[serde(skip_serializing_if = "Option::is_none")]
     pub speaker_idx: Option<i64>,
 }
@@ -208,6 +209,10 @@ pub fn start_transcription_task<R: Runtime>(
                                         let audio_start_time = chunk_timestamp; // Already in seconds from recording start
                                         let audio_end_time = chunk_timestamp + chunk_duration;
                                         let sentences = to_meeting_time(&local_sentences, &transcript, audio_start_time, audio_end_time);
+                                        let mic_only_share = levels::live_fraction(audio_start_time, audio_end_time);
+                                        if let Some(fraction) = mic_only_share {
+                                            debug!("speakers: mic-only fraction {:.2} for {:.1}-{:.1}s", fraction, audio_start_time, audio_end_time);
+                                        }
 
                                         // Save structured transcript segment to recording manager (only final results)
                                         // Save ALL segments (partial and final) to ensure complete JSON
@@ -231,7 +236,7 @@ pub fn start_transcription_task<R: Runtime>(
                                             audio_end_time,
                                             duration: chunk_duration,
                                             sentences,
-                                            speaker_idx: None,
+                                            speaker_idx: levels::live_label(audio_start_time, audio_end_time),
                                         };
 
                                         if let Err(e) = app_clone.emit("transcript-update", &update)

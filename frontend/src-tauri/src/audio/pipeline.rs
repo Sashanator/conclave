@@ -762,6 +762,9 @@ impl AudioPipeline {
             VAD_REDEMPTION_TIME_MS
         );
 
+        // One level track per recording; it stays off unless speaker identification is active
+        crate::speakers::levels::live_reset(crate::speakers::is_active());
+
         // Initialize professional audio mixing components
         let ring_buffer = AudioMixerRingBuffer::new(sample_rate);
         let mixer = ProfessionalAudioMixer::new(sample_rate);
@@ -847,6 +850,9 @@ impl AudioPipeline {
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data
                     while self.ring_buffer.can_mix() {
                         if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
+                            // Level track for the You/Others label; a no-op unless speaker identification is on
+                            crate::speakers::levels::live_push(crate::speakers::levels::window_levels(&mic_window, &sys_window));
+
                             // Simple mixing without aggressive ducking
                             let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
 

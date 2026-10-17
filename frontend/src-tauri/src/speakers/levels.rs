@@ -2,6 +2,8 @@
 // A slice is mic-only when the mic is loud over its own noise floor and the system channel is quiet over its floor.
 
 use std::collections::VecDeque;
+use std::fs;
+use std::path::Path;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
 
 pub const SLICE_SECS: f64 = 0.05;
@@ -115,6 +117,13 @@ pub fn encode(pairs: &[LevelPair]) -> Vec<u8> {
     out
 }
 
+/// Writes `levels.bin` in the meeting folder through a temp file, so a crash never leaves a half file.
+pub fn write_levels_file(folder: &Path, pairs: &[LevelPair]) -> std::io::Result<()> {
+    let tmp = folder.join(".levels.bin.tmp");
+    fs::write(&tmp, encode(pairs))?;
+    fs::rename(&tmp, folder.join("levels.bin"))
+}
+
 pub fn decode(bytes: &[u8]) -> Result<Vec<LevelPair>, String> {
     if bytes.len() < HEADER_LEN {
         return Err(format!("levels file too short: {} bytes", bytes.len()));
@@ -156,6 +165,9 @@ struct Live {
 }
 
 static LIVE: LazyLock<Mutex<Option<Live>>> = LazyLock::new(|| Mutex::new(None));
+/// Every test that touches `LIVE` holds this, since cargo runs tests in parallel.
+#[cfg(test)]
+pub(crate) static LIVE_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn live() -> MutexGuard<'static, Option<Live>> {
     LIVE.lock().unwrap_or_else(PoisonError::into_inner)
@@ -179,12 +191,15 @@ pub fn live_push(window: [LevelPair; SLICES_PER_WINDOW]) {
     }
 }
 
+/// Mic-only share of `[start, end)` in the live track; `None` when inactive or the range has no slices.
+pub fn live_fraction(start: f64, end: f64) -> Option<f64> {
+    let guard = live();
+    mic_only_fraction(&guard.as_ref()?.flags, start, end)
+}
+
 /// `Some(0)` (You) when over half of `[start, end)` is mic-only, else `None` (Others, or inactive).
 pub fn live_label(start: f64, end: f64) -> Option<i64> {
-    let guard = live();
-    let live = guard.as_ref()?;
-    let fraction = mic_only_fraction(&live.flags, start, end)?;
-    (fraction > 0.5).then_some(0)
+    live_fraction(start, end).filter(|&f| f > 0.5).map(|_| 0)
 }
 
 pub fn live_is_active() -> bool {
@@ -254,9 +269,18 @@ mod tests {
             ((seed >> 40) as f32 / (1u64 << 24) as f32) * 0.2
         };
         let pairs: Vec<LevelPair> = (0..1_500).map(|_| (next(), next())).collect();
-        let mut t = FloorTracker::new();
-        let per_push: Vec<bool> = pairs.iter().map(|&p| t.push(p)).collect();
-        assert_eq!(mic_only_flags(&pairs), per_push);
+        let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        live_reset(true);
+        for window in pairs.chunks_exact(SLICES_PER_WINDOW) {
+            live_push(window.try_into().unwrap());
+        }
+        // a slice is mic-only exactly when its own 50 ms range is labelled You
+        let live_flags: Vec<bool> = (0..pairs.len())
+            .map(|k| live_label(k as f64 * SLICE_SECS, (k + 1) as f64 * SLICE_SECS).is_some())
+            .collect();
+        assert_eq!(live_flags, mic_only_flags(&pairs));
+        assert!(live_flags.contains(&true) && live_flags.contains(&false));
+        assert_eq!(live_take(), Some(pairs));
     }
 
     #[test]
@@ -299,6 +323,7 @@ mod tests {
 
     #[test]
     fn live_store_labels_and_resets() {
+        let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         assert!(!live_is_active());
         live_push([(0.1, 0.1); SLICES_PER_WINDOW]); // no-op while inactive
         assert_eq!(live_take(), None);

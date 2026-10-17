@@ -572,6 +572,7 @@ pub fn run() {
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
+            speakers::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults

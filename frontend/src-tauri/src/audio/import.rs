@@ -794,6 +794,10 @@ async fn get_or_init_whisper<R: Runtime>(
                     .map_err(|e| anyhow!("Failed to load model '{}': {}", target_model, e))?;
             }
 
+            // A running recording keeps its context; the setting applies at the next start
+            if !crate::audio::recording_commands::is_recording_now() {
+                e.apply_speaker_setting().await;
+            }
             Ok(e)
         }
         None => Err(anyhow!("Whisper engine not initialized")),

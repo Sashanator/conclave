@@ -75,7 +75,7 @@ impl MeetingsRepository {
         if let Some(meeting) = meeting {
             // Get all transcripts for this meeting
             let transcripts =
-                sqlx::query_as::<_, Transcript>("SELECT * FROM transcripts WHERE meeting_id = ?")
+                sqlx::query_as::<_, Transcript>("SELECT * FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time ASC, id ASC")
                     .bind(meeting_id)
                     .fetch_all(&mut *transaction)
                     .await?;
@@ -93,6 +93,7 @@ impl MeetingsRepository {
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
                     mark: t.mark,
+                    speaker_idx: t.speaker_idx,
                 })
                 .collect::<Vec<_>>();
 
@@ -164,7 +165,7 @@ impl MeetingsRepository {
         let transcripts = sqlx::query_as::<_, Transcript>(
             "SELECT * FROM transcripts
              WHERE meeting_id = ?
-             ORDER BY audio_start_time ASC
+             ORDER BY audio_start_time ASC, id ASC
              LIMIT ? OFFSET ?"
         )
         .bind(meeting_id)
@@ -275,6 +276,24 @@ async fn delete_meeting_with_transaction(
         .execute(&mut *transaction)
         .await?;
 
+    // Explicit, not only the FK (spec §9)
+    sqlx::query("DELETE FROM meeting_speakers WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    // Explicit, not only the FK (spec §9)
+    sqlx::query("DELETE FROM speaker_jobs WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    // Explicit, not only the FK (spec §9)
+    sqlx::query("UPDATE voiceprints SET source_meeting_id = NULL WHERE source_meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
     // 3. Delete from transcripts
     sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
         .bind(meeting_id)
@@ -288,4 +307,141 @@ async fn delete_meeting_with_transaction(
         .await?;
 
     Ok(result.rows_affected() > 0)
+}
+
+#[cfg(test)]
+mod migration_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+    use sqlx::migrate::Migrator;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::path::Path;
+
+    const SPEAKERS_VERSION: i64 = 20261017000000;
+
+    async fn insert_meeting(pool: &SqlitePool, id: &str) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, 'M', '2026-10-17 12:00:00', '2026-10-17 12:00:00')")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn insert_line(pool: &SqlitePool, id: &str, meeting_id: &str, start: f64) {
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time) VALUES (?, ?, 'hi', '2026-10-17', ?)")
+            .bind(id)
+            .bind(meeting_id)
+            .bind(start)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn migration_creates_self_person() {
+        let pool = test_pool().await;
+        let (id, is_self): (String, i64) = sqlx::query_as("SELECT id, is_self FROM people")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((id.as_str(), is_self), ("self", 1));
+        // second self is rejected
+        assert!(sqlx::query("INSERT INTO people (id,name,is_self,created_at) VALUES ('x','X',1,'t')")
+            .execute(&pool)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn loaders_order_by_start_then_id() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        insert_line(&pool, "b", "M", 2.0).await;
+        insert_line(&pool, "c", "M", 1.0).await;
+        insert_line(&pool, "a", "M", 1.0).await;
+
+        let full = MeetingsRepository::get_meeting(&pool, "M").await.unwrap().unwrap();
+        let full_ids: Vec<&str> = full.transcripts.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!(full_ids, ["a", "c", "b"]);
+
+        let (page, total) = MeetingsRepository::get_meeting_transcripts_paginated(&pool, "M", 10, 0)
+            .await
+            .unwrap();
+        let page_ids: Vec<&str> = page.iter().map(|t| t.id.as_str()).collect();
+        assert_eq!((page_ids, total), (vec!["a", "c", "b"], 3));
+    }
+
+    #[tokio::test]
+    async fn delete_meeting_removes_speaker_rows_and_keeps_voiceprints() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        insert_line(&pool, "t1", "M", 1.0).await;
+        sqlx::query("INSERT INTO people (id,name,is_self,created_at) VALUES ('p1','Anna',0,'t')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO meeting_speakers (meeting_id,idx,person_id,name,centroid,seconds) VALUES ('M',1,'p1','Anna',NULL,10.0)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO speaker_jobs (meeting_id,status,run_token,updated_at) VALUES ('M','done','tok','t')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO voiceprints (id,person_id,source_meeting_id,source_idx,vector,seconds,created_at) VALUES ('v1','p1','M',1,x'00',1.0,'t')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
+
+        let (speakers,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_speakers WHERE meeting_id = 'M'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let (jobs,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speaker_jobs WHERE meeting_id = 'M'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let (source,): (Option<String>,) = sqlx::query_as("SELECT source_meeting_id FROM voiceprints WHERE id = 'v1'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((speakers, jobs, source), (0, 0, None));
+    }
+
+    #[tokio::test]
+    async fn pre_feature_rows_survive_migration() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        // Apply every migration before the speaker one, then insert a pre-feature row.
+        let mut before = Migrator::new(Path::new("./migrations")).await.unwrap();
+        before.migrations = before
+            .migrations
+            .iter()
+            .filter(|m| m.version < SPEAKERS_VERSION)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        before.run(&pool).await.unwrap();
+        insert_meeting(&pool, "M").await;
+        insert_line(&pool, "t1", "M", 1.5).await;
+
+        Migrator::new(Path::new("./migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        let (text, start, idx, sentences): (String, Option<f64>, Option<i64>, Option<String>) =
+            sqlx::query_as("SELECT transcript, audio_start_time, speaker_idx, sentences FROM transcripts WHERE id = 't1'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!((text.as_str(), start, idx, sentences), ("hi", Some(1.5), None, None));
+    }
 }

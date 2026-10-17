@@ -42,6 +42,10 @@ pub struct Transcript {
     pub duration: Option<f64>,
     #[sqlx(default)]
     pub mark: Option<String>,
+    #[sqlx(default)]
+    pub speaker_idx: Option<i64>,
+    #[sqlx(default)]
+    pub sentences: Option<String>,
 }
 
 #[derive(Debug, Clone, FromRow, Serialize, Deserialize)]

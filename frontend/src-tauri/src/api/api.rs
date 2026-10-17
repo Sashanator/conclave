@@ -139,6 +139,8 @@ pub struct MeetingTranscript {
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_idx: Option<i64>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -898,6 +900,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
                     mark: t.mark,
+                    speaker_idx: t.speaker_idx,
                 })
                 .collect::<Vec<_>>();
 

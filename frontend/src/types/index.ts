@@ -161,3 +161,25 @@ export interface TranscriptSegmentData {
   confidence?: number;
   mark?: TranscriptMark | null;
 }
+
+export type SpeakerJobStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';
+
+export interface SpeakerView {
+  idx: number;
+  name: string;
+  person_id: string | null;
+  is_self: boolean;
+  seconds: number;
+}
+
+export interface MeetingSpeakers {
+  job: { status: SpeakerJobStatus; reason: string | null; percent: number | null } | null;
+  speakers: SpeakerView[];
+}
+
+export interface SpeakerSettings {
+  enabled: boolean;
+  models_ready: boolean;
+  downloading: boolean;
+  last_analysis: { backend: string; run_seconds: number; audio_seconds: number } | null;
+}

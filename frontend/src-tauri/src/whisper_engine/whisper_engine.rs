@@ -15,6 +15,7 @@ use tokio::io::AsyncWriteExt;
 use crate::config::WHISPER_MODEL_CATALOG;
 use super::acceleration::{whisper_context_acceleration_for, WhisperCompiledBackend};
 use super::language_policy::{pad_to_min_duration, LanguagePolicy};
+use crate::speakers::sentences::{build_sentences, Sentence, TimedToken};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelStatus {
@@ -578,8 +579,27 @@ impl WhisperEngine {
         }
     }
 
-    /// Transcribe audio with streaming support for partial results and adaptive quality
-    pub async fn transcribe_audio_with_confidence(&self, audio_data: Vec<f32>, language: Option<String>, policy: Option<&mut LanguagePolicy>) -> Result<(String, f32, bool)> {
+    /// Token bytes and times for sentence timing. Special tokens (id >= EOT) are skipped.
+    fn timed_tokens(state: &WhisperState, ctx: &WhisperContext) -> Result<Vec<TimedToken>> {
+        let eot = ctx.token_eot();
+        let mut tokens = Vec::new();
+        for segment in 0..state.full_n_segments()? {
+            for token in 0..state.full_n_tokens(segment)? {
+                let id = state.full_get_token_id(segment, token)?;
+                if id >= eot {
+                    continue;
+                }
+                let data = state.full_get_token_data(segment, token)?;
+                let bytes = ctx.token_to_cstr(id)?.to_bytes().to_vec();
+                tokens.push(TimedToken { bytes, t0: data.t0, t1: data.t1 });
+            }
+        }
+        Ok(tokens)
+    }
+
+    /// Transcribe audio with streaming support for partial results and adaptive quality.
+    /// The sentences are chunk-local and empty when their timing is unusable.
+    pub async fn transcribe_audio_with_confidence(&self, audio_data: Vec<f32>, language: Option<String>, policy: Option<&mut LanguagePolicy>) -> Result<(String, f32, bool, Vec<Sentence>)> {
         let ctx_lock = self.current_context.read().await;
         let ctx = ctx_lock.as_ref()
             .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
@@ -639,7 +659,7 @@ impl WhisperEngine {
 
         let duration_seconds = audio_data.len() as f64 / 16000.0;
         let is_partial = duration_seconds < 15.0; // Consider chunks under 15s as partial
-        let audio_data = pad_to_min_duration(audio_data);
+        let (audio_data, pad_before) = pad_to_min_duration(audio_data);
         let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(4);
         params.set_n_threads(n_threads as i32);
 
@@ -703,7 +723,20 @@ impl WhisperEngine {
             0.0
         };
 
-        Ok((cleaned_result, avg_confidence, is_partial))
+        // Sentences never fail the transcription; a line whose text was changed keeps none
+        let sentences = if cleaned_result == final_result {
+            match Self::timed_tokens(&state, ctx) {
+                Ok(tokens) => build_sentences(&tokens, pad_before as f64 / 16000.0, duration_seconds),
+                Err(e) => {
+                    log::warn!("Sentence timing skipped: {}", e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        Ok((cleaned_result, avg_confidence, is_partial, sentences))
     }
 
     pub async fn transcribe_audio(&self, audio_data: Vec<f32>, language: Option<String>) -> Result<String> {
@@ -812,7 +845,7 @@ impl WhisperEngine {
                       transcription_count, audio_data.len(), duration_seconds);
         }
         let mut state = ctx.create_state()?;
-        let audio_data = pad_to_min_duration(audio_data);
+        let audio_data = pad_to_min_duration(audio_data).0;
         state.full(params, &audio_data)?;
 
         // Extract text with improved segment handling

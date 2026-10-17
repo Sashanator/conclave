@@ -591,7 +591,7 @@ async fn run_import<R: Runtime>(
             (text, 0.9f32)
         } else {
             let engine = whisper_engine.as_ref().unwrap();
-            let (text, conf, _) = engine
+            let (text, conf, _, _) = engine
                 .transcribe_audio_with_confidence(segment.samples.clone(), language.clone(), Some(&mut policy))
                 .await
                 .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;

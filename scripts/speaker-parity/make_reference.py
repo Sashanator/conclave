@@ -95,19 +95,26 @@ def pick_clips(segs):
 
 
 def sub_windows(spans):
-    """3 s tiles of each segment >= 1.5 s (a short segment is one window), at most 60, evenly spaced."""
-    wins = []
+    """Plan Task 14 rule: turns < 1.5 s skipped; 1.5-3 s whole; >= 3 s consecutive 3 s windows from
+    the turn start, a remainder >= 1.5 s its own window, a shorter one dropped. More than 60 candidates
+    keep candidates[(i * (n - 1)) // 59] for i in range(60)."""
+    cands = []
     for s, e in spans:
-        if e - s < SEG_MIN_SECS:
+        d = e - s
+        if d < SEG_MIN_SECS:
             continue
-        n_full = int((e - s) // SUB_SECS)
-        if n_full == 0:
-            wins.append((s, e))
-        else:
-            wins += [(s + k * SUB_SECS, s + (k + 1) * SUB_SECS) for k in range(n_full)]
-    if len(wins) > MAX_CENTROIDS:
-        wins = [wins[i] for i in np.linspace(0, len(wins) - 1, MAX_CENTROIDS).round().astype(int)]
-    return wins
+        if d <= SUB_SECS:
+            cands.append((s, e))
+            continue
+        n_full = int(d // SUB_SECS)
+        cands += [(s + k * SUB_SECS, s + (k + 1) * SUB_SECS) for k in range(n_full)]
+        rest_start = s + n_full * SUB_SECS
+        if e - rest_start >= SEG_MIN_SECS:
+            cands.append((rest_start, e))
+    n = len(cands)
+    if n > MAX_CENTROIDS:
+        cands = [cands[(i * (n - 1)) // (MAX_CENTROIDS - 1)] for i in range(MAX_CENTROIDS)]
+    return cands
 
 
 def centroids(segs, audio, embed):
@@ -127,39 +134,35 @@ def centroids(segs, audio, embed):
 
 
 def merge(secs, cents):
-    """Spec 8.2 steps 6-7: anchors merge greedily, small clusters attach or stay unknown.
+    """Spec 8.2 steps 6-7. Each anchor is compared with the ORIGINAL centroid of every kept anchor.
 
-    Shortcut: an anchor without a centroid becomes unknown, not its own speaker.
+    An anchor without a centroid is kept as its own speaker but can't match or attach anything.
     """
-    def cos(a, b):
-        return float(np.dot(a, b))
+    def sim(a, b):
+        return -1.0 if a is None or b is None else float(np.dot(a, b))
 
-    groups = []
-    anchors = sorted((c for c in secs if secs[c] >= ANCHOR_SECS and cents[c] is not None),
-                     key=lambda c: -secs[c])
+    kept = []  # [original centroid, seconds]
     used = set()
+    anchors = sorted((c for c in secs if secs[c] >= ANCHOR_SECS), key=lambda c: -secs[c])
     for c in anchors:
-        sims = [cos(cents[c], g["cent"]) for g in groups]
+        sims = [sim(cents[c], k[0]) for k in kept]
         if sims and max(sims) >= ANCHOR_MERGE:
-            g = groups[int(np.argmax(sims))]
-            g["sum"] = g["sum"] + cents[c]
-            g["cent"] = unit(g["sum"])
-            g["secs"] += secs[c]
+            kept[int(np.argmax(sims))][1] += secs[c]
         else:
-            groups.append({"sum": cents[c].copy(), "cent": cents[c], "secs": secs[c]})
+            kept.append([cents[c], secs[c]])
         used.add(c)
 
     loose = []
     smalls = sorted((c for c in secs if SMALL_SECS <= secs[c] < ANCHOR_SECS), key=lambda c: -secs[c])
     for c in smalls:
-        sims = [cos(cents[c], g["cent"]) for g in groups] if cents[c] is not None else []
+        sims = [sim(cents[c], k[0]) for k in kept]
         if sims and max(sims) >= ATTACH:
-            groups[int(np.argmax(sims))]["secs"] += secs[c]
+            kept[int(np.argmax(sims))][1] += secs[c]
             used.add(c)
         else:
             loose.append(c)
-    if groups:
-        speakers = [g["secs"] for g in groups]
+    if kept:
+        speakers = [k[1] for k in kept]
     else:
         speakers = [secs[c] for c in loose]
         used.update(loose)
@@ -177,6 +180,22 @@ def self_check():
     cents = {0: e0, 1: near, 2: e1, 3: unit(e2 + 0.2 * e1), 4: e2}
     assert merge(secs, cents) == {"speakers": 2, "seconds": [75.0, 40.0], "unknown_seconds": [5.0, 1.0]}
     assert merge({0: 5.0, 1: 4.0}, {0: e0, 1: e1}) == {"speakers": 2, "seconds": [5.0, 4.0], "unknown_seconds": []}
+    # Original-centroid rule: C is 0.80 from the A+B mean but 0.64 from A, so it must stay apart.
+    a = e0
+    b = np.array([0.9, np.sqrt(1 - 0.81), 0.0])
+    c = np.array([np.cos(np.radians(50)), np.sin(np.radians(50)), 0.0])
+    assert merge({0: 60.0, 1: 50.0, 2: 40.0}, {0: a, 1: b, 2: c}) == \
+        {"speakers": 2, "seconds": [110.0, 40.0], "unknown_seconds": []}
+    # An anchor without a centroid stays its own speaker.
+    assert merge({0: 40.0, 1: 35.0}, {0: e0, 1: None}) == \
+        {"speakers": 2, "seconds": [40.0, 35.0], "unknown_seconds": []}
+    # Plan windowing rule and the 60-pick index rule.
+    assert sub_windows([(0.0, 4.5)]) == [(0.0, 3.0), (3.0, 4.5)]
+    assert sub_windows([(0.0, 4.2)]) == [(0.0, 3.0)]
+    assert [(i * 99) // 59 for i in (0, 1, 2, 59)] == [0, 1, 3, 99]
+    spans = [(2.0 * i, 2.0 * i + 2.0) for i in range(100)]
+    picks = sub_windows(spans)
+    assert len(picks) == 60 and picks == [spans[(i * 99) // 59] for i in range(60)]
 
 
 def run(name, audio_dir, models, embed, out_root):
@@ -202,13 +221,17 @@ def run(name, audio_dir, models, embed, out_root):
     assert clip_emb.shape == (CLIP_COUNT, 192), clip_emb.shape
     clip_emb.tofile(os.path.join(out, "clip_emb.f32"))
 
+    write_merged(out, step1, audio, embed)
+
+
+def write_merged(out, step1, audio, embed):
     secs = {}
     for s, e, c in step1:
         secs[c] = secs.get(c, 0.0) + (e - s)
     merged = merge(secs, centroids(step1, audio, embed))
     with open(os.path.join(out, "merged.json"), "w") as f:
         json.dump(merged, f)
-    print(f"{name}: speakers={merged['speakers']} seconds={merged['seconds']}", flush=True)
+    print(f"{os.path.basename(out)}: speakers={merged['speakers']} seconds={merged['seconds']}", flush=True)
 
 
 def main():
@@ -216,12 +239,20 @@ def main():
     p.add_argument("--audio-dir", required=True)
     p.add_argument("--models", required=True)
     p.add_argument("--out", required=True)
+    p.add_argument("--merge-only", action="store_true",
+                   help="rebuild merged.json from the existing diar_step1.json and audio16k.f32")
     args = p.parse_args()
     self_check()
     models = check_models(args.models)
     embed = Embedder(models["titanet-large.onnx"])
     for name in RECORDINGS:
-        if os.path.exists(os.path.join(args.out, name, "merged.json")):
+        out = os.path.join(args.out, name)
+        if args.merge_only:
+            with open(os.path.join(out, "diar_step1.json")) as f:
+                step1 = json.load(f)
+            write_merged(out, step1, np.fromfile(os.path.join(out, "audio16k.f32"), dtype="<f4"), embed)
+            continue
+        if os.path.exists(os.path.join(out, "merged.json")):
             print(f"{name}: already done, skipping", flush=True)
             continue
         run(name, args.audio_dir, models, embed, args.out)

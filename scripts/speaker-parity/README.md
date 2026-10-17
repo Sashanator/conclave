@@ -34,6 +34,8 @@ nice -n 15 /workspace/.superpowers/speaker-parity/venv/bin/python -I scripts/spe
 the four recordings took about 1.5 hours in total (about 3.3 h of audio, two diarization passes
 each: Ira 4 min, Slava 24 min, german-lesson 34 min, meetup 16 min).
 A recording whose `merged.json` already exists is skipped, so an interrupted run can resume.
+`--merge-only` rebuilds just `merged.json` from the existing `diar_step1.json` and `audio16k.f32`
+(TitaNet centroids only, no diarization).
 
 ## Decoding
 
@@ -57,12 +59,16 @@ Per recording, in `/workspace/.superpowers/speaker-parity/<name>/` (never commit
   step-1 clusters. `unknown_seconds` lists the seconds that are not assigned to any speaker.
 
 Merge details (spec §8.2 steps 6–7):
-- Centroids: 3 s tiles of segments of at least 1.5 s, at most 60 per cluster, evenly spaced. The
-  centroid is the normalised mean of the normalised tile embeddings.
-- Anchors (≥ 30 s) merge greedily, biggest first, into the best-matching group at cosine ≥ 0.7.
-  The group centroid is the normalised sum of its members.
-- Small clusters (3 s ≤ seconds < 30 s) attach to the nearest anchor group at cosine ≥ 0.65.
-  Unmatched ones stay as separate speakers when there is no anchor, and become unknown otherwise.
+- Centroid windows (plan Task 14 rule): turns under 1.5 s are skipped; 1.5–3 s turns are used whole;
+  turns of 3 s or more give consecutive 3 s windows from the turn start, and a remainder of at least
+  1.5 s is its own window. With more than 60 windows, index `(i * (n - 1)) // 59` is kept for
+  `i` in 0..60. The centroid is the normalised mean of the normalised window embeddings.
+- Anchors (≥ 30 s) are compared, biggest first, with each kept anchor's ORIGINAL centroid. A
+  match is cosine ≥ 0.7 to the most similar one, and seconds add up. Otherwise the anchor is kept.
+  An anchor without a centroid is kept as its own speaker.
+- Small clusters (3 s ≤ seconds < 30 s) attach to the nearest kept anchor's original centroid at
+  cosine ≥ 0.65. Unmatched ones stay as separate speakers when there is no anchor, and become
+  unknown otherwise.
 - Steps 8–9 (self and known voices) need `levels.bin` and voiceprints, so they are not in this kit.
 
 The script runs a self-check of the merge rules at start-up.
@@ -71,9 +77,9 @@ The script runs a self-check of the merge rules at start-up.
 
 | Recording | speakers | seconds |
 |---|---|---|
-| 1-2-1_Ira | 2 | 1017.70, 354.92 |
-| 1-2-1_Slava | 2 | 1650.56, 1382.96 |
-| german-lesson | 2 | 1900.92, 1688.19 |
-| meetup | 5 | 2397.75, 429.16, 248.59, 100.07, 35.61 |
+| 1-2-1_Ira | 2 | 1020.03, 366.49 |
+| 1-2-1_Slava | 2 | 1645.99, 1376.49 |
+| german-lesson | 2 | 1897.42, 1675.94 |
+| meetup | 5 | 2378.94, 443.17, 248.59, 93.13, 35.61 |
 
 The spike expected `meetup` ≥ 3 speakers with 3 of them at ≥ 30 s; this run gives 5, all at ≥ 30 s.

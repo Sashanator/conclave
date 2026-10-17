@@ -9,6 +9,7 @@ Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src` (exclud
 | Host | Where (file:line) | Purpose | Decision |
 |---|---|---|---|
 | huggingface.co | `src-tauri/src/whisper_engine/whisper_engine.rs:1104-1115` (download via `Client::builder` at `:1172`); `src-tauri/src/parakeet_engine/parakeet_engine.rs:136` (Parakeet v2 base URL); `src-tauri/src/summary/summary_engine/models.rs:172,185,198,211,342,355,369,383` (GGUF summary models, downloaded by `model_manager.rs:473`); `src/lib/parakeet.ts:78` (comment only) | Whisper, Parakeet v2 and local summary model downloads | Allowed (model host) |
+| huggingface.co | `src-tauri/src/speakers/models.rs` (`MODELS` URLs, pinned to commit hashes; `download_models`) | Speaker identification models (pyannote segmentation 3.0, TitaNet-large), downloaded only on the user's request and SHA-256 verified | Allowed (model host) |
 | meetily.towardsgeneralintelligence.com | `src-tauri/src/parakeet_engine/parakeet_engine.rs:127` (Parakeet v3 base URL, used at `:865-912`) | Parakeet v3 model download; contacted only when the user downloads a Parakeet model | Allowed — Meetily-owned, reported to user |
 | api.anthropic.com | `src-tauri/src/anthropic/anthropic.rs:103` (model list, `:100`); `src-tauri/src/summary/llm_client.rs:345` (messages, POST at `:398`/`:457`) | User-configured LLM summaries | Allowed (user-configured) |
 | api.openai.com | `src-tauri/src/openai/openai.rs:130` (`:127`); `src-tauri/src/summary/llm_client.rs:303` | User-configured LLM summaries | Allowed (user-configured) |

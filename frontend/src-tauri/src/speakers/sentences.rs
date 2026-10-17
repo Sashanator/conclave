@@ -17,15 +17,23 @@ pub struct TimedToken {
 /// Tolerance in seconds for token times that fall just outside the line's audio.
 const TOLERANCE_SECS: f64 = 0.2;
 
-/// Cuts a sentence after a token that ends the accumulated text in `.`, `?`, `!` or `…`.
+/// Cuts a sentence after a terminal-punctuation token when the next token starts with whitespace
+/// (or it is the last token). A period inside "3.5" or "z.B." is followed by a token with no space, so it does not cut.
 pub fn build_sentences(tokens: &[TimedToken], pad_secs: f64, audio_secs: f64) -> Vec<Sentence> {
+    // whisper.cpp leaves token times at -1 when it did not compute them
+    if tokens.iter().any(|t| t.t0 < 0 || t.t1 < t.t0) {
+        return Vec::new();
+    }
     let mut out = Vec::new();
     let mut bytes: Vec<u8> = Vec::new();
     let mut span: Option<(i64, i64)> = None;
-    for tok in tokens {
+    for (i, tok) in tokens.iter().enumerate() {
         bytes.extend_from_slice(&tok.bytes);
         span = Some(span.map_or((tok.t0, tok.t1), |(t0, _)| (t0, tok.t1)));
-        if ends_sentence(&bytes) {
+        let boundary = tokens
+            .get(i + 1)
+            .map_or(true, |next| next.bytes.first().is_some_and(|b| b.is_ascii_whitespace()));
+        if boundary && ends_sentence(&bytes) {
             push_sentence(&mut out, &bytes, span, pad_secs, audio_secs);
             bytes.clear();
             span = None;
@@ -39,7 +47,16 @@ fn ends_sentence(bytes: &[u8]) -> bool {
     // `trim_ascii_end` needs Rust 1.80; the crate supports 1.77
     let end = bytes.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(0, |i| i + 1);
     let trimmed = &bytes[..end];
-    matches!(trimmed.last(), Some(b'.' | b'?' | b'!')) || trimmed.ends_with("…".as_bytes())
+    let stem_len = if trimmed.ends_with("…".as_bytes()) {
+        end - "…".len()
+    } else if matches!(trimmed.last(), Some(b'.' | b'?' | b'!')) {
+        end - 1
+    } else {
+        return false;
+    };
+    // An abbreviation such as "z.B." or "e.g." keeps its dots, so a dot inside the last word means no cut
+    let word_start = trimmed[..stem_len].iter().rposition(|b| b.is_ascii_whitespace()).map_or(0, |i| i + 1);
+    !trimmed[word_start..stem_len].contains(&b'.')
 }
 
 fn push_sentence(out: &mut Vec<Sentence>, bytes: &[u8], span: Option<(i64, i64)>, pad_secs: f64, audio_secs: f64) {
@@ -143,6 +160,25 @@ mod tests {
         ];
         assert_eq!(build_sentences(&t, 0.0, 1.0), vec![
             Sentence(0.0, 0.6, "Ну…".into()), Sentence(0.6, 1.0, "Потом.".into())]);
+    }
+
+    #[test]
+    fn sentences_do_not_cut_inside_numbers_or_abbreviations() {
+        let t = [tok(" It", 0, 10), tok(" costs", 10, 20), tok(" 3", 20, 30), tok(".", 30, 35), tok("5", 35, 40), tok(" euros.", 40, 60)];
+        let one = build_sentences(&t, 0.0, 0.6);
+        assert_eq!(one, vec![Sentence(0.0, 0.6, "It costs 3.5 euros.".into())]);
+        assert!(to_meeting_time(&one, "It costs 3.5 euros.", 0.0, 0.6).is_some());
+
+        let t = [tok(" Das", 0, 10), tok(" z", 10, 20), tok(".", 20, 25), tok("B", 25, 30), tok(".", 30, 35), tok(" gut.", 35, 50)];
+        let one = build_sentences(&t, 0.0, 0.5);
+        assert_eq!(one, vec![Sentence(0.0, 0.5, "Das z.B. gut.".into())]);
+        assert!(to_meeting_time(&one, "Das z.B. gut.", 0.0, 0.5).is_some());
+    }
+
+    #[test]
+    fn sentences_reject_unset_token_times() {
+        assert!(build_sentences(&[tok(" Hi.", -1, -1)], 0.0, 1.0).is_empty());
+        assert!(build_sentences(&[tok(" Hi.", 50, 20)], 0.0, 1.0).is_empty());
     }
 
     #[test]

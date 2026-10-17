@@ -3,7 +3,8 @@ import type { ReactNode } from 'react';
 import { act, create } from 'react-test-renderer';
 
 const originalPopover = { ...await import('../../src/components/ui/popover') };
-afterAll(() => mock.module('../../src/components/ui/popover', () => originalPopover));
+// Block body: returning mock.module's result from afterAll leaks the mock into later test files (Bun 1.2.21).
+afterAll(() => { mock.module('../../src/components/ui/popover', () => originalPopover); });
 const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
 // Captures the close-focus handler so the test can fire it the way Radix does on close.
 const closeFocus: { handler?: (e: { preventDefault(): void }) => void } = {};

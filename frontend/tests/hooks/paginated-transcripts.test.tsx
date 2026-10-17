@@ -15,7 +15,8 @@ const invoke = mock((command: string, args: Record<string, unknown>) => new Prom
 }));
 mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
 const { usePaginatedTranscripts } = await import('../../src/hooks/usePaginatedTranscripts');
-afterAll(() => mock.module('@tauri-apps/api/core', () => originalCore));
+// Block body: returning mock.module's result from afterAll leaks the mock into later test files (Bun 1.2.21).
+afterAll(() => { mock.module('@tauri-apps/api/core', () => originalCore); });
 
 let state: ReturnType<typeof usePaginatedTranscripts>;
 let renderer: ReactTestRenderer | undefined;

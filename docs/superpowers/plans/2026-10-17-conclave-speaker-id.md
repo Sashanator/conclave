@@ -338,7 +338,7 @@ In `language_policy.rs` tests: `pad_reports_offset_before_audio`. A 0.5 s input 
   - After the last token, emit any remaining unpunctuated tokens as a final sentence.
   - `t0` is the first token's `t0`; `t1` is the last token's `t1`. Both are `/100.0 - pad_secs`, clamped to `[0, audio_secs]` and rounded to 2 decimals.
 
-  **`to_meeting_time`:** add `start`, clamp to `[start, end]`, and return `Some` only if `is_valid` holds.
+  **`to_meeting_time`:** add `start`, then check `is_valid` (whose bounds include the 0.2 s tolerance). Only if it holds, clamp the accepted times to `[start, end]` and return `Some`.
 
   **`is_valid`** (the one rule set, also used by save in Task 3 and by the job in Task 16):
   - Joining the sentence texts with `' '` equals the line text after collapsing whitespace.
@@ -1022,7 +1022,8 @@ export function lineSpeakerName(idx: number | null | undefined, speakers: Speake
 export function speakerChips(speakers: SpeakerView[]): { key: string; name: string; idxs: number[]; seconds: number; isSelf: boolean }[]  // grouped by person_id, self first, then seconds desc
 export function formatTalkTime(seconds: number): string                               // '12m', '45s', '1h 05m'
 export function lastAnalysisText(a: SpeakerSettings['last_analysis']): string | null  // 'Last analysis: DirectML · 41 s for a 58-min meeting'
-// ConfigContext: speakerIdActive: boolean; refreshSpeakerSettings(): Promise<void>  (listens to 'speaker-settings-changed')
+// ConfigContext: speakerIdActive: boolean; speakerSettingsLoaded: boolean (false until the first speakers_get_settings answers or fails);
+//                refreshSpeakerSettings(): Promise<void>  (listens to 'speaker-settings-changed')
 ```
 
 - [ ] **Step 1: Write the failing tests:**
@@ -1138,13 +1139,14 @@ export function useMeetingSpeakers(meetingId: string, active: boolean): {
   - names on: `[00:05] Сергей: text`, and with a mark `[00:05] [MARKED: action] Сергей: text`.
   - Copy: feature on → `[12:04] Сергей: …`; off → unchanged.
   - gate: auto-summary does not start while the job is `pending` or `running`. It starts when the job turns `done`, `failed` or `skipped`, or when "Summarize now" is clicked. With the feature off it starts immediately, as today.
+  - gate waits for settings: `speakers_get_settings` answers after 50 ms with active → no summary starts in those 50 ms; then a `pending` job keeps it closed.
   - gate waits for the first lookup: `speakers_get_meeting` answers after 50 ms with a `pending` job → no summary starts before or after the answer until the job is terminal. The existing effect latches `autoGenerationStartedMeetingIdRef`, so starting early cannot be undone.
   - the gate opens after a `speakers-updated` event for a job that ended `failed` or `skipped`.
   - hint: after `namesChanged`, the summary panel shows "Speaker names changed. Regenerate the summary to use them". Clicking Regenerate goes through `shouldRegenerate(summaryDirty)`, the existing guard.
 - [ ] **Step 2:** FAIL.
 - [ ] **Step 3: Implement.**
   - When `speakerIdActive` is false, call `formatSummaryTranscript(transcripts)` with **no** second argument (and Copy uses today's format). Only when active: names are resolved from the latest `speakers_get_meeting` result via `lineSpeakerName(t.speaker_idx, speakers, job?.status === 'done')`.
-  - The gate is an extra condition in the existing effect: `speakerGateOpen`. It is true when inactive, or when `loaded` and (no job, the job is terminal, or `summarizeNow` is set). Until `loaded`, it is false.
+  - The gate is an extra condition in the existing effect: `speakerGateOpen`. It is false until `speakerSettingsLoaded`. After that it is true when inactive, or when `loaded` and (no job, the job is terminal, or `summarizeNow` is set). A failed settings lookup counts as loaded-and-inactive, so the summary is never blocked forever.
 - [ ] **Step 4:** PASS. Then `tsc`, `bun test`, `pnpm run build`.
 - [ ] **Step 5: Commit** `feat(summary): wait for speakers and use names`.
 
@@ -1180,11 +1182,13 @@ Changes:
 - Test: `speakers/job.rs` `windows_e2e` (`#[ignore]`)
 
 `windows_e2e`:
-- **First**, before any other ORT call in the test process: preload the staged `binaries/onnxruntime/DirectML.dll`, then `ort::init_from(<abs path of staged onnxruntime.dll>)`. Assert via `GetModuleFileNameW(GetModuleHandleW("onnxruntime.dll"))` that the loaded module is the staged one, not an `ort-sys` download in `target/`.
+- **First**, before any other ORT call in the test process: preload the staged `binaries/onnxruntime/DirectML.dll`, then `ort::init_from(<abs path of staged onnxruntime.dll>).with_telemetry(false).commit()?`. `init_from` alone only stores the path (`ort-2.0.0-rc.10/src/environment.rs:459-461`); the DLL loads at `commit`. After that, assert via `GetModuleFileNameW(GetModuleHandleW("onnxruntime.dll"))` that the loaded module is the staged one, not an `ort-sys` download in `target/`.
 - Downloads both models into a temp dir with `download_models` (real network, pinned hashes).
 - Loads `OrtSpeakerModels` with `prefer_directml = true`. A GPU-less runner may still create a DirectML device on Windows' software adapter, so accept `directml` or `cpu`. Assert that the label matches what actually registered (the per-session backends recorded at creation), and that loading did not panic.
 - Runs `run_one` on a generated 30 s noise WAV → `done`, with the same backend label.
-- **Parakeet check:** build an ORT session with Parakeet's exact options (`model.rs:120-131`: Level3, CPU EP, parallel execution on) on the 6 MB segmentation model, and run it once. A real Parakeet model (~600 MB) is not downloaded in CI. The user doesn't use Parakeet, and this checks that the new runtime accepts Parakeet's session configuration. State this limit in the task report.
+- **Parakeet check (spec §12):** load the real Parakeet v2 model on the new runtime with `ParakeetModel::new(dir, true)` (int8; all three sessions), then transcribe 2 s of silence without error.
+  - The model is the commit-pinned Hugging Face v2 source (`parakeet_engine.rs:136`), fetched with the existing Parakeet downloader into `PARAKEET_TEST_DIR`.
+  - In `ci.yml`, add an `actions/cache` step for that directory, keyed on `hashFiles('frontend/src-tauri/src/parakeet_engine/parakeet_engine.rs')`. The ~650 MB download then happens once, not on every run.
 
 - [ ] **Step 1:** Push the branch (this is the push point). Run `gh workflow run ci.yml -f full=true --ref speaker-id`.
 - [ ] **Step 2:** Watch with `gh run watch`. Expected: `windows-app` passes, including `windows_e2e`. On failure, fix and re-dispatch at most twice, then report.

@@ -13,15 +13,25 @@ const invoke = mock(async (command: string) => {
 });
 mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
 mock.module('sonner', () => ({ toast: { success() {}, warning() {}, error() {} } }));
+// The lines the checkpoint holds; set per test.
+let storedTranscripts: Array<Record<string, unknown>> = [
+  { id: 't1', text: 'hello', timestamp: '2026-10-16T10:00:00Z', sequenceId: 1, confidence: 0.9 },
+];
+const savedMeetings: Array<{ transcripts: Array<Record<string, unknown>> }> = [];
 mock.module('../../src/services/indexedDBService', () => ({
   indexedDBService: {
     getMeetingMetadata: async () => ({ meetingId: 'meeting-local-1', title: 'Standup', folderPath: '/recordings/Standup' }),
-    getTranscripts: async () => [{ id: 't1', text: 'hello', timestamp: '2026-10-16T10:00:00Z', sequenceId: 1, confidence: 0.9 }],
+    getTranscripts: async () => storedTranscripts,
     markMeetingSaved: async () => {},
   },
 }));
 mock.module('../../src/services/storageService', () => ({
-  storageService: { saveMeeting: async () => ({ meeting_id: 'meeting-1' }) },
+  storageService: {
+    saveMeeting: async (_title: string, transcripts: Array<Record<string, unknown>>) => {
+      savedMeetings.push({ transcripts });
+      return { meeting_id: 'meeting-1' };
+    },
+  },
 }));
 mock.module('../../src/lib/summary-language-preferences', () => ({ applyPinnedSummaryLanguageToMeeting: async () => {} }));
 
@@ -79,5 +89,22 @@ describe('recoverMeeting checkpoint cleanup', () => {
   test('a partial recovery keeps the checkpoints', async () => {
     recoverAudio = async () => ({ status: 'partial', chunk_count: 2, estimated_duration_seconds: 60, message: 'partial' });
     expect(await recoverAndCountCleanups()).toBe(0);
+  });
+});
+
+describe('recovery keeps the speaker fields', () => {
+  test('a stored line keeps speaker_idx and sentences; a line without them gets no such keys', async () => {
+    storedTranscripts = [
+      { id: 't1', text: 'Hi.', timestamp: '2026-10-16T10:00:00Z', sequenceId: 1, confidence: 0.9, speaker_idx: 0, sentences: [[1, 2, 'Hi.']] },
+      { id: 't2', text: 'Bye.', timestamp: '2026-10-16T10:00:05Z', sequenceId: 2, confidence: 0.9 },
+    ];
+    savedMeetings.length = 0;
+    recoverAudio = async () => ({ status: 'success', chunk_count: 2, estimated_duration_seconds: 60, message: 'ok' });
+    await recoverAndCountCleanups();
+    const [first, second] = savedMeetings.at(-1)!.transcripts;
+    expect(first).toMatchObject({ speaker_idx: 0, sentences: [[1, 2, 'Hi.']] });
+    expect(second).not.toHaveProperty('speaker_idx');
+    expect(second).not.toHaveProperty('sentences');
+    storedTranscripts = [{ id: 't1', text: 'hello', timestamp: '2026-10-16T10:00:00Z', sequenceId: 1, confidence: 0.9 }];
   });
 });

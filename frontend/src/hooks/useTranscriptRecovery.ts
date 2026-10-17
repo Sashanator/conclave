@@ -174,6 +174,9 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         audio_end_time: (t as any).audio_end_time,
         duration: (t as any).duration,
         mark: metadata.marks?.[String((t as any).sequence_id)] ?? null,
+        // Only when set, so an unset line keeps the same payload as before
+        ...(t.speaker_idx != null && { speaker_idx: t.speaker_idx }),
+        ...(t.sentences != null && { sentences: t.sentences }),
       }));
 
       // 6. Save to backend database using existing save utilities

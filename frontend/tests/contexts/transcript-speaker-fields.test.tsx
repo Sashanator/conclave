@@ -90,6 +90,17 @@ describe('transcript speaker fields', () => {
     expect(api.transcripts[0]).toMatchObject({ text: 'Hi.', speaker_idx: 0, sentences: [[1, 2, 'Hi.']] });
   });
 
+  test('a live line without the speaker fields adds no such keys to the payload', async () => {
+    const { speaker_idx: _idx, sentences: _sentences, ...bare } = update;
+    await act(async () => { renderer = create(tree()); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => { listeners.at(-1)!(bare as TranscriptUpdate); });
+    await settle();
+    expect(api.transcripts[0]).toBeDefined();
+    expect(JSON.parse(JSON.stringify(api.transcripts[0]))).not.toHaveProperty('speaker_idx');
+    expect(JSON.parse(JSON.stringify(api.transcripts[0]))).not.toHaveProperty('sentences');
+  });
+
   test('the history rebuilt after a reload keeps speaker_idx and sentences', async () => {
     recording.isRecording = true;
     getTranscriptHistory.mockImplementation(async () => [{

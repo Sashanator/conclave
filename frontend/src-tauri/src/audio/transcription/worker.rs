@@ -48,6 +48,7 @@ pub struct TranscriptUpdate {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sentences: Option<Vec<Sentence>>,
     // Speaker index from the live "You" label; always None until speaker labelling fills it
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub speaker_idx: Option<i64>,
 }
 
@@ -619,3 +620,37 @@ fn format_recording_time(seconds: f64) -> String {
             assert!(!should_emit_transcript("   "));
         }
     }
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn update(sentences: Option<Vec<Sentence>>, speaker_idx: Option<i64>) -> TranscriptUpdate {
+        TranscriptUpdate {
+            text: "Hi.".into(), timestamp: "10:00:00".into(), source: "Audio".into(), sequence_id: 1,
+            chunk_start_time: 0.0, is_partial: false, confidence: 0.9, audio_start_time: 0.0,
+            audio_end_time: 1.0, duration: 1.0, sentences, speaker_idx,
+        }
+    }
+
+    #[test]
+    fn unset_speaker_fields_are_omitted_from_the_event() {
+        let json = serde_json::to_value(update(None, None)).unwrap();
+        assert!(json.get("speaker_idx").is_none());
+        assert!(json.get("sentences").is_none());
+    }
+
+    #[test]
+    fn set_speaker_fields_are_serialized() {
+        let json = serde_json::to_value(update(Some(vec![Sentence(0.0, 1.0, "Hi.".into())]), Some(0))).unwrap();
+        assert_eq!(json["speaker_idx"], 0);
+        assert_eq!(json["sentences"], serde_json::json!([[0.0, 1.0, "Hi."]]));
+    }
+
+    #[test]
+    fn an_event_without_the_keys_still_deserializes() {
+        let json = serde_json::to_value(update(None, None)).unwrap();
+        let back: TranscriptUpdate = serde_json::from_value(json).unwrap();
+        assert_eq!((back.speaker_idx, back.sentences), (None, None));
+    }
+}

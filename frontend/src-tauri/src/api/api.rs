@@ -1547,6 +1547,24 @@ mod segment_parse_tests {
     }
 
     #[test]
+    fn unset_speaker_fields_are_omitted_from_the_json() {
+        let seg = parse_transcript_segments(vec![json!({"id": "a", "text": "x", "timestamp": "t"})]).unwrap();
+        let json = serde_json::to_value(&seg[0]).unwrap();
+        assert!(json.get("speaker_idx").is_none());
+        assert!(json.get("sentences").is_none());
+    }
+
+    #[test]
+    fn a_speaker_zero_and_sentences_survive_a_round_trip() {
+        let seg = parse_transcript_segments(vec![json!({
+            "id": "a", "text": "Hi.", "timestamp": "t", "speaker_idx": 0, "sentences": [[0.0, 1.0, "Hi."]],
+        })]).unwrap();
+        let json = serde_json::to_value(&seg[0]).unwrap();
+        assert_eq!(json["speaker_idx"], 0);
+        assert_eq!(json["sentences"], json!([[0.0, 1.0, "Hi."]]));
+    }
+
+    #[test]
     fn a_string_mark_and_a_missing_mark_decode() {
         let segs = parse_transcript_segments(vec![
             json!({"id": "a", "text": "x", "timestamp": "t", "mark": "action"}),

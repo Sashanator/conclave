@@ -483,3 +483,19 @@ impl Default for RecordingSaver {
         Self::new()
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::TranscriptSegment;
+
+    #[test]
+    fn unset_speaker_fields_are_omitted_from_the_export() {
+        let segment = TranscriptSegment {
+            id: "seg_1".into(), text: "Hi.".into(), audio_start_time: 0.0, audio_end_time: 1.0, duration: 1.0,
+            display_time: "[00:00]".into(), confidence: 0.9, sequence_id: 1, speaker_idx: None, sentences: None,
+        };
+        let json = serde_json::to_value(&segment).unwrap();
+        assert!(json.get("speaker_idx").is_none());
+        assert!(json.get("sentences").is_none());
+    }
+}

@@ -38,17 +38,31 @@ const SLANEY_LOG_SCALE: f32 = 14.545078505785561; // 27 / log(6.4)
 
 pub fn read_nemo_meta(session: &ort::session::Session) -> Result<NemoMeta, String> {
     let meta = session.metadata().map_err(|e| e.to_string())?;
-    let get = |key: &str| {
+    nemo_meta_from(|key| {
         meta.custom(key)
             .map_err(|e| format!("metadata '{key}': {e}"))
-    };
+    })
+}
+
+/// The metadata rules, on a key lookup so that they can be tested without a model.
+fn nemo_meta_from(
+    get: impl Fn(&str) -> Result<Option<String>, String>,
+) -> Result<NemoMeta, String> {
     let req =
         |key: &str| get(key)?.ok_or_else(|| format!("'{key}' does not exist in the metadata"));
-    let parse = |key: &str| -> Result<f32, String> {
+    // sherpa reads the window lengths as int32.
+    let int = |key: &str| -> Result<f32, String> {
         req(key)?
-            .parse()
+            .parse::<i32>()
+            .map(|v| v as f32)
             .map_err(|_| format!("invalid '{key}' in the metadata"))
     };
+    let framework = req("framework")?;
+    if framework != "nemo" {
+        return Err(format!(
+            "unsupported framework '{framework}', expected 'nemo'"
+        ));
+    }
     let out = NemoMeta {
         feat_dim: req("feat_dim")?
             .parse()
@@ -56,8 +70,8 @@ pub fn read_nemo_meta(session: &ort::session::Session) -> Result<NemoMeta, Strin
         sample_rate: req("sample_rate")?
             .parse()
             .map_err(|_| "invalid 'sample_rate' in the metadata")?,
-        window_size_ms: parse("window_size_ms")?,
-        window_stride_ms: parse("window_stride_ms")?,
+        window_size_ms: int("window_size_ms")?,
+        window_stride_ms: int("window_stride_ms")?,
         // Same defaults as sherpa's model loader.
         window_type: get("window_type")?.unwrap_or_else(|| "povey".into()),
         normalize_type: get("feature_normalize_type")?.unwrap_or_default(),
@@ -66,30 +80,39 @@ pub fn read_nemo_meta(session: &ort::session::Session) -> Result<NemoMeta, Strin
     Ok(out)
 }
 
+/// Longest window the port accepts (about 65 s at 16 kHz). Bounds the allocations that a bad model could ask for.
+const MAX_FRAME_LEN: usize = 1 << 20;
+
 /// Rejects settings the port cannot compute, so that `nemo_features` never has to.
 fn check_meta(m: &NemoMeta) -> Result<(), String> {
-    let (frame_len, shift, padded) = frame_params(m);
+    if !(m.window_size_ms.is_finite() && m.window_size_ms > 0.0)
+        || !(m.window_stride_ms.is_finite() && m.window_stride_ms > 0.0)
+    {
+        return Err("window_size_ms and window_stride_ms must be positive".into());
+    }
+    let (frame_len, shift, padded) = frame_params(m)?;
+    if frame_len < 2 || shift < 1 {
+        return Err("window_size_ms and window_stride_ms are too small for the sample rate".into());
+    }
     if m.normalize_type != "per_feature" {
         return Err(format!(
             "unsupported feature_normalize_type '{}'",
             m.normalize_type
         ));
     }
+    mel_banks(m.feat_dim, m.sample_rate as f32, padded)?;
     if window_coeffs(&m.window_type, frame_len).is_none() {
         return Err(format!("unsupported window_type '{}'", m.window_type));
     }
-    if frame_len < 2 || shift < 1 {
-        return Err("window_size_ms and window_stride_ms are too small for the sample rate".into());
-    }
-    mel_banks(m.feat_dim, m.sample_rate as f32, padded).map(|_| ())
+    Ok(())
 }
 
 /// Log-mel features as `[feat_dim, frames]`, per-feature normalised over time. `samples` must already
 /// be at `meta.sample_rate`. The frames are not padded to a multiple of 16; the embedder does that.
 pub fn nemo_features(samples: &[f32], meta: &NemoMeta) -> Array2<f32> {
-    let (frame_len, shift, padded) = frame_params(meta);
-    let feat_dim = meta.feat_dim;
     // `check_meta` runs in `read_nemo_meta`; a hand-built NemoMeta must pass it too.
+    let (frame_len, shift, padded) = frame_params(meta).expect("checked by check_meta");
+    let feat_dim = meta.feat_dim;
     let window = window_coeffs(&meta.window_type, frame_len).expect("checked by check_meta");
     let bins = mel_banks(feat_dim, meta.sample_rate as f32, padded).expect("checked by check_meta");
 
@@ -159,11 +182,17 @@ pub fn nemo_features(samples: &[f32], meta: &NemoMeta) -> Array2<f32> {
 
 /// Frame length, hop and FFT size in samples (kaldi `WindowSize`, `WindowShift`, `PaddedWindowSize`).
 /// The f32 arithmetic is kept in the same order as kaldi, so the sizes truncate the same way.
-fn frame_params(meta: &NemoMeta) -> (usize, usize, usize) {
+fn frame_params(meta: &NemoMeta) -> Result<(usize, usize, usize), String> {
     let sr = meta.sample_rate as f32;
     let frame_len = (sr * 0.001 * meta.window_size_ms) as usize;
     let shift = (sr * 0.001 * meta.window_stride_ms) as usize;
-    (frame_len, shift, frame_len.next_power_of_two())
+    if frame_len > MAX_FRAME_LEN {
+        return Err("window_size_ms is too large for the sample rate".into());
+    }
+    let padded = frame_len
+        .checked_next_power_of_two()
+        .ok_or("window_size_ms is too large for the sample rate")?;
+    Ok((frame_len, shift, padded))
 }
 
 /// kaldi `GetWindow` (feature-window.cc). Computed in f64 and stored as f32, as kaldi does.
@@ -200,10 +229,13 @@ struct MelBin {
 /// kaldi `MelBanks::InitLibrosaMelBanks` with the NeMo settings: slaney mel scale, slaney norm,
 /// `low_freq` 0 and `high_freq` = Nyquist - 400.
 fn mel_banks(num_bins: usize, sample_rate: f32, padded: usize) -> Result<Vec<MelBin>, String> {
-    if num_bins < 3 {
-        return Err("Must have at least 3 mel bins".into());
-    }
     let num_fft_bins = padded / 2;
+    // Checked before `with_capacity`, so a huge `feat_dim` from a model cannot ask for a huge allocation.
+    if !(3..=num_fft_bins).contains(&num_bins) {
+        return Err(format!(
+            "feat_dim {num_bins} is outside 3..={num_fft_bins} for this window"
+        ));
+    }
     let nyquist = 0.5 * sample_rate;
     let low = LOW_FREQ_HZ;
     let high = nyquist + HIGH_FREQ_OFFSET_HZ;
@@ -353,5 +385,64 @@ mod tests {
         let mut m = meta();
         m.sample_rate = 0;
         assert!(check_meta(&m).is_err());
+    }
+
+    #[test]
+    fn check_meta_rejects_bad_window_sizes_before_allocating() {
+        for ms in [f32::NAN, f32::INFINITY, 0.0, -25.0, 1e30] {
+            let mut m = meta();
+            m.window_size_ms = ms;
+            assert!(check_meta(&m).is_err(), "window_size_ms {ms}");
+        }
+        for ms in [f32::NAN, f32::INFINITY, 0.0, -10.0] {
+            let mut m = meta();
+            m.window_stride_ms = ms;
+            assert!(check_meta(&m).is_err(), "window_stride_ms {ms}");
+        }
+    }
+
+    fn meta_from(pairs: &[(&str, &str)]) -> Result<NemoMeta, String> {
+        nemo_meta_from(|key| {
+            Ok(pairs
+                .iter()
+                .find(|(k, _)| *k == key)
+                .map(|(_, v)| v.to_string()))
+        })
+    }
+
+    const NEMO_PAIRS: [(&str, &str); 7] = [
+        ("feat_dim", "80"),
+        ("sample_rate", "16000"),
+        ("window_size_ms", "25"),
+        ("window_stride_ms", "10"),
+        ("window_type", "hann"),
+        ("feature_normalize_type", "per_feature"),
+        ("framework", "nemo"),
+    ];
+
+    #[test]
+    fn nemo_meta_requires_nemo_framework() {
+        assert!(meta_from(&NEMO_PAIRS).is_ok());
+        let without: Vec<_> = NEMO_PAIRS
+            .iter()
+            .copied()
+            .filter(|(k, _)| *k != "framework")
+            .collect();
+        assert!(meta_from(&without).is_err());
+        let mut other = NEMO_PAIRS.to_vec();
+        other[6] = ("framework", "pytorch");
+        assert!(meta_from(&other).is_err());
+    }
+
+    #[test]
+    fn nemo_meta_parses_window_ms_as_integers() {
+        let mut fractional = NEMO_PAIRS.to_vec();
+        fractional[2] = ("window_size_ms", "25.5");
+        assert!(meta_from(&fractional).is_err());
+        let mut junk = NEMO_PAIRS.to_vec();
+        junk[3] = ("window_stride_ms", "nan");
+        assert!(meta_from(&junk).is_err());
+        let m = meta_from(&NEMO_PAIRS).unwrap();
+        assert_eq!((m.window_size_ms, m.window_stride_ms), (25.0, 10.0));
     }
 }

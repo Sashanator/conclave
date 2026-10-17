@@ -2,6 +2,7 @@ pub mod sentences;
 pub mod features;
 pub mod levels;
 pub mod models;
+pub mod runtime;
 pub mod settings;
 
 /// The feature runs only when it is switched on and its models are present.

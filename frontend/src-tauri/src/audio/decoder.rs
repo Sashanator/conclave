@@ -5,7 +5,10 @@
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use rayon::prelude::*;
+use rubato::{FftFixedIn, Resampler};
 use std::borrow::Cow;
+use std::fs::File;
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -15,6 +18,7 @@ use symphonia::core::formats::FormatOptions;
 use symphonia::core::io::MediaSourceStream;
 use symphonia::core::meta::MetadataOptions;
 use symphonia::core::probe::Hint;
+use symphonia::core::units::TimeBase;
 
 use super::audio_processing::{audio_to_mono, resample, resample_audio};
 use super::ffmpeg::find_ffmpeg_path;
@@ -581,6 +585,266 @@ pub fn decode_audio_file_with_progress(
     })
 }
 
+/// Output rate of the speaker pipeline (Whisper and the diarizer both take 16 kHz mono).
+const SPEAKER_RATE_HZ: u32 = 16_000;
+/// Silence is pushed in blocks of this size, so a long gap never needs one long buffer.
+static SILENCE: [f32; 4096] = [0.0; 4096];
+
+#[cfg(test)]
+thread_local! {
+    /// Largest number of input samples held at once by the streaming decode (tests only).
+    static INPUT_HIGH_WATER: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+fn note_input_buffered(len: usize) {
+    INPUT_HIGH_WATER.with(|hw| hw.set(hw.get().max(len)));
+}
+
+#[cfg(not(test))]
+fn note_input_buffered(_len: usize) {}
+
+/// Places a decoded packet on the container timeline, in input-rate frames.
+///
+/// `ts` is where the packet starts, `frames` is its decoded length and `written` is the
+/// timeline position reached so far. Returns `(skip, zero_fill, write)`: drop the first
+/// `skip` frames (they repeat audio already written), insert `zero_fill` silent frames
+/// (a forward gap), then keep `write` frames.
+fn align_packet(ts: u64, frames: u64, written: u64) -> (u64, u64, u64) {
+    if ts < written {
+        let skip = (written - ts).min(frames);
+        (skip, 0, frames - skip)
+    } else {
+        (0, ts - written, frames)
+    }
+}
+
+/// Converts a packet timestamp from the track's time base to frames at `rate`.
+/// Without a time base the timestamp is already a frame count.
+fn ts_to_frames(ts: u64, time_base: Option<TimeBase>, rate: u32) -> u64 {
+    match time_base {
+        Some(tb) => (ts as f64 * tb.numer as f64 * rate as f64 / tb.denom as f64).round() as u64,
+        None => ts,
+    }
+}
+
+/// Mono input-rate frames in, 16 kHz f32 little-endian out. The resampler works in 1 s chunks.
+struct Resample16k {
+    resampler: FftFixedIn<f32>,
+    rate: u32,
+    /// Input frames waiting for a full chunk (never more than one chunk).
+    pending: Vec<f32>,
+    /// Output frames still to drop: the resampler's filter delay, at the start only.
+    to_drop: usize,
+    /// The filter delay, which `finish` counts against the output it produces.
+    delay: usize,
+    /// Every output frame the resampler has produced, including the dropped ones.
+    produced: u64,
+    out: BufWriter<File>,
+}
+
+impl Resample16k {
+    fn new(rate: u32, output: &Path) -> Result<Self> {
+        let file = File::create(output)
+            .map_err(|e| anyhow!("Failed to create temp audio file '{}': {}", output.display(), e))?;
+        let resampler = FftFixedIn::<f32>::new(rate as usize, SPEAKER_RATE_HZ as usize, rate as usize, 2, 1)?;
+        let delay = resampler.output_delay();
+        Ok(Self {
+            resampler,
+            rate,
+            pending: Vec::with_capacity(rate as usize),
+            to_drop: delay,
+            delay,
+            produced: 0,
+            out: BufWriter::new(file),
+        })
+    }
+
+    /// Appends `frames` silent input frames, in blocks.
+    fn push_silence(&mut self, mut frames: u64) -> Result<()> {
+        while frames > 0 {
+            let n = (frames as usize).min(SILENCE.len());
+            self.push(&SILENCE[..n])?;
+            frames -= n as u64;
+        }
+        Ok(())
+    }
+
+    fn push(&mut self, mut data: &[f32]) -> Result<()> {
+        let chunk = self.rate as usize;
+        while !data.is_empty() {
+            let take = (chunk - self.pending.len()).min(data.len());
+            self.pending.extend_from_slice(&data[..take]);
+            data = &data[take..];
+            note_input_buffered(self.pending.len());
+            if self.pending.len() == chunk {
+                let out = self.resampler.process(&[&self.pending], None)?;
+                self.pending.clear();
+                self.write_output(&out[0])?;
+            }
+        }
+        Ok(())
+    }
+
+    fn write_output(&mut self, data: &[f32]) -> Result<()> {
+        self.produced += data.len() as u64;
+        let skip = self.to_drop.min(data.len());
+        self.to_drop -= skip;
+        let bytes: Vec<u8> = data[skip..].iter().flat_map(|s| s.to_le_bytes()).collect();
+        self.out.write_all(&bytes)?;
+        Ok(())
+    }
+
+    /// Flushes the resampler, then sets the file to exactly `round(timeline × 16000 / rate)`
+    /// frames. Returns the seconds written.
+    fn finish(mut self, timeline: u64) -> Result<f64> {
+        if !self.pending.is_empty() {
+            let tail = [std::mem::take(&mut self.pending)];
+            let out = self.resampler.process_partial(Some(&tail[..]), None)?;
+            self.write_output(&out[0])?;
+        }
+        let expected = (timeline as f64 * SPEAKER_RATE_HZ as f64 / self.rate as f64).round() as u64;
+        while self.produced < expected + self.delay as u64 {
+            let out = self.resampler.process_partial(None::<&[Vec<f32>]>, None)?;
+            if out[0].is_empty() {
+                break;
+            }
+            self.write_output(&out[0])?;
+        }
+        if self.produced < expected + self.delay as u64 {
+            warn!("Resampler flush ended early; the missing tail is zero-filled");
+        }
+        self.out.flush()?;
+        let file = self.out.into_inner().map_err(|e| e.into_error())?;
+        // Trims any extra frames, or zero-fills a short flush, so the length is exact.
+        file.set_len(expected * 4)?;
+        Ok(expected as f64 / SPEAKER_RATE_HZ as f64)
+    }
+}
+
+/// Decodes an audio file straight to 16 kHz mono f32 (little-endian) at `output`.
+///
+/// Packets are streamed through a resampler in 1 s chunks, so memory stays small whatever the
+/// file length. Each packet is placed on the container timeline by its timestamp: audio the
+/// AAC encoder repeats at segment joins is dropped, and forward gaps are filled with silence.
+/// The output therefore matches the container duration. `progress` gets fractions in 0..=1.
+/// Returns the seconds written.
+pub fn decode_to_mono_16k_file(
+    input: &Path,
+    output: &Path,
+    progress: &mut dyn FnMut(f32),
+) -> Result<f64> {
+    info!("Streaming decode to 16 kHz: {}", input.display());
+
+    // Formats Symphonia can't read go through ffmpeg first, as in decode_audio_file.
+    let (_temp_wav_guard, decode_path) = if needs_ffmpeg_conversion(input) {
+        let temp = convert_to_wav_with_ffmpeg(input, None)?;
+        let path = temp.to_path_buf();
+        (Some(temp), path)
+    } else {
+        (None, input.to_path_buf())
+    };
+
+    let file = File::open(&decode_path)
+        .map_err(|e| anyhow!("Failed to open audio file '{}': {}", decode_path.display(), e))?;
+    let mut hint = Hint::new();
+    if let Some(ext) = decode_path.extension().and_then(|e| e.to_str()) {
+        hint.with_extension(ext);
+    }
+    let mut format = symphonia::default::get_probe()
+        .format(
+            &hint,
+            MediaSourceStream::new(Box::new(file), Default::default()),
+            &FormatOptions::default(),
+            &MetadataOptions::default(),
+        )
+        .map_err(|e| anyhow!("Failed to probe audio format: {}", e))?
+        .format;
+
+    let track = format
+        .tracks()
+        .iter()
+        .find(|t| t.codec_params.codec != CODEC_TYPE_NULL)
+        .ok_or_else(|| anyhow!("No audio track found in file"))?;
+    let track_id = track.id;
+    let time_base = track.codec_params.time_base;
+    let n_frames = track.codec_params.n_frames;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &DecoderOptions::default())
+        .map_err(|e| anyhow!("Failed to create decoder: {}", e))?;
+
+    // Symphonia parses the mp4 edit list but does not apply it, and gapless trimming is off by
+    // default, so the packet timestamps are the raw container timeline and nothing is trimmed here.
+    let mut sample_buf: Option<SampleBuffer<f32>> = None;
+    let mut stream: Option<Resample16k> = None;
+    let mut rate = 0u32;
+    let mut channels = 0u16;
+    // Container timeline position, in input-rate frames.
+    let mut written = 0u64;
+    let mut last_pct = 0u32;
+
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            Err(symphonia::core::errors::Error::IoError(ref e))
+                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
+            {
+                break;
+            }
+            Err(e) => {
+                warn!("Error reading packet: {}", e);
+                break;
+            }
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            Err(e) => {
+                warn!("Error decoding packet: {}", e);
+                continue;
+            }
+        };
+
+        let spec = *decoded.spec();
+        let capacity = decoded.capacity() as u64;
+        let buf = sample_buf.get_or_insert_with(|| {
+            // The decoder's rate and channels win over the container's (see decode_audio_file).
+            rate = spec.rate;
+            channels = spec.channels.count() as u16;
+            SampleBuffer::<f32>::new(capacity, spec)
+        });
+        buf.copy_interleaved_ref(decoded);
+        let mono = audio_to_mono(buf.samples(), channels);
+        note_input_buffered(mono.len());
+
+        let ts = ts_to_frames(packet.ts(), time_base, rate);
+        let (skip, zero_fill, write) = align_packet(ts, mono.len() as u64, written);
+        if stream.is_none() {
+            stream = Some(Resample16k::new(rate, output)?);
+        }
+        let s = stream.as_mut().expect("stream was created above");
+        s.push_silence(zero_fill)?;
+        s.push(&mono[skip as usize..])?;
+        written += zero_fill + write;
+
+        if let Some(n) = n_frames {
+            let pct = ((packet.ts() as f64 / n as f64) * 100.0).min(100.0) as u32;
+            if pct > last_pct {
+                last_pct = pct;
+                progress(pct as f32 / 100.0);
+            }
+        }
+    }
+
+    let stream = stream.ok_or_else(|| anyhow!("No audio samples decoded from file"))?;
+    let seconds = stream.finish(written)?;
+    progress(1.0);
+    info!("Streamed {:.2}s of 16 kHz audio to {}", seconds, output.display());
+    Ok(seconds)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -856,5 +1120,211 @@ mod tests {
         assert!(!needs_ffmpeg_conversion(Path::new("audio.m4a")));
         // No extension
         assert!(!needs_ffmpeg_conversion(Path::new("noext")));
+    }
+}
+
+#[cfg(test)]
+mod streaming_tests {
+    use super::*;
+
+    const MEETUP: &str = "/workspace/.superpowers/spike-audio/meetup.mp4";
+
+    /// Stereo 16-bit WAV from frames of `[left, right]`.
+    fn write_wav(path: &Path, rate: u32, frames: &[[f32; 2]]) {
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: rate,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(path, spec).unwrap();
+        for frame in frames {
+            for &s in frame {
+                w.write_sample((s.clamp(-1.0, 1.0) * 32767.0) as i16).unwrap();
+            }
+        }
+        w.finalize().unwrap();
+    }
+
+    fn tone(frames: usize, rate: u32) -> Vec<[f32; 2]> {
+        (0..frames)
+            .map(|i| {
+                let t = i as f32 / rate as f32;
+                let v = 0.3 * (2.0 * std::f32::consts::PI * 440.0 * t).sin()
+                    + 0.2 * (2.0 * std::f32::consts::PI * 3000.0 * t).sin();
+                [v, v]
+            })
+            .collect()
+    }
+
+    fn read_f32(path: &Path) -> Vec<f32> {
+        std::fs::read(path)
+            .unwrap()
+            .chunks_exact(4)
+            .map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]]))
+            .collect()
+    }
+
+    #[test]
+    fn align_packet_drops_backward_overlap() {
+        // Packet at 100 (50 frames) starts 20 frames before the 120 already written.
+        assert_eq!(align_packet(100, 50, 120), (20, 0, 30));
+    }
+
+    #[test]
+    fn align_packet_drops_a_packet_already_written() {
+        assert_eq!(align_packet(100, 10, 120), (10, 0, 0));
+    }
+
+    #[test]
+    fn align_packet_zero_fills_forward_gap() {
+        assert_eq!(align_packet(200, 50, 120), (0, 80, 50));
+    }
+
+    #[test]
+    fn align_packet_keeps_exact_continuity() {
+        assert_eq!(align_packet(120, 50, 120), (0, 0, 50));
+    }
+
+    #[test]
+    fn align_packet_always_ends_on_the_later_of_written_and_packet_end() {
+        for ts in 0..40u64 {
+            for frames in 0..20u64 {
+                for written in 0..40u64 {
+                    let (skip, zero, write) = align_packet(ts, frames, written);
+                    assert!(skip <= frames);
+                    assert_eq!(write, frames - skip);
+                    assert_eq!(
+                        written + zero + write,
+                        written.max(ts + frames),
+                        "ts={ts} frames={frames} written={written}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn ts_to_frames_scales_to_the_decoded_rate() {
+        let tb = Some(TimeBase { numer: 1, denom: 48000 });
+        // HE-AAC: 48 kHz container timestamps, 24 kHz decoded frames.
+        assert_eq!(ts_to_frames(2048, tb, 24000), 1024);
+        assert_eq!(ts_to_frames(2048, tb, 48000), 2048);
+        assert_eq!(ts_to_frames(2048, None, 24000), 2048);
+    }
+
+    #[test]
+    fn decode_to_mono_16k_file_matches_reference_tone() {
+        // The whole decode is not a usable reference: it returns 47,914 frames for this 3 s input
+        // (SincFixedIn, no flush) and sits about one sample off with a fractional delay. The
+        // tone is analytic, so the streamed output is checked against the exact signal.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("tone.wav");
+        write_wav(&src, 48000, &tone(144_000, 48000)); // 3 s
+        let out = dir.path().join("out.f32");
+
+        let secs = decode_to_mono_16k_file(&src, &out, &mut |_| {}).unwrap();
+        let streamed = read_f32(&out);
+        assert_eq!(streamed.len(), 48_000);
+        assert!((secs - 3.0).abs() < 1e-9);
+
+        let mean_abs_err: f32 = streamed
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let t = i as f32 / 16000.0;
+                let ideal = 0.3 * (2.0 * std::f32::consts::PI * 440.0 * t).sin()
+                    + 0.2 * (2.0 * std::f32::consts::PI * 3000.0 * t).sin();
+                (v - ideal).abs()
+            })
+            .sum::<f32>()
+            / streamed.len() as f32;
+        assert!(mean_abs_err < 1e-3, "mean abs error {mean_abs_err}");
+    }
+
+    #[test]
+    fn decode_streams_without_loading_whole_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("long.wav");
+        write_wav(&src, 48000, &tone(60 * 48000, 48000)); // 60 s
+        let out = dir.path().join("long.f32");
+
+        INPUT_HIGH_WATER.with(|hw| hw.set(0));
+        decode_to_mono_16k_file(&src, &out, &mut |_| {}).unwrap();
+        let high_water = INPUT_HIGH_WATER.with(|hw| hw.get());
+
+        assert!(high_water <= 2 * 48000, "held {high_water} input samples at once");
+        assert_eq!(read_f32(&out).len(), 60 * 16000);
+    }
+
+    #[test]
+    fn decode_keeps_timing_exact() {
+        // 10.37 s at 48 kHz: not a whole number of 1 s chunks.
+        let frames = 497_760usize;
+        let mut audio = vec![[0.0f32; 2]; frames];
+        let clicks = [0usize, 240_000, 494_400]; // 0.0 s, 5.0 s (chunk boundary), 10.3 s
+        for &c in &clicks {
+            audio[c] = [0.8, 0.8];
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("clicks.wav");
+        write_wav(&src, 48000, &audio);
+        let out = dir.path().join("clicks.f32");
+
+        decode_to_mono_16k_file(&src, &out, &mut |_| {}).unwrap();
+        let samples = read_f32(&out);
+        let expected_len = (10.37f64 * 16000.0).round() as i64;
+        assert!((samples.len() as i64 - expected_len).abs() <= 1, "len {}", samples.len());
+
+        for &c in &clicks {
+            let expected = (c as f64 * 16000.0 / 48000.0).round() as usize;
+            let lo = expected.saturating_sub(20);
+            let hi = (expected + 21).min(samples.len());
+            let peak = (lo..hi)
+                .max_by(|&a, &b| samples[a].abs().total_cmp(&samples[b].abs()))
+                .unwrap();
+            assert!(samples[peak].abs() > 0.1, "no click near input {c}");
+            assert!(
+                (peak as i64 - expected as i64).abs() <= 2,
+                "click at input {c}: peak {peak}, expected {expected}"
+            );
+        }
+    }
+
+    #[test]
+    #[ignore = "needs the real meetup.mp4 spike recording (never committed)"]
+    fn meetup_decode_matches_container_duration() {
+        let src = Path::new(MEETUP);
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("meetup.f32");
+
+        let decoded = decode_to_mono_16k_file(src, &out, &mut |_| {}).unwrap();
+        let container = container_seconds(src);
+        println!("meetup: decoded {decoded:.3} s, container {container:.3} s");
+        assert!(
+            (decoded - container).abs() <= 0.05,
+            "decoded {decoded:.3} s vs container {container:.3} s"
+        );
+    }
+
+    /// Track duration from the container: n_frames in time-base units.
+    fn container_seconds(path: &Path) -> f64 {
+        let file = File::open(path).unwrap();
+        let mut hint = Hint::new();
+        hint.with_extension("mp4");
+        let probed = symphonia::default::get_probe()
+            .format(
+                &hint,
+                MediaSourceStream::new(Box::new(file), Default::default()),
+                &FormatOptions::default(),
+                &MetadataOptions::default(),
+            )
+            .unwrap();
+        let p = &probed.format.tracks().iter().find(|t| t.codec_params.codec != CODEC_TYPE_NULL).unwrap().codec_params;
+        let n = p.n_frames.unwrap() as f64;
+        match p.time_base {
+            Some(tb) => n * tb.numer as f64 / tb.denom as f64,
+            None => n / p.sample_rate.unwrap() as f64,
+        }
     }
 }

@@ -6,6 +6,7 @@ pub mod levels;
 pub mod models;
 pub mod runtime;
 pub mod settings;
+pub mod temp_audio;
 
 /// The feature runs only when it is switched on and its models are present.
 pub fn is_active() -> bool {

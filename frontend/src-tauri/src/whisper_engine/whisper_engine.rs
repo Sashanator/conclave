@@ -325,10 +325,13 @@ impl WhisperEngine {
 
                 let (ctx, mode) = Self::create_context(model_name, &model_info.path, speakers_enabled)?;
 
-                // Update current context and model
-                *self.current_context.write().await = Some(ctx);
-                *self.context_mode.write().await = mode;
-                *self.current_model.write().await = Some(model_name.to_string());
+                // Context, mode and name change under one write guard, so no reader sees them out of step
+                {
+                    let mut ctx_guard = self.current_context.write().await;
+                    *ctx_guard = Some(ctx);
+                    *self.context_mode.write().await = mode;
+                    *self.current_model.write().await = Some(model_name.to_string());
+                }
 
                 Ok(())
             },

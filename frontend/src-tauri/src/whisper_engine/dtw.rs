@@ -28,7 +28,7 @@ pub fn dtw_mode_for_model(model_name: &str) -> Option<DtwMode<'static>> {
     if model_name.contains("large-v3-turbo") {
         return Some(DtwMode::Custom { aheads: &TURBO_AHEADS });
     }
-    let model_preset = match model_name {
+    let model_preset = match strip_quantisation(model_name) {
         "tiny" => DtwModelPreset::Tiny,
         "base" => DtwModelPreset::Base,
         "small" => DtwModelPreset::Small,
@@ -37,6 +37,14 @@ pub fn dtw_mode_for_model(model_name: &str) -> Option<DtwMode<'static>> {
         _ => return None,
     };
     Some(DtwMode::ModelPreset { model_preset })
+}
+
+/// "base-q5_1" → "base": quantised files share their model's alignment preset.
+fn strip_quantisation(model_name: &str) -> &str {
+    match model_name.rsplit_once("-q") {
+        Some((base, q)) if q.len() == 3 && q.as_bytes()[0].is_ascii_digit() && q.as_bytes()[1] == b'_' && q.as_bytes()[2].is_ascii_digit() => base,
+        _ => model_name,
+    }
 }
 
 /// (flash_attn, DTW mode) for a context. Flash attention is turned off only when DTW is on.
@@ -53,18 +61,40 @@ pub fn sentences_enabled(context: ContextMode, text_unchanged: bool) -> bool {
 }
 
 /// Text tokens with their DTW start times to sentence-timing tokens: each token ends where the next
-/// text token starts, and the last one ends at `end_cs` (centiseconds of the padded chunk).
+/// text token starts, and the last one ends at `end_cs` (centiseconds of the padded chunk), or at its
+/// own start when that start lies in the padding past the audio end.
 /// A negative DTW time means DTW failed for the chunk, so there are no tokens.
 pub fn dtw_timed_tokens(tokens: Vec<(Vec<u8>, i64)>, end_cs: i64) -> Vec<TimedToken> {
     if tokens.iter().any(|(_, t0)| *t0 < 0) {
         return Vec::new();
     }
-    let next_starts: Vec<i64> = tokens.iter().skip(1).map(|(_, t0)| *t0).chain(std::iter::once(end_cs)).collect();
+    let next_starts: Vec<i64> = tokens.iter().skip(1).map(|(_, t0)| *t0).collect();
     tokens
         .into_iter()
-        .zip(next_starts)
-        .map(|((bytes, t0), t1)| TimedToken { bytes, t0, t1 })
+        .enumerate()
+        .map(|(i, (bytes, t0))| {
+            let t1 = next_starts.get(i).copied().unwrap_or_else(|| end_cs.max(t0));
+            TimedToken { bytes, t0, t1 }
+        })
         .collect()
+}
+
+/// The job asking for a speaker-ID context change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Job {
+    Recording,
+    Import,
+    Retranscription,
+}
+
+/// A context change waits for every other job to finish: each job sees its own flag set, so only the others count.
+pub fn should_apply(recording: bool, importing: bool, retranscribing: bool, caller: Job) -> bool {
+    let others_running = match caller {
+        Job::Recording => importing || retranscribing,
+        Job::Import => recording || retranscribing,
+        Job::Retranscription => recording || importing,
+    };
+    !others_running
 }
 
 #[cfg(test)]
@@ -93,6 +123,30 @@ mod tests {
     }
 
     #[test]
+    fn dtw_mode_for_model_maps_quantised_presets() {
+        for name in ["tiny-q5_1", "base-q5_1", "small-q5_1", "medium-q5_0", "large-v3-q5_0"] {
+            assert!(
+                matches!(dtw_mode_for_model(name), Some(DtwMode::ModelPreset { .. })),
+                "{name} should get its preset"
+            );
+        }
+        assert!(dtw_mode_for_model("unknown-q5_1").is_none());
+    }
+
+    #[test]
+    fn should_apply_only_when_no_other_job_runs() {
+        // Each job sees its own flag as set, so only the other two matter
+        assert!(should_apply(false, false, false, Job::Import));
+        assert!(!should_apply(true, false, false, Job::Import));
+        assert!(!should_apply(false, false, true, Job::Import));
+        assert!(should_apply(false, true, false, Job::Import));
+        assert!(!should_apply(true, true, false, Job::Recording));
+        assert!(!should_apply(false, true, true, Job::Retranscription));
+        assert!(should_apply(true, false, false, Job::Recording));
+        assert!(should_apply(false, false, false, Job::Recording));
+    }
+
+    #[test]
     fn context_params_disable_flash_attn_only_with_dtw() {
         // Speaker ID off: today's options, flash attention kept, no DTW
         assert!(matches!(dtw_context_options(true, false, "large-v3-turbo"), (true, DtwMode::None)));
@@ -116,6 +170,16 @@ mod tests {
         assert!(dtw_timed_tokens(vec![(b"a".to_vec(), -1), (b"b".to_vec(), 5)], 10).is_empty());
         assert!(dtw_timed_tokens(vec![(b"a".to_vec(), 0), (b"b".to_vec(), -1)], 10).is_empty());
         assert!(dtw_timed_tokens(vec![], 10).is_empty());
+    }
+
+    #[test]
+    fn dtw_last_token_never_ends_before_it_starts() {
+        // A sub-1 s chunk: the last token starts inside the padding, past the audio end
+        let timed = dtw_timed_tokens(vec![(b" hi.".to_vec(), 130)], 120);
+        assert_eq!((timed[0].t0, timed[0].t1), (130, 130));
+        let timed = dtw_timed_tokens(vec![(b" a".to_vec(), 0), (b" b.".to_vec(), 130)], 120);
+        let spans: Vec<(i64, i64)> = timed.iter().map(|t| (t.t0, t.t1)).collect();
+        assert_eq!(spans, vec![(0, 130), (130, 130)]);
     }
 
     #[test]

@@ -8,6 +8,9 @@ use crate::parakeet_engine::ParakeetEngine;
 use crate::speakers::sentences::{to_meeting_time, Sentence};
 use crate::state::AppState;
 use crate::whisper_engine::WhisperEngine;
+use crate::whisper_engine::dtw::{should_apply, Job};
+use crate::audio::recording_commands::is_recording_now;
+use crate::audio::retranscription::is_retranscription_in_progress;
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -794,8 +797,8 @@ async fn get_or_init_whisper<R: Runtime>(
                     .map_err(|e| anyhow!("Failed to load model '{}': {}", target_model, e))?;
             }
 
-            // A running recording keeps its context; the setting applies at the next start
-            if !crate::audio::recording_commands::is_recording_now() {
+            // Other jobs keep the context they run with; the setting applies at the next idle start
+            if should_apply(is_recording_now(), is_import_in_progress(), is_retranscription_in_progress(), Job::Import) {
                 e.apply_speaker_setting().await;
             }
             Ok(e)

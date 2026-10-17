@@ -183,3 +183,11 @@ export interface SpeakerSettings {
   downloading: boolean;
   last_analysis: { backend: string; run_seconds: number; audio_seconds: number } | null;
 }
+
+export interface Person {
+  id: string;
+  name: string;
+  is_self: boolean;
+  meetings: number;
+  last_heard: string | null;
+}

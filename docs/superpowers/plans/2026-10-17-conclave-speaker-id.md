@@ -19,6 +19,19 @@
 - Speaker SQL lives in `database/repositories/speakers.rs`, the codebase's repository pattern. Clustering and merge live in `speakers/cluster.rs`. There is no `voices.rs`: matching is in `assign.rs`, and learning, pruning and rename/delete/merge are SQL.
 - The release is v0.6.0, because v0.5.0 (Phase 4) shipped after the spec was written.
 
+**Changes after the Codex + Antigravity plan review (2026-10-17):**
+- Every terminal job state emits `speakers-updated`, and the summary gate stays closed until the first speaker lookup returns.
+- `finish_without_publish` is token-checked, and replacing transcripts invalidates a running job even with the feature off.
+- Sentences may not overlap and are re-validated on save.
+- Recording-history reloads keep speaker fields.
+- Streaming decode keeps exact timing (resampler delay, flush, trim) and deletes partial temp files.
+- Features (Task 9) now come before the runtime (Task 10).
+- Split rows get a correct `duration`.
+- The installer size gate runs before publishing.
+- `DirectML.dll` is preloaded by absolute path, and the Windows test initialises ORT from the staged DLL.
+- DTW reference uses custom turbo alignment heads.
+- One finding was rejected: TitaNet frames are *not* padded to 16 (sherpa pads only its buffer; the tensor shape is unpadded).
+
 ## Global Constraints
 
 - **Start condition:** PR #8 (`fix/transcript-quality`) is merged into `main`, and `speaker-id` is rebased onto it (Task 0). The plan targets that code: `transcribe_audio_with_confidence(audio, language, policy: Option<&mut LanguagePolicy>)` and `pad_to_min_duration` in `whisper_engine/language_policy.rs`.
@@ -130,7 +143,7 @@
 
    Each such line is stored without sentences and later gets its majority speaker. Tests: Task 2 (`sentences_*`), Task 3 (`save_transcript_drops_bad_sentences_and_speaker_idx`).
 2. **An interrupted or overtaken job must leave no stale or orphan data.** Cases: the app closes mid-analysis; the meeting is deleted mid-job; Re-transcribe or Re-identify runs mid-job. Expected: publishing does nothing, and an interrupted job re-runs at the next start. Tests: Task 15 (`publish_*`, `recover_*`) and Task 16 (`job_discards_result_when_token_changed`).
-3. **DirectML missing or failing mid-run** (an old driver, no DX12, a device reset) must give a finished CPU analysis with the real backend recorded. A silent CPU fallback must never be recorded as `directml`. Tests: Task 9 (`load_reports_cpu_when_directml_registration_fails`) and Task 16 (`job_falls_back_to_cpu_and_records_mixed`).
+3. **DirectML missing or failing mid-run** (an old driver, no DX12, a device reset) must give a finished CPU analysis with the real backend recorded. A silent CPU fallback must never be recorded as `directml`. Tests: Task 10 (`backend_label_combines_backends`), Task 16 (`job_falls_back_to_cpu_and_records_mixed`) and Task 23 (`windows_e2e`).
 4. **Feature off means today's app exactly:**
    - no `levels.bin`;
    - no `speaker_idx`;
@@ -159,8 +172,8 @@
 | `speakers/settings.rs` (new), `audio/pipeline.rs`, `audio/recording_saver.rs`, `audio/meeting_folder.rs` | Setting, feed levels, write `levels.bin`, delete list | 6 |
 | `scripts/speaker-parity/` (new: `README.md`, `make_reference.py`, `requirements.txt`) | Local reference outputs from sherpa-onnx 1.13.8 | 7 |
 | `speakers/models.rs` (new) | Model catalog, SHA-256 resumable download, readiness | 8 |
-| `speakers/runtime.rs` (new) | ORT sessions, DirectML/CPU, explicit backend, fallback | 9 |
-| `speakers/features.rs` (new) | NeMo log-mel features (sherpa port) | 10 |
+| `speakers/runtime.rs` (new) | ORT sessions, DirectML/CPU, explicit backend, fallback | 10 |
+| `speakers/features.rs` (new) | NeMo log-mel features (sherpa port) | 9 |
 | `speakers/diarize.rs` (new) | Segmentation, powerset, overlap exclusion, embeddings, reconstruction (sherpa port) | 12 |
 | `speakers/cluster.rs` (new) | Complete linkage, window-step cap, centroid merge helpers | 11 |
 | `audio/decoder.rs`, `speakers/temp_audio.rs` (new) | Streaming decode to a 16 kHz mono temp file; random-access reader | 13 |
@@ -230,7 +243,7 @@ All Rust paths are under `frontend/src-tauri/src/` unless shown otherwise.
 #[tokio::test] async fn pre_feature_rows_survive_migration() { /* rows inserted before running the new migration keep text/times; speaker_idx and sentences are NULL */ }
 ```
 
-Apply migrations up to the previous one with `sqlx::migrate::Migrator`. Use `Migrator::new(Path::new("./migrations"))`, filter `migrations` to version < 20261017000000, run, insert a row, then run the full migrator.
+`pre_feature_rows_survive_migration` must not use `test_pool()`, which already runs every migration. Connect directly with `SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:")`. Then apply the migrations up to the previous one with `Migrator::new(Path::new("./migrations"))`, filtered to version < 20261017000000. Insert a row, then run the full migrator.
 
 - [ ] **Step 2:** `cargo test -p meetily --lib repositories::meeting` → FAIL (table `people` does not exist).
 - [ ] **Step 3: Implement.**
@@ -262,7 +275,8 @@ pub struct Sentence(pub f64, pub f64, pub String);           // [t0, t1, text]
 pub struct TimedToken { pub bytes: Vec<u8>, pub t0: i64, pub t1: i64 } // centiseconds in the padded chunk
 pub fn build_sentences(tokens: &[TimedToken], pad_secs: f64, audio_secs: f64) -> Vec<Sentence>      // chunk-local seconds
 pub fn to_meeting_time(local: &[Sentence], line_text: &str, start: f64, end: f64) -> Option<Vec<Sentence>>
-pub fn parse_json(raw: &str) -> Option<Vec<Sentence>>          // None on any invalid entry
+pub fn is_valid(s: &[Sentence], line_text: &str, start: f64, end: f64) -> bool  // meeting-time sentences vs their line
+pub fn parse_json(raw: &str) -> Option<Vec<Sentence>>          // None on any malformed entry (shape/finite numbers only)
 // language_policy.rs
 pub fn pad_to_min_duration(audio: Vec<f32>) -> (Vec<f32>, usize) // (audio, samples added before)
 // whisper_engine.rs
@@ -301,6 +315,12 @@ fn tok(s: &str, t0: i64, t1: i64) -> TimedToken { TimedToken { bytes: s.as_bytes
     let late = vec![Sentence(0.0, 5.0, "a.".into())];
     assert!(to_meeting_time(&late, "a.", 0.0, 2.0).is_none()); // beyond end + 0.2 s tolerance
 }
+#[test] fn sentences_reject_overlap() {
+    let s = vec![Sentence(0.0, 1.0, "a.".into()), Sentence(0.8, 1.5, "b.".into())];
+    assert!(!is_valid(&s, "a. b.", 0.0, 2.0));
+    let ok = vec![Sentence(0.0, 1.0, "a.".into()), Sentence(1.0, 1.5, "b.".into())];
+    assert!(is_valid(&ok, "a. b.", 0.0, 2.0));
+}
 #[test] fn sentences_parse_json_rejects_garbage() {
     assert_eq!(parse_json(r#"[[1.0,2.0,"a."]]"#).unwrap().len(), 1);
     for raw in [r#"[[1.0,"x","a"]]"#, r#"{"a":1}"#, r#"[[NaN,1,"a"]]"#, "not json"] { assert!(parse_json(raw).is_none()); }
@@ -315,12 +335,14 @@ In `language_policy.rs` tests: `pad_reports_offset_before_audio`. A 0.5 s input 
   **`build_sentences`:**
   - Concatenate token bytes. Cut after a token whose bytes, with trailing ASCII whitespace trimmed, end in `.`, `?`, `!` or the UTF-8 bytes of `…`.
   - Sentence text is `String::from_utf8_lossy(bytes).trim()`. Drop empty sentences.
+  - After the last token, emit any remaining unpunctuated tokens as a final sentence.
   - `t0` is the first token's `t0`; `t1` is the last token's `t1`. Both are `/100.0 - pad_secs`, clamped to `[0, audio_secs]` and rounded to 2 decimals.
 
-  **`to_meeting_time`:**
-  - Check that joining the sentence texts with `' '` equals the line text after collapsing whitespace.
-  - Then add `start`, and require `t0 ≤ t1`, non-decreasing `t0`, and every time within `[start − 0.2, end + 0.2]`.
-  - Clamp to `[start, end]`.
+  **`to_meeting_time`:** add `start`, clamp to `[start, end]`, and return `Some` only if `is_valid` holds.
+
+  **`is_valid`** (the one rule set, also used by save in Task 3 and by the job in Task 16):
+  - Joining the sentence texts with `' '` equals the line text after collapsing whitespace.
+  - Every `t0 ≤ t1`, each sentence's `t0 ≥` the previous sentence's `t1` (no overlap), and all times are within `[start − 0.2, end + 0.2]`.
 
   **`transcribe_audio_with_confidence`:**
   - Use `let (audio_data, pad_before) = pad_to_min_duration(audio_data)`.
@@ -345,7 +367,8 @@ In `language_policy.rs` tests: `pad_reports_offset_before_audio`. A 0.5 s input 
   - `audio/import.rs:550,607,724`
   - `audio/retranscription.rs:341,397,458`
   - `frontend/src/types/index.ts` (`Transcript`, `TranscriptUpdate`)
-  - `frontend/src/contexts/TranscriptContext.tsx` (copy the new fields from the update into the stored line)
+  - `frontend/src/contexts/TranscriptContext.tsx` (copy the new fields from the update into the stored line, `:315-353`; also in the history rebuild after a reload, `:402`)
+  - `audio/recording_saver.rs:15-25` (`recording_saver::TranscriptSegment` gains `speaker_idx`, `sentences`, both `#[serde(default)]`) and `audio/recording_commands.rs:503-525,692-` (both history listeners copy them)
 - Test: `database/repositories/transcript.rs` tests; `frontend/tests/contexts/` (new `transcript-speaker-fields.test.tsx`).
 
 **Interfaces:**
@@ -369,15 +392,17 @@ In `language_policy.rs` tests: `pad_reports_offset_before_audio`. A 0.5 s input 
 
 ```ts
 // transcript-speaker-fields.test.tsx: a 'transcript-update' payload with speaker_idx 0 and sentences [[1,2,"Hi."]]
-// ends up in useTranscripts().transcripts[0] with both fields unchanged
+// ends up in useTranscripts().transcripts[0] with both fields unchanged; after the reload path rebuilds history
+// from the backend (mock the history command with the same fields), both fields are still there
 ```
 
 - [ ] **Step 2:** Run the Rust and Bun tests → FAIL.
 - [ ] **Step 3: Implement.**
   - **Live:** `transcribe_chunk_with_provider` returns the sentences too. The worker calls `to_meeting_time(&s, &transcript, audio_start_time, audio_end_time)` and puts the result in `TranscriptUpdate.sentences`.
   - **Lenient deserializers:**
-    - `lenient_sentences` accepts only a valid list (same rules as `parse_json`, applied to a `serde_json::Value`). Anything else becomes `None`.
+    - `lenient_sentences` accepts only a well-formed list (same shape rules as `parse_json`, applied to a `serde_json::Value`). Anything else becomes `None`.
     - `lenient_speaker_idx` accepts only `0`. A live save can only know "You"; anything else becomes `None`.
+    - After deserializing a segment, `save_transcript` keeps its sentences only if `is_valid(&s, &text, start, end)`; otherwise it stores NULL.
   - **Insert** adds `speaker_idx, sentences` (JSON via `serde_json::to_string`).
   - **Import and retranscription:** convert each Whisper result with `to_meeting_time(&s, &text, start_ms/1000, end_ms/1000)` and store it. Parakeet gives `None`.
 - [ ] **Step 4:** Tests PASS. Then the full Rust lib tests and `bun test` → PASS.
@@ -392,7 +417,7 @@ This task decides whether line splitting (Task 14, `SPLIT_LINES`) ships enabled.
 - [ ] **Step 1: Build a test harness** in the scratchpad, not committed. It runs `WhisperEngine::transcribe_audio_with_confidence` on 10-minute excerpts of the 4 recordings in `/workspace/.superpowers/spike-audio/`.
   - Model: `ggml-large-v3-turbo` from `.superpowers/quality-debug/`.
   - Use the app's VAD chunks: run `audio::vad` over the 16 kHz excerpt, exactly as `import.rs` does.
-- [ ] **Step 2: Build the reference.** Transcribe the same chunks with whisper-rs DTW token timestamps (`WhisperContextParameters::dtw_parameters`, preset `LargeV3Turbo`). Then take each sentence end from the DTW time of its last token.
+- [ ] **Step 2: Build the reference.** Transcribe the same chunks with whisper-rs DTW token timestamps. whisper-rs 0.13.2 has no turbo preset (`DtwModelPreset` stops at `LargeV3`), so use `DtwMode::Custom` with large-v3-turbo's alignment heads, copied from `g_aheads_large_v3_turbo` in the whisper.cpp version vendored by `whisper-rs-sys` 0.13.2. If that version lacks it, take the heads from openai-whisper's `_ALIGNMENT_HEADS["large-v3-turbo"]` and note the source. Each sentence's reference end is `WhisperTokenData.t_dtw` of its last token (centiseconds).
 - [ ] **Step 3: Record the results.** Report the median and p90 of |token-time end − DTW end| over all sentence ends, plus the counts.
   - **Gate:** median ≤ 0.30 s **and** p90 ≤ 0.80 s → `SPLIT_LINES = true`. Otherwise `false`, and the controller tells the user.
 - [ ] **Step 4: Commit** `docs(speakers): sentence timing measurement` (the numbers only).
@@ -553,49 +578,7 @@ pub fn delete_models(dir: &Path) -> Result<(), String>         // only the two k
 - [ ] **Step 4:** PASS.
 - [ ] **Step 5: Commit** `feat(speakers): verified model download`.
 
-### Task 9: ORT sessions on DirectML or CPU **[Codex]**
-
-**Files:**
-- Create: `speakers/runtime.rs`
-- Test: `speakers/runtime.rs`
-
-**Interfaces:**
-- Produces:
-
-```rust
-#[derive(Clone, Copy, PartialEq, Debug)] pub enum Backend { DirectMl, Cpu }
-pub const TITANET_ON_DIRECTML: bool = true;   // set false if the user's profiling shows CPU is faster (Task 24)
-pub struct SegMeta { pub window_size: usize, pub receptive_field_size: usize, pub receptive_field_shift: usize, pub num_speakers: usize, pub powerset_max_classes: usize, pub num_classes: usize }
-pub trait SpeakerModels {
-    fn seg_meta(&self) -> &SegMeta;
-    fn segment(&mut self, chunk: &[f32]) -> Result<ndarray::Array2<f32>, String>; // [frames, num_classes] logits
-    fn embed(&mut self, samples: &[f32]) -> Result<Option<Vec<f32>>, String>;    // None = invalid (NaN/zero-norm)
-    fn backend_label(&self) -> &'static str;                                      // "directml" | "cpu" | "mixed"
-    fn fall_back_to_cpu(&mut self) -> Result<(), String>;
-}
-pub struct OrtSpeakerModels { /* seg, emb sessions + backends + metas */ }
-impl OrtSpeakerModels { pub fn load(dir: &Path, prefer_directml: bool) -> Result<Self, String> }
-fn session(path: &Path, backend: Backend) -> Result<ort::session::Session, String>
-```
-
-- [ ] **Step 1: Write the failing tests:**
-  - `cpu_session_options`: building with `Backend::Cpu` sets intra threads = max(1, logical/2), with spinning off (`with_intra_op_spinning(false)`, `with_inter_op_spinning(false)`). Test via a small pure `cpu_threads(logical: usize) -> usize` (`8 → 4`, `1 → 1`).
-  - `load_reports_cpu_when_directml_registration_fails`: on Linux, `load(dir, true)` → `backend_label() == "cpu"`, because DirectML registration with `.error_on_failure()` errors and the code retries on CPU. Marked `#[ignore]`; needs the parity models (`SPEAKER_MODELS_DIR` env).
-  - `segment_shape_matches_meta` (ignored): 10 s of zeros → shape `[589, 7]` or whatever `num_classes` the metadata reports. Assert `cols == num_classes`.
-- [ ] **Step 2:** FAIL.
-- [ ] **Step 3: Implement.**
-  - **DirectML** (only under `#[cfg(windows)]`): `DirectMLExecutionProvider::default().build().error_on_failure()`, `with_parallel_execution(false)`, `with_memory_pattern(false)`.
-  - **CPU:** `CPUExecutionProvider`, threads as tested, spinning off.
-  - Call `crate::ensure_onnx_runtime_available()` first.
-  - If a DirectML session fails to create, use CPU and log `warn!`.
-  - Read `SegMeta` from model metadata keys `window_size`, `receptive_field_size`, `receptive_field_shift`, `num_speakers`, `powerset_max_classes`, `num_classes`, as sherpa's `offline-speaker-segmentation-pyannote-model.cc` does.
-  - The input name `x` and the output come from session inputs/outputs; don't hard-code them.
-  - `embed` computes features with Task 10's `nemo_features` and runs TitaNet with inputs `audio_signal [1, bins, frames]` and `length [1]` (names from the session).
-  - Sessions are `!Sync`; a single job thread owns them.
-- [ ] **Step 4:** Unit tests PASS. Run the ignored ones with `SPEAKER_MODELS_DIR=/workspace/.superpowers/speaker-parity/models cargo test ... -- --ignored`.
-- [ ] **Step 5: Commit** `feat(speakers): ORT sessions with explicit DirectML/CPU backend`.
-
-### Task 10: NeMo features (port)
+### Task 9: NeMo features (port)
 
 **Files:**
 - Create: `speakers/features.rs`
@@ -615,11 +598,55 @@ pub fn nemo_features(samples: &[f32], meta: &NemoMeta) -> ndarray::Array2<f32>  
 - [ ] **Step 1: Write the failing tests:**
   - `features_shape_and_normalisation`: 1 s of a 440 Hz sine → `feat_dim` rows, frames = the snip-edges count for the metadata window/stride; each row has mean ≈ 0 and std ≈ 1 (tolerance 1e-3).
   - `features_silence_is_finite`: all zeros → all values finite (the `stddev + 1e-5` guard).
-  - `embedding_parity_with_sherpa` (`#[ignore]`): for each recording's 20 clips, cosine(Rust `embed`, `clip_emb.npy`) > 0.999.
+  - The embedding parity test lives in Task 10, which adds `embed`.
 - [ ] **Step 2:** FAIL.
 - [ ] **Step 3: Implement** the port, using `realfft`. It must reproduce: pre-emphasis, the window from metadata, `snip_edges = true`, no DC removal, librosa-style mel filters, log, then per-feature normalisation with `stddev + 1e-5`. Match the sherpa code line by line. Put any constant not read from metadata in a `const` with a comment naming the sherpa line.
-- [ ] **Step 4:** Unit tests PASS. The ignored parity test PASSES on all 80 clips. Report the min cosine.
+- [ ] **Step 4:** Unit tests PASS.
 - [ ] **Step 5: Commit** `feat(speakers): NeMo feature extraction`.
+
+### Task 10: ORT sessions on DirectML or CPU **[Codex]**
+
+**Files:**
+- Create: `speakers/runtime.rs`
+- Test: `speakers/runtime.rs`
+
+**Interfaces:**
+- Produces:
+
+```rust
+#[derive(Clone, Copy, PartialEq, Debug)] pub enum Backend { DirectMl, Cpu }
+pub const TITANET_ON_DIRECTML: bool = true;   // set false if the user's profiling shows CPU is faster (Task 24)
+pub struct SegMeta { pub sample_rate: usize, pub window_size: usize, pub receptive_field_size: usize, pub receptive_field_shift: usize, pub num_speakers: usize, pub powerset_max_classes: usize, pub num_classes: usize }
+pub trait SpeakerModels {
+    fn seg_meta(&self) -> &SegMeta;
+    fn segment(&mut self, chunk: &[f32]) -> Result<ndarray::Array2<f32>, String>; // [frames, num_classes] logits
+    fn embed(&mut self, samples: &[f32]) -> Result<Option<Vec<f32>>, String>;    // None = invalid (NaN/zero-norm)
+    fn backend_label(&self) -> &'static str;                                      // "directml" | "cpu" | "mixed"
+    fn fall_back_to_cpu(&mut self) -> Result<(), String>;
+}
+pub struct OrtSpeakerModels { /* seg, emb sessions + backends + metas */ }
+impl OrtSpeakerModels { pub fn load(dir: &Path, prefer_directml: bool) -> Result<Self, String> }
+fn session(path: &Path, backend: Backend) -> Result<ort::session::Session, String>
+```
+
+- [ ] **Step 1: Write the failing tests:**
+  - `cpu_session_options`: building with `Backend::Cpu` sets intra threads = max(1, logical/2), with spinning off (`with_intra_op_spinning(false)`, `with_inter_op_spinning(false)`). Test via a small pure `cpu_threads(logical: usize) -> usize` (`8 → 4`, `1 → 1`).
+  - `load_on_linux_uses_cpu` (ignored; needs the parity models via `SPEAKER_MODELS_DIR`): `load(dir, true)` → `backend_label() == "cpu"`. On non-Windows, DirectML is never attempted (`#[cfg(not(windows))]` → CPU). The fallback *behaviour* is tested with fake models in Task 16, and the real registration on Windows in Task 23.
+  - `backend_label_combines_backends`: a pure `label(seg: Backend, emb: Backend, any_directml_work_failed_over: bool) -> &'static str`. Both DirectML → `directml`; both CPU and never DirectML → `cpu`; mixed, or a failover after DirectML work → `mixed`.
+  - `segment_shape_matches_meta` (ignored): 10 s of zeros → `cols == num_classes` from the metadata.
+  - `embedding_parity_with_sherpa` (ignored, moved here from Task 9 because it needs `embed`): for each recording's 20 clips, cosine(Rust `embed`, `clip_emb.npy`) > 0.999. Report the min cosine.
+- [ ] **Step 2:** FAIL.
+- [ ] **Step 3: Implement.**
+  - **DirectML** (only under `#[cfg(windows)]`): `DirectMLExecutionProvider::default().build().error_on_failure()`, `with_parallel_execution(false)`, `with_memory_pattern(false)`.
+  - **CPU:** `CPUExecutionProvider`, threads as tested, spinning off.
+  - Call `crate::ensure_onnx_runtime_available()` first.
+  - If a DirectML session fails to create, use CPU and log `warn!`.
+  - Read `SegMeta` from model metadata keys `sample_rate`, `window_size`, `receptive_field_size`, `receptive_field_shift`, `num_speakers`, `powerset_max_classes`, `num_classes`, as sherpa's `offline-speaker-segmentation-pyannote-model.cc` does. Error unless `sample_rate == 16000`.
+  - Segmentation input is one `f32` tensor of shape `[1, 1, window_size]` (sherpa `offline-speaker-diarization-pyannote-impl.h:365`). Output `[1, frames, num_classes]` is returned as `[frames, num_classes]`. Input/output names come from the session; don't hard-code them.
+  - `embed` computes features with Task 9's `nemo_features` (`[feat_dim, frames]`). It runs TitaNet with an `f32` tensor `[1, feat_dim, frames]` and an `i64` length tensor `[1]` = `frames`. **No frame padding:** sherpa resizes its buffer to a multiple of 16 frames, but its tensor shape uses the unpadded count (`speaker-embedding-extractor-nemo-impl.h:92-100`), so the padding never reaches the model.
+  - Sessions are `!Sync`; a single job thread owns them.
+- [ ] **Step 4:** Unit tests PASS. Run the ignored ones with `SPEAKER_MODELS_DIR=/workspace/.superpowers/speaker-parity/models cargo test ... -- --ignored`. The embedding parity test must pass on all 80 clips.
+- [ ] **Step 5: Commit** `feat(speakers): ORT sessions with explicit DirectML/CPU backend`.
 
 ### Task 11: Clustering and step cap
 
@@ -674,7 +701,7 @@ pub fn mean_normalized(v: &[Vec<f32>]) -> Option<Vec<f32>>  // None if empty or 
 Skip the silhouette/confidence code: `compute_confidence` is off.
 
 **Interfaces:**
-- Consumes: `SpeakerModels` (Task 9), `cluster::complete_linkage_labels` (Task 11). This task defines `AudioSource` with a `Vec<f32>` impl for tests; Task 13 implements it for the temp file.
+- Consumes: `SpeakerModels` (Task 10), `cluster::complete_linkage_labels` (Task 11). This task defines `AudioSource` with a `Vec<f32>` impl for tests; Task 13 implements it for the temp file.
 - Produces:
 
 ```rust
@@ -713,20 +740,28 @@ pub fn diarize(audio: &dyn AudioSource, models: &mut dyn SpeakerModels, step_sec
 // audio/decoder.rs
 pub fn decode_to_mono_16k_file(input: &Path, output: &Path, progress: &mut dyn FnMut(f32)) -> anyhow::Result<f64>  // seconds written
 // speakers/temp_audio.rs
-pub struct TempAudio { file: std::fs::File, len: usize, path: PathBuf }   // deletes the file on Drop
-impl TempAudio { pub fn create_in(dir: &Path, meeting_id: &str) -> std::io::Result<PathBuf>; pub fn open(path: PathBuf) -> std::io::Result<Self>; }
+pub struct TempFileGuard(PathBuf);       // deletes the file on Drop unless converted
+impl TempFileGuard { pub fn new_in(dir: &Path, meeting_id: &str) -> Self; pub fn path(&self) -> &Path; }
+pub struct TempAudio { file: std::fs::File, len: usize, guard: TempFileGuard }   // deletes the file on Drop
+impl TempAudio { pub fn open(guard: TempFileGuard) -> std::io::Result<Self>; }
 impl crate::speakers::diarize::AudioSource for TempAudio
 pub fn clear_temp_dir(dir: &Path)        // startup: removes *.f32 files directly in dir only
 ```
 
 - [ ] **Step 1: Write the failing tests:**
   - `decode_to_mono_16k_file_matches_whole_decode`: a generated 48 kHz stereo WAV (3 s, via `hound` in `dev-dependencies`, or the existing test fixture writer) → the file has 48,000 samples, within ±1 of `decode_audio_file(..).to_whisper_format()` length. Mean absolute difference < 1e-3.
-  - `decode_streams_without_loading_whole_file`: a source of 60 s; assert that the function's internal buffer never exceeds 1 s of input. Expose `const MAX_BUFFER_SECS: f64 = 1.0` and assert the resampler chunk size derived from it.
+  - `decode_streams_without_loading_whole_file`: a 60 s source. The function records the largest number of input samples it held at once in a `#[cfg(test)]` thread-local high-water mark, updated wherever samples are buffered. Assert the mark ≤ 2 s of input. A whole-file implementation would hold 60 s and fail.
+  - `decode_keeps_timing_exact`: 48 kHz input of 10.37 s (not a whole number of chunks) with a click at 0.0 s, at 5.0 s (a chunk boundary) and at 10.3 s. Output length = `round(10.37 × 16000)` ± 1. Each click peak is within ±2 samples of its expected 16 kHz position.
+  - `temp_guard_deletes_partial_file_on_decode_error`: decode a truncated file into a guard → `Err`, and the file no longer exists after the guard drops.
   - `temp_audio_reads_ranges_and_deletes_on_drop`; `clear_temp_dir_removes_only_f32_files`.
 - [ ] **Step 2:** FAIL.
 - [ ] **Step 3: Implement.**
   - The symphonia packet loop downmixes to mono and feeds a `rubato::FftFixedIn` resampler in 1 s chunks.
-  - Write `f32` LE through a `BufWriter`.
+  - **Timing:**
+    - Drop the first `resampler.output_delay()` output frames.
+    - Feed the final partial chunk with `process_partial`, then flush with `process_partial(None)` until enough output exists.
+    - Trim the output to exactly `round(input_frames × 16000 / input_rate)` frames.
+  - Write `f32` LE through a `BufWriter` into the guard's path. The caller opens `TempAudio` only on success; on error the guard deletes the partial file.
   - The ffmpeg-only extensions reuse `convert_to_wav_with_ffmpeg` first.
 - [ ] **Step 4:** PASS.
 - [ ] **Step 5: Commit** `feat(speakers): streaming 16 kHz decode to a temp file`.
@@ -754,7 +789,10 @@ pub enum SelfEvidence { Levels(Vec<bool>), Prints(Vec<Vec<f32>>), None }
 pub struct KnownPerson { pub person_id: String, pub prints: Vec<Vec<f32>> }
 #[derive(Debug, Clone, PartialEq)] pub struct ResolvedSpeaker { pub idx: i64, pub person_id: Option<String>, pub centroid: Option<Vec<f32>>, pub seconds: f64, pub turns: Vec<(f64, f64)> }
 pub fn clusters_from_turns(turns: &[Turn]) -> Vec<ClusterInfo>                 // centroid None (filled by the job)
-pub fn centroid_windows(turns: &[(f64, f64)]) -> Vec<(f64, f64)>               // 3 s sub-windows of turns ≥ 1.5 s, ≤ 60, evenly spaced
+pub fn centroid_windows(turns: &[(f64, f64)]) -> Vec<(f64, f64)>
+// turns < 1.5 s: skipped; 1.5–3 s: the whole turn; ≥ 3 s: consecutive non-overlapping 3 s windows from the turn start
+// (a remainder ≥ 1.5 s is its own window, a shorter one is dropped). More than 60 candidates → keep
+// candidates[(i * (n - 1)) / 59] for i in 0..60, in time order.
 pub fn self_learning_windows(turns: &[(f64, f64)], flags: &[bool]) -> Vec<(f64, f64)>  // 3 s windows ≥ 90 % mic-only
 pub fn resolve_speakers(clusters: Vec<ClusterInfo>, self_ev: &SelfEvidence, people: &[KnownPerson]) -> Vec<ResolvedSpeaker>
 pub struct Line { pub id: String, pub start: f64, pub end: f64, pub text: String, pub sentences: Option<Vec<Sentence>> }
@@ -821,6 +859,10 @@ pub struct Publish { pub speakers: Vec<ResolvedSpeaker>, pub lines: Vec<LineOut>
 
 enqueue_in_tx(conn: &mut SqliteConnection, meeting_id: &str) -> Result<String, SqlxError>       // upsert pending, new token
 enqueue(pool, meeting_id) -> Result<String, SqlxError>
+transcripts_replaced_in_tx(conn: &mut SqliteConnection, meeting_id: &str, active: bool) -> Result<(), SqlxError>
+// called by EVERY transaction that replaces a meeting's transcripts (re-transcribe), whatever the feature state:
+// active → enqueue_in_tx; inactive and a job row exists → status 'skipped', reason 'feature_off', NEW token
+// (so a job still running can never publish against the replaced rows); no row → nothing
 recover_jobs(pool) -> Result<u64, SqlxError>                     // pending|running → pending with new tokens
 claim_next(pool) -> Result<Option<(String, String)>, SqlxError>  // oldest pending → running; returns (meeting_id, token)
 finish_without_publish(pool, meeting_id, token, status: &str, reason: Option<&str>, backend: Option<&str>) -> Result<bool, SqlxError>
@@ -842,7 +884,7 @@ Rules (spec §9):
 - **Publish:** one transaction. First run `UPDATE speaker_jobs SET status='done', backend=?, audio_seconds=?, run_seconds=?, reason=NULL, updated_at=? WHERE meeting_id=? AND run_token=? AND status='running'`. If 0 rows are affected, roll back and return `false`. Then:
   - `DELETE FROM voiceprints WHERE source_meeting_id=?`
   - replace `meeting_speakers`
-  - for each `LineOut`: `UPDATE` (id `Some`; also set `transcript`, times, `sentences`, `speaker_idx`) or `INSERT` (new UUID `transcript-<uuid>`, copying `timestamp` from `source_id`'s row, `mark` NULL)
+  - for each `LineOut`: `UPDATE` (id `Some`; also set `transcript`, `audio_start_time`, `audio_end_time`, `duration = end − start`, `sentences`, `speaker_idx`) or `INSERT` (new UUID `transcript-<uuid>`, same columns, copying `timestamp` from `source_id`'s row, `mark` NULL)
   - insert the self print (`source_idx 0`, `person_id 'self'`) if present, then prune to 20 newest
 - **`name_speaker`:**
   - `Err("Speaker analysis is running")` if the job is pending or running.
@@ -856,12 +898,15 @@ Rules (spec §9):
 - **`merge_people`:**
   - Refused if either side is self or `from == into`.
   - Move voiceprints and `meeting_speakers.person_id` to `into`, prune `into` to 20, delete `from`.
-- **Save transaction:** `TranscriptsRepository::save_transcript` gains `enqueue_speakers: bool` and calls `enqueue_in_tx` inside its transaction.
+- **`finish_without_publish`** is token-checked like publish: `UPDATE speaker_jobs SET status=?, reason=?, backend=?, updated_at=? WHERE meeting_id=? AND run_token=? AND status='running'`. It returns `false` on 0 rows, so an overtaken job can never overwrite a newer pending one.
+- **Save transaction:** `TranscriptsRepository::save_transcript` gains `enqueue_speakers: bool` and calls `enqueue_in_tx` inside its transaction. This task updates its caller `api/api.rs:994` to pass `false`; Task 16 wires `speakers::is_active()`.
 
 - [ ] **Step 1: Write the failing tests:**
   - `save_without_feature_creates_no_job`; `save_with_feature_creates_pending_job`.
-  - `claim_and_publish_with_matching_token`: speakers are replaced, lines updated or inserted, the job is `done`.
+  - `claim_and_publish_with_matching_token`: speakers are replaced, lines updated or inserted (each with `duration == end − start`), the job is `done`.
   - `publish_with_stale_token_does_nothing`: re-enqueue between claim and publish → returns `false`, and no row changed.
+  - `finish_with_stale_token_does_nothing`: re-enqueue between claim and `finish_without_publish(.., "failed", ..)` → `false`; the job stays `pending`.
+  - `replacing_transcripts_with_feature_off_invalidates_running_job`: claim; `transcripts_replaced_in_tx(.., active=false)`; publish with the old token → `false`. Status is `skipped` / `feature_off`.
   - `publish_after_meeting_deleted_does_nothing`: no orphan `meeting_speakers`.
   - `recover_requeues_running_with_new_token`.
   - `publish_removes_prints_learned_from_this_meeting_on_rerun`.
@@ -885,7 +930,7 @@ Rules (spec §9):
   - `lib.rs`: setup sets `models::set_models_dir`; calls `temp_audio::clear_temp_dir`, `SpeakersRepository::recover_jobs`, and `job::start_worker(app.handle())` after DB init (`lib.rs:~577`); registers the commands
   - `api/api.rs` (`api_save_transcript` passes `enqueue_speakers = speakers::is_active()` and calls `job::wake()` after commit)
   - `audio/import.rs` (enqueue in `create_meeting_with_transcripts`'s transaction when active, then `wake()`)
-  - `audio/retranscription.rs` (enqueue inside its transaction when active: this invalidates a running job's token; then `wake()`)
+  - `audio/retranscription.rs` (call `transcripts_replaced_in_tx(conn, meeting_id, is_active())` inside its replace transaction, always; then `wake()`)
 - Test: `speakers/job.rs`
 
 **Interfaces:**
@@ -897,7 +942,7 @@ Rules (spec §9):
 pub fn start_worker<R: Runtime>(app: AppHandle<R>)        // one tokio task; one job at a time app-wide
 pub fn wake()                                              // tokio::sync::Notify
 pub(crate) async fn run_one<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, meeting_id: &str, token: &str, deps: &mut dyn JobDeps) -> Result<(), String>
-pub(crate) trait JobDeps { fn models(&mut self, prefer_directml: bool) -> Result<Box<dyn SpeakerModels>, String>; fn is_active(&self) -> bool; fn models_ready(&self) -> bool; }
+pub(crate) trait JobDeps { fn models(&mut self, prefer_directml: bool) -> Result<Box<dyn SpeakerModels>, String>; fn is_active(&self) -> bool; fn models_ready(&self) -> bool; fn emit(&self, event: &str, meeting_id: &str); fn recordings_base(&self) -> Option<PathBuf>; }
 // commands.rs (all #[tauri::command])
 speakers_get_settings() -> SpeakerSettings { enabled, models_ready, downloading, last_analysis: Option<{backend, run_seconds, audio_seconds}> }
 speakers_set_enabled(enabled: bool)                        // settings::save_enabled; enabling starts the download if models are missing; emits speaker-settings-changed
@@ -911,7 +956,7 @@ people_list() / people_rename(id, name) / people_delete(id) / people_merge(from,
 ```
 
 `run_one` steps (spec §8.2):
-0. **Preconditions** → `finish_without_publish(.., "skipped", reason)`: `feature_off`, `models_missing`, `no_recording`. The recording is found with `guarded_meeting_folder` + `find_audio_file` on `meetings.folder_path`.
+0. **Preconditions** → `finish_without_publish(.., "skipped", reason)`: `feature_off`, `models_missing`, `no_recording`. The recording is found with `guarded_meeting_folder(&folder_path, &recordings_base)` + `find_audio_file`. `recordings_base` comes from the saved `save_folder` preference, the same way Phase 4's callers get it (see the callers of `guarded_meeting_folder` in `audio/meeting_folder.rs`/`retention.rs`).
 1. Decode to a `TempAudio` in `<app_data>/speakers-tmp/`.
 2. Pick the step with `window_step_secs`, then `diarize`.
 3. Build clusters; embed `centroid_windows` for each cluster with ≥ 3 s.
@@ -923,14 +968,18 @@ people_list() / people_rename(id, name) / people_delete(id) / people_merge(from,
 9. Emit `speakers-updated`. Log at `info` exactly: `speakers: stage timings decode={:.1}s diarize={:.1}s centroids={:.1}s publish={:.1}s backend={} audio={:.0}s run={:.1}s`.
 
 Rules:
-- Progress emits `speakers-progress`: decode 0–10, diarize 10–80, centroids 80–95, publish 100. The latest percent is kept in memory for `speakers_get_meeting`.
+- **Every** terminal transition the worker makes (`done`, `failed`, `skipped`), and every enqueue, emits `speakers-updated { meeting_id }`. Otherwise the UI would stay on "running" and the summary gate would never open.
+- `speaker-settings-changed` is emitted on toggle, after a successful model download, and after model deletion, i.e. whenever `is_active()` can change.
+- `speakers_set_enabled(true)` returns immediately. A missing-model download runs in `tauri::async_runtime::spawn`; a second request while one runs is ignored.
+- Progress emits `speakers-progress`: decode 0–10, diarize 10–80, centroids 80–95, publish 100. The latest percent is kept in a `Mutex<HashMap<meeting_id, u8>>` for `speakers_get_meeting`, and the entry is removed when the job reaches a terminal state.
 - **DirectML failure** during a stage: call `models.fall_back_to_cpu()`, then redo that stage. The backend becomes `"mixed"` if any work ran on DirectML, else `"cpu"`.
 - Any other error → `failed` with the error text, truncated to 300 characters.
 - The `TempAudio` is dropped (deleted) on every path.
 - Heavy work runs in `tokio::task::spawn_blocking`; the sessions live inside that closure.
 
 - [ ] **Step 1: Write the failing tests**, with `FakeDeps`, fake models and a temp meeting folder holding a tiny WAV named `audio.wav`:
-  - `job_skips_without_recording`; `job_skips_when_feature_off`; `job_skips_when_models_missing`.
+  - `job_skips_without_recording`; `job_skips_when_feature_off`; `job_skips_when_models_missing`. Each also asserts that a `speakers-updated` event was emitted (via a recording event sink in `JobDeps`, `fn emit(&self, event: &str, meeting_id: &str)`).
+  - `job_failure_emits_update`.
   - `job_publishes_speakers_and_labels` (fake diarization: two clusters, one mic-only via a written `levels.bin`) → idx 0 and idx 1 exist, and the lines are labelled.
   - `job_discards_result_when_token_changed`: re-enqueue during the run (FakeModels hook) → status stays `pending`, and no speakers are written.
   - `job_falls_back_to_cpu_and_records_mixed`: fake DirectML `embed` fails once → the job is `done` with backend `mixed`.
@@ -1046,7 +1095,7 @@ test('last analysis text', () => { expect(lastAnalysisText({ backend: 'directml'
 
 ```ts
 export function useMeetingSpeakers(meetingId: string, active: boolean): {
-  data: MeetingSpeakers | null; busy: boolean; percent: number | null;
+  data: MeetingSpeakers | null; loaded: boolean /* first speakers_get_meeting answered (or inactive) */; busy: boolean; percent: number | null;
   identify(): Promise<void>; name(idx: number, target: { personId: string } | { newName: string }): Promise<void>;
   moveLine(transcriptId: string, idx: number | null): Promise<void>; namesChanged: boolean; clearNamesChanged(): void;
 }  // reloads on 'speakers-updated' / 'speakers-progress' for this meeting; after publish it also re-fetches transcripts (calls the onTranscriptsChanged callback arg)
@@ -1089,11 +1138,13 @@ export function useMeetingSpeakers(meetingId: string, active: boolean): {
   - names on: `[00:05] Сергей: text`, and with a mark `[00:05] [MARKED: action] Сергей: text`.
   - Copy: feature on → `[12:04] Сергей: …`; off → unchanged.
   - gate: auto-summary does not start while the job is `pending` or `running`. It starts when the job turns `done`, `failed` or `skipped`, or when "Summarize now" is clicked. With the feature off it starts immediately, as today.
+  - gate waits for the first lookup: `speakers_get_meeting` answers after 50 ms with a `pending` job → no summary starts before or after the answer until the job is terminal. The existing effect latches `autoGenerationStartedMeetingIdRef`, so starting early cannot be undone.
+  - the gate opens after a `speakers-updated` event for a job that ended `failed` or `skipped`.
   - hint: after `namesChanged`, the summary panel shows "Speaker names changed. Regenerate the summary to use them". Clicking Regenerate goes through `shouldRegenerate(summaryDirty)`, the existing guard.
 - [ ] **Step 2:** FAIL.
 - [ ] **Step 3: Implement.**
-  - At generation time, names are resolved from the latest `speakers_get_meeting` result via `lineSpeakerName(t.speaker_idx, speakers, job?.status === 'done')`.
-  - The gate is an extra condition in the existing effect: `speakerGateOpen`, which is true when inactive, when there is no job, when the job is terminal, or when `summarizeNow` is set.
+  - When `speakerIdActive` is false, call `formatSummaryTranscript(transcripts)` with **no** second argument (and Copy uses today's format). Only when active: names are resolved from the latest `speakers_get_meeting` result via `lineSpeakerName(t.speaker_idx, speakers, job?.status === 'done')`.
+  - The gate is an extra condition in the existing effect: `speakerGateOpen`. It is true when inactive, or when `loaded` and (no job, the job is terminal, or `summarizeNow` is set). Until `loaded`, it is false.
 - [ ] **Step 4:** PASS. Then `tsc`, `bun test`, `pnpm run build`.
 - [ ] **Step 5: Commit** `feat(summary): wait for speakers and use names`.
 
@@ -1113,8 +1164,9 @@ export function useMeetingSpeakers(meetingId: string, active: boolean): {
 - Test: the `build/onnxruntime.rs` verification functions, if they have tests; otherwise add `#[cfg(test)]` cases in a `tests` module compiled by `build.rs`'s test harness. If none exists, verify by a Windows target `cargo check` only (Linux builds skip staging).
 
 Changes:
-- **Staging:** download both `.nupkg` files (zip archives), verify archive size and SHA, extract only the listed paths, verify each file, and stage `onnxruntime.dll`, `onnxruntime_providers_shared.dll`, `DirectML.dll` and the license into `binaries/onnxruntime/`. The `tauri.windows.conf.json` resource mapping already bundles the whole directory next to the exe, so `DirectML.dll` lands beside `Conclave.exe` and is found first.
-- **`release.yml`:** after the installer upload step, fail if any `bundle/nsis/*.exe` is > 100,000,000 bytes, and print the size. Also extend the smoke test to copy `binaries/onnxruntime/*` next to the exe. Today it copies only `cudart64_12.dll`, so an ORT load failure goes unnoticed. Then grep the app log for `Initialized bundled ONNX Runtime`.
+- **Staging:** download both `.nupkg` files (zip archives), verify archive size and SHA, extract only the listed paths, verify each file, and stage `onnxruntime.dll`, `onnxruntime_providers_shared.dll`, `DirectML.dll` and the license into `binaries/onnxruntime/`. The `tauri.windows.conf.json` resource mapping already bundles the whole directory next to the exe.
+- **Preload `DirectML.dll`** (`lib.rs:467-496`, Windows only): resolve `DirectML.dll` from the resource dir the same way as `onnxruntime.dll`. Load it with `LoadLibraryExW(path, NULL, LOAD_WITH_ALTERED_SEARCH_PATH)` **before** `ort::init_from`, and log the loaded module path (`GetModuleFileNameW`). The exe's folder already precedes System32 in the search order, but the preload makes the bundled copy certain, including in test processes. Declare the two functions in an `extern "system"` block against `kernel32`, like `whisper_engine/cuda_runtime.rs:27-43`. A failed preload is logged and the app continues; speakers then run on CPU.
+- **`release.yml`:** directly after "Build installer" and **before** "Publish release" (line 175), fail if any `bundle/nsis/*.exe` is > 100,000,000 bytes, and print the size. Also extend the smoke test to copy `binaries/onnxruntime/*` next to the exe. Today it copies only `cudart64_12.dll`, so an ORT load failure goes unnoticed. Then grep the app log for `Initialized bundled ONNX Runtime`.
 - **Existing gap (do not fix here):** check the Windows CI log for an `ort-sys` download from `cdn.pyke.io` (default `download-binaries`). Report it to the controller, who puts it on the later list.
 
 - [ ] **Step 1:** Run `cargo check --target x86_64-pc-windows-msvc -p meetily` if the toolchain is present. Otherwise check the build script by running its pure verification on the downloaded nupkgs in a scratch test (sizes and hashes match the table).
@@ -1128,10 +1180,11 @@ Changes:
 - Test: `speakers/job.rs` `windows_e2e` (`#[ignore]`)
 
 `windows_e2e`:
+- **First**, before any other ORT call in the test process: preload the staged `binaries/onnxruntime/DirectML.dll`, then `ort::init_from(<abs path of staged onnxruntime.dll>)`. Assert via `GetModuleFileNameW(GetModuleHandleW("onnxruntime.dll"))` that the loaded module is the staged one, not an `ort-sys` download in `target/`.
 - Downloads both models into a temp dir with `download_models` (real network, pinned hashes).
-- Loads `OrtSpeakerModels` with `prefer_directml = true`. Runners have no GPU, so expect `cpu`; assert that the label is `cpu` and that loading did not panic.
-- Runs `run_one` on a generated 30 s noise WAV → `done`, with backend `cpu`.
-- Also runs one Parakeet session load on the new runtime (`ParakeetModel::new` with any small available model). If none is downloadable in CI, assert that `ensure_onnx_runtime_available()` is `Ok` after `ort::init_from` on the staged DLL.
+- Loads `OrtSpeakerModels` with `prefer_directml = true`. A GPU-less runner may still create a DirectML device on Windows' software adapter, so accept `directml` or `cpu`. Assert that the label matches what actually registered (the per-session backends recorded at creation), and that loading did not panic.
+- Runs `run_one` on a generated 30 s noise WAV → `done`, with the same backend label.
+- **Parakeet check:** build an ORT session with Parakeet's exact options (`model.rs:120-131`: Level3, CPU EP, parallel execution on) on the 6 MB segmentation model, and run it once. A real Parakeet model (~600 MB) is not downloaded in CI. The user doesn't use Parakeet, and this checks that the new runtime accepts Parakeet's session configuration. State this limit in the task report.
 
 - [ ] **Step 1:** Push the branch (this is the push point). Run `gh workflow run ci.yml -f full=true --ref speaker-id`.
 - [ ] **Step 2:** Watch with `gh run watch`. Expected: `windows-app` passes, including `windows_e2e`. On failure, fix and re-dispatch at most twice, then report.

@@ -69,11 +69,32 @@ fn file_verified(path: &Path, model: &ModelFile) -> bool {
         }
     }
     let ok = sha256_file(path).is_ok_and(|hash| hash == model.sha256);
+    remember(path, stamp, ok);
+    ok
+}
+
+fn remember(path: &Path, stamp: Stamp, ok: bool) {
     VERIFIED
         .lock()
         .unwrap()
         .insert(path.to_path_buf(), (stamp, ok));
-    ok
+}
+
+/// The only client for model downloads. Redirects are followed only to https, at most 10 hops,
+/// and a plain-http hop is refused before it is sent.
+pub(crate) fn download_client() -> reqwest::Client {
+    reqwest::Client::builder()
+        .redirect(reqwest::redirect::Policy::custom(|attempt| {
+            if attempt.url().scheme() == "https" && attempt.previous().len() < 10 {
+                attempt.follow()
+            } else {
+                attempt
+                    .error("refusing a redirect to a non-https address or more than 10 redirects")
+            }
+        }))
+        .connect_timeout(Duration::from_secs(30))
+        .build()
+        .expect("model download client configuration is static")
 }
 
 /// Downloads every model in `MODELS`. `progress(downloaded, total)` counts bytes across both files.
@@ -137,6 +158,10 @@ pub(crate) async fn download_one(
     tokio::fs::rename(&part, &final_path)
         .await
         .map_err(|e| format!("Failed to save {}: {e}", model.name))?;
+    // Just hashed, so record the verdict now instead of re-hashing on the first models_ready().
+    if let Ok(meta) = tokio::fs::metadata(&final_path).await {
+        remember(&final_path, (meta.len(), meta.modified().ok()), true);
+    }
     progress(model.bytes, model.bytes);
     Ok(())
 }
@@ -156,12 +181,17 @@ async fn fetch_into(
     if have > 0 {
         request = request.header(reqwest::header::RANGE, format!("bytes={have}-"));
     }
-    let response = request
-        .send()
+    // The client's connect timeout covers connecting; this covers the wait for response headers.
+    let response = tokio::time::timeout(Duration::from_secs(60), request.send())
         .await
+        .map_err(|_| format!("{} download timed out waiting for the server", model.name))?
         .map_err(|e| format!("Failed to start {} download: {e}", model.name))?;
-    // reqwest follows redirects. Refuse a final address that is not https, unless it is the pinned URL itself.
-    if response.url().scheme() != "https" && response.url().as_str() != model.url {
+    // Backstop for download_client's redirect policy. The pinned URL is exempt only in tests, which use a plain-http stub.
+    #[cfg(test)]
+    let pinned = response.url().as_str() == model.url;
+    #[cfg(not(test))]
+    let pinned = false;
+    if response.url().scheme() != "https" && !pinned {
         return Err(format!("{} redirected to a non-https address", model.name));
     }
 
@@ -173,6 +203,8 @@ async fn fetch_into(
                 .get(reqwest::header::CONTENT_RANGE)
                 .and_then(|v| v.to_str().ok());
             if found != Some(expected.as_str()) {
+                // The partial file no longer matches what the server is sending; start over next time.
+                let _ = tokio::fs::remove_file(part).await;
                 return Err(format!(
                     "{} resume returned Content-Range {:?}, expected {expected}",
                     model.name, found
@@ -193,33 +225,40 @@ async fn fetch_into(
     let mut writer = tokio::io::BufWriter::with_capacity(1 << 20, file);
 
     let mut stream = response.bytes_stream();
-    loop {
-        let chunk = match tokio::time::timeout(Duration::from_secs(30), stream.next()).await {
-            Err(_) => return Err(format!("Download of {} stalled for 30 seconds", model.name)),
-            Ok(None) => break,
-            Ok(Some(chunk)) => {
-                chunk.map_err(|e| format!("Download of {} interrupted: {e}", model.name))?
+    let mut oversize = false;
+    let streamed = async {
+        loop {
+            let chunk = match tokio::time::timeout(Duration::from_secs(30), stream.next()).await {
+                Err(_) => return Err(format!("Download of {} stalled for 30 seconds", model.name)),
+                Ok(None) => return Ok(()),
+                Ok(Some(chunk)) => {
+                    chunk.map_err(|e| format!("Download of {} interrupted: {e}", model.name))?
+                }
+            };
+            written += chunk.len() as u64;
+            if written > model.bytes {
+                oversize = true;
+                return Err(format!(
+                    "{} is larger than its pinned {} bytes",
+                    model.name, model.bytes
+                ));
             }
-        };
-        written += chunk.len() as u64;
-        if written > model.bytes {
-            drop(writer);
-            let _ = tokio::fs::remove_file(part).await;
-            return Err(format!(
-                "{} is larger than its pinned {} bytes",
-                model.name, model.bytes
-            ));
+            writer
+                .write_all(&chunk)
+                .await
+                .map_err(|e| format!("Failed to write {}: {e}", model.name))?;
+            progress(written, model.bytes);
         }
-        writer
-            .write_all(&chunk)
-            .await
-            .map_err(|e| format!("Failed to write {}: {e}", model.name))?;
-        progress(written, model.bytes);
     }
-    writer
-        .flush()
-        .await
-        .map_err(|e| format!("Failed to write {}: {e}", model.name))?;
+    .await;
+    // Flush on every exit path, so the bytes already received are on disk for the next resume.
+    let flushed = writer.flush().await;
+    drop(writer);
+    if oversize {
+        let _ = tokio::fs::remove_file(part).await;
+    }
+    streamed?;
+    flushed.map_err(|e| format!("Failed to write {}: {e}", model.name))?;
     if written != model.bytes {
         return Err(format!(
             "{} download ended at {written} of {} bytes; retry to resume",
@@ -259,6 +298,8 @@ mod tests {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
 
+    type Seen = Arc<StdMutex<Vec<Option<String>>>>;
+
     fn leak(s: String) -> &'static str {
         Box::leak(s.into_boxed_str())
     }
@@ -267,7 +308,7 @@ mod tests {
         format!("{:x}", Sha256::digest(bytes))
     }
 
-    /// A model whose URL points at a local stub serving `served`; `expected` fixes the size and hash.
+    /// A model whose URL points at a local stub; `expected` fixes the size and hash.
     fn test_model(base: &str, name: &str, expected: &[u8]) -> ModelFile {
         ModelFile {
             name: leak(name.to_string()),
@@ -277,11 +318,24 @@ mod tests {
         }
     }
 
-    /// Serves `body` for any GET on 127.0.0.1, honouring `Range: bytes=N-`. Returns the base URL and the Range headers seen.
-    async fn serve(body: Vec<u8>) -> (String, Arc<StdMutex<Vec<Option<String>>>>) {
+    fn http_response(status: &str, extra_headers: &str, payload: &[u8]) -> Vec<u8> {
+        let mut out = format!(
+            "HTTP/1.1 {status}\r\n{extra_headers}Content-Length: {}\r\nConnection: close\r\n\r\n",
+            payload.len()
+        )
+        .into_bytes();
+        out.extend_from_slice(payload);
+        out
+    }
+
+    /// Loopback HTTP/1.1 stub. `respond` gets the request's Range header and returns the full response.
+    /// Returns the base URL and the Range header of every request.
+    async fn stub(
+        respond: impl Fn(Option<String>) -> Vec<u8> + Send + Sync + 'static,
+    ) -> (String, Seen) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
-        let seen = Arc::new(StdMutex::new(Vec::new()));
+        let seen: Seen = Arc::new(StdMutex::new(Vec::new()));
         let seen_task = seen.clone();
         tokio::spawn(async move {
             loop {
@@ -302,36 +356,37 @@ mod tests {
                     .find(|l| l.to_ascii_lowercase().starts_with("range:"))
                     .map(|l| l["range:".len()..].trim().to_string());
                 seen_task.lock().unwrap().push(range.clone());
-
-                let start = range
-                    .as_deref()
-                    .and_then(|r| r.strip_prefix("bytes="))
-                    .and_then(|r| r.strip_suffix('-'))
-                    .and_then(|n| n.parse::<usize>().ok())
-                    .filter(|n| *n < body.len());
-                let (status, from, extra) = match start {
-                    Some(s) => (
-                        "206 Partial Content",
-                        s,
-                        format!(
-                            "Content-Range: bytes {s}-{}/{}\r\n",
-                            body.len() - 1,
-                            body.len()
-                        ),
-                    ),
-                    None => ("200 OK", 0, String::new()),
-                };
-                let payload = &body[from..];
-                let head = format!(
-                    "HTTP/1.1 {status}\r\n{extra}Content-Length: {}\r\nConnection: close\r\n\r\n",
-                    payload.len()
-                );
-                let _ = sock.write_all(head.as_bytes()).await;
-                let _ = sock.write_all(payload).await;
+                let reply = respond(range);
+                let _ = sock.write_all(&reply).await;
                 let _ = sock.shutdown().await;
             }
         });
         (format!("http://{addr}"), seen)
+    }
+
+    /// Serves `body`, honouring `Range: bytes=N-` with a 206.
+    async fn serve(body: Vec<u8>) -> (String, Seen) {
+        stub(move |range| {
+            let start = range
+                .as_deref()
+                .and_then(|r| r.strip_prefix("bytes="))
+                .and_then(|r| r.strip_suffix('-'))
+                .and_then(|n| n.parse::<usize>().ok())
+                .filter(|n| *n < body.len());
+            match start {
+                Some(s) => http_response(
+                    "206 Partial Content",
+                    &format!(
+                        "Content-Range: bytes {s}-{}/{}\r\n",
+                        body.len() - 1,
+                        body.len()
+                    ),
+                    &body[s..],
+                ),
+                None => http_response("200 OK", "", &body),
+            }
+        })
+        .await
     }
 
     #[tokio::test]
@@ -341,12 +396,19 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let model = test_model(&base, "model.onnx", &body);
 
-        download_one(&reqwest::Client::new(), &model, dir.path(), |_, _| {})
+        download_one(&download_client(), &model, dir.path(), |_, _| {})
             .await
             .unwrap();
 
         assert_eq!(std::fs::read(dir.path().join("model.onnx")).unwrap(), body);
         assert!(!dir.path().join("model.onnx.part").exists());
+        // The readiness cache already holds the verdict, so the first models_ready() does not re-hash.
+        let cached = VERIFIED
+            .lock()
+            .unwrap()
+            .get(&dir.path().join("model.onnx"))
+            .map(|(_, ok)| *ok);
+        assert_eq!(cached, Some(true));
     }
 
     #[tokio::test]
@@ -357,11 +419,71 @@ mod tests {
         std::fs::write(dir.path().join("model.onnx.part"), &body[..500]).unwrap();
         let model = test_model(&base, "model.onnx", &body);
 
-        download_one(&reqwest::Client::new(), &model, dir.path(), |_, _| {})
+        download_one(&download_client(), &model, dir.path(), |_, _| {})
             .await
             .unwrap();
 
         assert_eq!(*seen.lock().unwrap(), vec![Some("bytes=500-".to_string())]);
+        assert_eq!(std::fs::read(dir.path().join("model.onnx")).unwrap(), body);
+        assert!(!dir.path().join("model.onnx.part").exists());
+    }
+
+    #[tokio::test]
+    async fn resume_restarts_when_server_ignores_range() {
+        let body: Vec<u8> = (0..1000u32).map(|i| (i % 247) as u8).collect();
+        let full = body.clone();
+        let (base, seen) = stub(move |_| http_response("200 OK", "", &full)).await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("model.onnx.part"), &body[..500]).unwrap();
+        let model = test_model(&base, "model.onnx", &body);
+
+        download_one(&download_client(), &model, dir.path(), |_, _| {})
+            .await
+            .unwrap();
+
+        assert_eq!(*seen.lock().unwrap(), vec![Some("bytes=500-".to_string())]);
+        assert_eq!(std::fs::read(dir.path().join("model.onnx")).unwrap(), body);
+        assert!(!dir.path().join("model.onnx.part").exists());
+    }
+
+    #[tokio::test]
+    async fn resume_with_wrong_content_range_discards_part() {
+        let body: Vec<u8> = (0..1000u32).map(|i| (i % 249) as u8).collect();
+        let tail = body[500..].to_vec();
+        let (base, _) = stub(move |_| {
+            http_response(
+                "206 Partial Content",
+                "Content-Range: bytes 0-499/1000\r\n",
+                &tail,
+            )
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(dir.path().join("model.onnx.part"), &body[..500]).unwrap();
+        let model = test_model(&base, "model.onnx", &body);
+
+        let result = download_one(&download_client(), &model, dir.path(), |_, _| {}).await;
+
+        assert!(result.is_err());
+        assert!(!dir.path().join("model.onnx.part").exists());
+        assert!(!dir.path().join("model.onnx").exists());
+    }
+
+    #[tokio::test]
+    async fn oversized_part_is_discarded_and_download_restarts() {
+        let body: Vec<u8> = (0..1000u32).map(|i| (i % 241) as u8).collect();
+        let (base, seen) = serve(body.clone()).await;
+        let dir = tempfile::tempdir().unwrap();
+        let mut junk = body.clone();
+        junk.extend_from_slice(&[0u8; 10]);
+        std::fs::write(dir.path().join("model.onnx.part"), &junk).unwrap();
+        let model = test_model(&base, "model.onnx", &body);
+
+        download_one(&download_client(), &model, dir.path(), |_, _| {})
+            .await
+            .unwrap();
+
+        assert_eq!(*seen.lock().unwrap(), vec![None]);
         assert_eq!(std::fs::read(dir.path().join("model.onnx")).unwrap(), body);
         assert!(!dir.path().join("model.onnx.part").exists());
     }
@@ -374,7 +496,7 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let model = test_model(&base, "model.onnx", &expected);
 
-        let result = download_one(&reqwest::Client::new(), &model, dir.path(), |_, _| {}).await;
+        let result = download_one(&download_client(), &model, dir.path(), |_, _| {}).await;
 
         assert!(result.is_err());
         assert!(!dir.path().join("model.onnx").exists());
@@ -389,9 +511,34 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let model = test_model(&base, "model.onnx", &expected);
 
-        let result = download_one(&reqwest::Client::new(), &model, dir.path(), |_, _| {}).await;
+        let result = download_one(&download_client(), &model, dir.path(), |_, _| {}).await;
 
         assert!(result.is_err());
+        assert!(!dir.path().join("model.onnx.part").exists());
+    }
+
+    #[tokio::test]
+    async fn download_refuses_redirect_to_http() {
+        let body = vec![5u8; 300];
+        let (target, target_seen) = serve(body.clone()).await;
+        let (base, _) = stub(move |_| {
+            http_response(
+                "302 Found",
+                &format!("Location: {target}/model.onnx\r\n"),
+                b"",
+            )
+        })
+        .await;
+        let dir = tempfile::tempdir().unwrap();
+        let model = test_model(&base, "model.onnx", &body);
+
+        let result = download_one(&download_client(), &model, dir.path(), |_, _| {}).await;
+
+        assert!(result.is_err());
+        assert!(
+            target_seen.lock().unwrap().is_empty(),
+            "the http redirect target was contacted"
+        );
         assert!(!dir.path().join("model.onnx.part").exists());
     }
 
@@ -414,6 +561,13 @@ mod tests {
         std::fs::write(&path, vec![b'x'; good.len()]).unwrap();
         assert!(!all_verified(dir.path(), &models), "hash mismatch");
         std::fs::write(&path, &good).unwrap();
+        // Move the mtime so the cached "mismatch" for this (len, mtime) cannot hide the good bytes.
+        std::fs::File::options()
+            .write(true)
+            .open(&path)
+            .unwrap()
+            .set_modified(SystemTime::now() + Duration::from_secs(60))
+            .unwrap();
         assert!(all_verified(dir.path(), &models), "exact match");
     }
 

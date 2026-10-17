@@ -17,6 +17,8 @@ export interface Transcript {
   audio_end_time?: number;   // Seconds from recording start (e.g., 128.6)
   duration?: number;          // Segment duration in seconds (e.g., 3.3)
   mark?: TranscriptMark | null;
+  speaker_idx?: number | null; // 0 = "You" (live label); null until speaker labelling
+  sentences?: [number, number, string][] | null; // [t0, t1, text] in meeting seconds
 }
 
 export type TranscriptMark = 'important' | 'action' | 'followup';
@@ -39,6 +41,8 @@ export interface TranscriptUpdate {
   audio_start_time: number; // Seconds from recording start
   audio_end_time: number;   // Seconds from recording start
   duration: number;          // Segment duration in seconds
+  speaker_idx?: number | null;
+  sentences?: [number, number, string][] | null;
 }
 
 export interface Block {

@@ -5,6 +5,7 @@
 use super::engine::TranscriptionEngine;
 use super::provider::TranscriptionError;
 use crate::audio::AudioChunk;
+use crate::speakers::sentences::{to_meeting_time, Sentence};
 use crate::whisper_engine::language_policy::LanguagePolicy;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -43,6 +44,11 @@ pub struct TranscriptUpdate {
     pub audio_start_time: f64, // Seconds from recording start (e.g., 125.3)
     pub audio_end_time: f64,   // Seconds from recording start (e.g., 128.6)
     pub duration: f64,          // Segment duration in seconds (e.g., 3.3)
+    // Timed sentences in meeting seconds; None when their timing is unusable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<Vec<Sentence>>,
+    // Speaker index from the live "You" label; always None until speaker labelling fills it
+    pub speaker_idx: Option<i64>,
 }
 
 // NOTE: get_transcript_history and get_recording_meeting_name functions
@@ -165,7 +171,7 @@ pub fn start_transcription_task<R: Runtime>(
                             )
                             .await
                             {
-                                Ok((transcript, confidence_opt, is_partial)) => {
+                                Ok((transcript, confidence_opt, is_partial, local_sentences)) => {
                                     let confidence_str = match confidence_opt {
                                         Some(c) => format!("{:.2}", c),
                                         None => "N/A".to_string(),
@@ -200,6 +206,7 @@ pub fn start_transcription_task<R: Runtime>(
                                         let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
                                         let audio_start_time = chunk_timestamp; // Already in seconds from recording start
                                         let audio_end_time = chunk_timestamp + chunk_duration;
+                                        let sentences = to_meeting_time(&local_sentences, &transcript, audio_start_time, audio_end_time);
 
                                         // Save structured transcript segment to recording manager (only final results)
                                         // Save ALL segments (partial and final) to ensure complete JSON
@@ -222,6 +229,8 @@ pub fn start_transcription_task<R: Runtime>(
                                             audio_start_time,
                                             audio_end_time,
                                             duration: chunk_duration,
+                                            sentences,
+                                            speaker_idx: None,
                                         };
 
                                         if let Err(e) = app_clone.emit("transcript-update", &update)
@@ -403,14 +412,14 @@ pub fn start_transcription_task<R: Runtime>(
 }
 
 /// Transcribe audio chunk using the appropriate provider (Whisper, Parakeet, or trait-based)
-/// Returns: (text, confidence Option, is_partial)
+/// Returns: (text, confidence Option, is_partial, chunk-local sentences; empty when the engine gives none)
 async fn transcribe_chunk_with_provider<R: Runtime>(
     engine: &TranscriptionEngine,
     chunk: AudioChunk,
     app: &AppHandle<R>,
     language: &Option<String>,
     policy: &mut LanguagePolicy,
-) -> std::result::Result<(String, Option<f32>, bool), TranscriptionError> {
+) -> std::result::Result<(String, Option<f32>, bool, Vec<Sentence>), TranscriptionError> {
     // Convert to 16kHz mono for transcription
     let transcription_data = if chunk.sample_rate != 16000 {
         crate::audio::audio_processing::resample_audio(&chunk.data, chunk.sample_rate, 16000)
@@ -450,10 +459,10 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 .transcribe_audio_with_confidence(speech_samples, language.clone(), Some(policy))
                 .await
             {
-                Ok((text, confidence, is_partial, _)) => {
+                Ok((text, confidence, is_partial, sentences)) => {
                     let cleaned_text = text.trim().to_string();
                     if cleaned_text.is_empty() {
-                        return Ok((String::new(), Some(confidence), is_partial));
+                        return Ok((String::new(), Some(confidence), is_partial, Vec::new()));
                     }
 
                     info!(
@@ -461,7 +470,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                         chunk.chunk_id, cleaned_text, confidence, is_partial
                     );
 
-                    Ok((cleaned_text, Some(confidence), is_partial))
+                    Ok((cleaned_text, Some(confidence), is_partial, sentences))
                 }
                 Err(e) => {
                     error!(
@@ -489,7 +498,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 Ok(text) => {
                     let cleaned_text = text.trim().to_string();
                     if cleaned_text.is_empty() {
-                        return Ok((String::new(), None, false));
+                        return Ok((String::new(), None, false, Vec::new()));
                     }
 
                     info!(
@@ -498,7 +507,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                     );
 
                     // Parakeet doesn't provide confidence or partial results
-                    Ok((cleaned_text, None, false))
+                    Ok((cleaned_text, None, false, Vec::new()))
                 }
                 Err(e) => {
                     error!(
@@ -527,7 +536,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 Ok(result) => {
                     let cleaned_text = result.text.trim().to_string();
                     if cleaned_text.is_empty() {
-                        return Ok((String::new(), result.confidence, result.is_partial));
+                        return Ok((String::new(), result.confidence, result.is_partial, Vec::new()));
                     }
 
                     let confidence_str = match result.confidence {
@@ -544,7 +553,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                         result.is_partial
                     );
 
-                    Ok((cleaned_text, result.confidence, result.is_partial))
+                    Ok((cleaned_text, result.confidence, result.is_partial, Vec::new()))
                 }
                 Err(e) => {
                     error!(

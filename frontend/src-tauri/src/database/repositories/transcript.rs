@@ -1,4 +1,5 @@
 use crate::api::{TranscriptSearchResult, TranscriptSegment};
+use crate::speakers::sentences::{is_valid, Sentence};
 use crate::database::repositories::meeting_notes::{
     sanitize_mark, sanitize_notes, MeetingNote, MeetingNotesRepository,
 };
@@ -50,9 +51,14 @@ impl TranscriptsRepository {
         // 2. Save each transcript segment with audio timing fields
         for segment in transcripts {
             let transcript_id = format!("transcript-{}", Uuid::new_v4());
+            // Sentences that do not match the saved line are dropped; the line itself still saves
+            let sentences = match (&segment.sentences, segment.audio_start_time, segment.audio_end_time) {
+                (Some(s), Some(start), Some(end)) if is_valid(s, &segment.text, start, end) => serde_json::to_string(s).ok(),
+                _ => None,
+            };
             let result = sqlx::query(
-                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, mark)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)"
+                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, mark, speaker_idx, sentences)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
             )
             .bind(&transcript_id)
             .bind(&meeting_id)
@@ -62,6 +68,8 @@ impl TranscriptsRepository {
             .bind(segment.audio_end_time)
             .bind(segment.duration)
             .bind(sanitize_mark(segment.mark.as_deref()))
+            .bind(segment.speaker_idx)
+            .bind(sentences)
             .execute(&mut *transaction)
             .await;
 
@@ -183,8 +191,38 @@ mod tests {
         TranscriptSegment {
             id: "x".into(), text: text.into(), timestamp: "t".into(),
             audio_start_time: Some(start), audio_end_time: Some(start + 1.0), duration: Some(1.0),
-            mark: mark.map(str::to_string),
+            mark: mark.map(str::to_string), sentences: None, speaker_idx: None,
         }
+    }
+
+    #[tokio::test]
+    async fn save_transcript_stores_sentences_and_self_label() {
+        let pool = crate::database::repositories::test_pool().await;
+        let mut line = seg("Hi.", 0.0, None);
+        line.sentences = Some(vec![Sentence(0.0, 1.0, "Hi.".into())]);
+        line.speaker_idx = Some(0);
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[line], None, &[]).await.unwrap();
+        let (idx, sentences): (Option<i64>, Option<String>) = sqlx::query_as("SELECT speaker_idx, sentences FROM transcripts WHERE meeting_id = ?")
+            .bind(&id).fetch_one(&pool).await.unwrap();
+        assert_eq!(idx, Some(0));
+        assert_eq!(sentences.as_deref(), Some(r#"[[0.0,1.0,"Hi."]]"#));
+    }
+
+    #[tokio::test]
+    async fn save_transcript_drops_bad_sentences_and_speaker_idx() {
+        let pool = crate::database::repositories::test_pool().await;
+        // Malformed sentences and an out-of-range speaker from the webview are dropped while parsing
+        let malformed: TranscriptSegment = serde_json::from_value(serde_json::json!({
+            "id": "x", "text": "a", "timestamp": "t", "audio_start_time": 0.0, "audio_end_time": 1.0, "duration": 1.0,
+            "sentences": [[1, "x", "a"]], "speaker_idx": 7
+        })).unwrap();
+        // Well-formed sentences whose text does not match the line are dropped by save_transcript
+        let mut mismatched = seg("a", 2.0, None);
+        mismatched.sentences = Some(vec![Sentence(2.0, 3.0, "Other.".into())]);
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[malformed, mismatched], None, &[]).await.unwrap();
+        let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as("SELECT speaker_idx, sentences FROM transcripts WHERE meeting_id = ?")
+            .bind(&id).fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, vec![(None, None), (None, None)]);
     }
 
     #[tokio::test]

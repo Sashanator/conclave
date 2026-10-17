@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
 
+use crate::speakers::sentences::Sentence;
 use crate::{
     database::{
         models::MeetingModel,
@@ -196,11 +197,27 @@ pub struct TranscriptSegment {
     pub duration: Option<f64>,
     #[serde(default, deserialize_with = "lenient_mark", skip_serializing_if = "Option::is_none")]
     pub mark: Option<String>,
+    #[serde(default, deserialize_with = "lenient_sentences", skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<Vec<Sentence>>,
+    #[serde(default, deserialize_with = "lenient_speaker_idx", skip_serializing_if = "Option::is_none")]
+    pub speaker_idx: Option<i64>,
 }
 
 /// A mark that is not a string is dropped here, so it can never fail the save at stop.
 fn lenient_mark<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(d)?.and_then(|v| v.as_str().map(str::to_string)))
+}
+
+/// Sentences are kept only as a well-formed, finite list. Anything else is dropped, so it never fails the save.
+fn lenient_sentences<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<Sentence>>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?
+        .and_then(|v| serde_json::from_value::<Vec<Sentence>>(v).ok())
+        .filter(|s| s.iter().all(|Sentence(t0, t1, _)| t0.is_finite() && t1.is_finite())))
+}
+
+/// The live path can only tell "You" (speaker 0), so any other index is dropped.
+fn lenient_speaker_idx<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?.and_then(|v| v.as_i64()).filter(|&i| i == 0))
 }
 
 /// Decodes the segments sent with a save. Shared by `api_save_transcript` and its tests.

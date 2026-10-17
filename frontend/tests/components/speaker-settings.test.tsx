@@ -22,26 +22,46 @@ afterAll(() => {
 type Handler = (event: { payload: unknown }) => void;
 const handlers = new Map<string, Handler>();
 
+type Settings = { enabled: boolean; models_ready: boolean; downloading: boolean; last_analysis: null | { backend: string; run_seconds: number; audio_seconds: number } };
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
 const placeholder = ({ placeholder: text }: { placeholder?: string }) => <>{text}</>;
 const SWITCH_LABEL = 'Identify speakers';
-
-let settings = { enabled: false, models_ready: false, downloading: false, last_analysis: null as null | { backend: string; run_seconds: number; audio_seconds: number } };
-let people = [
+const DEFAULT_PEOPLE = [
   { id: 'alex', name: 'Alex', is_self: false, meetings: 3, last_heard: '2026-10-10T09:00:00Z' },
   { id: 'me', name: 'Sasha', is_self: true, meetings: 40, last_heard: '2026-10-16T09:00:00Z' },
   { id: 'dana', name: 'Dana', is_self: false, meetings: 1, last_heard: null },
 ];
 
-const invoke = mock(async (command: string, _args?: Record<string, unknown>): Promise<unknown> => {
+// Mirrors the Rust side closely enough: a download marks the models as downloading until it ends
+let settings: Settings;
+let people = DEFAULT_PEOPLE;
+let holdEnable = false;
+let releaseEnable: (() => void) | null = null;
+let renameFails = false;
+
+const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'speakers_get_settings') return settings;
   if (command === 'people_list') return people;
   if (command === 'speakers_set_enabled') {
-    settings = { ...settings, enabled: Boolean(_args?.enabled), downloading: Boolean(_args?.enabled) };
+    const enabled = Boolean(args?.enabled);
+    const apply = () => {
+      settings = { ...settings, enabled, downloading: enabled && !settings.models_ready };
+    };
+    if (holdEnable) {
+      return new Promise<void>((resolve) => {
+        releaseEnable = () => {
+          apply();
+          resolve();
+        };
+      });
+    }
+    apply();
     return undefined;
   }
+  // Progress can arrive before the settings reread says downloading, so the mock leaves downloading false
   if (command === 'speakers_download_models') return undefined;
   if (command === 'speakers_delete_models') return undefined;
+  if (command === 'people_rename' && renameFails) throw new Error('name taken');
   if (command === 'people_rename' || command === 'people_merge' || command === 'people_delete') return undefined;
   throw new Error(`Unexpected command: ${command}`);
 });
@@ -74,11 +94,20 @@ async function flush() {
   });
 }
 
+async function remount() {
+  renderer?.unmount();
+  renderer = null;
+  await act(async () => {
+    renderer = create(<SpeakerSettings />);
+  });
+  await flush();
+}
+
 function text(node: ReactTestInstance): string {
   return node.children.map((child) => (typeof child === 'string' ? child : text(child))).join('');
 }
 
-function button(label: string): ReactTestInstance {
+function button(label: string): ReactTestInstance | undefined {
   return renderer!.root.findAll((n) => n.type === 'button' && text(n) === label)[0];
 }
 
@@ -96,8 +125,18 @@ function emit(event: string, payload: unknown) {
   });
 }
 
+// A failed download as the Rust side reports it: the run has ended, with the error in the done event
+function failDownload(error: string) {
+  settings = { ...settings, downloading: false };
+  return emit('speaker-models-done', { ok: false, error });
+}
+
 function calls(command: string) {
   return invoke.mock.calls.filter(([name]) => name === command);
+}
+
+function renameInput(id: string): ReactTestInstance | undefined {
+  return renderer!.root.findAll((n) => n.type === 'input' && n.props.id === `person-name-${id}`)[0];
 }
 
 describe('speaker settings tab', () => {
@@ -106,17 +145,11 @@ describe('speaker settings tab', () => {
     toast.error.mockClear();
     handlers.clear();
     settings = { enabled: false, models_ready: false, downloading: false, last_analysis: null };
-    people = [
-      { id: 'alex', name: 'Alex', is_self: false, meetings: 3, last_heard: '2026-10-10T09:00:00Z' },
-      { id: 'me', name: 'Sasha', is_self: true, meetings: 40, last_heard: '2026-10-16T09:00:00Z' },
-      { id: 'dana', name: 'Dana', is_self: false, meetings: 1, last_heard: null },
-    ];
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<SpeakerSettings />);
-    });
-    await flush();
+    people = DEFAULT_PEOPLE;
+    holdEnable = false;
+    releaseEnable = null;
+    renameFails = false;
+    await remount();
   });
 
   test('toggle on invokes speakers_set_enabled with { enabled: true }', async () => {
@@ -126,6 +159,21 @@ describe('speaker settings tab', () => {
     });
     await flush();
     expect(calls('speakers_set_enabled')).toEqual([['speakers_set_enabled', { enabled: true }]]);
+  });
+
+  test('the switch is disabled while speakers_set_enabled is in flight', async () => {
+    holdEnable = true;
+    await act(async () => {
+      toggle().props.onClick();
+    });
+    await flush();
+    expect(toggle().props.disabled).toBe(true);
+    await act(async () => {
+      releaseEnable?.();
+    });
+    await flush();
+    expect(toggle().props.disabled).toBe(false);
+    expect(toggle().props['aria-checked']).toBe(true);
   });
 
   test('the download progress event renders a percentage', async () => {
@@ -142,15 +190,52 @@ describe('speaker settings tab', () => {
       toggle().props.onClick();
     });
     await flush();
-    await emit('speaker-models-done', { ok: false, error: 'network down' });
+    await failDownload('network down');
     await flush();
     expect(renderer!.root.findAll((n) => n.type === 'p' && text(n) === 'network down').length).toBe(1);
 
     await act(async () => {
-      button('Retry').props.onClick();
+      button('Retry')!.props.onClick();
     });
     await flush();
     expect(calls('speakers_download_models').length).toBe(1);
+  });
+
+  test('after a restart with the feature on and no models, Retry shows without a stored error', async () => {
+    settings = { enabled: true, models_ready: false, downloading: false, last_analysis: null };
+    await remount();
+    expect(renderer!.root.findAll((n) => n.type === 'p' && text(n) === "Speaker models aren't downloaded yet.").length).toBe(1);
+    expect(button('Retry')).toBeDefined();
+
+    await act(async () => {
+      button('Retry')!.props.onClick();
+    });
+    await flush();
+    expect(calls('speakers_download_models').length).toBe(1);
+  });
+
+  test('Retry is not shown while the models are ready or the feature is off', async () => {
+    settings = { enabled: true, models_ready: true, downloading: false, last_analysis: null };
+    await remount();
+    expect(button('Retry')).toBeUndefined();
+    settings = { enabled: false, models_ready: false, downloading: false, last_analysis: null };
+    await remount();
+    expect(button('Retry')).toBeUndefined();
+  });
+
+  test('progress after Retry shows the bar even before settings report downloading', async () => {
+    await act(async () => {
+      toggle().props.onClick();
+    });
+    await flush();
+    await failDownload('network down');
+    await flush();
+    await act(async () => {
+      button('Retry')!.props.onClick();
+    });
+    await flush();
+    await emit('speaker-models-progress', { percent: 55, downloaded_bytes: 55, total_bytes: 100 });
+    expect(renderer!.root.findAll((n) => n.type === 'span' && text(n) === '55%').length).toBe(1);
   });
 
   test('self has no Delete and no Merge, and is pinned first with "this is you"', async () => {
@@ -168,7 +253,7 @@ describe('speaker settings tab', () => {
   test('Delete confirms with the exact text and then invokes people_delete', async () => {
     const confirm = spyOn(window, 'confirm').mockImplementation(() => true);
     await act(async () => {
-      row('alex').findAll((n) => n.type === 'button' && text(n) === 'Delete')[0].props.onClick();
+      row('alex').findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Delete Alex')[0].props.onClick();
     });
     await flush();
     expect(confirm.mock.calls).toEqual([['Voiceprints are removed; past transcripts keep the name']]);
@@ -186,22 +271,64 @@ describe('speaker settings tab', () => {
     confirm.mockRestore();
   });
 
-  test('Rename shows an inline input and saves the trimmed name with people_rename', async () => {
+  test('Rename submits the trimmed name with people_rename, with a length limit', async () => {
+    await act(async () => {
+      row('alex').findAll((n) => n.type === 'button' && text(n) === 'Rename')[0].props.onClick();
+    });
+    expect(renameInput('alex')!.props.maxLength).toBe(80);
+    await act(async () => {
+      renameInput('alex')!.props.onChange({ target: { value: '  Alexei ' } });
+    });
+    await act(async () => {
+      row('alex').findAll((n) => n.type === 'form')[0].props.onSubmit({ preventDefault() {} });
+    });
+    await flush();
+    expect(calls('people_rename')).toEqual([['people_rename', { id: 'alex', name: 'Alexei' }]]);
+    expect(renameInput('alex')).toBeUndefined();
+  });
+
+  test('Save is disabled for a blank name', async () => {
     await act(async () => {
       row('alex').findAll((n) => n.type === 'button' && text(n) === 'Rename')[0].props.onClick();
     });
     await act(async () => {
-      renderer!.root.findAll((n) => n.type === 'input' && n.props.id === 'person-name-alex')[0].props.onChange({ target: { value: '  Alexei ' } });
+      renameInput('alex')!.props.onChange({ target: { value: '   ' } });
     });
-    await act(async () => {
-      row('alex').findAll((n) => n.type === 'button' && text(n) === 'Save')[0].props.onClick();
-    });
-    await flush();
-    expect(calls('people_rename')).toEqual([['people_rename', { id: 'alex', name: 'Alexei' }]]);
+    expect(button('Save')!.props.disabled).toBe(true);
   });
 
-  test('Merge into picks a target and invokes people_merge with from and into', async () => {
+  test('a failed rename keeps the editor open with the typed name', async () => {
+    renameFails = true;
+    await act(async () => {
+      row('alex').findAll((n) => n.type === 'button' && text(n) === 'Rename')[0].props.onClick();
+    });
+    await act(async () => {
+      renameInput('alex')!.props.onChange({ target: { value: 'Alexei' } });
+    });
+    await act(async () => {
+      row('alex').findAll((n) => n.type === 'form')[0].props.onSubmit({ preventDefault() {} });
+    });
+    await flush();
+    expect(toast.error.mock.calls.length).toBe(1);
+    expect(renameInput('alex')!.props.value).toBe('Alexei');
+  });
+
+  test('Escape cancels the rename', async () => {
+    await act(async () => {
+      row('alex').findAll((n) => n.type === 'button' && text(n) === 'Rename')[0].props.onClick();
+    });
+    await act(async () => {
+      renameInput('alex')!.props.onKeyDown({ key: 'Escape' });
+    });
+    expect(renameInput('alex')).toBeUndefined();
+    expect(calls('people_rename').length).toBe(0);
+  });
+
+  test('Merge into resets to the placeholder, is labelled per person, and invokes people_merge', async () => {
+    const trigger = row('alex').findAll((n) => n.props['aria-label'] === 'Merge Alex into…')[0];
+    expect(trigger).toBeDefined();
     const select = row('alex').findAll((n) => typeof n.props.onValueChange === 'function')[0];
+    expect(select.props.value).toBe('');
     await act(async () => {
       select.props.onValueChange('dana');
     });
@@ -209,9 +336,12 @@ describe('speaker settings tab', () => {
     expect(calls('people_merge')).toEqual([['people_merge', { from: 'alex', into: 'dana' }]]);
   });
 
-  test('Delete models invokes speakers_delete_models', async () => {
+  test('Delete models invokes speakers_delete_models and is shown only when the models are ready', async () => {
+    expect(button('Delete models')).toBeUndefined();
+    settings = { enabled: true, models_ready: true, downloading: false, last_analysis: null };
+    await remount();
     await act(async () => {
-      button('Delete models').props.onClick();
+      button('Delete models')!.props.onClick();
     });
     await flush();
     expect(calls('speakers_delete_models').length).toBe(1);
@@ -219,11 +349,7 @@ describe('speaker settings tab', () => {
 
   test('shows the last analysis line when the settings have one', async () => {
     settings = { enabled: true, models_ready: true, downloading: false, last_analysis: { backend: 'directml', run_seconds: 41, audio_seconds: 3500 } };
-    await act(async () => {
-      renderer!.unmount();
-      renderer = create(<SpeakerSettings />);
-    });
-    await flush();
+    await remount();
     expect(renderer!.root.findAll((n) => n.type === 'p' && text(n) === 'Last analysis: DirectML · 41 s for a 58-min meeting').length).toBe(1);
   });
 });

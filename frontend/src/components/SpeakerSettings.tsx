@@ -14,11 +14,14 @@ import type { Person, SpeakerSettings as Settings } from "@/types"
 
 const DELETE_PROMPT = "Voiceprints are removed; past transcripts keep the name"
 
-async function call(command: string, args: Record<string, unknown> | undefined, failure: string) {
+// Returns whether the command succeeded; a failure is shown as a toast
+async function call(command: string, args: Record<string, unknown> | undefined, failure: string): Promise<boolean> {
   try {
     await invoke(command, args)
+    return true
   } catch (err) {
     toast.error(failure, { description: String(err) })
+    return false
   }
 }
 
@@ -28,6 +31,7 @@ export function SpeakerSettings() {
   const [percent, setPercent] = useState<number | null>(null)
   const [downloadError, setDownloadError] = useState<string | null>(null)
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null)
+  const [pending, setPending] = useState(false)
 
   const loadSettings = useCallback(async () => {
     try {
@@ -69,7 +73,9 @@ export function SpeakerSettings() {
   }, [loadSettings, loadPeople])
 
   const setEnabled = async (enabled: boolean) => {
+    setPending(true)
     await call("speakers_set_enabled", { enabled }, "Could not change speaker identification")
+    setPending(false)
     loadSettings()
   }
 
@@ -87,8 +93,10 @@ export function SpeakerSettings() {
   const saveRename = async () => {
     if (!renaming) return
     const name = renaming.name.trim()
-    if (name) await call("people_rename", { id: renaming.id, name }, "Could not rename the voice")
-    setRenaming(null)
+    if (!name) return
+    // On failure the editor stays open with the typed name, so the user can retry or correct it
+    const ok = await call("people_rename", { id: renaming.id, name }, "Could not rename the voice")
+    if (ok) setRenaming(null)
     loadPeople()
   }
 
@@ -104,6 +112,7 @@ export function SpeakerSettings() {
   }
 
   const analysis = settings ? lastAnalysisText(settings.last_analysis) : null
+  const modelsMissing = settings?.enabled === true && !settings.models_ready && !settings.downloading
   const sorted = [...people].sort((a, b) => Number(b.is_self) - Number(a.is_self))
 
   return (
@@ -114,27 +123,30 @@ export function SpeakerSettings() {
           <Switch
             aria-label="Identify speakers"
             checked={settings?.enabled ?? false}
-            disabled={!settings}
+            disabled={!settings || pending}
             onCheckedChange={setEnabled}
           />
         </div>
 
-        {settings?.downloading && (
+        {(settings?.downloading || percent !== null) && (
           <div className="flex items-center gap-3">
             <Progress value={percent ?? 0} className="flex-1" />
             <span className="text-sm text-muted-foreground w-12 text-right">{percent ?? 0}%</span>
           </div>
         )}
 
-        {downloadError && (
+        {/* Shown after a restart or tab switch too, when the feature is on but its models are missing */}
+        {(downloadError || modelsMissing) && (
           <div className="flex items-center gap-3">
-            <p className="text-sm text-red-600 flex-1">{downloadError}</p>
+            <p className={`text-sm flex-1 ${downloadError ? "text-red-600" : "text-muted-foreground"}`}>
+              {downloadError ?? "Speaker models aren't downloaded yet."}
+            </p>
             <Button size="sm" onClick={download}>Retry</Button>
           </div>
         )}
 
         <div className="flex items-center justify-between gap-3">
-          <Button variant="outline" size="sm" onClick={deleteModels}>Delete models</Button>
+          {settings?.models_ready && <Button variant="outline" size="sm" onClick={deleteModels}>Delete models</Button>}
           {analysis && <p className="text-sm text-muted-foreground">{analysis}</p>}
         </div>
       </div>
@@ -147,17 +159,28 @@ export function SpeakerSettings() {
             return (
               <li key={p.id} data-person={p.id} className="flex items-center gap-3 py-3">
                 {renaming?.id === p.id ? (
-                  <>
+                  <form
+                    className="flex flex-1 items-center gap-3"
+                    onSubmit={(e) => {
+                      e.preventDefault()
+                      saveRename()
+                    }}
+                  >
                     <Input
                       id={`person-name-${p.id}`}
-                      aria-label="Name"
+                      aria-label={`Rename ${p.name}`}
                       className="flex-1"
+                      maxLength={80}
+                      autoFocus
                       value={renaming.name}
                       onChange={(e) => setRenaming({ id: p.id, name: e.target.value })}
+                      onKeyDown={(e) => {
+                        if (e.key === "Escape") setRenaming(null)
+                      }}
                     />
-                    <Button size="sm" onClick={saveRename}>Save</Button>
-                    <Button size="sm" variant="ghost" onClick={() => setRenaming(null)}>Cancel</Button>
-                  </>
+                    <Button type="submit" size="sm" disabled={!renaming.name.trim()}>Save</Button>
+                    <Button type="button" size="sm" variant="ghost" onClick={() => setRenaming(null)}>Cancel</Button>
+                  </form>
                 ) : (
                   <>
                     <div className="flex-1 min-w-0">
@@ -171,8 +194,9 @@ export function SpeakerSettings() {
                     </div>
                     <Button variant="outline" size="sm" onClick={() => setRenaming({ id: p.id, name: p.name })}>Rename</Button>
                     {!p.is_self && others.length > 0 && (
-                      <Select onValueChange={(into) => mergeInto(p.id, into)}>
-                        <SelectTrigger className="w-40">
+                      // value="" keeps the placeholder showing, so the same target can be picked again
+                      <Select value="" onValueChange={(into) => mergeInto(p.id, into)}>
+                        <SelectTrigger className="w-40" aria-label={`Merge ${p.name} into…`}>
                           <SelectValue placeholder="Merge into…" />
                         </SelectTrigger>
                         <SelectContent>
@@ -183,7 +207,7 @@ export function SpeakerSettings() {
                       </Select>
                     )}
                     {!p.is_self && (
-                      <Button variant="destructive" size="sm" onClick={() => remove(p.id)}>Delete</Button>
+                      <Button variant="destructive" size="sm" aria-label={`Delete ${p.name}`} onClick={() => remove(p.id)}>Delete</Button>
                     )}
                   </>
                 )}

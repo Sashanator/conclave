@@ -146,16 +146,48 @@ fn read_seg_meta(session: &Session) -> Result<SegMeta, String> {
         powerset_max_classes: get("powerset_max_classes")?,
         num_classes: get("num_classes")?,
     };
-    if out.sample_rate != 16_000 {
+    check_seg_meta(&out)?;
+    Ok(out)
+}
+
+/// Rejects segmentation metadata the diarizer cannot use. The 60 s cap bounds the window buffer.
+fn check_seg_meta(m: &SegMeta) -> Result<(), String> {
+    if m.sample_rate != 16_000 {
         return Err(format!(
             "segmentation sample_rate {} is not 16000",
-            out.sample_rate
+            m.sample_rate
         ));
     }
-    if out.window_size == 0 || out.num_classes == 0 {
-        return Err("segmentation metadata has an empty window or no classes".into());
+    if [
+        m.window_size,
+        m.num_classes,
+        m.receptive_field_size,
+        m.receptive_field_shift,
+        m.num_speakers,
+    ]
+    .contains(&0)
+    {
+        return Err("segmentation metadata has a zero size".into());
     }
-    Ok(out)
+    if m.window_size > 60 * m.sample_rate {
+        return Err(format!(
+            "segmentation window of {} samples is longer than 60 s",
+            m.window_size
+        ));
+    }
+    Ok(())
+}
+
+/// Checks the input and output counts that the calls rely on: segmentation needs one input and one
+/// output, and TitaNet needs features and lengths in, and logits and an embedding out. Tuples are (inputs, outputs).
+fn check_model_io(seg: (usize, usize), emb: (usize, usize)) -> Result<(), String> {
+    if seg.0 < 1 || seg.1 < 1 {
+        return Err("segmentation model needs one input and one output".into());
+    }
+    if emb.0 < 2 || emb.1 < 2 {
+        return Err("TitaNet model needs two inputs and two outputs".into());
+    }
+    Ok(())
 }
 
 impl OrtSpeakerModels {
@@ -173,6 +205,10 @@ impl OrtSpeakerModels {
         };
         let (seg, seg_backend) = open(&seg_path, seg_pref)?;
         let (emb, emb_backend) = open(&emb_path, emb_pref)?;
+        check_model_io(
+            (seg.inputs.len(), seg.outputs.len()),
+            (emb.inputs.len(), emb.outputs.len()),
+        )?;
         Ok(Self {
             seg_meta: read_seg_meta(&seg)?,
             nemo: read_nemo_meta(&emb)?,
@@ -286,6 +322,54 @@ mod tests {
         assert_eq!(cpu_threads(8), 4);
         assert_eq!(cpu_threads(1), 1);
         assert_eq!(cpu_threads(0), 1);
+    }
+
+    fn seg_meta() -> SegMeta {
+        SegMeta {
+            sample_rate: 16_000,
+            window_size: 160_000,
+            receptive_field_size: 991,
+            receptive_field_shift: 270,
+            num_speakers: 3,
+            powerset_max_classes: 2,
+            num_classes: 7,
+        }
+    }
+
+    #[test]
+    fn seg_meta_rejects_zero_sizes_and_long_windows() {
+        assert!(check_seg_meta(&seg_meta()).is_ok());
+        let zeroed: [fn(&mut SegMeta); 5] = [
+            |m| m.receptive_field_size = 0,
+            |m| m.receptive_field_shift = 0,
+            |m| m.num_speakers = 0,
+            |m| m.window_size = 0,
+            |m| m.num_classes = 0,
+        ];
+        for set in zeroed {
+            let mut m = seg_meta();
+            set(&mut m);
+            assert!(check_seg_meta(&m).is_err(), "{m:?}");
+        }
+        let mut m = seg_meta();
+        m.window_size = 60 * 16_000;
+        assert!(check_seg_meta(&m).is_ok());
+        m.window_size = 60 * 16_000 + 1;
+        assert!(check_seg_meta(&m).is_err());
+        let mut m = seg_meta();
+        m.sample_rate = 8_000;
+        assert!(check_seg_meta(&m).is_err());
+    }
+
+    #[test]
+    fn io_counts_must_cover_the_calls() {
+        assert!(check_model_io((1, 1), (2, 2)).is_ok());
+        assert!(check_model_io((1, 3), (2, 2)).is_ok());
+        assert!(check_model_io((0, 1), (2, 2)).is_err());
+        assert!(check_model_io((1, 0), (2, 2)).is_err());
+        // TitaNet without the length input, or without the embedding output, would index out of range.
+        assert!(check_model_io((1, 1), (1, 2)).is_err());
+        assert!(check_model_io((1, 1), (2, 1)).is_err());
     }
 
     #[test]

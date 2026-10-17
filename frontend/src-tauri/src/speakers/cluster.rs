@@ -8,7 +8,7 @@ pub const MAX_EMBEDDINGS: usize = 15_000;
 /// Length of one embedding window in seconds; the step is the hop between windows.
 const WINDOW_SECS: f64 = 10.0;
 
-/// Labels 0..k by first appearance. Cut at `threshold` on the distance `1 - cosine`.
+/// Labels 0..k by first appearance. Cut at `threshold` on the distance `1 - cosine`. The inputs must be finite.
 pub fn complete_linkage_labels(emb: &[Vec<f32>], threshold: f32) -> Vec<usize> {
     let n = emb.len();
     if n <= 1 {
@@ -116,8 +116,10 @@ fn nn_chain_complete(n: usize, mut dist: Vec<f32>) -> Vec<(f32, usize, usize)> {
 
 /// Smallest whole step (1 s, 2 s, ...) with `3 * windows(step) <= MAX_EMBEDDINGS`.
 pub fn window_step_secs(duration_secs: f64) -> f64 {
-    // An infinite duration would make the loop below spin forever.
-    assert!(duration_secs.is_finite(), "meeting duration must be finite");
+    // A non-finite duration has no window count; the 1 s step is the fallback (and keeps the loop finite).
+    if !duration_secs.is_finite() {
+        return 1.0;
+    }
     let mut step = 1.0;
     while 3.0 * window_count(duration_secs, step) > MAX_EMBEDDINGS as f64 {
         step += 1.0;
@@ -149,9 +151,11 @@ pub fn cosine(a: &[f32], b: &[f32]) -> f32 {
 /// Mean of the unit-normalised vectors, normalised again. None if empty or the mean has zero norm.
 /// Each vector counts equally, whatever its length. The brief leaves this choice open.
 pub fn mean_normalized(v: &[Vec<f32>]) -> Option<Vec<f32>> {
-    let first = v.first()?;
+    // A vector with a NaN or infinity is skipped, so that it cannot poison the whole mean.
+    let finite = |x: &&Vec<f32>| x.iter().all(|f| f.is_finite());
+    let first = v.iter().find(finite)?;
     let mut sum = vec![0.0f32; first.len()];
-    for x in v {
+    for x in v.iter().filter(finite) {
         for (s, u) in sum.iter_mut().zip(unit_vector(x)) {
             *s += u;
         }
@@ -323,6 +327,26 @@ mod tests {
                 "dur {dur} step {step}"
             );
         }
+    }
+
+    #[test]
+    fn window_step_non_finite_duration_is_one_second() {
+        for dur in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            assert_eq!(window_step_secs(dur), 1.0, "duration {dur}");
+        }
+    }
+
+    #[test]
+    fn mean_normalized_skips_non_finite_vectors() {
+        assert_eq!(
+            mean_normalized(&[vec![1.0, 0.0], vec![f32::NAN, 0.0]]),
+            Some(vec![1.0, 0.0])
+        );
+        assert_eq!(
+            mean_normalized(&[vec![f32::INFINITY, 0.0], vec![0.0, 2.0]]),
+            Some(vec![0.0, 1.0])
+        );
+        assert_eq!(mean_normalized(&[vec![f32::NAN, 1.0]]), None);
     }
 
     #[test]

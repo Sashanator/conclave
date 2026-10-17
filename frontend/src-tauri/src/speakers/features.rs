@@ -85,6 +85,9 @@ const MAX_FRAME_LEN: usize = 1 << 20;
 
 /// Rejects settings the port cannot compute, so that `nemo_features` never has to.
 fn check_meta(m: &NemoMeta) -> Result<(), String> {
+    if m.sample_rate != 16_000 {
+        return Err(format!("unsupported sample_rate {}, expected 16000", m.sample_rate));
+    }
     if !(m.window_size_ms.is_finite() && m.window_size_ms > 0.0)
         || !(m.window_stride_ms.is_finite() && m.window_stride_ms > 0.0)
     {
@@ -432,6 +435,14 @@ mod tests {
         let mut other = NEMO_PAIRS.to_vec();
         other[6] = ("framework", "pytorch");
         assert!(meta_from(&other).is_err());
+    }
+
+    #[test]
+    fn nemo_meta_rejects_other_sample_rates() {
+        let mut other = NEMO_PAIRS.to_vec();
+        other[1] = ("sample_rate", "8000");
+        assert!(meta_from(&other).is_err());
+        assert!(meta_from(&NEMO_PAIRS).is_ok());
     }
 
     #[test]

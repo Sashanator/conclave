@@ -1,5 +1,6 @@
 pub mod sentences;
 pub mod cluster;
+pub mod diarize;
 pub mod features;
 pub mod levels;
 pub mod models;

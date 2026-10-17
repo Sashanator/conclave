@@ -47,13 +47,20 @@ fn ends_sentence(bytes: &[u8]) -> bool {
     // `trim_ascii_end` needs Rust 1.80; the crate supports 1.77
     let end = bytes.iter().rposition(|b| !b.is_ascii_whitespace()).map_or(0, |i| i + 1);
     let trimmed = &bytes[..end];
-    let stem_len = if trimmed.ends_with("…".as_bytes()) {
-        end - "…".len()
-    } else if matches!(trimmed.last(), Some(b'.' | b'?' | b'!')) {
-        end - 1
-    } else {
+    // Strip every trailing terminal mark, so "Wait..." is checked on "Wait" and "Why?!" on "Why"
+    let mut stem_len = end;
+    loop {
+        if trimmed[..stem_len].ends_with("…".as_bytes()) {
+            stem_len -= "…".len();
+        } else if stem_len > 0 && matches!(trimmed[stem_len - 1], b'.' | b'?' | b'!') {
+            stem_len -= 1;
+        } else {
+            break;
+        }
+    }
+    if stem_len == end {
         return false;
-    };
+    }
     // An abbreviation such as "z.B." or "e.g." keeps its dots, so a dot inside the last word means no cut
     let word_start = trimmed[..stem_len].iter().rposition(|b| b.is_ascii_whitespace()).map_or(0, |i| i + 1);
     !trimmed[word_start..stem_len].contains(&b'.')
@@ -173,6 +180,20 @@ mod tests {
         let one = build_sentences(&t, 0.0, 0.5);
         assert_eq!(one, vec![Sentence(0.0, 0.5, "Das z.B. gut.".into())]);
         assert!(to_meeting_time(&one, "Das z.B. gut.", 0.0, 0.5).is_some());
+    }
+
+    #[test]
+    fn sentences_ascii_ellipsis_cuts() {
+        let t = [tok(" Ну...", 0, 50), tok(" Потом.", 60, 100)];
+        assert_eq!(build_sentences(&t, 0.0, 1.0), vec![
+            Sentence(0.0, 0.5, "Ну...".into()), Sentence(0.6, 1.0, "Потом.".into())]);
+    }
+
+    #[test]
+    fn sentences_repeated_terminal_marks_cut() {
+        let t = [tok(" Why?!", 0, 10), tok(" Next", 20, 30)];
+        assert_eq!(build_sentences(&t, 0.0, 0.3), vec![
+            Sentence(0.0, 0.1, "Why?!".into()), Sentence(0.2, 0.3, "Next".into())]);
     }
 
     #[test]

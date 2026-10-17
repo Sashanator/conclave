@@ -160,6 +160,7 @@ export interface TranscriptSegmentData {
   text: string;
   confidence?: number;
   mark?: TranscriptMark | null;
+  speaker_idx?: number | null; // 0 = "You" (live label); null until speaker labelling
 }
 
 export type SpeakerJobStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped';

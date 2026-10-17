@@ -7,6 +7,8 @@ import { configService, ModelConfig } from '@/services/configService';
 import { invoke } from '@tauri-apps/api/core';
 import { BetaFeatures, BetaFeatureKey, loadBetaFeatures, saveBetaFeatures } from '@/types/betaFeatures';
 import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
+import { parseAllowedLanguages } from '@/lib/allowed-languages';
+import { toast } from 'sonner';
 
 export interface OllamaModel {
   name: string;
@@ -59,6 +61,10 @@ interface ConfigContextType {
   // Language preference
   selectedLanguage: string;
   setSelectedLanguage: (lang: string) => void;
+
+  // Languages spoken in the user's meetings (auto mode picks only among these; empty = any)
+  allowedLanguages: string[];
+  setAllowedLanguages: (languages: string[]) => void;
 
   // UI preferences
   showConfidenceIndicator: boolean;
@@ -148,6 +154,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     }
     return 'auto';
   });
+  const [allowedLanguages, setAllowedLanguages] = useState<string[]>(() =>
+    typeof window !== 'undefined' ? parseAllowedLanguages(localStorage.getItem('allowedLanguages')) : []
+  );
 
   // UI preferences state
   const [showConfidenceIndicator, setShowConfidenceIndicator] = useState<boolean>(() => {
@@ -227,6 +236,19 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
         });
     }
   }, []); 
+
+  // Sync allowed languages to Rust on mount; if Rust rejects them, reset so the UI never shows unused languages
+  useEffect(() => {
+    invoke('set_allowed_languages', { languages: allowedLanguages })
+      .catch(err => {
+        console.error('[ConfigContext] Failed to sync allowed languages to Rust on startup:', err);
+        setAllowedLanguages([]);
+        localStorage.setItem('allowedLanguages', '[]');
+        invoke('set_allowed_languages', { languages: [] }).catch(resetErr =>
+          console.error('[ConfigContext] Failed to reset allowed languages in Rust:', resetErr)
+        );
+      });
+  }, []);
 
   // Load model configuration on mount
   useEffect(() => {
@@ -481,6 +503,21 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     );
   }, []);
 
+  // Wrapper for setAllowedLanguages: Rust validates first; state and localStorage change only on success
+  const handleSetAllowedLanguages = useCallback(async (languages: string[]) => {
+    try {
+      await invoke('set_allowed_languages', { languages });
+    } catch (err) {
+      console.error('Failed to sync allowed languages to Rust:', err);
+      toast.error("Couldn't save meeting languages", { description: String(err) });
+      return;
+    }
+    setAllowedLanguages(languages);
+    if (typeof window !== 'undefined') {
+      localStorage.setItem('allowedLanguages', JSON.stringify(languages));
+    }
+  }, []);
+
   const value: ConfigContextType = useMemo(() => ({
     modelConfig,
     setModelConfig,
@@ -495,6 +532,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     setSelectedDevices,
     selectedLanguage,
     setSelectedLanguage: handleSetSelectedLanguage,
+    allowedLanguages,
+    setAllowedLanguages: handleSetAllowedLanguages,
     showConfidenceIndicator,
     toggleConfidenceIndicator,
     betaFeatures,
@@ -518,6 +557,8 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     selectedDevices,
     selectedLanguage,
     handleSetSelectedLanguage,
+    allowedLanguages,
+    handleSetAllowedLanguages,
     showConfidenceIndicator,
     toggleConfidenceIndicator,
     betaFeatures,

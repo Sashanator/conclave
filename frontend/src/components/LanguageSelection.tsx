@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Globe } from 'lucide-react';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
+import { MAX_ALLOWED_LANGUAGES, addLanguage, removeLanguage } from '@/lib/allowed-languages';
 
 export interface Language {
   code: string;
@@ -127,7 +128,7 @@ export function LanguageSelection({
   provider = 'localWhisper'
 }: LanguageSelectionProps) {
   const [saving, setSaving] = useState(false);
-  const { setSelectedLanguage } = useConfig();
+  const { setSelectedLanguage, allowedLanguages, setAllowedLanguages } = useConfig();
 
   // Parakeet only supports auto-detection (doesn't support manual language selection)
   const isParakeet = provider === 'parakeet';
@@ -165,6 +166,10 @@ export function LanguageSelection({
     lang => lang.code === selectedLanguage
   )?.name || 'Auto Detect (Original Language)';
 
+  const addableLanguages = LANGUAGES.filter(
+    lang => lang.code !== 'auto' && lang.code !== 'auto-translate' && !allowedLanguages.includes(lang.code)
+  );
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -188,6 +193,54 @@ export function LanguageSelection({
             </option>
           ))}
         </select>
+
+        {/* Languages spoken in the meetings: used whenever auto detection runs */}
+        {!isParakeet && (
+          <div className="space-y-2 pt-2">
+            <h5 className="text-sm font-medium text-foreground">Languages spoken in your meetings</h5>
+            <div className="flex flex-wrap gap-2">
+              {allowedLanguages.map((code) => {
+                const name = LANGUAGES.find(lang => lang.code === code)?.name || code;
+                return (
+                  <span
+                    key={code}
+                    className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-background border border-input rounded-full"
+                  >
+                    {name}
+                    <button
+                      type="button"
+                      aria-label={`Remove ${name}`}
+                      onClick={() => setAllowedLanguages(removeLanguage(allowedLanguages, code))}
+                      className="text-muted-foreground hover:text-foreground"
+                    >
+                      ×
+                    </button>
+                  </span>
+                );
+              })}
+            </div>
+            {allowedLanguages.length < MAX_ALLOWED_LANGUAGES && (
+              <select
+                aria-label="Add language"
+                value=""
+                onChange={(e) => {
+                  if (e.target.value) setAllowedLanguages(addLanguage(allowedLanguages, e.target.value));
+                }}
+                className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+              >
+                <option value="">Add language…</option>
+                {addableLanguages.map((language) => (
+                  <option key={language.code} value={language.code}>
+                    {language.name} ({language.code})
+                  </option>
+                ))}
+              </select>
+            )}
+            <p className="text-xs text-muted-foreground">
+              Used whenever the language is Auto Detect, including Re-transcribe and Import. Whisper only chooses among these languages. Leave empty to let it pick any language.
+            </p>
+          </div>
+        )}
 
         {/* Parakeet language limitation warning */}
         {isParakeet && (

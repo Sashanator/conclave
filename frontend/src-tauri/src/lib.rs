@@ -122,9 +122,9 @@ mod onnx_runtime_tests {
     }
 }
 
-// Global language preference storage (default to "auto-translate" for automatic translation to English)
+// Global language preference storage (default to "auto": automatic language detection, no translation)
 static LANGUAGE_PREFERENCE: std::sync::LazyLock<StdMutex<String>> =
-    std::sync::LazyLock::new(|| StdMutex::new("auto-translate".to_string()));
+    std::sync::LazyLock::new(|| StdMutex::new("auto".to_string()));
 
 #[derive(Debug, Deserialize)]
 struct RecordingArgs {
@@ -433,6 +433,77 @@ async fn set_language_preference(language: String) -> Result<(), String> {
 // Internal helper function to get language preference (for use within Rust code)
 pub fn get_language_preference_internal() -> Option<String> {
     LANGUAGE_PREFERENCE.lock().ok().map(|lang| lang.clone())
+}
+
+// Languages the user speaks; in auto mode Whisper chooses only among these (empty = any language)
+static ALLOWED_LANGUAGES: std::sync::LazyLock<StdMutex<Vec<String>>> =
+    std::sync::LazyLock::new(|| StdMutex::new(Vec::new()));
+
+pub fn get_allowed_languages_internal() -> Vec<String> {
+    ALLOWED_LANGUAGES.lock().map(|langs| langs.clone()).unwrap_or_default()
+}
+
+#[tauri::command]
+async fn set_allowed_languages(languages: Vec<String>) -> Result<(), String> {
+    let languages = validate_allowed_languages(languages)?;
+    let mut allowed = ALLOWED_LANGUAGES
+        .lock()
+        .map_err(|e| format!("Failed to set allowed languages: {}", e))?;
+    log_info!("Setting allowed languages to: {:?}", languages);
+    *allowed = languages;
+    Ok(())
+}
+
+// Input comes from the webview, so each code is checked against Whisper's language table
+// (get_lang_id panics on a NUL byte, so the shape is checked first)
+fn validate_allowed_languages(languages: Vec<String>) -> Result<Vec<String>, String> {
+    if languages.len() > 20 {
+        return Err("At most 20 languages can be chosen".to_string());
+    }
+    let mut valid: Vec<String> = Vec::new();
+    for code in languages {
+        let well_formed = (2..=3).contains(&code.len()) && code.bytes().all(|b| b.is_ascii_lowercase());
+        if !well_formed || whisper_rs::get_lang_id(&code).is_none() {
+            return Err(format!("Unknown language code: {:?}", code));
+        }
+        if !valid.contains(&code) {
+            valid.push(code);
+        }
+    }
+    Ok(valid)
+}
+
+#[cfg(test)]
+mod allowed_languages_tests {
+    use super::validate_allowed_languages;
+
+    fn codes(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn accepts_known_codes_in_order() {
+        assert_eq!(validate_allowed_languages(codes(&["ru", "de", "en"])), Ok(codes(&["ru", "de", "en"])));
+    }
+
+    #[test]
+    fn dedupes_keeping_first_order() {
+        assert_eq!(validate_allowed_languages(codes(&["ru", "ru"])), Ok(codes(&["ru"])));
+        assert_eq!(validate_allowed_languages(codes(&["de", "ru", "de"])), Ok(codes(&["de", "ru"])));
+    }
+
+    #[test]
+    fn rejects_bad_codes_as_a_whole() {
+        for bad in ["RU", "auto", "xx", "r\0u", ""] {
+            assert!(validate_allowed_languages(codes(&["ru", bad])).is_err(), "accepted {:?}", bad);
+        }
+    }
+
+    #[test]
+    fn rejects_more_than_twenty_entries() {
+        let twenty_one: Vec<String> = (0..21).map(|_| "ru".to_string()).collect();
+        assert!(validate_allowed_languages(twenty_one).is_err());
+    }
 }
 
 pub fn run() {
@@ -749,6 +820,7 @@ pub fn run() {
             audio::recording_preferences::get_audio_backend_info,
             // Language preference commands
             set_language_preference,
+            set_allowed_languages,
             // Notification system commands
             notifications::commands::get_notification_settings,
             notifications::commands::set_notification_settings,

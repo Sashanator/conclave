@@ -5,6 +5,7 @@
 use super::engine::TranscriptionEngine;
 use super::provider::TranscriptionError;
 use crate::audio::AudioChunk;
+use crate::whisper_engine::language_policy::LanguagePolicy;
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -117,6 +118,10 @@ pub fn start_transcription_task<R: Runtime>(
                     warn!("⚠️ Worker {} pre-validation: {} model not loaded - chunks may be skipped", worker_id, engine_name);
                 }
 
+                // One language snapshot and one policy per recording
+                let language = crate::get_language_preference_internal();
+                let mut policy = LanguagePolicy::new(crate::get_allowed_languages_internal());
+
                 loop {
                     // Try to get a chunk to process
                     let chunk = {
@@ -155,6 +160,8 @@ pub fn start_transcription_task<R: Runtime>(
                                 &engine_clone,
                                 chunk,
                                 &app_clone,
+                                &language,
+                                &mut policy,
                             )
                             .await
                             {
@@ -401,6 +408,8 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
     engine: &TranscriptionEngine,
     chunk: AudioChunk,
     app: &AppHandle<R>,
+    language: &Option<String>,
+    policy: &mut LanguagePolicy,
 ) -> std::result::Result<(String, Option<f32>, bool), TranscriptionError> {
     // Convert to 16kHz mono for transcription
     let transcription_data = if chunk.sample_rate != 16000 {
@@ -437,11 +446,8 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
     // Transcribe using the appropriate engine (with improved error handling)
     match engine {
         TranscriptionEngine::Whisper(whisper_engine) => {
-            // Get language preference from global state
-            let language = crate::get_language_preference_internal();
-
             match whisper_engine
-                .transcribe_audio_with_confidence(speech_samples, language)
+                .transcribe_audio_with_confidence(speech_samples, language.clone(), Some(policy))
                 .await
             {
                 Ok((text, confidence, is_partial)) => {
@@ -517,9 +523,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
         }
         TranscriptionEngine::Provider(provider) => {
             // NEW: Trait-based provider (clean, unified interface)
-            let language = crate::get_language_preference_internal();
-
-            match provider.transcribe(speech_samples, language).await {
+            match provider.transcribe(speech_samples, language.clone()).await {
                 Ok(result) => {
                     let cleaned_text = result.text.trim().to_string();
                     if cleaned_text.is_empty() {

@@ -115,6 +115,7 @@ mod tests {
     use super::*;
 
     #[tokio::test]
+    #[ignore = "enumerates output devices and crashes (access violation) on CI runners with no audio device; run with --ignored on a PC"]
     async fn test_list_system_audio_devices() {
         let devices = list_system_audio_devices_command().await;
         match devices {

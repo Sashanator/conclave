@@ -45,6 +45,7 @@ export default function PageContent({
   loadedCount,
   onLoadMore,
   onSetTranscriptMark,
+  onSetTranscriptSpeaker,
 }: {
   meeting: any;
   summaryData: MeetingSummary | null;
@@ -61,6 +62,7 @@ export default function PageContent({
   loadedCount?: number;
   onLoadMore?: () => void;
   onSetTranscriptMark?: (id: string, mark: TranscriptMark | null) => Promise<void>;
+  onSetTranscriptSpeaker?: (id: string, idx: number | null) => void;
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
@@ -104,7 +106,7 @@ export default function PageContent({
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
   const templates = useTemplates();
   // One instance for the page: the transcript bar renames through it and the summary panel shows its names-changed hint
-  const speakers = useMeetingSpeakers(meeting.id, speakerIdActive, onRefetchTranscripts);
+  const speakers = useMeetingSpeakers(meeting.id, speakerIdActive, onRefetchTranscripts, onSetTranscriptSpeaker);
   // Settings past the timeout count as inactive: no names and no wait
   const speakersOn = speakerIdActive && !settingsTimedOut;
   const summarizeNow = summarizeNowId === meeting.id;

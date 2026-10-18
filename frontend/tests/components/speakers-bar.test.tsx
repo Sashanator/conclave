@@ -19,8 +19,15 @@ afterAll(() => {
 });
 
 const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
+// Keeps the last Popover's open state and setter, so a test can open a chip's name box
+const popover: { open?: boolean; onOpenChange?: (open: boolean) => void } = {};
 mock.module('../../src/components/ui/popover', () => ({
-  Popover: pass, PopoverAnchor: pass, PopoverTrigger: pass, PopoverContent: pass,
+  Popover: ({ open, onOpenChange, children }: { open?: boolean; onOpenChange?: (open: boolean) => void; children?: ReactNode }) => {
+    popover.open = open;
+    popover.onOpenChange = onOpenChange;
+    return <>{children}</>;
+  },
+  PopoverAnchor: pass, PopoverTrigger: pass, PopoverContent: pass,
 }));
 // Plain stand-ins: cmdk needs DOM measurement that the test renderer does not provide
 mock.module('../../src/components/ui/command', () => ({
@@ -40,9 +47,10 @@ const people: Person[] = [
   { id: 'p1', name: 'Сергей', is_self: false, meetings: 2, last_heard: null },
   { id: 'me', name: 'Sasha', is_self: true, meetings: 30, last_heard: null },
 ];
-const invoke = mock(async (command: string): Promise<unknown> => {
+const invoke = mock(async (command: string, _args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'speakers_get_meeting') return meetingReply;
   if (command === 'people_list') return people;
+  if (command === 'speakers_name') return 'anya-id';
   return undefined;
 });
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
@@ -104,6 +112,9 @@ describe('SpeakersBar', () => {
     await mount(<Bar />);
     expect(chips().map((c) => c.props['data-chip'])).toEqual(['Sasha', 'Сергей', 'Speaker 2']);
     expect(textOf(renderer!.toJSON())).toContain('18m');
+    // Self is not a control: no naming box, no button
+    expect(chips()[0].type).toBe('span');
+    expect(chips()[1].type).toBe('button');
   });
 
   test('picking a known person names the speaker with its person id', async () => {
@@ -121,10 +132,46 @@ describe('SpeakersBar', () => {
     expect(invoke).toHaveBeenCalledWith('speakers_name', { meetingId: 'm1', idx: 2, newName: 'Аня' });
   });
 
+  test('a chip with two idx values creates one person, then joins the second idx to it by id', async () => {
+    const second: SpeakerView = { ...SERGEY, idx: 3, seconds: 200 };
+    meetingReply = { job: { status: 'done', reason: null, percent: null }, speakers: [SERGEY, second] };
+    await mount(<Bar />);
+    await act(async () => { nameInput().props.onValueChange('Аня'); });
+    await act(async () => { commandItem('New person…').props.onSelect(); });
+    expect(callsOf('speakers_name').map(([, args]) => args)).toEqual([
+      { meetingId: 'm1', idx: 1, newName: 'Аня' },
+      { meetingId: 'm1', idx: 3, personId: 'anya-id' },
+    ]);
+  });
+
+  test('"New person…" is disabled for a name over 80 characters', async () => {
+    meetingReply = { job: { status: 'done', reason: null, percent: null }, speakers: [UNNAMED] };
+    await mount(<Bar />);
+    await act(async () => { nameInput().props.onValueChange('а'.repeat(80)); });
+    expect(commandItem('New person…').props.disabled).toBe(false);
+    await act(async () => { nameInput().props.onValueChange('а'.repeat(81)); });
+    expect(commandItem('New person…').props.disabled).toBe(true);
+  });
+
+  test('an open name box closes when a job starts', async () => {
+    const idle = { job: { status: 'done', reason: null, percent: null }, speakers: [UNNAMED] } as MeetingSpeakers;
+    const onName = async () => null;
+    const onIdentify = async () => {};
+    await mount(<SpeakersBar data={idle} busy={false} percent={null} onName={onName} onIdentify={onIdentify} />);
+    await act(async () => { popover.onOpenChange!(true); });
+    expect(popover.open).toBe(true);
+    await act(async () => {
+      renderer!.update(<SpeakersBar data={{ ...idle, job: { status: 'running', reason: null, percent: 5 } }} busy percent={5} onName={onName} onIdentify={onIdentify} />);
+    });
+    expect(popover.open).toBe(false);
+  });
+
   test('while busy the chips are disabled and the progress shows', async () => {
     meetingReply = { job: { status: 'running', reason: null, percent: 40 }, speakers: [SERGEY, SASHA] };
     await mount(<Bar />);
-    expect(chips().every((c) => c.props.disabled === true)).toBe(true);
+    const buttons = chips().filter((c) => c.type === 'button');
+    expect(buttons.length).toBe(1);
+    expect(buttons.every((c) => c.props.disabled === true)).toBe(true);
     expect(textOf(renderer!.toJSON())).toContain('Identifying speakers… 40%');
   });
 
@@ -181,7 +228,7 @@ describe('SpeakerLineMenu', () => {
 
 describe('identify button', () => {
   const EXACT = 'Labels, including your manual fixes, will be replaced. Continue?';
-  const group = (job: MeetingSpeakers['job'] = null) => {
+  const group = (job: MeetingSpeakers['job'] = null, hasSpeakers = false) => {
     const onIdentifySpeakers = mock(async () => {});
     return {
       onIdentifySpeakers,
@@ -194,6 +241,7 @@ describe('identify button', () => {
           meetingFolderPath="/recordings/m1"
           audioMissingReason={null}
           speakerJob={job}
+          hasSpeakers={hasSpeakers}
           speakersBusy={false}
           onIdentifySpeakers={onIdentifySpeakers}
         />
@@ -220,6 +268,19 @@ describe('identify button', () => {
       const { element, onIdentifySpeakers } = group({ status: 'done', reason: null, percent: null });
       await mount(element);
       expect(identifyButton().props.title).toBe('Re-identify');
+      await act(async () => { identifyButton().props.onClick(); });
+      expect(confirm).toHaveBeenCalledWith(EXACT);
+      expect(onIdentifySpeakers).not.toHaveBeenCalled();
+    } finally {
+      confirm.mockRestore();
+    }
+  });
+
+  test('asks before replacing labels when speakers exist but the job is not done', async () => {
+    const confirm = spyOn(window, 'confirm').mockImplementation(() => false);
+    try {
+      const { element, onIdentifySpeakers } = group({ status: 'failed', reason: 'boom', percent: null }, true);
+      await mount(element);
       await act(async () => { identifyButton().props.onClick(); });
       expect(confirm).toHaveBeenCalledWith(EXACT);
       expect(onIdentifySpeakers).not.toHaveBeenCalled();

@@ -124,6 +124,7 @@ export function TranscriptPanel({
           onRefetchTranscripts={onRefetchTranscripts}
           audioMissingReason={audioMissingReason}
           speakerJob={speakers.data?.job ?? null}
+          hasSpeakers={(speakers.data?.speakers.length ?? 0) > 0}
           speakersBusy={speakers.busy}
           onIdentifySpeakers={speakers.identify}
         />

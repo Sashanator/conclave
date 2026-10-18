@@ -8,13 +8,14 @@ import { formatTalkTime, speakerChips, type MeetingSpeakers } from '@/lib/speake
 import type { Person } from '@/types';
 
 const DOTS = ['bg-blue-500', 'bg-emerald-500', 'bg-amber-500', 'bg-violet-500', 'bg-rose-500', 'bg-cyan-500'];
+const NAME_MAX = 80;
 type NameTarget = { personId: string } | { newName: string };
 
 interface SpeakersBarProps {
   data: MeetingSpeakers | null;
   busy: boolean;
   percent: number | null;
-  onName: (idx: number, target: NameTarget) => Promise<void>;
+  onName: (idx: number, target: NameTarget) => Promise<string | null>;
   onIdentify: () => Promise<void>;
 }
 
@@ -52,6 +53,7 @@ export function SpeakersBar({ data, busy, percent, onName, onIdentify }: Speaker
               name={chip.name}
               seconds={chip.seconds}
               idxs={chip.idxs}
+              isSelf={chip.isSelf}
               dot={DOTS[i % DOTS.length]}
               named={data?.speakers.find((s) => s.idx === chip.idxs[0])?.person_id != null}
               people={people}
@@ -69,31 +71,52 @@ interface SpeakerChipProps {
   name: string;
   seconds: number;
   idxs: number[];
+  isSelf: boolean;
   dot: string;
   named: boolean;
   people: Person[];
   disabled: boolean;
-  onName: (idx: number, target: NameTarget) => Promise<void>;
+  onName: (idx: number, target: NameTarget) => Promise<string | null>;
 }
 
-function SpeakerChip({ name, seconds, idxs, dot, named, people, disabled, onName }: SpeakerChipProps) {
+function SpeakerChip({ name, seconds, idxs, isSelf, dot, named, people, disabled, onName }: SpeakerChipProps) {
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState('');
+  // A job that starts while the box is open closes it
+  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+
+  const body = (
+    <>
+      <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden="true" />
+      <span>{name}</span>
+      <span className="text-xs text-muted-foreground">{formatTalkTime(seconds)}</span>
+      {!named && <span aria-hidden="true">✎</span>}
+    </>
+  );
+
+  // Renaming yourself happens in Settings; the backend refuses idx 0
+  if (isSelf) {
+    return <span data-chip={name} className="inline-flex h-7 items-center gap-1.5 px-2 text-sm">{body}</span>;
+  }
 
   const pick = async (target: NameTarget) => {
     setOpen(false);
     setQuery('');
-    for (const idx of idxs) await onName(idx, target);
+    const [first, ...rest] = idxs.filter((idx) => idx !== 0);
+    if (first === undefined) return;
+    // The first name creates or finds the person; the rest join that person by id
+    const personId = await onName(first, target);
+    if (personId == null) return;
+    for (const idx of rest) await onName(idx, { personId });
   };
+
+  const typed = query.trim();
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <Button variant="outline" size="sm" className="h-7 gap-1.5 px-2" disabled={disabled} data-chip={name}>
-          <span className={`h-2 w-2 rounded-full ${dot}`} aria-hidden="true" />
-          <span>{name}</span>
-          <span className="text-xs text-muted-foreground">{formatTalkTime(seconds)}</span>
-          {!named && <span aria-hidden="true">✎</span>}
+          {body}
         </Button>
       </PopoverTrigger>
       <PopoverContent className="w-64 p-0" align="start">
@@ -110,8 +133,8 @@ function SpeakerChip({ name, seconds, idxs, dot, named, people, disabled, onName
               <CommandItem
                 forceMount
                 value="New person…"
-                disabled={!query.trim()}
-                onSelect={() => void pick({ newName: query.trim() })}
+                disabled={!typed || typed.length > NAME_MAX}
+                onSelect={() => void pick({ newName: typed })}
               >
                 New person…
               </CommandItem>

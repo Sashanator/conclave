@@ -20,6 +20,8 @@ interface TranscriptButtonGroupProps {
   audioMissingReason?: string | null;
   /** Speaker analysis job of this meeting; Re-identify once it is done */
   speakerJob?: MeetingSpeakers['job'];
+  /** Labels already exist, so Identify asks before replacing them */
+  hasSpeakers?: boolean;
   speakersBusy?: boolean;
   onIdentifySpeakers?: () => Promise<void>;
 }
@@ -34,15 +36,17 @@ export function TranscriptButtonGroup({
   onRefetchTranscripts,
   audioMissingReason,
   speakerJob,
+  hasSpeakers = false,
   speakersBusy = false,
   onIdentifySpeakers,
 }: TranscriptButtonGroupProps) {
   const { betaFeatures, speakerIdActive } = useConfig();
   const reidentify = speakerJob?.status === 'done';
+  const replacesLabels = reidentify || hasSpeakers;
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
 
   const handleIdentify = () => {
-    if (reidentify && !window.confirm('Labels, including your manual fixes, will be replaced. Continue?')) return;
+    if (replacesLabels && !window.confirm('Labels, including your manual fixes, will be replaced. Continue?')) return;
     void onIdentifySpeakers?.();
   };
 

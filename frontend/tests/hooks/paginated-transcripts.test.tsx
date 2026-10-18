@@ -198,4 +198,13 @@ describe('transcript marks', () => {
     await act(async () => { requests.find(r => r.command === 'set_transcript_mark')!.reject(new Error('db locked')); });
     expect(state.segments[0].mark).toBe('action');
   });
+
+  test('setTranscriptSpeaker patches one line in place without a transcript reload', async () => {
+    await loadMarked();
+    const before = requests.filter(r => r.command === 'api_get_meeting_transcripts').length;
+    await act(async () => { state.setTranscriptSpeaker('t1', 2); });
+    expect(state.segments[0].speaker_idx).toBe(2);
+    expect(state.transcripts[0].speaker_idx).toBe(2);
+    expect(requests.filter(r => r.command === 'api_get_meeting_transcripts').length).toBe(before);
+  });
 });

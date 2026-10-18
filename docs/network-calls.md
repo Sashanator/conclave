@@ -66,6 +66,7 @@ These run while the installer is built, not when Conclave runs. They are not in 
 |---|---|---|---|
 | github.com/Zackriya-Solutions/ffmpeg-binaries | `src-tauri/build/ffmpeg.rs:134-166` | ffmpeg archive bundled as `externalBin` in the installer | Allowed — Meetily-owned, reported to user; archive pinned by SHA-256 |
 | api.nuget.org | `src-tauri/build/onnxruntime.rs` (`PACKAGES` URLs) | ONNX Runtime 1.22.0 DirectML build and DirectML 1.15.4 NuGet packages (`build.rs`); both archives SHA-256 pinned | Allowed (build-time only) |
+| cdn.pyke.io | `ort-sys` build script (`ort-sys-2.0.0-rc.10/dist.txt`, `build.rs` `real_main`), reached through `ort`'s default `download-binaries` on Windows; URL `https://cdn.pyke.io/0/pyke:ort-rs/ms@1.22.0/x86_64-pc-windows-msvc.tgz` | `ort-sys`'s prebuilt ONNX Runtime 1.22.0 tarball, fetched in the CI build only. Hash-checked by ort-sys (SHA-256 `540d19b3…190d`); extracted to the cargo cache and copied to `OUT_DIR`; not bundled, not used by Conclave | Allowed (build-time only); to be removed by the later fix: set `ORT_SKIP_DOWNLOAD=1` or `ORT_LIB_LOCATION` in the Windows build. Not yet applied |
 | fonts.googleapis.com (via `next/font/google`) | `src/app/layout.tsx:4` | Source Sans 3 font, fetched by Next.js at build time and self-hosted | Allowed (build-time only) |
 
 ## Removed (updater tooling)

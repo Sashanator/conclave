@@ -4,6 +4,11 @@ import { Transcript, TranscriptMark, TranscriptSegmentData } from '@/types';
 import { TranscriptView } from '@/components/TranscriptView';
 import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptView';
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
+import { SpeakersBar } from './SpeakersBar';
+import { SpeakerLineMenu } from './SpeakerLineMenu';
+import { useMeetingSpeakers } from '@/hooks/useMeetingSpeakers';
+import { useConfig } from '@/contexts/ConfigContext';
+import { lineSpeakerName } from '@/lib/speakers';
 import { useMemo, type ReactNode } from 'react';
 
 interface TranscriptPanelProps {
@@ -61,6 +66,10 @@ export function TranscriptPanel({
   playheadSeconds,
   footer,
 }: TranscriptPanelProps) {
+  const { speakerIdActive } = useConfig();
+  const speakersOn = speakerIdActive && !!meetingId;
+  const speakers = useMeetingSpeakers(meetingId ?? '', speakersOn, onRefetchTranscripts);
+
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {
     if (usePagination && segments) {
@@ -74,8 +83,31 @@ export function TranscriptPanel({
       text: t.text,
       confidence: t.confidence,
       mark: t.mark,
+      speaker_idx: t.speaker_idx,
     }));
   }, [transcripts, usePagination, segments]);
+
+  // Feature off: no label node, so rows render exactly as before
+  const renderSpeakerLabel = useMemo(() => {
+    if (!speakersOn) return undefined;
+    const list = speakers.data?.speakers ?? [];
+    return (s: TranscriptSegmentData) => {
+      if (list.length === 0) {
+        // Before analysis only the live label exists, and only for lines that have one
+        if (s.speaker_idx == null) return null;
+        const name = lineSpeakerName(s.speaker_idx, [], false);
+        return <span data-speaker-label={name} className="text-xs text-muted-foreground mt-1 flex-shrink-0">{name}</span>;
+      }
+      return (
+        <SpeakerLineMenu
+          idx={s.speaker_idx}
+          speakers={list}
+          disabled={speakers.busy}
+          onMove={(idx) => void speakers.moveLine(s.id, idx)}
+        />
+      );
+    };
+  }, [speakersOn, speakers.data, speakers.busy, speakers.moveLine]);
 
   return (
     <div className="flex h-full min-w-0 w-full bg-background flex-col relative @container">
@@ -89,8 +121,21 @@ export function TranscriptPanel({
           meetingFolderPath={meetingFolderPath}
           onRefetchTranscripts={onRefetchTranscripts}
           audioMissingReason={audioMissingReason}
+          speakerJob={speakers.data?.job ?? null}
+          speakersBusy={speakers.busy}
+          onIdentifySpeakers={speakers.identify}
         />
       </div>
+
+      {speakersOn && (
+        <SpeakersBar
+          data={speakers.data}
+          busy={speakers.busy}
+          percent={speakers.percent}
+          onName={speakers.name}
+          onIdentify={speakers.identify}
+        />
+      )}
 
       {/* Transcript content - use virtualized view for better performance */}
       <div className="flex-1 overflow-hidden pb-4">
@@ -111,6 +156,7 @@ export function TranscriptPanel({
           onMarkChange={onMarkChange}
           onPlayFrom={onPlayFrom}
           playheadSeconds={playheadSeconds}
+          renderSpeakerLabel={renderSpeakerLabel}
         />
       </div>
 

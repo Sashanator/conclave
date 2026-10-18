@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo } from "react";
+import { useCallback, useRef, useReducer, startTransition, useEffect, useState, memo, type ReactNode } from "react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useAutoScroll } from "@/hooks/useAutoScroll";
 import { useTranscriptStreaming } from "@/hooks/useTranscriptStreaming";
@@ -45,6 +45,8 @@ export interface VirtualizedTranscriptViewProps {
     playheadSeconds?: number | null;
     /** Live speaker label per line (e.g. "You" or "Others"); lines render unchanged without it */
     getSpeakerLabel?: (segment: TranscriptSegmentData) => string | undefined;
+    /** Custom label node per line (meeting page speaker menu); takes precedence over getSpeakerLabel */
+    renderSpeakerLabel?: (segment: TranscriptSegmentData) => ReactNode;
 }
 
 // Threshold for enabling virtualization (below this, use simple rendering)
@@ -87,6 +89,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onMarkChange,
     onPlay,
     speakerLabel,
+    speakerNode,
 }: {
     id: string;
     timestamp: number;
@@ -99,6 +102,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
     onMarkChange?: (mark: TranscriptMark | null) => void;
     onPlay?: () => void;
     speakerLabel?: string;
+    speakerNode?: ReactNode;
 }) {
     const displayText = cleanStopWords(text) || (text.trim() === '' ? '[Silence]' : text);
 
@@ -131,11 +135,11 @@ const TranscriptSegment = memo(function TranscriptSegment({
                         )}
                     </TooltipContent>
                 </Tooltip>
-                {speakerLabel && (
+                {speakerNode ?? (speakerLabel && (
                     <span data-speaker-label={speakerLabel} className="text-xs text-muted-foreground mt-1 flex-shrink-0">
                         {speakerLabel}
                     </span>
-                )}
+                ))}
                 <div className="flex-1">
                     {isStreaming ? (
                         <div className="bg-muted border border-border rounded-lg px-3 py-2">
@@ -173,6 +177,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     onPlayFrom,
     playheadSeconds,
     getSpeakerLabel,
+    renderSpeakerLabel,
 }) => {
     // Create scroll ref first - shared between virtualizer and auto-scroll hook
     const scrollRef = useRef<HTMLDivElement>(null);
@@ -352,6 +357,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onMarkChange={onMarkChange ? (m) => onMarkChange(segment.id, m) : undefined}
                                         onPlay={onPlayFrom ? () => onPlayFrom(segment.timestamp) : undefined}
                                         speakerLabel={getSpeakerLabel?.(segment)}
+                                        speakerNode={renderSpeakerLabel?.(segment)}
                                     />
                                 </div>
                             );
@@ -413,6 +419,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                         onMarkChange={onMarkChange ? (m) => onMarkChange(segment.id, m) : undefined}
                                         onPlay={onPlayFrom ? () => onPlayFrom(segment.timestamp) : undefined}
                                         speakerLabel={getSpeakerLabel?.(segment)}
+                                        speakerNode={renderSpeakerLabel?.(segment)}
                                     />
                                 </motion.div>
                             );

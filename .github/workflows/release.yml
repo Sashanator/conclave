@@ -184,11 +184,14 @@ jobs:
             exit 1
           }
           Stop-Process -Id $p.Id -Force
-          if (-not (Select-String -Path $errLog -Pattern 'Initialized bundled ONNX Runtime' -Quiet)) {
-            Write-Error "app log has no 'Initialized bundled ONNX Runtime' line; the bundled runtime did not load"
-            exit 1
+          # A failed DirectML preload only logs a warning, so its success line is required too.
+          foreach ($line in 'Initialized bundled ONNX Runtime', 'Preloaded bundled DirectML') {
+            if (-not (Select-String -Path $errLog -Pattern $line -Quiet)) {
+              Write-Error "app log has no '$line' line; the bundled runtime did not load"
+              exit 1
+            }
           }
-          Write-Host "OK: app stayed up 20s without CUDA on PATH and the bundled ONNX Runtime loaded"
+          Write-Host "OK: app stayed up 20s without CUDA on PATH; bundled ONNX Runtime and DirectML loaded"
 
       - name: Publish release (only after the checks above pass)
         if: github.ref_type == 'tag'

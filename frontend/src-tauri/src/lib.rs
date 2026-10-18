@@ -95,12 +95,16 @@ fn preload_directml(path: &std::path::Path) -> Result<String, String> {
     if module.is_null() {
         return Err(format!("failed to load {}: {}", path.display(), std::io::Error::last_os_error()));
     }
-    let mut buffer = [0u16; 1024];
-    let length = unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) };
+    // 32,768 UTF-16 units is the longest path Windows returns; a result that fills the buffer was cut off.
+    let mut buffer = vec![0u16; 32_768];
+    let length = unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
     if length == 0 {
         return Err(format!("loaded {} but could not read its path: {}", path.display(), std::io::Error::last_os_error()));
     }
-    Ok(String::from_utf16_lossy(&buffer[..length as usize]))
+    if length >= buffer.len() {
+        return Err(format!("loaded {} but its path does not fit in {} characters", path.display(), buffer.len()));
+    }
+    Ok(String::from_utf16_lossy(&buffer[..length]))
 }
 
 #[cfg(target_os = "windows")]

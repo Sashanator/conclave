@@ -40,7 +40,7 @@ struct Artifact {
     sha256: &'static str,
 }
 
-const ARTIFACTS: [Artifact; 5] = [
+const ARTIFACTS: [Artifact; 7] = [
     Artifact {
         package: 0,
         archive_path: "runtimes/win-x64/native/onnxruntime.dll",
@@ -63,6 +63,13 @@ const ARTIFACTS: [Artifact; 5] = [
         sha256: "c250d6278f0b47a6439fb7592b08b58a55eb9f535aa49a1db63211c3f982b674",
     },
     Artifact {
+        package: 0,
+        archive_path: "ThirdPartyNotices.txt",
+        output_name: "ONNXRUNTIME_THIRD_PARTY_NOTICES.txt",
+        size: 333_022,
+        sha256: "e00f828e0a33de591a355ae6606d2625f5758da7d2c844db7821c9dd3e3647b6",
+    },
+    Artifact {
         package: 1,
         archive_path: "bin/x64-win/DirectML.dll",
         output_name: "DirectML.dll",
@@ -75,6 +82,13 @@ const ARTIFACTS: [Artifact; 5] = [
         output_name: "DIRECTML_LICENSE.txt",
         size: 10_439,
         sha256: "a05138e3a085ff60a44881eedfa58dccb03ecc1d7b1f6ae888418e8c2fec4b8d",
+    },
+    Artifact {
+        package: 1,
+        archive_path: "ThirdPartyNotices.txt",
+        output_name: "DIRECTML_THIRD_PARTY_NOTICES.txt",
+        size: 4_577,
+        sha256: "2c95795c13ff48a58b6ed916f37901c23d964b5d9d601af422f17ad2172e7950",
     },
 ];
 

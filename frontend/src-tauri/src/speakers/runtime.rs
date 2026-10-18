@@ -46,6 +46,14 @@ pub trait SpeakerModels {
     fn backend_label(&self) -> &'static str;
     /// Rebuilds every DirectML session on the CPU after a run failed on DirectML.
     fn fall_back_to_cpu(&mut self) -> Result<(), String>;
+    /// Whether the segmentation model runs on DirectML, so that its errors may trigger a fallback.
+    fn seg_on_directml(&self) -> bool {
+        false
+    }
+    /// Whether TitaNet runs on DirectML, so that its errors may trigger a fallback.
+    fn emb_on_directml(&self) -> bool {
+        false
+    }
 }
 
 pub struct OrtSpeakerModels {
@@ -309,6 +317,12 @@ impl SpeakerModels for OrtSpeakerModels {
         label(self.seg_backend, self.emb_backend, self.dml_failed_over)
     }
 
+    fn seg_on_directml(&self) -> bool {
+        self.seg_backend == Backend::DirectMl
+    }
+    fn emb_on_directml(&self) -> bool {
+        self.emb_backend == Backend::DirectMl
+    }
     fn fall_back_to_cpu(&mut self) -> Result<(), String> {
         if self.seg_backend == Backend::DirectMl {
             self.seg = session(&self.seg_path, Backend::Cpu)?;

@@ -35,8 +35,6 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     info!("speakers: identification is {}", if enabled { "on" } else { "off" });
 }
 
-// shortcut: no Tauri command yet, the settings UI task adds it, until then nothing calls this
-#[allow(dead_code)]
 pub fn save_enabled<R: Runtime>(app: &AppHandle<R>, enabled: bool) -> Result<(), String> {
     let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
     store.set(KEY, enabled);

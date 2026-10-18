@@ -30,7 +30,7 @@ pub struct JobRow {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct SpeakerView {
     pub idx: i64,
     pub name: String,
@@ -39,7 +39,7 @@ pub struct SpeakerView {
     pub seconds: f64,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct PersonView {
     pub id: String,
     pub name: String,

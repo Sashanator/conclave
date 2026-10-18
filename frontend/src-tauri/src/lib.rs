@@ -572,6 +572,15 @@ pub fn run() {
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
+            // Speaker models sit beside the Whisper models. The models hash is warmed off the runtime,
+            // so later is_active() calls on async paths only read the cache.
+            match _app.path().app_data_dir() {
+                Ok(data) => speakers::models::set_models_dir(data.join("models").join("speakers")),
+                Err(e) => log::error!("speakers: no app data folder, the feature stays off: {e}"),
+            }
+            tauri::async_runtime::spawn_blocking(|| {
+                let _ = speakers::models::models_ready();
+            });
             speakers::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
@@ -648,6 +657,20 @@ pub fn run() {
                 database::setup::initialize_database_on_startup(&_app.handle()).await
             })
             .expect("Failed to initialize database");
+
+            // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
+            if let Ok(data) = _app.path().app_data_dir() {
+                speakers::temp_audio::clear_temp_dir(&data.join("speakers-tmp"));
+            }
+            tauri::async_runtime::block_on(async {
+                let state = _app.state::<state::AppState>();
+                match database::repositories::speakers::SpeakersRepository::recover_jobs(state.db_manager.pool()).await {
+                    Ok(0) => {}
+                    Ok(n) => log::info!("speakers: {n} interrupted analysis job(s) queued again"),
+                    Err(e) => log::warn!("speakers: could not requeue interrupted jobs: {e}"),
+                }
+            });
+            speakers::job::start_worker(_app.handle().clone());
 
             // Copy the shipped templates into the user's templates folder once; deleted ones stay deleted.
             match summary::templates::seed_templates() {
@@ -879,6 +902,19 @@ pub fn run() {
             audio::import::start_import_audio_command,
             audio::import::cancel_import_command,
             audio::import::is_import_in_progress_command,
+            // Speaker identification commands
+            speakers::commands::speakers_get_settings,
+            speakers::commands::speakers_set_enabled,
+            speakers::commands::speakers_download_models,
+            speakers::commands::speakers_delete_models,
+            speakers::commands::speakers_get_meeting,
+            speakers::commands::speakers_identify,
+            speakers::commands::speakers_name,
+            speakers::commands::speakers_move_line,
+            speakers::commands::people_list,
+            speakers::commands::people_rename,
+            speakers::commands::people_delete,
+            speakers::commands::people_merge,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

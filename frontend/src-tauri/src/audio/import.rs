@@ -5,6 +5,7 @@ use crate::audio::decoder::{decode_audio_file, decode_audio_file_with_progress};
 use crate::audio::vad::get_speech_chunks_with_progress;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
 use crate::parakeet_engine::ParakeetEngine;
+use crate::database::repositories::speakers::SpeakersRepository;
 use crate::speakers::sentences::{to_meeting_time, Sentence};
 use crate::state::AppState;
 use crate::whisper_engine::WhisperEngine;
@@ -645,13 +646,19 @@ async fn run_import<R: Runtime>(
         .try_state::<AppState>()
         .ok_or_else(|| anyhow!("App state not available"))?;
 
+    let speakers_active = crate::speakers::is_active();
     let meeting_id = create_meeting_with_transcripts(
         app_state.db_manager.pool(),
         &title,
         &segments,
         meeting_folder.to_string_lossy().to_string(),
+        speakers_active,
     )
     .await?;
+    if speakers_active {
+        crate::speakers::job::wake();
+        let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
+    }
 
     // Write transcripts.json and metadata.json to the meeting folder
     emit_progress(&app, "saving", 90, "Writing transcript files...");
@@ -700,6 +707,7 @@ async fn create_meeting_with_transcripts(
     title: &str,
     segments: &[TranscriptSegment],
     folder_path: String,
+    enqueue_speakers: bool,
 ) -> Result<String> {
     let meeting_id = format!("meeting-{}", Uuid::new_v4());
     let now = chrono::Utc::now();
@@ -742,6 +750,12 @@ async fn create_meeting_with_transcripts(
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
+    }
+
+    if enqueue_speakers {
+        SpeakersRepository::enqueue_in_tx(&mut *tx, &meeting_id)
+            .await
+            .map_err(|e| anyhow!("Failed to queue speaker analysis: {}", e))?;
     }
 
     tx.commit()

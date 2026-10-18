@@ -12,6 +12,9 @@ use anyhow::{Result, anyhow};
 use reqwest::Client;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use crate::audio::import::is_import_in_progress;
+use crate::audio::recording_commands::is_recording_now;
+use crate::audio::retranscription::is_retranscription_in_progress;
 use crate::config::WHISPER_MODEL_CATALOG;
 use super::acceleration::{whisper_context_acceleration_for, WhisperCompiledBackend, WhisperContextAcceleration};
 use super::language_policy::{pad_to_min_duration, LanguagePolicy};
@@ -310,9 +313,18 @@ impl WhisperEngine {
                 // FIX 5: Check if this model is already loaded. Copy the name out so the read guard is released before unloading.
                 let current_model = self.current_model.read().await.clone();
                 if let Some(current_model) = current_model.as_deref() {
-                    if current_model == model_name && self.context_mode.read().await.speakers_enabled == speakers_enabled {
-                        log::info!("Model {} is already loaded, skipping reload", model_name);
-                        return Ok(());
+                    if current_model == model_name {
+                        if self.context_mode.read().await.speakers_enabled == speakers_enabled {
+                            log::info!("Model {} is already loaded, skipping reload", model_name);
+                            return Ok(());
+                        }
+                        // Same model, other speaker mode: reload only while idle, the same rule as apply_speaker_setting's
+                        // callers. A busy app keeps the loaded context, and the next idle start applies the change.
+                        let idle = !is_recording_now() && !is_import_in_progress() && !is_retranscription_in_progress();
+                        if !idle {
+                            log::info!("Speaker mode changed while busy; {} keeps its context until the next idle start", model_name);
+                            return Ok(());
+                        }
                     }
                     if current_model != model_name {
                         // FIX 5: Unload current model before loading new one

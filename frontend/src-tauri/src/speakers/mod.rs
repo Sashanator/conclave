@@ -1,3 +1,5 @@
+pub mod commands;
+pub mod job;
 pub mod sentences;
 pub mod assign;
 pub mod cluster;

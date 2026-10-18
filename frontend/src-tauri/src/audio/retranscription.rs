@@ -502,6 +502,9 @@ async fn run_retranscription<R: Runtime>(
 
     tx.commit().await
         .map_err(|e| anyhow!("Failed to commit transaction: {}", e))?;
+    // The replaced lines queue a fresh analysis (or skip a stale one), so the worker and the UI must hear about it.
+    crate::speakers::job::wake();
+    let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
 
     info!(
         "Updated {} transcripts for meeting {} in transaction",

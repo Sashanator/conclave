@@ -2,7 +2,6 @@
 // Files live in `<app_data>/speakers-tmp/` as `<meeting>-<uuid>.f32` (raw little-endian f32).
 
 use std::fs::File;
-use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
 use super::diarize::AudioSource;
@@ -55,15 +54,12 @@ impl AudioSource for TempAudio {
     }
 
     fn read(&self, start: usize, out: &mut [f32]) -> Result<(), String> {
-        let end = start.checked_add(out.len()).filter(|&end| end <= self.len);
-        if end.is_none() {
+        if start.checked_add(out.len()).map_or(true, |end| end > self.len) {
             return Err("read past the end of the audio".into());
         }
-        // `&File` implements Read and Seek, so no lock is needed for reads through `&self`.
+        // Positional reads do not move a shared file cursor, so concurrent reads are safe.
         let mut bytes = vec![0u8; out.len() * 4];
-        (&self.file)
-            .seek(SeekFrom::Start(start as u64 * 4))
-            .and_then(|_| (&self.file).read_exact(&mut bytes))
+        read_at(&self.file, &mut bytes, start as u64 * 4)
             .map_err(|e| format!("failed to read the temp audio: {e}"))?;
         for (dst, c) in out.iter_mut().zip(bytes.chunks_exact(4)) {
             *dst = f32::from_le_bytes([c[0], c[1], c[2], c[3]]);
@@ -72,9 +68,37 @@ impl AudioSource for TempAudio {
     }
 }
 
+/// Fills `buf` from `offset` without touching the file cursor.
+#[cfg(unix)]
+fn read_at(file: &File, buf: &mut [u8], offset: u64) -> std::io::Result<()> {
+    std::os::unix::fs::FileExt::read_exact_at(file, buf, offset)
+}
+
+/// Fills `buf` from `offset` without touching the file cursor.
+#[cfg(windows)]
+fn read_at(file: &File, mut buf: &mut [u8], mut offset: u64) -> std::io::Result<()> {
+    use std::os::windows::fs::FileExt;
+    while !buf.is_empty() {
+        match file.seek_read(buf, offset) {
+            Ok(0) => return Err(std::io::ErrorKind::UnexpectedEof.into()),
+            Ok(n) => {
+                buf = &mut buf[n..];
+                offset += n as u64;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::Interrupted => {}
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(())
+}
+
 /// Startup cleanup: removes leftover `*.f32` files directly in `dir`. Subfolders and links are
-/// never followed or removed.
+/// never followed or removed, and nothing is removed when `dir` itself is a link.
 pub fn clear_temp_dir(dir: &Path) {
+    // symlink_metadata does not follow a link, so a link to a directory is not a directory here.
+    if !std::fs::symlink_metadata(dir).map_or(false, |m| m.is_dir()) {
+        return;
+    }
     let Ok(entries) = std::fs::read_dir(dir) else {
         return;
     };
@@ -124,21 +148,34 @@ mod tests {
     }
 
     #[test]
-    fn temp_guard_deletes_partial_file_on_decode_error() {
-        // A truncated m4a cannot be probed, so the decode fails before any output exists.
-        // The partial file is simulated here, because the guard's job is to remove it.
-        let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/he_aac_48k_5s.m4a");
-        let bytes = std::fs::read(&fixture).unwrap();
+    fn temp_guard_deletes_partial_file_after_a_truncated_decode() {
+        // A WAV cut off mid-data: the decode writes what it has, then the stream ends early.
+        // A mid-file demux error returns Ok with a warning (a short timeline), so the caller
+        // gets a partial file that only the guard can clean up.
         let dir = tempfile::tempdir().unwrap();
-        let src = dir.path().join("truncated.m4a");
-        std::fs::write(&src, &bytes[..bytes.len() / 2]).unwrap();
+        let src = dir.path().join("whole.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 16,
+            sample_format: hound::SampleFormat::Int,
+        };
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for i in 0..48_000i32 {
+            let v = ((i % 200) as i16) * 100;
+            w.write_sample(v).unwrap();
+            w.write_sample(v).unwrap();
+        }
+        w.finalize().unwrap();
+        let bytes = std::fs::read(&src).unwrap();
+        let cut = dir.path().join("cut.wav");
+        std::fs::write(&cut, &bytes[..bytes.len() / 3]).unwrap();
 
         let guard = TempFileGuard::new_in(dir.path(), "meeting-2");
         let path = guard.path().to_path_buf();
-        std::fs::write(&path, [0u8; 16]).unwrap();
-
-        let result = crate::audio::decoder::decode_to_mono_16k_file(&src, &path, &mut |_| {});
-        assert!(result.is_err());
+        let seconds = crate::audio::decoder::decode_to_mono_16k_file(&cut, &path, &mut |_| {}).unwrap();
+        assert!(seconds < 0.5, "only the first third of a 1 s file was decoded: {seconds}");
+        assert!(path.exists(), "the decode wrote a partial file");
         drop(guard);
         assert!(!path.exists(), "the guard removes the partial file");
     }
@@ -170,6 +207,44 @@ mod tests {
             std::fs::symlink_metadata(root.join("link.f32")).is_ok(),
             "links are not removed either"
         );
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn clear_temp_dir_does_nothing_when_the_dir_is_a_link() {
+        let real = tempfile::tempdir().unwrap();
+        std::fs::write(real.path().join("keep.f32"), [0u8; 4]).unwrap();
+        let holder = tempfile::tempdir().unwrap();
+        let link = holder.path().join("speakers-tmp");
+        std::os::unix::fs::symlink(real.path(), &link).unwrap();
+
+        clear_temp_dir(&link);
+
+        assert!(real.path().join("keep.f32").exists(), "a linked dir is left alone");
+    }
+
+    #[test]
+    fn temp_audio_supports_concurrent_reads() {
+        let dir = tempfile::tempdir().unwrap();
+        let guard = TempFileGuard::new_in(dir.path(), "meeting-3");
+        let values: Vec<f32> = (0..100_000).map(|i| i as f32).collect();
+        write_f32(guard.path(), &values);
+        let audio = TempAudio::open(guard).unwrap();
+
+        std::thread::scope(|scope| {
+            for t in 0..4usize {
+                let audio = &audio;
+                scope.spawn(move || {
+                    let mut out = [0.0f32; 64];
+                    for k in 0..200usize {
+                        let start = (t * 20_000 + k * 64) % 90_000;
+                        audio.read(start, &mut out).unwrap();
+                        assert_eq!(out[0], start as f32);
+                        assert_eq!(out[63], (start + 63) as f32);
+                    }
+                });
+            }
+        });
     }
 
     #[test]

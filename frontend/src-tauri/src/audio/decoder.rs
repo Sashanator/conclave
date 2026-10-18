@@ -604,28 +604,65 @@ fn note_input_buffered(len: usize) {
 #[cfg(not(test))]
 fn note_input_buffered(_len: usize) {}
 
+/// Longest forward gap accepted, in seconds. A longer one means corrupt timestamps.
+const MAX_GAP_SECS: u64 = 60;
+
+/// `round(value × mul ÷ div)` in integers, saturating at `u64::MAX`. `div` must be non-zero.
+fn scale_round(value: u64, mul: u64, div: u64) -> u64 {
+    let num = (value as u128)
+        .saturating_mul(mul as u128)
+        .saturating_mul(2)
+        .saturating_add(div as u128);
+    u64::try_from(num / (2 * div as u128)).unwrap_or(u64::MAX)
+}
+
 /// Places a decoded packet on the container timeline, in input-rate frames.
 ///
 /// `ts` is where the packet starts, `frames` is its decoded length and `written` is the
 /// timeline position reached so far. Returns `(skip, zero_fill, write)`: drop the first
 /// `skip` frames (they repeat audio already written), insert `zero_fill` silent frames
-/// (a forward gap), then keep `write` frames.
-fn align_packet(ts: u64, frames: u64, written: u64) -> (u64, u64, u64) {
-    if ts < written {
+/// (a forward gap), then keep `write` frames. Nothing is placed past `limit` (the track's
+/// declared end, when known). A forward gap longer than `max_gap` is an error.
+fn align_packet(
+    ts: u64,
+    frames: u64,
+    written: u64,
+    limit: Option<u64>,
+    max_gap: u64,
+) -> Result<(u64, u64, u64)> {
+    let (skip, mut zero_fill, mut write) = if ts < written {
         let skip = (written - ts).min(frames);
         (skip, 0, frames - skip)
     } else {
-        (0, ts - written, frames)
+        let gap = ts - written;
+        if gap > max_gap {
+            return Err(anyhow!(
+                "Corrupt audio timestamps: a gap of {} frames after frame {}",
+                gap,
+                written
+            ));
+        }
+        (0, gap, frames)
+    };
+    if let Some(limit) = limit {
+        zero_fill = zero_fill.min(limit.saturating_sub(written));
+        write = write.min(limit.saturating_sub(written.saturating_add(zero_fill)));
     }
+    Ok((skip, zero_fill, write))
 }
 
 /// Converts a packet timestamp from the track's time base to frames at `rate`.
-/// Without a time base the timestamp is already a frame count.
+/// Without a usable time base the timestamp is already a frame count.
 fn ts_to_frames(ts: u64, time_base: Option<TimeBase>, rate: u32) -> u64 {
     match time_base {
-        Some(tb) => (ts as f64 * tb.numer as f64 * rate as f64 / tb.denom as f64).round() as u64,
-        None => ts,
+        Some(tb) if tb.denom > 0 => scale_round(ts, tb.numer as u64 * rate as u64, tb.denom as u64),
+        _ => ts,
     }
+}
+
+/// True when the decoded timeline falls short of the declared duration by more than 2 %.
+fn timeline_is_short(written: u64, declared: u64) -> bool {
+    (written as u128) * 100 < (declared as u128) * 98
 }
 
 /// Mono input-rate frames in, 16 kHz f32 little-endian out. The resampler works in 1 s chunks.
@@ -703,7 +740,7 @@ impl Resample16k {
             let out = self.resampler.process_partial(Some(&tail[..]), None)?;
             self.write_output(&out[0])?;
         }
-        let expected = (timeline as f64 * SPEAKER_RATE_HZ as f64 / self.rate as f64).round() as u64;
+        let expected = scale_round(timeline, SPEAKER_RATE_HZ as u64, self.rate as u64);
         while self.produced < expected + self.delay as u64 {
             let out = self.resampler.process_partial(None::<&[Vec<f32>]>, None)?;
             if out[0].is_empty() {
@@ -728,7 +765,8 @@ impl Resample16k {
 /// file length. Each packet is placed on the container timeline by its timestamp: audio the
 /// AAC encoder repeats at segment joins is dropped, and forward gaps are filled with silence.
 /// The output therefore matches the container duration. `progress` gets fractions in 0..=1.
-/// Returns the seconds written.
+/// Returns the seconds written. On error the output may be partial: the caller's
+/// `TempFileGuard` removes it.
 pub fn decode_to_mono_16k_file(
     input: &Path,
     output: &Path,
@@ -820,14 +858,22 @@ pub fn decode_to_mono_16k_file(
         note_input_buffered(mono.len());
 
         let ts = ts_to_frames(packet.ts(), time_base, rate);
-        let (skip, zero_fill, write) = align_packet(ts, mono.len() as u64, written);
+        // The declared end plus 1 s: nothing is written past it, whatever the timestamps say.
+        let limit = n_frames.map(|n| ts_to_frames(n, time_base, rate).saturating_add(rate as u64));
+        let (skip, zero_fill, write) = align_packet(
+            ts,
+            mono.len() as u64,
+            written,
+            limit,
+            MAX_GAP_SECS * rate as u64,
+        )?;
         if stream.is_none() {
             stream = Some(Resample16k::new(rate, output)?);
         }
         let s = stream.as_mut().expect("stream was created above");
         s.push_silence(zero_fill)?;
-        s.push(&mono[skip as usize..])?;
-        written += zero_fill + write;
+        s.push(&mono[skip as usize..(skip + write) as usize])?;
+        written = written.saturating_add(zero_fill).saturating_add(write);
 
         if let Some(n) = n_frames {
             let pct = ((packet.ts() as f64 / n as f64) * 100.0).min(100.0) as u32;
@@ -838,6 +884,16 @@ pub fn decode_to_mono_16k_file(
         }
     }
 
+    if let Some(n) = n_frames {
+        let declared = ts_to_frames(n, time_base, rate);
+        if timeline_is_short(written, declared) {
+            warn!(
+                "Decoded {:.2} s of a declared {:.2} s; the file may be truncated",
+                written as f64 / rate as f64,
+                declared as f64 / rate as f64
+            );
+        }
+    }
     let stream = stream.ok_or_else(|| anyhow!("No audio samples decoded from file"))?;
     let seconds = stream.finish(written)?;
     progress(1.0);
@@ -1165,25 +1221,29 @@ mod streaming_tests {
             .collect()
     }
 
+    fn place(ts: u64, frames: u64, written: u64) -> (u64, u64, u64) {
+        align_packet(ts, frames, written, None, u64::MAX).unwrap()
+    }
+
     #[test]
     fn align_packet_drops_backward_overlap() {
         // Packet at 100 (50 frames) starts 20 frames before the 120 already written.
-        assert_eq!(align_packet(100, 50, 120), (20, 0, 30));
+        assert_eq!(place(100, 50, 120), (20, 0, 30));
     }
 
     #[test]
     fn align_packet_drops_a_packet_already_written() {
-        assert_eq!(align_packet(100, 10, 120), (10, 0, 0));
+        assert_eq!(place(100, 10, 120), (10, 0, 0));
     }
 
     #[test]
     fn align_packet_zero_fills_forward_gap() {
-        assert_eq!(align_packet(200, 50, 120), (0, 80, 50));
+        assert_eq!(place(200, 50, 120), (0, 80, 50));
     }
 
     #[test]
     fn align_packet_keeps_exact_continuity() {
-        assert_eq!(align_packet(120, 50, 120), (0, 0, 50));
+        assert_eq!(place(120, 50, 120), (0, 0, 50));
     }
 
     #[test]
@@ -1191,7 +1251,7 @@ mod streaming_tests {
         for ts in 0..40u64 {
             for frames in 0..20u64 {
                 for written in 0..40u64 {
-                    let (skip, zero, write) = align_packet(ts, frames, written);
+                    let (skip, zero, write) = place(ts, frames, written);
                     assert!(skip <= frames);
                     assert_eq!(write, frames - skip);
                     assert_eq!(
@@ -1205,12 +1265,55 @@ mod streaming_tests {
     }
 
     #[test]
+    fn align_packet_never_writes_past_the_limit() {
+        // The track ends at 120: a packet 100..150 keeps only 20 frames.
+        assert_eq!(align_packet(100, 50, 100, Some(120), u64::MAX).unwrap(), (0, 0, 20));
+        // A forward gap is cut at the limit as well.
+        assert_eq!(align_packet(200, 50, 120, Some(150), u64::MAX).unwrap(), (0, 30, 0));
+        // At the limit nothing more is written.
+        assert_eq!(align_packet(120, 50, 120, Some(120), u64::MAX).unwrap(), (0, 0, 0));
+    }
+
+    #[test]
+    fn align_packet_rejects_a_gap_over_the_maximum() {
+        assert_eq!(align_packet(100, 50, 0, None, 100).unwrap(), (0, 100, 50));
+        assert!(align_packet(101, 50, 0, None, 100).is_err());
+        // A corrupt timestamp near u64::MAX is an error, not an overflow.
+        assert!(align_packet(u64::MAX, 50, 0, Some(1000), 100).is_err());
+        assert!(align_packet(u64::MAX, 50, 0, None, 100).is_err());
+    }
+
+    #[test]
+    fn scale_round_rounds_half_up_and_saturates() {
+        assert_eq!(scale_round(1, 1, 3), 0); // 0.33
+        assert_eq!(scale_round(1, 2, 3), 1); // 0.67
+        assert_eq!(scale_round(3, 1, 2), 2); // 1.5 rounds up
+        assert_eq!(scale_round(u64::MAX, u64::MAX, 1), u64::MAX);
+    }
+
+    #[test]
+    fn timeline_is_short_below_98_percent() {
+        assert!(timeline_is_short(979, 1000));
+        assert!(!timeline_is_short(980, 1000));
+        assert!(!timeline_is_short(1000, 1000));
+    }
+
+    #[test]
     fn ts_to_frames_scales_to_the_decoded_rate() {
         let tb = Some(TimeBase { numer: 1, denom: 48000 });
         // HE-AAC: 48 kHz container timestamps, 24 kHz decoded frames.
         assert_eq!(ts_to_frames(2048, tb, 24000), 1024);
         assert_eq!(ts_to_frames(2048, tb, 48000), 2048);
         assert_eq!(ts_to_frames(2048, None, 24000), 2048);
+    }
+
+    #[test]
+    fn ts_to_frames_is_exact_at_the_extremes() {
+        // A 1/3 time base at 2 Hz: 1 tick is 0.67 frames, which rounds up.
+        assert_eq!(ts_to_frames(1, Some(TimeBase { numer: 1, denom: 3 }), 2), 1);
+        // An invalid time base falls back to the raw timestamp.
+        assert_eq!(ts_to_frames(5, Some(TimeBase { numer: 1, denom: 0 }), 48000), 5);
+        assert_eq!(ts_to_frames(u64::MAX, Some(TimeBase { numer: 1, denom: 1 }), 48000), u64::MAX);
     }
 
     #[test]

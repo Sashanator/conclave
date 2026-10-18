@@ -6,7 +6,7 @@ import { VirtualizedTranscriptView } from '@/components/VirtualizedTranscriptVie
 import { TranscriptButtonGroup } from './TranscriptButtonGroup';
 import { SpeakersBar } from './SpeakersBar';
 import { SpeakerLineMenu } from './SpeakerLineMenu';
-import { useMeetingSpeakers } from '@/hooks/useMeetingSpeakers';
+import type { MeetingSpeakersState } from '@/hooks/useMeetingSpeakers';
 import { useConfig } from '@/contexts/ConfigContext';
 import { lineSpeakerName } from '@/lib/speakers';
 import { useMemo, type ReactNode } from 'react';
@@ -40,6 +40,8 @@ interface TranscriptPanelProps {
   onPlayFrom?: (seconds: number) => void;
   playheadSeconds?: number | null;
   footer?: ReactNode;
+  // The page owns the speaker state so the summary can wait on it and show the names-changed hint
+  speakers: MeetingSpeakersState;
 }
 
 export function TranscriptPanel({
@@ -65,10 +67,10 @@ export function TranscriptPanel({
   onPlayFrom,
   playheadSeconds,
   footer,
+  speakers,
 }: TranscriptPanelProps) {
   const { speakerIdActive } = useConfig();
   const speakersOn = speakerIdActive && !!meetingId;
-  const speakers = useMeetingSpeakers(meetingId ?? '', speakersOn, onRefetchTranscripts);
 
   // Convert transcripts to segments if pagination is not used but we want virtualization
   const convertedSegments = useMemo(() => {

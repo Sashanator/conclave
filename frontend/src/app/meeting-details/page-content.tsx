@@ -1,7 +1,7 @@
 "use client";
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
-import { MeetingSummary, SummaryProcessResponse, TranscriptMark } from '@/types';
+import { MeetingSummary, SummaryProcessResponse, Transcript, TranscriptMark } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
@@ -20,7 +20,9 @@ import { useCopyOperations } from '@/hooks/meeting-details/useCopyOperations';
 import { useMeetingOperations } from '@/hooks/meeting-details/useMeetingOperations';
 import { useMeetingNotes } from '@/hooks/useMeetingNotes';
 import { useMeetingAudio } from '@/hooks/useMeetingAudio';
+import { useMeetingSpeakers } from '@/hooks/useMeetingSpeakers';
 import { useConfig } from '@/contexts/ConfigContext';
+import { lineSpeakerName } from '@/lib/speakers';
 import { readSummaryMetadata } from '@/lib/summary-content';
 import { pickTemplateIfAllowed } from '@/lib/regenerate-guard';
 import { audioMissingMessage } from '@/lib/meeting-audio';
@@ -88,11 +90,34 @@ export default function PageContent({
   const { serverAddress } = useSidebar();
 
   // Get model config from ConfigContext
-  const { modelConfig, setModelConfig, isModelConfigLoading } = useConfig();
+  const { modelConfig, setModelConfig, isModelConfigLoading, speakerIdActive, speakerSettingsLoaded } = useConfig();
+  // Speaker analysis: the summary waits for it, but a settings lookup that never answers must not block it
+  const [settingsTimedOut, setSettingsTimedOut] = useState(false);
+  const [summarizeNowId, setSummarizeNowId] = useState<string | null>(null);
+  useEffect(() => {
+    if (speakerSettingsLoaded) return;
+    const timer = setTimeout(() => setSettingsTimedOut(true), 5000);
+    return () => clearTimeout(timer);
+  }, [speakerSettingsLoaded]);
 
   // Custom hooks
   const meetingData = useMeetingData({ meeting, summaryData, onMeetingUpdated });
   const templates = useTemplates();
+  // One instance for the page: the transcript bar renames through it and the summary panel shows its names-changed hint
+  const speakers = useMeetingSpeakers(meeting.id, speakerIdActive, onRefetchTranscripts);
+  // Settings past the timeout count as inactive: no names and no wait
+  const speakersOn = speakerIdActive && !settingsTimedOut;
+  const summarizeNow = summarizeNowId === meeting.id;
+  const speakerGateOpen = (speakerSettingsLoaded || settingsTimedOut)
+    && (!speakersOn || (speakers.loaded && (!speakers.busy || summarizeNow)));
+  // Undefined while off, so the summary text and Copy are exactly as before
+  const speakerName = useMemo(() => {
+    if (!speakersOn) return undefined;
+    const analysed = speakers.data?.job?.status === 'done';
+    const list = speakers.data?.speakers ?? [];
+    // Before analysis a line without a live label stays unnamed, as in the transcript
+    return (t: Transcript) => (t.speaker_idx == null && !analysed ? undefined : lineSpeakerName(t.speaker_idx, list, analysed));
+  }, [speakersOn, speakers.data]);
 
   // Callback to register the modal open function
   const handleRegisterModalOpen = (openFn: () => void) => {
@@ -144,6 +169,7 @@ export default function PageContent({
     updateMeetingTitle: meetingData.updateMeetingTitle,
     setAiSummary: meetingData.setAiSummary,
     onOpenModelSettings: handleOpenModelSettings,
+    speakerName,
   });
 
   const summaryMetadata = readSummaryMetadata(meetingData.aiSummary);
@@ -157,6 +183,7 @@ export default function PageContent({
     meetingTitle: meetingData.meetingTitle,
     aiSummary: meetingData.aiSummary,
     blockNoteSummaryRef: meetingData.blockNoteSummaryRef,
+    speakerName,
   });
 
   const meetingOperations = useMeetingOperations({
@@ -174,13 +201,19 @@ export default function PageContent({
     }
   }, [meeting.id, meetingData.aiSummary, summaryGeneration.summaryStatus]);
 
-  // Auto-generate only after the model configuration has settled.
+  // Auto-generate only after the model configuration and the speaker analysis have settled.
+  // The latch below is one-way, so a start before the analysis answers could not be undone.
+  const speakerWaiting = shouldAutoGenerate
+    && summaryGeneration.summaryStatus === 'idle'
+    && meetingData.transcripts.length > 0
+    && !speakerGateOpen;
   useEffect(() => {
     if (
       !shouldAutoGenerate
       || summaryGeneration.summaryStatus !== 'idle'
       || isModelConfigLoading
       || meetingData.transcripts.length === 0
+      || !speakerGateOpen
       || autoGenerationStartedMeetingIdRef.current === meeting.id
     ) {
       return;
@@ -199,6 +232,7 @@ export default function PageContent({
     modelConfig.model,
     summaryGeneration.handleGenerateSummary,
     summaryGeneration.summaryStatus,
+    speakerGateOpen,
     onAutoGenerateComplete,
   ]);
 
@@ -256,6 +290,7 @@ export default function PageContent({
               onPlayFrom={audio.info?.path ? audio.playFrom : undefined}
               playheadSeconds={audio.playhead}
               footer={<AudioPlayerBar audio={audio} />}
+              speakers={speakers}
             />
           }
           summary={
@@ -295,6 +330,10 @@ export default function PageContent({
               }
               isModelConfigLoading={isModelConfigLoading}
               onOpenModelSettings={handleRegisterModalOpen}
+              speakerWaiting={speakerWaiting}
+              onSummarizeNow={() => setSummarizeNowId(meeting.id)}
+              namesChanged={speakers.namesChanged}
+              onClearNamesChanged={speakers.clearNamesChanged}
             />
           }
         />

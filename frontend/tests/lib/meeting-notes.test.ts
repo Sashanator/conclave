@@ -36,6 +36,29 @@ describe('meeting-notes', () => {
     );
   });
 
+  test('summary transcript without a name function is byte-identical to today', () => {
+    const lines = [
+      t({ audio_start_time: 183, text: 'we move it to Q2', mark: 'important' }),
+      t({ timestamp: '10:07:00', text: 'no time', mark: 'followup' }),
+    ];
+    expect(formatSummaryTranscript(lines, undefined)).toBe(formatSummaryTranscript(lines));
+    expect(formatSummaryTranscript(lines)).toBe('[03:03] [MARKED: important] we move it to Q2\n10:07:00 [MARKED: followup] no time');
+  });
+
+  test('summary transcript puts the speaker name before the text, after any mark', () => {
+    const name = (x: Transcript) => (x.speaker_idx === 1 ? 'Сергей' : undefined);
+    const text = formatSummaryTranscript([
+      t({ audio_start_time: 5, text: 'text', speaker_idx: 1 }),
+      t({ audio_start_time: 5, text: 'text', speaker_idx: 1, mark: 'action' }),
+      t({ audio_start_time: 9, text: 'unnamed', speaker_idx: 2 }),
+    ], name);
+    expect(text).toBe(
+      '[00:05] Сергей: text\n' +
+      '[00:05] [MARKED: action] Сергей: text\n' +
+      '[00:09] unnamed',
+    );
+  });
+
   test('sortNotes: by time, untimed last, stable, new array', () => {
     const notes = [
       { id: 'a', at: null, text: 'a' }, { id: 'b', at: 9, text: 'b' },

@@ -53,6 +53,8 @@ interface UseSummaryGenerationProps {
   updateMeetingTitle: (title: string) => void;
   setAiSummary: (summary: MeetingSummary | null) => void;
   onOpenModelSettings?: () => void;
+  // Set only while speaker id is active; without it the summary text has no names
+  speakerName?: (t: Transcript) => string | undefined;
 }
 
 export function useSummaryGeneration({
@@ -66,6 +68,7 @@ export function useSummaryGeneration({
   updateMeetingTitle,
   setAiSummary,
   onOpenModelSettings,
+  speakerName,
 }: UseSummaryGenerationProps) {
   const restored = initialSummary?.meeting_id === meeting.id ? initialSummary : null;
   const [summaryStatus, setSummaryStatus] = useState<SummaryStatus>(() => restoredSummaryStatus(restored));
@@ -347,8 +350,8 @@ export function useSummaryGeneration({
   }, []);
 
   const buildSummaryTranscriptPayload = useCallback((allTranscripts: Transcript[]) => ({
-    transcriptText: formatSummaryTranscript(allTranscripts),
-  }), []);
+    transcriptText: formatSummaryTranscript(allTranscripts, speakerName),
+  }), [speakerName]);
 
   const showPreflightError = useCallback((message: string) => {
     setSummaryError(message);

@@ -101,3 +101,5 @@ export function useMeetingSpeakers(
     clearNamesChanged: () => setNamesChanged(false),
   };
 }
+
+export type MeetingSpeakersState = ReturnType<typeof useMeetingSpeakers>;

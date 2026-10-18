@@ -2,7 +2,7 @@ import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'b
 import { useEffect, useState } from 'react';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import { parseSummaryContent } from '../../src/lib/summary-content';
-import type { MeetingSummary, SummaryProcessResponse } from '../../src/types';
+import type { MeetingSummary, SummaryProcessResponse, Transcript } from '../../src/types';
 
 // Bun shares module mocks between test files; restore application modules after this suite.
 const originalNavigation = { ...await import('next/navigation') };
@@ -19,11 +19,12 @@ mock.module('../../src/contexts/RecordingStateContext', () => ({ useRecordingSta
 const notify = mock(() => {});
 mock.module('sonner', () => ({ toast: { info: notify, error: notify, success: notify, warning: notify } }));
 let startProcess: () => Promise<{ process_id: string }>;
+let transcriptRows: Partial<Transcript>[] = [{ text: 'Meeting transcript', timestamp: '00:00' }];
 let getSummary: (meetingId: string) => Promise<SummaryProcessResponse>;
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'api_get_meetings') return [];
   if (command === 'api_get_summary') return getSummary(args!.meetingId as string);
-  if (command === 'api_get_meeting_transcripts') return { transcripts: [{ text: 'Meeting transcript', timestamp: '00:00' }], total_count: 1 };
+  if (command === 'api_get_meeting_transcripts') return { transcripts: transcriptRows, total_count: transcriptRows.length };
   if (command === 'get_ollama_models') return [{ name: 'test' }];
   if (command === 'api_process_transcript') return startProcess();
   if (command === 'api_cancel_summary') return { cancelled: true };
@@ -67,6 +68,7 @@ beforeEach(() => {
   renderer = undefined as unknown as ReactTestRenderer;
   configuredModel = 'test';
   timers.clear(); notify.mockClear(); invoke.mockClear();
+  transcriptRows = [{ text: 'Meeting transcript', timestamp: '00:00' }];
   getSummary = async () => response();
   startProcess = async () => ({ process_id: 'attempt-a' });
   globalThis.setInterval = ((callback: () => Promise<void>) => {
@@ -252,5 +254,40 @@ describe('summary state restored when returning to a meeting', () => {
     await tick();
     expect(state.summaryStatus).toBe('completed');
     expect(text()).toContain('Finished summary');
+  });
+});
+
+describe('summary payload speaker names', () => {
+  let generate: () => Promise<void>;
+  function Generator({ speakerName }: { speakerName?: (t: Transcript) => string | undefined }) {
+    const summary = useSummaryGeneration({
+      meeting: { id: 'meeting-a', created_at: '2026-09-01T00:00:00Z' },
+      transcripts: [], modelConfig: { provider: 'ollama', model: 'test', whisperModel: 'base' },
+      isModelConfigLoading: false, selectedTemplate: null,
+      setAiSummary: () => {}, updateMeetingTitle: () => {}, initialSummary: null, speakerName,
+    });
+    generate = () => summary.handleGenerateSummary('');
+    return null;
+  }
+  async function sentTranscript(speakerName?: (t: Transcript) => string | undefined): Promise<string> {
+    await act(async () => { renderer = create(<SidebarProvider><Generator speakerName={speakerName} /></SidebarProvider>); });
+    await act(async () => { await generate(); });
+    const call = invoke.mock.calls.find(([command]) => command === 'api_process_transcript');
+    return (call![1] as { text: string }).text;
+  }
+  const rows: Partial<Transcript>[] = [
+    { text: 'Hello', timestamp: '00:00', audio_start_time: 5, speaker_idx: 1, mark: 'action' },
+    { text: 'no time', timestamp: '10:07:00', mark: 'important', speaker_idx: 2 },
+  ];
+
+  test('summary payload is byte-identical when the feature is off', async () => {
+    transcriptRows = rows;
+    expect(await sentTranscript()).toBe('[00:05] [MARKED: action] Hello\n10:07:00 [MARKED: important] no time');
+  });
+
+  test('names from the speaker function go into the payload', async () => {
+    transcriptRows = rows;
+    const names = (t: Transcript) => (t.speaker_idx === 1 ? 'Сергей' : 'Sasha');
+    expect(await sentTranscript(names)).toBe('[00:05] [MARKED: action] Сергей: Hello\n10:07:00 [MARKED: important] Sasha: no time');
   });
 });

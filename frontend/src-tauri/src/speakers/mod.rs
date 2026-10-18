@@ -1,4 +1,5 @@
 pub mod sentences;
+pub mod assign;
 pub mod cluster;
 pub mod diarize;
 pub mod features;

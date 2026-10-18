@@ -459,6 +459,15 @@ async fn run_retranscription<R: Runtime>(
         .await
         .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
 
+    // Overtakes any analysis still running on the old lines, whatever the feature state
+    crate::database::repositories::speakers::SpeakersRepository::transcripts_replaced_in_tx(
+        &mut *tx,
+        &meeting_id,
+        crate::speakers::is_active(),
+    )
+    .await
+    .map_err(|e| anyhow!("Failed to queue speaker analysis: {}", e))?;
+
     for segment in &segments {
         sqlx::query(
             "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_idx, sentences)

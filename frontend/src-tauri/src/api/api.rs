@@ -1017,6 +1017,7 @@ pub async fn api_save_transcript<R: Runtime>(
         &transcripts_to_save,
         folder_path,
         &parse_notes(notes.unwrap_or_default()),
+        false,
     )
     .await
     {

@@ -79,6 +79,31 @@ pub(crate) fn ensure_onnx_runtime_available() -> anyhow::Result<()> {
 }
 
 #[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+extern "system" {
+    fn LoadLibraryExW(name: *const u16, file: *mut std::ffi::c_void, flags: u32) -> *mut std::ffi::c_void;
+    fn GetModuleFileNameW(module: *mut std::ffi::c_void, filename: *mut u16, size: u32) -> u32;
+}
+
+/// Loads the bundled DirectML.dll and returns the path it loaded from. The module is never freed, so it stays loaded.
+#[cfg(target_os = "windows")]
+fn preload_directml(path: &std::path::Path) -> Result<String, String> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // LOAD_WITH_ALTERED_SEARCH_PATH (0x8): the DLL's own folder is searched for its dependencies.
+    let module = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), 0x8) };
+    if module.is_null() {
+        return Err(format!("failed to load {}: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    let mut buffer = [0u16; 1024];
+    let length = unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) };
+    if length == 0 {
+        return Err(format!("loaded {} but could not read its path: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    Ok(String::from_utf16_lossy(&buffer[..length as usize]))
+}
+
+#[cfg(target_os = "windows")]
 fn catch_onnx_runtime_init<F, E>(init: F) -> Result<(), String>
 where
     F: FnOnce() -> Result<(), E>,
@@ -543,6 +568,14 @@ pub fn run() {
                 tauri::path::BaseDirectory::Resource,
             ) {
                 Ok(runtime_path) => {
+                    // Before ort::init_from, so onnxruntime.dll binds to the bundled DirectML. A failure only leaves speakers on CPU.
+                    match _app.path().resolve("DirectML.dll", tauri::path::BaseDirectory::Resource) {
+                        Ok(directml_path) => match preload_directml(&directml_path) {
+                            Ok(loaded) => log::info!("Preloaded bundled DirectML from {loaded}"),
+                            Err(error) => log::warn!("DirectML preload failed, speakers will use the CPU: {error}"),
+                        },
+                        Err(error) => log::warn!("Failed to resolve bundled DirectML.dll, speakers will use the CPU: {error}"),
+                    }
                     match catch_onnx_runtime_init(|| {
                         ort::init_from(runtime_path.to_string_lossy().into_owned())
                             .with_telemetry(false)

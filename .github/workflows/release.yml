@@ -128,6 +128,16 @@ jobs:
           releaseDraft: true
           includeUpdaterJson: false
 
+      - name: Check installer size (limit 100,000,000 bytes)
+        shell: pwsh
+        run: |
+          $installers = @(Get-ChildItem target/x86_64-pc-windows-msvc/release/bundle/nsis/*.exe)
+          if ($installers.Count -eq 0) { Write-Error "no NSIS installer found in target/x86_64-pc-windows-msvc/release/bundle/nsis"; exit 1 }
+          foreach ($installer in $installers) {
+            Write-Host ("{0}: {1:N0} bytes" -f $installer.Name, $installer.Length)
+            if ($installer.Length -gt 100000000) { Write-Error ("{0} is over 100,000,000 bytes" -f $installer.Name); exit 1 }
+          }
+
       - name: Verify CUDA DLLs are delay-loaded, not hard imports
         shell: pwsh
         run: |
@@ -154,12 +164,16 @@ jobs:
           $exe = "target/x86_64-pc-windows-msvc/release/Conclave.exe"
           if (-not (Test-Path $exe)) { Write-Error "Expected $exe (mainBinaryName); found: $(Get-ChildItem target/x86_64-pc-windows-msvc/release/*.exe | Select-Object -ExpandProperty Name)"; exit 1 }
           Copy-Item -LiteralPath "frontend/src-tauri/binaries/cuda/cudart64_12.dll" -Destination (Join-Path (Split-Path $exe) "cudart64_12.dll") -Force -ErrorAction Stop
+          # The bundled ONNX Runtime and DirectML sit next to the exe too, as the installer lays them out.
+          Copy-Item -Path "frontend/src-tauri/binaries/onnxruntime/*" -Destination (Split-Path $exe) -Force -ErrorAction Stop
           # Missing DLLs exit instead of showing a modal dialog; child processes inherit the error mode.
           Add-Type -Namespace Win32 -Name ErrorMode -MemberDefinition '[DllImport("kernel32.dll")] public static extern uint SetErrorMode(uint uMode);'
           [Win32.ErrorMode]::SetErrorMode(0x8001) | Out-Null  # SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
           $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'CUDA' }) -join ';'
           $env:CUDA_PATH = $null
-          $p = Start-Process -FilePath $exe -PassThru
+          # The app logs to stderr (main.rs), so capture it to find the ONNX Runtime init line.
+          $errLog = Join-Path $env:RUNNER_TEMP "conclave-smoke-stderr.log"
+          $p = Start-Process -FilePath $exe -PassThru -RedirectStandardError $errLog
           $null = $p.Handle  # keeps the handle open so $p.ExitCode is reliable if the exe dies at once
           Start-Sleep -Seconds 20
           if ($p.HasExited) {
@@ -170,7 +184,11 @@ jobs:
             exit 1
           }
           Stop-Process -Id $p.Id -Force
-          Write-Host "OK: app stayed up 20s without CUDA on PATH"
+          if (-not (Select-String -Path $errLog -Pattern 'Initialized bundled ONNX Runtime' -Quiet)) {
+            Write-Error "app log has no 'Initialized bundled ONNX Runtime' line; the bundled runtime did not load"
+            exit 1
+          }
+          Write-Host "OK: app stayed up 20s without CUDA on PATH and the bundled ONNX Runtime loaded"
 
       - name: Publish release (only after the checks above pass)
         if: github.ref_type == 'tag'

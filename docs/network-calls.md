@@ -65,7 +65,7 @@ These run while the installer is built, not when Conclave runs. They are not in 
 | Host | Where (file:line) | Purpose | Decision |
 |---|---|---|---|
 | github.com/Zackriya-Solutions/ffmpeg-binaries | `src-tauri/build/ffmpeg.rs:134-166` | ffmpeg archive bundled as `externalBin` in the installer | Allowed — Meetily-owned, reported to user; archive pinned by SHA-256 |
-| github.com/microsoft/onnxruntime | `src-tauri/build/onnxruntime.rs:14` | ONNX Runtime 1.22.0 Windows archive (`build.rs`) | Allowed (build-time only) |
+| api.nuget.org | `src-tauri/build/onnxruntime.rs` (`PACKAGES` URLs) | ONNX Runtime 1.22.0 DirectML build and DirectML 1.15.4 NuGet packages (`build.rs`); both archives SHA-256 pinned | Allowed (build-time only) |
 | fonts.googleapis.com (via `next/font/google`) | `src/app/layout.tsx:4` | Source Sans 3 font, fetched by Next.js at build time and self-hosted | Allowed (build-time only) |
 
 ## Removed (updater tooling)

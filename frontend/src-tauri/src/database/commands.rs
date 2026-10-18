@@ -162,6 +162,7 @@ pub async fn import_and_initialize_database(
 
     // Update app state with the new manager
     app.manage(AppState { db_manager });
+    crate::speakers::job::wake();
 
     info!("Legacy database imported and initialized successfully");
 
@@ -186,6 +187,7 @@ pub async fn initialize_fresh_database(app: AppHandle) -> Result<(), String> {
 
     // Update app state with the new manager
     app.manage(AppState { db_manager: db_manager.clone() });
+    crate::speakers::job::wake();
 
     // Set default model configuration for fresh installs
     if let Err(e) = crate::onboarding::save_onboarding_defaults(db_manager.pool()).await {

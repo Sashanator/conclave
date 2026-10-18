@@ -93,15 +93,31 @@ pub(crate) trait JobDeps: Send + Sync {
     fn temp_dir(&self) -> Result<PathBuf, String>;
 }
 
-/// The worker: claims one job at a time and runs each in its own task. A job left pending or running by an
-/// earlier run is queued again by `recover_jobs` at startup.
+/// Waits until `database()` yields the pool (a first launch has none until the user creates one), then requeues
+/// the jobs an earlier run left pending or running. It wakes on `wake()`, and polls once a second in case a wake was missed.
+async fn ready_pool(database: impl Fn() -> Option<SqlitePool>) -> SqlitePool {
+    let pool = loop {
+        if let Some(pool) = database() {
+            break pool;
+        }
+        tokio::select! {
+            _ = WAKE.notified() => {}
+            _ = tokio::time::sleep(Duration::from_secs(1)) => {}
+        }
+    };
+    match SpeakersRepository::recover_jobs(&pool).await {
+        Ok(0) => {}
+        Ok(n) => info!("speakers: {n} interrupted analysis job(s) queued again"),
+        Err(e) => warn!("speakers: could not requeue interrupted jobs: {e}"),
+    }
+    pool
+}
+
+/// The worker: claims one job at a time and runs each in its own task.
 pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
+        let pool = ready_pool(|| app.try_state::<AppState>().map(|s| s.db_manager.pool().clone())).await;
         loop {
-            let Some(pool) = app.try_state::<AppState>().map(|s| s.db_manager.pool().clone()) else {
-                log::error!("speakers: the database is not ready, the analysis worker stops");
-                return;
-            };
             // Held from the claim through the run, so deletion never sees a half-started job. Released while idle.
             let model_files = MODEL_LOCK.read().await;
             match SpeakersRepository::claim_next(&pool).await {
@@ -1130,6 +1146,29 @@ mod tests {
         run_one(&pool, "m1", &token, &deps).await.unwrap(); // skipped/failed, not running any more
         identify(&pool, "m1", true, true).await.unwrap();
         assert_eq!(status(&pool).await.0, "pending");
+    }
+
+    /// A first launch has no database: the worker waits for one (no return, no panic), then requeues the interrupted
+    /// job exactly once, under a new token.
+    #[tokio::test]
+    async fn worker_waits_for_the_database_then_recovers_once() {
+        let s = setup();
+        let pool = pool_with_meeting(&s.folder).await;
+        let interrupted = claim(&pool).await;
+        let looks = std::sync::atomic::AtomicUsize::new(0);
+        let ready = ready_pool(|| {
+            // No database on the first two looks, as before the user creates one.
+            if looks.fetch_add(1, std::sync::atomic::Ordering::SeqCst) < 2 {
+                None
+            } else {
+                Some(pool.clone())
+            }
+        })
+        .await;
+        assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 3);
+        let job = SpeakersRepository::get_job(&ready, "m1").await.unwrap().unwrap();
+        assert_eq!(job.status, "pending");
+        assert_ne!(job.run_token, interrupted, "the interrupted run cannot publish");
     }
 
     #[test]

@@ -717,14 +717,7 @@ pub fn run() {
             if let Ok(data) = _app.path().app_data_dir() {
                 speakers::temp_audio::clear_temp_dir(&data.join("speakers-tmp"));
             }
-            tauri::async_runtime::block_on(async {
-                let state = _app.state::<state::AppState>();
-                match database::repositories::speakers::SpeakersRepository::recover_jobs(state.db_manager.pool()).await {
-                    Ok(0) => {}
-                    Ok(n) => log::info!("speakers: {n} interrupted analysis job(s) queued again"),
-                    Err(e) => log::warn!("speakers: could not requeue interrupted jobs: {e}"),
-                }
-            });
+            // The worker waits for the database (a first launch has none yet) and requeues interrupted jobs once it exists.
             speakers::job::start_worker(_app.handle().clone());
 
             // Copy the shipped templates into the user's templates folder once; deleted ones stay deleted.

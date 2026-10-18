@@ -104,6 +104,7 @@ const textOf = (node: unknown): string => {
   if (Array.isArray(node)) return node.map(textOf).join('');
   return textOf((node as { children?: unknown }).children);
 };
+const commandItems = (value: string): ReactTestInstance[] => renderer!.root.findAll((n) => n.props.value === value && typeof n.type === 'function' && n.props.onSelect);
 const callsOf = (command: string) => invoke.mock.calls.filter(([c]) => c === command);
 
 describe('SpeakersBar', () => {
@@ -115,6 +116,13 @@ describe('SpeakersBar', () => {
     // Self is not a control: no naming box, no button
     expect(chips()[0].type).toBe('span');
     expect(chips()[1].type).toBe('button');
+  });
+
+  test('Known voices leave out the self person', async () => {
+    meetingReply = { job: { status: 'done', reason: null, percent: null }, speakers: [UNNAMED] };
+    await mount(<Bar />);
+    expect(commandItems('Сергей')).toHaveLength(1);
+    expect(commandItems('Sasha')).toHaveLength(0);
   });
 
   test('picking a known person names the speaker with its person id', async () => {

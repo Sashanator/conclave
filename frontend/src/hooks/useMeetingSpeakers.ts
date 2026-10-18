@@ -49,13 +49,14 @@ export function useMeetingSpeakers(
     } catch (err) {
       console.error('Failed to load speakers:', err);
     } finally {
-      if (meetingRef.current === id) setAnswered(true);
+      // Only the latest request opens the gate; a late reply to an older one must not
+      if (meetingRef.current === id && seq === seqRef.current) setAnswered(true);
     }
   }, [meetingId]);
 
   useEffect(() => {
     if (!active) return;
-    void reload();
+    let cancelled = false;
     // Each listener has its own catch, so one that fails does not stop the other from being cleaned up
     const pending = [
       listen<{ meeting_id: string }>('speakers-updated', (event) => {
@@ -70,7 +71,10 @@ export function useMeetingSpeakers(
       console.error('Failed to listen for speaker events:', err);
       return null;
     }));
+    // The first read waits for the listeners, so a terminal event sent meanwhile is not lost
+    void Promise.all(pending).then(() => { if (!cancelled) void reload(); });
     return () => {
+      cancelled = true;
       for (const p of pending) void p.then((unlisten) => unlisten?.());
     };
   }, [active, meetingId, reload]);

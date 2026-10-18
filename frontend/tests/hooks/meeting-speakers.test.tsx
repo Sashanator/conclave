@@ -17,6 +17,8 @@ let meetingReply: MeetingSpeakers = { job: null, speakers: [] };
 // When set, each speakers_get_meeting waits for its own deferred reply
 let heldReplies: Array<{ resolve: (v: MeetingSpeakers) => void; promise: Promise<MeetingSpeakers> }> | null = null;
 let failProgressListen = false;
+// When set, every listen waits for this gate before it registers
+let listenGate: Promise<void> | null = null;
 const invoke = mock(async (command: string, _args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'speakers_name') return 'anya-id';
   if (command === 'speakers_get_meeting') {
@@ -34,9 +36,10 @@ mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
 mock.module('@tauri-apps/api/event', () => ({
   ...originalEvent,
   listen: async (event: string, handler: Handler) => {
+    if (listenGate) await listenGate;
     if (event === 'speakers-progress' && failProgressListen) throw new Error('listen refused');
     handlers.set(event, handler);
-    return () => handlers.delete(event);
+    return () => { if (handlers.get(event) === handler) handlers.delete(event); };
   },
 }));
 const toastError = mock(() => {});
@@ -64,6 +67,7 @@ afterEach(async () => {
   meetingReply = { job: null, speakers: [] };
   heldReplies = null;
   failProgressListen = false;
+  listenGate = null;
 });
 
 describe('useMeetingSpeakers', () => {
@@ -118,6 +122,47 @@ describe('useMeetingSpeakers', () => {
     await mount({ meetingId: 'm1', active: true });
     await act(async () => { handlers.get('speakers-progress')!({ payload: { meeting_id: 'other', percent: 90 } }); });
     expect(latest.percent).toBeNull();
+  });
+
+  test('a late reply to an older request does not open the gate', async () => {
+    heldReplies = [];
+    await mount({ meetingId: 'm1', active: true });
+    await act(async () => { void latest.identify(); });
+    const [first, second] = heldReplies!;
+    expect(latest.loaded).toBe(false);
+    await act(async () => {
+      first.resolve({ job: { status: 'running', reason: null, percent: 10 }, speakers: [] });
+      await first.promise;
+    });
+    expect(latest.loaded).toBe(false);
+    expect(latest.data).toBeNull();
+    await act(async () => {
+      second.resolve({ job: { status: 'done', reason: null, percent: null }, speakers: [] });
+      await second.promise;
+    });
+    expect(latest.loaded).toBe(true);
+    expect(latest.data?.job?.status).toBe('done');
+  });
+
+  test('the first read waits until the listeners are registered', async () => {
+    const gate: { open?: () => void } = {};
+    listenGate = new Promise<void>((resolve) => { gate.open = resolve; });
+    await mount({ meetingId: 'm1', active: true });
+    expect(calls('speakers_get_meeting').length).toBe(0);
+    await act(async () => { gate.open!(); });
+    expect(calls('speakers_get_meeting').length).toBe(1);
+    expect(handlers.has('speakers-updated')).toBe(true);
+  });
+
+  test('unmounting before the listeners register reads nothing and leaves no listener', async () => {
+    const gate: { open?: () => void } = {};
+    listenGate = new Promise<void>((resolve) => { gate.open = resolve; });
+    await mount({ meetingId: 'm1', active: true });
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await act(async () => { gate.open!(); });
+    expect(calls('speakers_get_meeting').length).toBe(0);
+    expect(handlers.size).toBe(0);
   });
 
   test('a late reply to an earlier request does not overwrite a newer one', async () => {

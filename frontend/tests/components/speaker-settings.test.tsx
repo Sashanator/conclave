@@ -65,9 +65,13 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'people_rename' || command === 'people_merge' || command === 'people_delete') return undefined;
   throw new Error(`Unexpected command: ${command}`);
 });
+// Set to make that event's listen fail, as the Tauri side can
+let refusedEvent: string | null = null;
 const listen = mock(async (event: string, handler: Handler) => {
+  if (event === refusedEvent) throw new Error('listen refused');
   handlers.set(event, handler);
-  return () => handlers.delete(event);
+  // Like Tauri: an unlisten removes only its own registration, never a newer one
+  return () => { if (handlers.get(event) === handler) handlers.delete(event); };
 });
 const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
 
@@ -345,6 +349,23 @@ describe('speaker settings tab', () => {
     });
     await flush();
     expect(calls('speakers_delete_models').length).toBe(1);
+  });
+
+  test('a refused listen does not keep the other listeners from being removed', async () => {
+    refusedEvent = 'speaker-models-done';
+    const logged = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      await remount();
+    } finally {
+      refusedEvent = null;
+      logged.mockRestore();
+    }
+    expect(handlers.has('speaker-models-progress')).toBe(true);
+    expect(handlers.has('speaker-settings-changed')).toBe(true);
+    await act(async () => { renderer!.unmount(); });
+    renderer = null;
+    expect(handlers.has('speaker-models-progress')).toBe(false);
+    expect(handlers.has('speaker-settings-changed')).toBe(false);
   });
 
   test('shows the last analysis line when the settings have one', async () => {

@@ -124,7 +124,8 @@ function SpeakerChip({ name, seconds, idxs, isSelf, dot, named, people, disabled
           <CommandInput placeholder="Name…" value={query} onValueChange={setQuery} />
           <CommandList>
             <CommandGroup>
-              {people.map((p) => (
+              {/* The self person is named in Settings, never from here: the backend refuses it */}
+              {people.filter((p) => !p.is_self).map((p) => (
                 <CommandItem key={p.id} value={p.name} onSelect={() => void pick({ personId: p.id })}>
                   {p.name}
                 </CommandItem>

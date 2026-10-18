@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react"
 import { invoke } from "@tauri-apps/api/core"
-import { listen, type UnlistenFn } from "@tauri-apps/api/event"
+import { listen } from "@tauri-apps/api/event"
 import { toast } from "sonner"
 import { Switch } from "./ui/switch"
 import { Button } from "./ui/button"
@@ -52,9 +52,8 @@ export function SpeakerSettings() {
   useEffect(() => {
     loadSettings()
     loadPeople()
-    let cancelled = false
-    let unlisteners: UnlistenFn[] = []
-    Promise.all([
+    // Each listener catches its own failure, so one rejected listen does not leak the others
+    const pending = [
       listen<{ percent: number }>("speaker-models-progress", (e) => setPercent(e.payload.percent)),
       listen<{ ok: boolean; error: string | null }>("speaker-models-done", (e) => {
         setPercent(null)
@@ -62,13 +61,12 @@ export function SpeakerSettings() {
         loadSettings()
       }),
       listen("speaker-settings-changed", () => loadSettings()),
-    ]).then((fns) => {
-      if (cancelled) fns.forEach((fn) => fn())
-      else unlisteners = fns
-    })
+    ].map((p) => p.catch((err) => {
+      console.error("Failed to listen for speaker events:", err)
+      return null
+    }))
     return () => {
-      cancelled = true
-      unlisteners.forEach((fn) => fn())
+      for (const p of pending) void p.then((unlisten) => unlisten?.())
     }
   }, [loadSettings, loadPeople])
 

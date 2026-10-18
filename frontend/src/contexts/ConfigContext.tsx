@@ -405,7 +405,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       if (cleanedUp) fn();
       else unlisten = fn;
     };
-    setupListener();
+    setupListener().catch(console.error);
     return () => {
       cleanedUp = true;
       unlisten?.();

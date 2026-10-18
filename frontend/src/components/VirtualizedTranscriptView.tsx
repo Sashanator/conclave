@@ -136,7 +136,7 @@ const TranscriptSegment = memo(function TranscriptSegment({
                     </TooltipContent>
                 </Tooltip>
                 {speakerNode ?? (speakerLabel && (
-                    <span data-speaker-label={speakerLabel} className="text-xs text-muted-foreground mt-1 flex-shrink-0">
+                    <span data-speaker-label={speakerLabel} className="text-xs text-muted-foreground mt-1 flex-shrink-0 select-none">
                         {speakerLabel}
                     </span>
                 ))}

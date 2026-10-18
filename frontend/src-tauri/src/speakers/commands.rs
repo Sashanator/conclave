@@ -91,15 +91,14 @@ pub async fn speakers_download_models<R: Runtime>(app: AppHandle<R>) -> Result<(
 }
 
 async fn download<R: Runtime>(app: AppHandle<R>) {
+    // Shared, taken before the flag: a deletion that starts first is refused, and one after sees the download.
+    let _model_files = job::MODEL_LOCK.read().await;
     if DOWNLOADING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return;
     }
     let _ = app.emit("speaker-settings-changed", json!({}));
     // Shared: deletion waits for the download, and the download waits for no one.
-    let result = {
-        let _model_files = job::MODEL_LOCK.read().await;
-        fetch_models(&app).await
-    };
+    let result = fetch_models(&app).await;
     DOWNLOADING.store(false, Ordering::SeqCst);
     let (ok, error) = match result {
         Ok(()) => (true, None),

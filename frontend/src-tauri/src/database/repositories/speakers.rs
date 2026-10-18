@@ -90,21 +90,22 @@ impl SpeakersRepository {
 
     /// Called by every transaction that replaces a meeting's transcripts. A feature-off replace
     /// rotates the token, so a run still in flight can never publish against the replaced lines.
-    pub async fn transcripts_replaced_in_tx(conn: &mut SqliteConnection, meeting_id: &str, active: bool) -> Result<(), SqlxError> {
+    /// Returns whether a job row changed (queued, or skipped), so callers know to report it.
+    pub async fn transcripts_replaced_in_tx(conn: &mut SqliteConnection, meeting_id: &str, active: bool) -> Result<bool, SqlxError> {
         if active {
             Self::enqueue_in_tx(&mut *conn, meeting_id).await?;
-        } else {
-            sqlx::query(
-                "UPDATE speaker_jobs SET status = 'skipped', reason = 'feature_off', run_token = ?, updated_at = ?
-                 WHERE meeting_id = ?",
-            )
-            .bind(Uuid::new_v4().to_string())
-            .bind(now())
-            .bind(meeting_id)
-            .execute(&mut *conn)
-            .await?;
+            return Ok(true);
         }
-        Ok(())
+        let r = sqlx::query(
+            "UPDATE speaker_jobs SET status = 'skipped', reason = 'feature_off', run_token = ?, updated_at = ?
+             WHERE meeting_id = ?",
+        )
+        .bind(Uuid::new_v4().to_string())
+        .bind(now())
+        .bind(meeting_id)
+        .execute(&mut *conn)
+        .await?;
+        Ok(r.rows_affected() > 0)
     }
 
     /// At start-up, pending and running jobs wait again under new tokens, so a run from before a crash cannot publish.
@@ -1077,6 +1078,21 @@ mod tests {
         SpeakersRepository::transcripts_replaced_in_tx(&mut tx, &m, false).await.unwrap();
         tx.commit().await.unwrap();
         assert!(SpeakersRepository::get_job(&pool, &m).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn replacing_transcripts_with_feature_off_reports_a_skipped_pending_job() {
+        let pool = test_pool().await;
+        let m = meeting(&pool, false).await;
+        SpeakersRepository::enqueue(&pool, &m).await.unwrap();
+        let before = SpeakersRepository::get_job(&pool, &m).await.unwrap().unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let changed = SpeakersRepository::transcripts_replaced_in_tx(&mut tx, &m, false).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!(changed, "an existing pending job is skipped, which the UI must hear about");
+        let after = SpeakersRepository::get_job(&pool, &m).await.unwrap().unwrap();
+        assert_eq!((after.status.as_str(), after.reason.as_deref()), ("skipped", Some("feature_off")));
+        assert_ne!(after.run_token, before.run_token, "the in-flight run is overtaken");
     }
 
     #[tokio::test]

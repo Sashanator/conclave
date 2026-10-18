@@ -462,7 +462,7 @@ async fn run_retranscription<R: Runtime>(
         .map_err(|e| anyhow!("Failed to delete existing transcripts: {}", e))?;
 
     // Overtakes any analysis still running on the old lines, whatever the feature state
-    crate::database::repositories::speakers::SpeakersRepository::transcripts_replaced_in_tx(
+    let job_changed = crate::database::repositories::speakers::SpeakersRepository::transcripts_replaced_in_tx(
         &mut *tx,
         &meeting_id,
         speakers_active,
@@ -504,9 +504,11 @@ async fn run_retranscription<R: Runtime>(
 
     tx.commit().await
         .map_err(|e| anyhow!("Failed to commit transaction: {}", e))?;
-    // The replaced lines queue a fresh analysis, so the worker wakes and the open meeting hears about it. Feature off: nothing to hear.
     if speakers_active {
         crate::speakers::job::wake();
+    }
+    // Any job row that changed (queued, or skipped by a feature-off replace) is a state change the open meeting must show.
+    if job_changed {
         let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
     }
 

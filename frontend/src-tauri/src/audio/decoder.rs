@@ -383,7 +383,11 @@ fn convert_to_wav_with_ffmpeg(
     Ok(temp_path)
 }
 
-/// Decode an audio file (MP4, M4A, WAV, etc.) to raw samples
+/// Decode an audio file (MP4, M4A, WAV, etc.) to raw samples.
+///
+/// Samples are placed on the container timeline by packet timestamp, as in
+/// [`decode_to_mono_16k_file`]: the encoder's repeated segment joins are dropped and
+/// forward gaps are zero-filled. Files without timestamp jumps decode unchanged.
 pub fn decode_audio_file(path: &Path) -> Result<DecodedAudio> {
     decode_audio_file_with_progress(path, None)
 }
@@ -480,6 +484,11 @@ pub fn decode_audio_file_with_progress(
     let expected_samples = expected_duration
         .map(|dur| (dur * sample_rate as f64 * channels as f64) as usize);
 
+    let time_base = track.codec_params.time_base;
+    let n_frames = track.codec_params.n_frames;
+    // Container timeline position, in frames at the decoded rate.
+    let mut written = 0u64;
+
     let mut last_progress = 0u32;
 
     loop {
@@ -535,10 +544,26 @@ pub fn decode_audio_file_with_progress(
                     sample_buf = Some(SampleBuffer::<f32>::new(duration, spec));
                 }
 
-                // Copy samples to buffer
+                // Copy samples to buffer, placed on the container timeline
                 if let Some(ref mut buf) = sample_buf {
                     buf.copy_interleaved_ref(decoded);
-                    all_samples.extend_from_slice(buf.samples());
+                    let ch = channels as usize;
+                    let frames = (buf.samples().len() / ch) as u64;
+                    let ts = ts_to_frames(packet.ts(), time_base, sample_rate);
+                    let limit = n_frames
+                        .map(|n| ts_to_frames(n, time_base, sample_rate).saturating_add(sample_rate as u64));
+                    let (skip, zero_fill, write) = align_packet(
+                        ts,
+                        frames,
+                        written,
+                        limit,
+                        MAX_GAP_SECS * sample_rate as u64,
+                    )?;
+                    all_samples.resize(all_samples.len() + zero_fill as usize * ch, 0.0);
+                    all_samples.extend_from_slice(
+                        &buf.samples()[skip as usize * ch..(skip + write) as usize * ch],
+                    );
+                    written = written.saturating_add(zero_fill).saturating_add(write);
                 }
 
                 // Emit progress updates (every 10%)
@@ -1392,6 +1417,49 @@ mod streaming_tests {
                 "click at input {c}: peak {peak}, expected {expected}"
             );
         }
+    }
+
+    #[test]
+    fn decode_audio_file_keeps_plain_wav_samples_exactly() {
+        // Float WAV: symphonia reads the values back bit for bit, so any change in how packets
+        // are placed shows up as a difference. A WAV has no timestamp jumps, so nothing moves.
+        let dir = tempfile::tempdir().unwrap();
+        let src = dir.path().join("float.wav");
+        let spec = hound::WavSpec {
+            channels: 2,
+            sample_rate: 48000,
+            bits_per_sample: 32,
+            sample_format: hound::SampleFormat::Float,
+        };
+        let values: Vec<f32> = (0..96_000).map(|i| (i as f32 * 0.001).sin() * 0.5).collect();
+        let mut w = hound::WavWriter::create(&src, spec).unwrap();
+        for &v in &values {
+            w.write_sample(v).unwrap();
+        }
+        w.finalize().unwrap();
+
+        let decoded = decode_audio_file(&src).unwrap();
+        assert_eq!(decoded.sample_rate, 48000);
+        assert_eq!(decoded.channels, 2);
+        assert!((decoded.duration_seconds - 1.0).abs() < 1e-9);
+        assert_eq!(decoded.samples, values);
+    }
+
+    #[test]
+    #[ignore = "needs the real meetup.mp4 spike recording (never committed)"]
+    fn meetup_decode_audio_file_matches_container_duration() {
+        let src = Path::new(MEETUP);
+        let decoded = decode_audio_file(src).unwrap();
+        let container = container_seconds(src);
+        println!(
+            "meetup decode_audio_file: decoded {:.3} s, container {container:.3} s, {} channels",
+            decoded.duration_seconds, decoded.channels
+        );
+        assert!(
+            (decoded.duration_seconds - container).abs() <= 0.05,
+            "decoded {:.3} s vs container {container:.3} s",
+            decoded.duration_seconds
+        );
     }
 
     #[test]

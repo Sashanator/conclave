@@ -175,8 +175,19 @@ fn check_seg_meta(m: &SegMeta) -> Result<(), String> {
             m.window_size
         ));
     }
+    // The powerset sets grow with the square of the speaker count, so the metadata must not
+    // ask for a huge mapping before any check runs.
+    if m.num_speakers > MAX_SEG_SPEAKERS {
+        return Err(format!(
+            "segmentation reports {} speakers, more than {MAX_SEG_SPEAKERS}",
+            m.num_speakers
+        ));
+    }
     Ok(())
 }
+
+/// Most speakers a segmentation model may report (pyannote 3.0 has 3).
+const MAX_SEG_SPEAKERS: usize = 8;
 
 /// Checks the input and output counts that the calls rely on: segmentation needs one input and one
 /// output, and TitaNet needs features and lengths in, and logits and an embedding out. Tuples are (inputs, outputs).
@@ -359,6 +370,17 @@ mod tests {
         let mut m = seg_meta();
         m.sample_rate = 8_000;
         assert!(check_seg_meta(&m).is_err());
+    }
+
+    #[test]
+    fn seg_meta_caps_the_speaker_count() {
+        let mut m = seg_meta();
+        m.num_speakers = MAX_SEG_SPEAKERS;
+        assert!(check_seg_meta(&m).is_ok());
+        m.num_speakers = MAX_SEG_SPEAKERS + 1;
+        assert!(check_seg_meta(&m).is_err());
+        m.num_speakers = usize::MAX;
+        assert!(check_seg_meta(&m).is_err(), "huge metadata must fail before any allocation");
     }
 
     #[test]

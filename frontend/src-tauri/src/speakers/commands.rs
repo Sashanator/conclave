@@ -9,6 +9,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 use super::{job, models, settings};
+use crate::audio::recording_preferences::get_default_recordings_folder;
 use crate::database::repositories::speakers::{NameTarget, PersonView, SpeakerView, SpeakersRepository};
 use crate::state::AppState;
 
@@ -94,7 +95,11 @@ async fn download<R: Runtime>(app: AppHandle<R>) {
         return;
     }
     let _ = app.emit("speaker-settings-changed", json!({}));
-    let result = fetch_models(&app).await;
+    // Shared: deletion waits for the download, and the download waits for no one.
+    let result = {
+        let _model_files = job::MODEL_LOCK.read().await;
+        fetch_models(&app).await
+    };
     DOWNLOADING.store(false, Ordering::SeqCst);
     let (ok, error) = match result {
         Ok(()) => (true, None),
@@ -122,12 +127,10 @@ async fn fetch_models<R: Runtime>(app: &AppHandle<R>) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn speakers_delete_models<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    if DOWNLOADING.load(Ordering::SeqCst) {
-        return Err("A model download is running".into());
-    }
-    if job::is_running() {
-        return Err("Speaker analysis is running".into());
-    }
+    // Exclusive: refused, not waited for, while a download or an analysis holds the lock.
+    let _exclusive = job::MODEL_LOCK
+        .try_write()
+        .map_err(|_| "A model download or speaker analysis is running".to_string())?;
     let dir = models::models_dir().ok_or("the speaker models folder is not set")?;
     models::delete_models(&dir)?;
     let _ = app.emit("speaker-settings-changed", json!({}));
@@ -149,7 +152,7 @@ pub async fn speakers_get_meeting(state: State<'_, AppState>, meeting_id: String
 pub async fn speakers_identify<R: Runtime>(app: AppHandle<R>, state: State<'_, AppState>, meeting_id: String) -> Result<(), String> {
     let pool = pool_of(&state);
     let active = active_now().await;
-    let base = job::recordings_base(&app).await;
+    let base = get_default_recordings_folder();
     let recording = job::recording_of(&pool, &meeting_id, Some(base)).await.map_err(|e| e.to_string())?.is_some();
     job::identify(&pool, &meeting_id, active, recording).await?;
     job::wake();

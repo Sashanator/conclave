@@ -434,6 +434,8 @@ async fn run_retranscription<R: Runtime>(
         .try_state::<AppState>()
         .ok_or_else(|| anyhow!("App state not available"))?;
 
+    // Read before the write transaction opens: the models check may hash on a blocking thread.
+    let speakers_active = tokio::task::spawn_blocking(crate::speakers::is_active).await.unwrap_or(false);
     // Wrap delete+insert+update in a transaction to prevent data loss
     let pool = app_state.db_manager.pool();
     let mut conn = pool.acquire().await.map_err(|e| anyhow!("DB error: {}", e))?;
@@ -463,7 +465,7 @@ async fn run_retranscription<R: Runtime>(
     crate::database::repositories::speakers::SpeakersRepository::transcripts_replaced_in_tx(
         &mut *tx,
         &meeting_id,
-        crate::speakers::is_active(),
+        speakers_active,
     )
     .await
     .map_err(|e| anyhow!("Failed to queue speaker analysis: {}", e))?;
@@ -502,9 +504,11 @@ async fn run_retranscription<R: Runtime>(
 
     tx.commit().await
         .map_err(|e| anyhow!("Failed to commit transaction: {}", e))?;
-    // The replaced lines queue a fresh analysis (or skip a stale one), so the worker and the UI must hear about it.
-    crate::speakers::job::wake();
-    let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
+    // The replaced lines queue a fresh analysis, so the worker wakes and the open meeting hears about it. Feature off: nothing to hear.
+    if speakers_active {
+        crate::speakers::job::wake();
+        let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
+    }
 
     info!(
         "Updated {} transcripts for meeting {} in transaction",

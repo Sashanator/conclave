@@ -646,7 +646,7 @@ async fn run_import<R: Runtime>(
         .try_state::<AppState>()
         .ok_or_else(|| anyhow!("App state not available"))?;
 
-    let speakers_active = crate::speakers::is_active();
+    let speakers_active = tokio::task::spawn_blocking(crate::speakers::is_active).await.unwrap_or(false);
     let meeting_id = create_meeting_with_transcripts(
         app_state.db_manager.pool(),
         &title,

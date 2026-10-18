@@ -16,7 +16,7 @@ use serde_json::json;
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::runtime::Handle;
-use tokio::sync::{mpsc, Notify};
+use tokio::sync::{mpsc, Notify, RwLock};
 
 use super::assign::{
     assign_lines, centroid_windows, clusters_from_turns, resolve_speakers, self_learning_windows, ClusterInfo, Line,
@@ -32,7 +32,7 @@ use super::settings;
 use super::temp_audio::{TempAudio, TempFileGuard};
 use crate::audio::decoder::decode_to_mono_16k_file;
 use crate::audio::meeting_folder::{find_audio_file, guarded_meeting_folder};
-use crate::audio::recording_preferences::{get_default_recordings_folder, load_recording_preferences};
+use crate::audio::recording_preferences::get_default_recordings_folder;
 use crate::database::repositories::speakers::{Publish, SpeakersRepository};
 use crate::state::AppState;
 
@@ -62,9 +62,23 @@ pub fn wake() {
     WAKE.notify_one();
 }
 
-/// True while a job is claimed and not yet finished.
-pub fn is_running() -> bool {
-    RUNNING.load(Ordering::SeqCst)
+/// Serialises deletion against downloads and analysis: both hold it shared for their whole run, deletion takes it exclusively.
+pub(crate) static MODEL_LOCK: RwLock<()> = RwLock::const_new(());
+
+/// Holds the running flag for one job; it clears however the job ends.
+struct RunningGuard;
+
+impl RunningGuard {
+    fn set() -> Self {
+        RUNNING.store(true, Ordering::SeqCst);
+        RunningGuard
+    }
+}
+
+impl Drop for RunningGuard {
+    fn drop(&mut self) {
+        RUNNING.store(false, Ordering::SeqCst);
+    }
 }
 
 pub fn percent_of(meeting_id: &str) -> Option<u8> {
@@ -79,10 +93,12 @@ fn forget_percent(meeting_id: &str) {
     PROGRESS.lock().unwrap_or_else(|e| e.into_inner()).remove(meeting_id);
 }
 
-/// The app's facts and effects that a run needs. The app implements it; tests use fakes.
-pub(crate) trait JobDeps: Send {
-    /// Loads the speaker models. `prefer_directml` asks for DirectML where it is available.
-    fn models(&mut self, prefer_directml: bool) -> Result<Box<dyn SpeakerModels + Send>, String>;
+/// Builds the run's models. It runs on a blocking thread, since loading the ONNX sessions is slow.
+pub(crate) type ModelFactory = Box<dyn FnOnce() -> Result<Box<dyn SpeakerModels + Send>, String> + Send>;
+
+/// What a run needs from the app. The app implements it; tests use fakes. Shared with the spawned job task, hence `Send + Sync`.
+pub(crate) trait JobDeps: Send + Sync {
+    fn model_factory(&self) -> ModelFactory;
     /// The feature is switched on and both models are present.
     fn is_active(&self) -> bool;
     fn models_ready(&self) -> bool;
@@ -94,7 +110,8 @@ pub(crate) trait JobDeps: Send {
     fn temp_dir(&self) -> Result<PathBuf, String>;
 }
 
-/// The single worker task. Jobs left `pending` or `running` by a previous run are queued again at startup.
+/// The worker: claims one job at a time and runs each in its own task. A job left pending or running by an
+/// earlier run is queued again by `recover_jobs` at startup.
 pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         loop {
@@ -104,12 +121,8 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
             };
             match SpeakersRepository::claim_next(&pool).await {
                 Ok(Some((meeting_id, token))) => {
-                    RUNNING.store(true, Ordering::SeqCst);
-                    let mut deps = AppDeps::load(&app).await;
-                    if let Err(e) = run_one(&pool, &meeting_id, &token, &mut deps).await {
-                        log::error!("speakers: could not record the end of the job for {meeting_id}: {e}");
-                    }
-                    RUNNING.store(false, Ordering::SeqCst);
+                    let deps: Arc<dyn JobDeps> = Arc::new(AppDeps::load(&app).await);
+                    run_claimed(&pool, &meeting_id, &token, deps).await;
                 }
                 Ok(None) => WAKE.notified().await,
                 Err(e) => {
@@ -121,12 +134,27 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
     });
 }
 
-/// The folder that holds the meeting folders: the saved recording folder.
-pub(crate) async fn recordings_base<R: Runtime>(app: &AppHandle<R>) -> PathBuf {
-    load_recording_preferences(app)
-        .await
-        .map(|p| p.save_folder)
-        .unwrap_or_else(|_| get_default_recordings_folder())
+/// Runs one claimed job in its own task. A panic ends only that job, as failed; the caller goes on.
+pub(crate) async fn run_claimed(pool: &SqlitePool, meeting_id: &str, token: &str, deps: Arc<dyn JobDeps>) {
+    let _running = RunningGuard::set();
+    let _model_files = MODEL_LOCK.read().await;
+    let task = tokio::spawn({
+        let (pool, meeting, token, deps) = (pool.clone(), meeting_id.to_string(), token.to_string(), deps.clone());
+        async move { run_one(&pool, &meeting, &token, deps.as_ref()).await }
+    });
+    match task.await {
+        Ok(Ok(())) => {}
+        Ok(Err(e)) => log::error!("speakers: could not record the end of the job for {meeting_id}: {e}"),
+        Err(e) => {
+            log::error!("speakers: analysis of {meeting_id} panicked: {e}");
+            forget_percent(meeting_id);
+            match record_end(pool, meeting_id, token, "failed", "internal error").await {
+                Ok(true) => deps.emit("speakers-updated", meeting_id),
+                Ok(false) => info!("speakers: job for {meeting_id} was overtaken, nothing was written"),
+                Err(e) => log::error!("speakers: could not record the failed job for {meeting_id}: {e}"),
+            }
+        }
+    }
 }
 
 /// The real app: models from the speakers folder, events on the app handle.
@@ -134,20 +162,24 @@ struct AppDeps<R: Runtime> {
     app: AppHandle<R>,
     /// Read off the async runtime before the run, so the models hash is never computed there.
     ready: bool,
-    base: PathBuf,
 }
 
 impl<R: Runtime> AppDeps<R> {
     async fn load(app: &AppHandle<R>) -> Self {
         let ready = tokio::task::spawn_blocking(models::models_ready).await.unwrap_or(false);
-        Self { app: app.clone(), ready, base: recordings_base(app).await }
+        Self { app: app.clone(), ready }
     }
 }
 
+fn load_onnx_models(dir: Option<PathBuf>) -> Result<Box<dyn SpeakerModels + Send>, String> {
+    let dir = dir.ok_or("the speaker models folder is not set")?;
+    Ok(Box::new(OrtSpeakerModels::load(&dir, true)?))
+}
+
 impl<R: Runtime> JobDeps for AppDeps<R> {
-    fn models(&mut self, prefer_directml: bool) -> Result<Box<dyn SpeakerModels + Send>, String> {
-        let dir = models::models_dir().ok_or("the speaker models folder is not set")?;
-        Ok(Box::new(OrtSpeakerModels::load(&dir, prefer_directml)?))
+    fn model_factory(&self) -> ModelFactory {
+        let dir = models::models_dir();
+        Box::new(move || load_onnx_models(dir))
     }
     fn is_active(&self) -> bool {
         settings::is_enabled() && self.ready
@@ -163,7 +195,7 @@ impl<R: Runtime> JobDeps for AppDeps<R> {
         let _ = self.app.emit("speakers-progress", json!({ "meeting_id": meeting_id, "percent": percent }));
     }
     fn recordings_base(&self) -> Option<PathBuf> {
-        Some(self.base.clone())
+        Some(get_default_recordings_folder())
     }
     fn temp_dir(&self) -> Result<PathBuf, String> {
         let data = self.app.path().app_data_dir().map_err(|e| e.to_string())?;
@@ -191,7 +223,7 @@ impl From<sqlx::Error> for Stop {
 }
 
 /// Runs one claimed job to its end state and records that state. Returns Err only when the end state cannot be written.
-pub(crate) async fn run_one(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &mut dyn JobDeps) -> Result<(), String> {
+pub(crate) async fn run_one(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn JobDeps) -> Result<(), String> {
     let outcome = analyse(pool, meeting_id, token, deps).await;
     forget_percent(meeting_id);
     let (status, reason) = match outcome {
@@ -212,10 +244,7 @@ pub(crate) async fn run_one(pool: &SqlitePool, meeting_id: &str, token: &str, de
     } else {
         info!("speakers: analysis of {meeting_id} skipped: {reason}");
     }
-    let written = SpeakersRepository::finish_without_publish(pool, meeting_id, token, status, Some(&reason), None)
-        .await
-        .map_err(|e| e.to_string())?;
-    if written {
+    if record_end(pool, meeting_id, token, status, &reason).await? {
         deps.emit("speakers-updated", meeting_id);
     } else {
         info!("speakers: job for {meeting_id} was overtaken, nothing was written");
@@ -223,12 +252,26 @@ pub(crate) async fn run_one(pool: &SqlitePool, meeting_id: &str, token: &str, de
     Ok(())
 }
 
+/// Writes a job's end state. A refused write is retried once after a second. False when the run was overtaken.
+async fn record_end(pool: &SqlitePool, meeting_id: &str, token: &str, status: &str, reason: &str) -> Result<bool, String> {
+    match SpeakersRepository::finish_without_publish(pool, meeting_id, token, status, Some(reason), None).await {
+        Ok(written) => Ok(written),
+        Err(e) => {
+            warn!("speakers: could not record {status} for {meeting_id}, retrying in 1 s: {e}");
+            tokio::time::sleep(Duration::from_secs(1)).await;
+            SpeakersRepository::finish_without_publish(pool, meeting_id, token, status, Some(reason), None)
+                .await
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
 fn truncate(s: &str) -> String {
     s.chars().take(REASON_MAX_CHARS).collect()
 }
 
 /// The stages of one run. Ok(true) when the result was published, Ok(false) when the run was overtaken.
-async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &mut dyn JobDeps) -> Result<bool, Stop> {
+async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn JobDeps) -> Result<bool, Stop> {
     let started = Instant::now();
     if !deps.is_active() {
         return Err(Stop::Skip(if deps.models_ready() { "feature_off" } else { "models_missing" }));
@@ -237,6 +280,11 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &mut dy
         .await?
         .ok_or(Stop::Skip("no_recording"))?;
     let folder = audio_path.parent().map(Path::to_path_buf).unwrap_or_default();
+
+    // The models load on a blocking thread, before anything is decoded.
+    let factory = deps.model_factory();
+    let loaded = run_blocking(deps, meeting_id, 0, 0, move |_| factory()).await??;
+    let mut models: Box<dyn SpeakerModels + Send> = Box::new(Failover::new(loaded));
 
     // Decode. The guard deletes the temp file on every failure below; the audio is opened only after success.
     let temp_dir = deps.temp_dir()?;
@@ -266,7 +314,6 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &mut dy
         return Ok(false);
     }
 
-    let mut models: Box<dyn SpeakerModels + Send> = Box::new(Failover::new(deps.models(true)?));
 
     // Diarize, in windows of the decoded audio. The reader fails once the run is overtaken.
     let step = window_step_secs(decoded_secs);
@@ -346,7 +393,7 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &mut dy
 }
 
 /// Runs `work` on the blocking pool and forwards its progress (fractions 0..=1) as percent in `from..=to`.
-async fn run_blocking<T, F>(deps: &mut dyn JobDeps, meeting_id: &str, from: u8, to: u8, work: F) -> Result<T, Stop>
+async fn run_blocking<T, F>(deps: &dyn JobDeps, meeting_id: &str, from: u8, to: u8, work: F) -> Result<T, Stop>
 where
     T: Send + 'static,
     F: FnOnce(&mut dyn FnMut(f32)) -> T + Send + 'static,
@@ -627,6 +674,7 @@ impl SpeakerModels for Failover {
 mod tests {
     use super::*;
     use crate::database::repositories::test_pool;
+    use std::sync::atomic::Ordering;
     use std::sync::Mutex as StdMutex;
 
     const CHUNK_FRAMES: usize = 589;
@@ -670,6 +718,8 @@ mod tests {
         embed_calls: usize,
         on_directml: bool,
         fell_back: bool,
+        /// Makes `backend_label` panic: it runs on the async side, after diarization.
+        panic_label: bool,
     }
 
     impl FakeModels {
@@ -685,6 +735,7 @@ mod tests {
                 embed_calls: 0,
                 on_directml: false,
                 fell_back: false,
+                panic_label: false,
             }
         }
     }
@@ -704,6 +755,9 @@ mod tests {
             (self.embed)(i, samples)
         }
         fn backend_label(&self) -> &'static str {
+            if self.panic_label {
+                panic!("test: backend_label panics");
+            }
             match (self.on_directml, self.fell_back) {
                 (false, _) => "cpu",
                 (true, false) => "directml",
@@ -725,7 +779,7 @@ mod tests {
         ready: bool,
         base: Option<PathBuf>,
         temp: PathBuf,
-        models: Option<Result<Box<dyn SpeakerModels + Send>, String>>,
+        models: StdMutex<Option<Result<Box<dyn SpeakerModels + Send>, String>>>,
         events: StdMutex<Vec<String>>,
     }
 
@@ -736,10 +790,10 @@ mod tests {
                 ready: true,
                 base: Some(base.to_path_buf()),
                 temp: temp.to_path_buf(),
-                models: Some(match models {
+                models: StdMutex::new(Some(match models {
                     Some(m) => Ok(Box::new(m) as Box<dyn SpeakerModels + Send>),
                     None => Err("no models in this test".into()),
-                }),
+                })),
                 events: StdMutex::new(Vec::new()),
             }
         }
@@ -749,8 +803,9 @@ mod tests {
     }
 
     impl JobDeps for FakeDeps {
-        fn models(&mut self, _prefer_directml: bool) -> Result<Box<dyn SpeakerModels + Send>, String> {
-            self.models.take().unwrap_or_else(|| Err("models already taken".into()))
+        fn model_factory(&self) -> ModelFactory {
+            let taken = self.models.lock().unwrap().take();
+            Box::new(move || taken.unwrap_or_else(|| Err("models already taken".into())))
         }
         fn is_active(&self) -> bool {
             self.active
@@ -877,7 +932,7 @@ mod tests {
         let pool = pool_with_meeting(&s.folder).await;
         let token = claim(&pool).await;
         let mut deps = FakeDeps::new(&s.base, &s.temp, None);
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
         assert_eq!(status(&pool).await.0, "skipped");
         assert_eq!(status(&pool).await.1.as_deref(), Some("no_recording"));
         assert!(deps.events().contains(&"speakers-updated m1".to_string()));
@@ -891,7 +946,7 @@ mod tests {
         let token = claim(&pool).await;
         let mut deps = FakeDeps::new(&s.base, &s.temp, None);
         deps.active = false;
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
         assert_eq!(status(&pool).await.1.as_deref(), Some("feature_off"));
         assert!(deps.events().contains(&"speakers-updated m1".to_string()));
     }
@@ -905,7 +960,7 @@ mod tests {
         let mut deps = FakeDeps::new(&s.base, &s.temp, None);
         deps.active = false;
         deps.ready = false;
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
         assert_eq!(status(&pool).await.1.as_deref(), Some("models_missing"));
         assert!(deps.events().contains(&"speakers-updated m1".to_string()));
     }
@@ -917,7 +972,7 @@ mod tests {
         let pool = pool_with_meeting(&s.folder).await;
         let token = claim(&pool).await;
         let mut deps = FakeDeps::new(&s.base, &s.temp, None); // models fail to load
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
         let (st, reason, _) = status(&pool).await;
         assert_eq!(st, "failed");
         assert!(reason.unwrap().contains("no models"));
@@ -935,7 +990,7 @@ mod tests {
         let token = claim(&pool).await;
         let models = FakeModels::new(two_speaker_logits, two_voices);
         let mut deps = FakeDeps::new(&s.base, &s.temp, Some(models));
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
 
         assert_eq!(status(&pool).await, ("done".into(), None, Some("cpu".into())));
         let speakers = SpeakersRepository::meeting_speakers(&pool, "m1").await.unwrap();
@@ -948,6 +1003,35 @@ mod tests {
         assert_eq!(labels, vec![Some(0), Some(1)]);
         assert!(deps.events().contains(&"speakers-updated m1".to_string()));
         assert!(std::fs::read_dir(&s.temp).unwrap().next().is_none(), "temp audio is deleted");
+    }
+
+    /// A panic on the async side ends that job as failed; the worker's next job still runs, and the running flag clears.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn job_panic_fails_the_job_and_the_worker_goes_on() {
+        let s = setup();
+        write_wav(&s.folder, 30.0, two_speakers_audio());
+        std::fs::write(s.folder.join(LEVELS_FILE), levels::encode(&two_speaker_levels())).unwrap();
+        let pool = pool_with_meeting(&s.folder).await;
+
+        let mut panicking = FakeModels::new(two_speaker_logits, two_voices);
+        panicking.panic_label = true;
+        let deps = Arc::new(FakeDeps::new(&s.base, &s.temp, Some(panicking)));
+        let shared: Arc<dyn JobDeps> = deps.clone();
+        let token = claim(&pool).await;
+        run_claimed(&pool, "m1", &token, shared).await;
+        let (st, reason, _) = status(&pool).await;
+        assert_eq!((st.as_str(), reason.as_deref()), ("failed", Some("internal error")));
+        assert!(deps.events().contains(&"speakers-updated m1".to_string()));
+        assert!(!RUNNING.load(Ordering::SeqCst), "the running flag clears after a panic");
+
+        // The next job runs to the end on the same pool and worker path.
+        SpeakersRepository::enqueue(&pool, "m1").await.unwrap();
+        let token = claim(&pool).await;
+        let good = Arc::new(FakeDeps::new(&s.base, &s.temp, Some(FakeModels::new(two_speaker_logits, two_voices))));
+        let shared: Arc<dyn JobDeps> = good.clone();
+        run_claimed(&pool, "m1", &token, shared).await;
+        assert_eq!(status(&pool).await.0, "done");
+        assert!(!RUNNING.load(Ordering::SeqCst));
     }
 
     #[tokio::test]
@@ -971,7 +1055,7 @@ mod tests {
             two_voices,
         );
         let mut deps = FakeDeps::new(&s.base, &s.temp, Some(models));
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
 
         assert_eq!(status(&pool).await.0, "pending");
         assert_eq!(speaker_count(&pool).await, 0);
@@ -999,7 +1083,7 @@ mod tests {
         });
         models.on_directml = true;
         let mut deps = FakeDeps::new(&s.base, &s.temp, Some(models));
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
 
         assert_eq!(status(&pool).await, ("done".into(), None, Some("mixed".into())));
         assert_eq!(speaker_count(&pool).await, 2);
@@ -1014,7 +1098,7 @@ mod tests {
         // The CPU model fails on the first window: nothing to fall back from, so the job fails.
         let models = FakeModels::new(|_| Err("model broken".into()), two_voices);
         let mut deps = FakeDeps::new(&s.base, &s.temp, Some(models));
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
 
         assert_eq!(status(&pool).await.0, "failed");
         assert!(std::fs::read_dir(&s.temp).unwrap().next().is_none(), "temp audio is deleted");
@@ -1028,7 +1112,7 @@ mod tests {
         let token = claim(&pool).await;
         let models = FakeModels::new(|_| Ok(window(0.0, |_| 0)), two_voices);
         let mut deps = FakeDeps::new(&s.base, &s.temp, Some(models));
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
 
         assert_eq!(status(&pool).await, ("done".into(), None, Some("cpu".into())));
         assert_eq!(speaker_count(&pool).await, 0);
@@ -1056,7 +1140,7 @@ mod tests {
         let pool = pool_with_meeting(&s.folder).await;
         let token = claim(&pool).await;
         let mut deps = FakeDeps::new(&s.base, &s.temp, None);
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap(); // skipped/failed, not running any more
+        run_one(&pool, "m1", &token, &deps).await.unwrap(); // skipped/failed, not running any more
         identify(&pool, "m1", true, true).await.unwrap();
         assert_eq!(status(&pool).await.0, "pending");
     }
@@ -1116,8 +1200,8 @@ mod tests {
         let token = claim(&pool).await;
 
         let mut deps = FakeDeps::new(&s.base, &s.temp, None);
-        deps.models = Some(OrtSpeakerModels::load(Path::new(&env("SPEAKER_MODELS_DIR")), false).map(|m| Box::new(m) as Box<dyn SpeakerModels + Send>));
-        run_one(&pool, "m1", &token, &mut deps).await.unwrap();
+        *deps.models.lock().unwrap() = Some(OrtSpeakerModels::load(Path::new(&env("SPEAKER_MODELS_DIR")), false).map(|m| Box::new(m) as Box<dyn SpeakerModels + Send>));
+        run_one(&pool, "m1", &token, &deps).await.unwrap();
 
         let job = SpeakersRepository::get_job(&pool, "m1").await.unwrap().unwrap();
         assert_eq!(job.status, "done", "{:?}", job.reason);

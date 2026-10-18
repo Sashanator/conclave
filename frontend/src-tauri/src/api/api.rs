@@ -1011,7 +1011,7 @@ pub async fn api_save_transcript<R: Runtime>(
     let pool = state.db_manager.pool();
 
     // Speaker analysis is queued in the save's transaction only while the feature is active.
-    let speakers_active = crate::speakers::is_active();
+    let speakers_active = tokio::task::spawn_blocking(crate::speakers::is_active).await.unwrap_or(false);
     // Now, call the repository with the correctly typed data.
     match TranscriptsRepository::save_transcript(
         pool,

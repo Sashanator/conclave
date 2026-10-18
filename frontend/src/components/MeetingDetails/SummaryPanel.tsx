@@ -59,7 +59,6 @@ interface SummaryPanelProps {
   speakerWaiting?: boolean;
   onSummarizeNow?: () => void;
   namesChanged?: boolean;
-  onClearNamesChanged?: () => void;
 }
 
 export function SummaryPanel({
@@ -95,7 +94,6 @@ export function SummaryPanel({
   speakerWaiting = false,
   onSummarizeNow,
   namesChanged = false,
-  onClearNamesChanged,
 }: SummaryPanelProps) {
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
@@ -328,9 +326,7 @@ export function SummaryPanel({
             variant="outline"
             size="sm"
             onClick={() => {
-              if (!shouldRegenerate(isSummaryDirty)) return;
-              onClearNamesChanged?.();
-              void onRegenerateSummary();
+              if (shouldRegenerate(isSummaryDirty)) void onRegenerateSummary();
             }}
           >
             Regenerate

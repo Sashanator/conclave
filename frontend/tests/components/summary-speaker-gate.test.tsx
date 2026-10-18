@@ -76,6 +76,7 @@ let lookupDelayMs = 0;
 let transcriptRows: Partial<Transcript>[] = [];
 const invoke = mock(async (command: string, _args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'speakers_get_meeting') { await sleep(lookupDelayMs); return jobReply; }
+  if (command === 'speakers_name') return 'p1';
   if (command === 'api_get_meeting_transcripts') return { transcripts: transcriptRows, total_count: transcriptRows.length, has_more: false };
   if (command === 'api_process_transcript') return { process_id: 'attempt-a' };
   if (command === 'api_cancel_summary') return { cancelled: true };
@@ -115,17 +116,27 @@ mock.module('../../src/lib/summary-language-preferences', () => ({
 
 // Summary panel stand-ins: the panel's own children are not under test here
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
-mock.module('../../src/components/AISummary/BlockNoteSummaryView', () => ({ BlockNoteSummaryView: forwardRef(() => null) }));
-mock.module('../../src/components/EmptyStateSummary', () => ({ EmptyStateSummary: () => null }));
-mock.module('../../src/components/MeetingDetails/SummaryGeneratorButtonGroup', () => ({ SummaryGeneratorButtonGroup: () => null }));
+// The stand-ins keep their props, so a test can press each summary start path the way the user would
+let generatorProps: { onGenerateSummary: (prompt: string) => Promise<void>; onTemplateSelect: (id: string, name: string) => void } | undefined;
+let blockNoteProps: { onRegenerateSummary?: () => void } | undefined;
+let emptyStateProps: { onGenerate: () => void } | undefined;
+mock.module('../../src/components/AISummary/BlockNoteSummaryView', () => ({
+  BlockNoteSummaryView: forwardRef((props: { onRegenerateSummary?: () => void }, _ref) => { blockNoteProps = props; return null; }),
+}));
+mock.module('../../src/components/EmptyStateSummary', () => ({
+  EmptyStateSummary: (props: { onGenerate: () => void }) => { emptyStateProps = props; return null; },
+}));
+mock.module('../../src/components/MeetingDetails/SummaryGeneratorButtonGroup', () => ({
+  SummaryGeneratorButtonGroup: (props: typeof generatorProps & object) => { generatorProps = props as typeof generatorProps; return null; },
+}));
 mock.module('../../src/components/MeetingDetails/SummaryUpdaterButtonGroup', () => ({ SummaryUpdaterButtonGroup: () => null }));
 mock.module('../../src/components/ui/popover', () => ({ Popover: passThrough, PopoverTrigger: passThrough, PopoverContent: passThrough }));
 mock.module('../../src/components/LanguagePickerPopover', () => ({ LanguagePickerPopover: () => null }));
 mock.module('../../src/hooks/useRecentLanguages', () => ({ useRecentLanguages: () => ({ addRecent: () => {} }) }));
 
 // The transcript panel is stubbed; the page's speaker state reaches the test through its props
-let transcriptProps: { speakers: { name: (idx: number, target: { personId: string }) => Promise<void> } } = {
-  speakers: { name: async () => {} },
+let transcriptProps: { speakers: { name: (idx: number, target: { personId: string }) => Promise<string | null>; namesChanged: boolean } } = {
+  speakers: { name: async () => null, namesChanged: false },
 };
 mock.module('../../src/components/MeetingDetails/TranscriptPanel', () => ({
   TranscriptPanel: (props: typeof transcriptProps) => { transcriptProps = props; return null; },
@@ -350,6 +361,92 @@ describe('summary waits for speaker analysis', () => {
     await act(async () => { heldFiveSecondTimers[0](); });
     await flush();
     expect(processCalls().length).toBe(1);
+  });
+});
+
+describe('gate fixes', () => {
+  test('a settings answer that arrives late as active still names the lines', async () => {
+    autoGenerate = false;
+    aiSummary = { markdown: 'Existing summary' };
+    transcriptRows = [line({ speaker_idx: 1 })];
+    settings = { speakerIdActive: false, speakerSettingsLoaded: false };
+    await show();
+    await act(async () => { heldFiveSecondTimers[0](); });
+    settings = { speakerIdActive: true, speakerSettingsLoaded: true };
+    jobReply = { job: job('done'), speakers: [SERGEY] };
+    await show();
+    await settle();
+    await act(async () => { await transcriptProps.speakers.name(1, { personId: 'p1' }); });
+    await click('Regenerate');
+    await flush();
+    expect(processCalls().at(-1)!.text).toBe('[00:05] Сергей: Hello');
+  });
+
+  test('Summarize now starts the summary while the first lookup is still in flight', async () => {
+    settings = { speakerIdActive: true, speakerSettingsLoaded: true };
+    lookupDelayMs = 200;
+    jobReply = { job: job('pending'), speakers: [] };
+    await show();
+    await flush();
+    expect(text()).toContain('Waiting for speaker analysis…');
+    await click('Summarize now');
+    await flush();
+    expect(processCalls().length).toBe(1);
+  });
+
+  test('Summarize now starts the summary while the settings lookup is still pending', async () => {
+    settings = { speakerIdActive: false, speakerSettingsLoaded: false };
+    await show();
+    await flush();
+    expect(text()).toContain('Waiting for speaker analysis…');
+    await click('Summarize now');
+    await flush();
+    expect(processCalls().length).toBe(1);
+  });
+
+  test('a failed re-identify keeps the published names in the summary', async () => {
+    settings = { speakerIdActive: true, speakerSettingsLoaded: true };
+    transcriptRows = [line({ speaker_idx: 1 })];
+    jobReply = { job: job('failed'), speakers: [SERGEY] };
+    await show();
+    await settle();
+    await flush();
+    expect(processCalls()[0].text).toBe('[00:05] Сергей: Hello');
+  });
+
+  test('an auto-summary clears the names-changed state', async () => {
+    settings = { speakerIdActive: true, speakerSettingsLoaded: true };
+    jobReply = { job: job('pending'), speakers: [] };
+    await show();
+    await settle();
+    await act(async () => { await transcriptProps.speakers.name(1, { personId: 'p1' }); });
+    expect(transcriptProps.speakers.namesChanged).toBe(true);
+    jobReply = { job: job('done'), speakers: [SERGEY] };
+    await emit('speakers-updated', { meeting_id: 'meeting-a' });
+    await settle();
+    await flush();
+    expect(processCalls().length).toBe(1);
+    expect(transcriptProps.speakers.namesChanged).toBe(false);
+  });
+
+  test.each([
+    ['the header Generate button', true, () => generatorProps!.onGenerateSummary('')],
+    ['a template pick that regenerates', true, () => generatorProps!.onTemplateSelect('daily_standup', 'Daily standup')],
+    ['Regenerate in the summary view', true, () => blockNoteProps!.onRegenerateSummary!()],
+    ['the empty-state Generate button', false, () => emptyStateProps!.onGenerate()],
+  ])('%s clears the names-changed state', async (_label, hasSummary, start) => {
+    aiSummary = hasSummary ? { markdown: 'Existing summary' } : null;
+    settings = { speakerIdActive: true, speakerSettingsLoaded: true };
+    jobReply = { job: job('done'), speakers: [SERGEY] };
+    autoGenerate = false;
+    await show();
+    await settle();
+    await act(async () => { await transcriptProps.speakers.name(1, { personId: 'p1' }); });
+    expect(transcriptProps.speakers.namesChanged).toBe(true);
+    await act(async () => { await start(); });
+    await flush();
+    expect(processCalls().length).toBe(1);
+    expect(transcriptProps.speakers.namesChanged).toBe(false);
   });
 });
 

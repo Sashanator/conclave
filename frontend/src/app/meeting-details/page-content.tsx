@@ -107,19 +107,30 @@ export default function PageContent({
   const templates = useTemplates();
   // One instance for the page: the transcript bar renames through it and the summary panel shows its names-changed hint
   const speakers = useMeetingSpeakers(meeting.id, speakerIdActive, onRefetchTranscripts, onSetTranscriptSpeaker);
-  // Settings past the timeout count as inactive: no names and no wait
-  const speakersOn = speakerIdActive && !settingsTimedOut;
+  // The timeout only opens the gate while the settings are unanswered; names follow the settings as they arrive
+  const speakersOn = speakerIdActive;
   const summarizeNow = summarizeNowId === meeting.id;
-  const speakerGateOpen = (speakerSettingsLoaded || settingsTimedOut)
-    && (!speakersOn || (speakers.loaded && (!speakers.busy || summarizeNow)));
+  const speakerGateOpen = summarizeNow
+    || (speakerSettingsLoaded ? !speakersOn || (speakers.loaded && !speakers.busy) : settingsTimedOut);
   // Undefined while off, so the summary text and Copy are exactly as before
   const speakerName = useMemo(() => {
     if (!speakersOn) return undefined;
-    const analysed = speakers.data?.job?.status === 'done';
     const list = speakers.data?.speakers ?? [];
+    // Published speakers stay in place after a failed re-identify, so they name the lines too
+    const analysed = list.length > 0;
     // Before analysis a line without a live label stays unnamed, as in the transcript
     return (t: Transcript) => (t.speaker_idx == null && !analysed ? undefined : lineSpeakerName(t.speaker_idx, list, analysed));
   }, [speakersOn, speakers.data]);
+
+  // Any new summary takes the current names, so the names-changed hint no longer applies
+  const generateSummary = (customPrompt: string) => {
+    speakers.clearNamesChanged();
+    return summaryGeneration.handleGenerateSummary(customPrompt);
+  };
+  const regenerateSummary = (templateId?: string) => {
+    speakers.clearNamesChanged();
+    return summaryGeneration.handleRegenerateSummary(templateId);
+  };
 
   // Callback to register the modal open function
   const handleRegisterModalOpen = (openFn: () => void) => {
@@ -224,6 +235,7 @@ export default function PageContent({
     autoGenerationStartedMeetingIdRef.current = meeting.id;
     console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
     onAutoGenerateComplete?.();
+    speakers.clearNamesChanged();
     void summaryGeneration.handleGenerateSummary('');
   }, [
     shouldAutoGenerate,
@@ -310,14 +322,14 @@ export default function PageContent({
               modelConfig={modelConfig}
               setModelConfig={setModelConfig}
               onSaveModelConfig={handleSaveModelConfig}
-              onGenerateSummary={summaryGeneration.handleGenerateSummary}
+              onGenerateSummary={generateSummary}
               onStopGeneration={summaryGeneration.handleStopGeneration}
               customPrompt={customPrompt}
               onSaveSummary={meetingData.handleSaveSummary}
               onSummaryChange={meetingData.handleSummaryChange}
               onDirtyChange={meetingData.setIsSummaryDirty}
               summaryError={summaryGeneration.summaryError}
-              onRegenerateSummary={summaryGeneration.handleRegenerateSummary}
+              onRegenerateSummary={regenerateSummary}
               getSummaryStatusMessage={summaryGeneration.getSummaryStatusMessage}
               availableTemplates={templates.availableTemplates}
               selectedTemplate={templates.selectedTemplate}
@@ -327,7 +339,7 @@ export default function PageContent({
                 pickTemplateIfAllowed(
                   meetingData.isSummaryDirty,
                   () => templates.handleTemplateSelection(id, name),
-                  () => summaryGeneration.handleRegenerateSummary(id),
+                  () => regenerateSummary(id),
                 )
               }
               isModelConfigLoading={isModelConfigLoading}
@@ -335,7 +347,6 @@ export default function PageContent({
               speakerWaiting={speakerWaiting}
               onSummarizeNow={() => setSummarizeNowId(meeting.id)}
               namesChanged={speakers.namesChanged}
-              onClearNamesChanged={speakers.clearNamesChanged}
             />
           }
         />

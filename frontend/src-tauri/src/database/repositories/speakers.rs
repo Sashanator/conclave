@@ -5,7 +5,7 @@
 use crate::speakers::assign::{KnownPerson, LineOut, ResolvedSpeaker};
 use chrono::{SecondsFormat, Utc};
 use sqlx::{Error as SqlxError, SqliteConnection, SqlitePool};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use tracing::warn;
 use uuid::Uuid;
 
@@ -186,7 +186,15 @@ impl SpeakersRepository {
             return Ok(false);
         }
 
-        // Prints learned from this meeting go; known-voice matching restores names from the others.
+        // People whose voice this meeting taught before a re-run. They keep learning from it under the new index.
+        let learned: HashSet<String> = sqlx::query_as::<_, (String,)>("SELECT DISTINCT person_id FROM voiceprints WHERE source_meeting_id = ?")
+            .bind(meeting_id)
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|r| r.0)
+            .collect();
+        // Prints learned from this meeting go; the kept ones below are written back under the new indexes.
         sqlx::query("DELETE FROM voiceprints WHERE source_meeting_id = ?")
             .bind(meeting_id)
             .execute(&mut *tx)
@@ -205,11 +213,37 @@ impl SpeakersRepository {
             .bind(meeting_id)
             .bind(s.idx)
             .bind(s.person_id.as_deref())
-            .bind(centroid)
+            .bind(centroid.as_deref())
             .bind(s.seconds)
             .execute(&mut *tx)
             .await?;
+
+            // A missing person inserts nothing (the subquery finds no row), like the meeting_speakers insert above
+            if let (Some(person), Some(vector)) = (s.person_id.as_deref(), centroid.as_deref()) {
+                if person != SELF_ID && learned.contains(person) && s.seconds >= LEARN_MIN_SECONDS {
+                    sqlx::query(
+                        "INSERT INTO voiceprints (id, person_id, source_meeting_id, source_idx, vector, seconds, created_at)
+                         SELECT ?, id, ?, ?, ?, ?, ? FROM people WHERE id = ?",
+                    )
+                    .bind(format!("voiceprint-{}", Uuid::new_v4()))
+                    .bind(meeting_id)
+                    .bind(s.idx)
+                    .bind(vector)
+                    .bind(s.seconds)
+                    .bind(now())
+                    .bind(person)
+                    .execute(&mut *tx)
+                    .await?;
+                    prune(&mut *tx, person).await?;
+                }
+            }
         }
+
+        // Lines left out of this publish keep no label: a label from the previous run may name a different speaker now.
+        sqlx::query("UPDATE transcripts SET speaker_idx = NULL WHERE meeting_id = ?")
+            .bind(meeting_id)
+            .execute(&mut *tx)
+            .await?;
 
         for l in &p.lines {
             let sentences = l.sentences.as_ref().and_then(|s| serde_json::to_string(s).ok());
@@ -1127,6 +1161,62 @@ mod tests {
             .unwrap();
         let (self_prints, _) = SpeakersRepository::known_people(&pool).await.unwrap();
         assert!(self_prints.is_empty());
+    }
+
+    #[tokio::test]
+    async fn rerun_keeps_learned_voice_under_new_index() {
+        let pool = test_pool().await;
+        let m = meeting(&pool, true).await;
+        assert!(run_job(&pool, &m, publish_of(vec![speaker(1, None, 25.0)], vec![], None)).await);
+        let alice = SpeakersRepository::name_speaker(&pool, &m, 1, NameTarget::New("Alice".into())).await.unwrap();
+        // Re-identify: Alice matches the same voice as idx 2
+        assert!(run_job(&pool, &m, publish_of(vec![speaker(2, Some(&alice), 25.0)], vec![], None)).await);
+        assert_eq!(print_owners(&pool, &m, 2).await, vec![alice.clone()]);
+        assert!(print_owners(&pool, &m, 1).await.is_empty());
+        assert_eq!(count(&pool, "SELECT COUNT(*) FROM voiceprints WHERE source_meeting_id = ?", &m).await, 1);
+    }
+
+    #[tokio::test]
+    async fn rerun_without_match_drops_the_meetings_print() {
+        let pool = test_pool().await;
+        let m = meeting(&pool, true).await;
+        assert!(run_job(&pool, &m, publish_of(vec![speaker(1, None, 25.0)], vec![], None)).await);
+        let alice = SpeakersRepository::name_speaker(&pool, &m, 1, NameTarget::New("Alice".into())).await.unwrap();
+        assert!(run_job(&pool, &m, publish_of(vec![speaker(1, None, 25.0)], vec![], None)).await);
+        assert!(print_owners(&pool, &m, 1).await.is_empty());
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM voiceprints WHERE person_id = ? AND source_meeting_id = ?")
+            .bind(&alice)
+            .bind(&m)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn auto_matched_speaker_does_not_learn_into_a_new_meeting() {
+        let pool = test_pool().await;
+        let old = meeting(&pool, true).await;
+        assert!(run_job(&pool, &old, publish_of(vec![speaker(1, None, 25.0)], vec![], None)).await);
+        let alice = SpeakersRepository::name_speaker(&pool, &old, 1, NameTarget::New("Alice".into())).await.unwrap();
+        // A different meeting where Alice is only matched by voice, never named
+        let m = meeting(&pool, true).await;
+        assert!(run_job(&pool, &m, publish_of(vec![speaker(1, Some(&alice), 25.0)], vec![], None)).await);
+        assert!(print_owners(&pool, &m, 1).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn publish_clears_labels_of_lines_left_out() {
+        let pool = test_pool().await;
+        let m = meeting(&pool, true).await;
+        let kept = line(&pool, &m, 0.0, 2.0).await;
+        let untimed = line(&pool, &m, 2.0, 4.0).await;
+        sqlx::query("UPDATE transcripts SET speaker_idx = 1 WHERE id = ?").bind(&untimed).execute(&pool).await.unwrap();
+        let lines = vec![LineOut { id: Some(kept.clone()), source_id: kept.clone(), start: 0.0, end: 2.0, text: "Hi.".into(), sentences: None, speaker_idx: Some(2) }];
+        assert!(run_job(&pool, &m, publish_of(vec![speaker(1, None, 25.0), speaker(2, None, 25.0)], lines, None)).await);
+        let label = |id: &str| sqlx::query_as::<_, (Option<i64>,)>("SELECT speaker_idx FROM transcripts WHERE id = ?").bind(id.to_string()).fetch_one(&pool);
+        assert_eq!(label(&kept).await.unwrap().0, Some(2));
+        assert_eq!(label(&untimed).await.unwrap().0, None);
     }
 
     #[tokio::test]

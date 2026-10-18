@@ -1266,3 +1266,119 @@ mod tests {
         assert_eq!(f.backend_label(), "mixed");
     }
 }
+
+/// Runs the real analysis on Windows: the staged ONNX Runtime with DirectML, the speaker models, a 30 s job, and
+/// Parakeet v2 on the same runtime. CI `windows-app` runs it with `SPEAKER_E2E=1` and `PARAKEET_TEST_DIR`. It downloads
+/// about 750 MB and fails, rather than skips, when those are missing.
+#[cfg(all(test, windows))]
+struct E2eDeps {
+    models: PathBuf,
+    base: PathBuf,
+    temp: PathBuf,
+}
+
+#[cfg(all(test, windows))]
+impl JobDeps for E2eDeps {
+    fn model_factory(&self) -> ModelFactory {
+        let dir = self.models.clone();
+        Box::new(move || load_onnx_models(Some(dir)))
+    }
+    fn is_active(&self) -> bool {
+        true
+    }
+    fn models_ready(&self) -> bool {
+        true
+    }
+    fn emit(&self, _event: &str, _meeting_id: &str) {}
+    fn progress(&self, _meeting_id: &str, _percent: u8) {}
+    fn recordings_base(&self) -> Option<PathBuf> {
+        Some(self.base.clone())
+    }
+    fn temp_dir(&self) -> Result<PathBuf, String> {
+        Ok(self.temp.clone())
+    }
+}
+
+#[cfg(all(test, windows))]
+#[tokio::test(flavor = "multi_thread")]
+#[ignore]
+async fn windows_e2e() {
+    use crate::database::repositories::test_pool;
+    use crate::parakeet_engine::{ModelStatus, ParakeetEngine, ParakeetModel};
+
+    assert_eq!(std::env::var("SPEAKER_E2E").as_deref(), Ok("1"), "set SPEAKER_E2E=1");
+    // The first ORT call in this process: DirectML is preloaded, then the staged runtime is initialised from its path.
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("binaries").join("onnxruntime");
+    let runtime = root.join("onnxruntime.dll");
+    crate::preload_directml(&root.join("DirectML.dll")).expect("preload DirectML");
+    ort::init_from(runtime.to_string_lossy().into_owned()).with_telemetry(false).commit().expect("initialise ONNX Runtime");
+    let loaded = crate::loaded_module_path("onnxruntime.dll").expect("onnxruntime.dll is loaded");
+    assert_eq!(
+        std::fs::canonicalize(&loaded).unwrap(),
+        std::fs::canonicalize(&runtime).unwrap(),
+        "the process loaded {loaded}, not the staged runtime"
+    );
+
+    let dir = tempfile::tempdir().unwrap();
+    let models_dir = dir.path().join("models");
+    models::download_models(&models::download_client(), &models_dir, |_, _| {}).await.expect("download the speaker models");
+    // The label is what the sessions registered on, read back from the models, and the job must record the same.
+    let label = {
+        let loaded = OrtSpeakerModels::load(&models_dir, true).expect("load the speaker models");
+        let label = match (loaded.seg_on_directml(), loaded.emb_on_directml()) {
+            (true, true) => "directml",
+            (false, false) => "cpu",
+            (seg, emb) => panic!("sessions on different backends: segmentation directml={seg}, embedding directml={emb}"),
+        };
+        assert_eq!(loaded.backend_label(), label);
+        label
+    };
+
+    let base = dir.path().join("recordings");
+    let folder = base.join("meeting-1");
+    std::fs::create_dir_all(&folder).unwrap();
+    let spec = hound::WavSpec { channels: 1, sample_rate: 16_000, bits_per_sample: 16, sample_format: hound::SampleFormat::Int };
+    let mut wav = hound::WavWriter::create(folder.join("audio.wav"), spec).unwrap();
+    let mut seed = 0x2545_F491_4F6C_DD1Du64; // xorshift64: deterministic white noise
+    for _ in 0..30 * 16_000 {
+        seed ^= seed << 13;
+        seed ^= seed >> 7;
+        seed ^= seed << 17;
+        wav.write_sample((seed as i16) / 4).unwrap();
+    }
+    wav.finalize().unwrap();
+
+    let pool = test_pool().await;
+    sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES ('m1', 'M', ?, ?, ?)")
+        .bind(chrono::Utc::now())
+        .bind(chrono::Utc::now())
+        .bind(folder.to_string_lossy().to_string())
+        .execute(&pool)
+        .await
+        .unwrap();
+    SpeakersRepository::enqueue(&pool, "m1").await.unwrap();
+    let (_, token) = SpeakersRepository::claim_next(&pool).await.unwrap().unwrap();
+    let deps = E2eDeps { models: models_dir.clone(), base, temp: dir.path().join("speakers-tmp") };
+    run_one(&pool, "m1", &token, &deps).await.unwrap();
+
+    let job = SpeakersRepository::get_job(&pool, "m1").await.unwrap().unwrap();
+    assert_eq!(job.status, "done", "{:?}", job.reason);
+    assert_eq!(job.backend.as_deref(), Some(label));
+    eprintln!("windows_e2e: backend={label} audio={:.1}s run={:.1}s", job.audio_seconds.unwrap_or_default(), job.run_seconds.unwrap_or_default());
+
+    // Parakeet v2 (spec §12): the real model on the same runtime, all three sessions, then 2 s of silence.
+    let parakeet_dir = PathBuf::from(std::env::var("PARAKEET_TEST_DIR").expect("set PARAKEET_TEST_DIR"));
+    let engine = ParakeetEngine::new_with_models_dir(Some(parakeet_dir)).unwrap();
+    let info = engine
+        .discover_models()
+        .await
+        .unwrap()
+        .into_iter()
+        .find(|m| m.name == "parakeet-tdt-0.6b-v2-int8")
+        .expect("Parakeet v2 is catalogued");
+    if !matches!(info.status, ModelStatus::Available) {
+        engine.download_model(&info.name, None).await.expect("download Parakeet v2");
+    }
+    let mut parakeet = ParakeetModel::new(&info.path, true).expect("load Parakeet v2");
+    parakeet.transcribe_samples(vec![0.0; 32_000]).expect("transcribe 2 s of silence");
+}

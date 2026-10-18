@@ -91,6 +91,18 @@ jobs:
       - name: Rust tests (Windows)
         run: cargo test --workspace --exclude llama-helper
 
+      - name: Cache Parakeet v2 model (speaker e2e)
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/parakeet-test
+          key: parakeet-v2-${{ hashFiles('frontend/src-tauri/src/parakeet_engine/parakeet_engine.rs') }}
+
+      - name: Speaker end-to-end (real ONNX Runtime, DirectML, models, Parakeet)
+        env:
+          SPEAKER_E2E: '1'
+          PARAKEET_TEST_DIR: ${{ runner.temp }}/parakeet-test
+        run: cargo test -p meetily --lib speakers::job::windows_e2e -- --ignored --nocapture
+
   detector:
     name: meeting-detector (Windows)
     runs-on: windows-latest

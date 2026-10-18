@@ -82,7 +82,23 @@ pub(crate) fn ensure_onnx_runtime_available() -> anyhow::Result<()> {
 #[link(name = "kernel32")]
 extern "system" {
     fn LoadLibraryExW(name: *const u16, file: *mut std::ffi::c_void, flags: u32) -> *mut std::ffi::c_void;
+    fn GetModuleHandleW(name: *const u16) -> *mut std::ffi::c_void;
     fn GetModuleFileNameW(module: *mut std::ffi::c_void, filename: *mut u16, size: u32) -> u32;
+}
+
+/// The file a loaded module came from. `what` names the module in errors.
+#[cfg(target_os = "windows")]
+fn module_file_name(module: *mut std::ffi::c_void, what: &std::path::Path) -> Result<String, String> {
+    // 32,768 UTF-16 units is the longest path Windows returns; a result that fills the buffer was cut off.
+    let mut buffer = vec![0u16; 32_768];
+    let length = unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 {
+        return Err(format!("loaded {} but could not read its path: {}", what.display(), std::io::Error::last_os_error()));
+    }
+    if length >= buffer.len() {
+        return Err(format!("loaded {} but its path does not fit in {} characters", what.display(), buffer.len()));
+    }
+    Ok(String::from_utf16_lossy(&buffer[..length]))
 }
 
 /// Loads the bundled DirectML.dll and returns the path it loaded from. The module is never freed, so it stays loaded.
@@ -95,16 +111,18 @@ fn preload_directml(path: &std::path::Path) -> Result<String, String> {
     if module.is_null() {
         return Err(format!("failed to load {}: {}", path.display(), std::io::Error::last_os_error()));
     }
-    // 32,768 UTF-16 units is the longest path Windows returns; a result that fills the buffer was cut off.
-    let mut buffer = vec![0u16; 32_768];
-    let length = unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
-    if length == 0 {
-        return Err(format!("loaded {} but could not read its path: {}", path.display(), std::io::Error::last_os_error()));
+    module_file_name(module, path)
+}
+
+/// The file the process loaded the module `name` from (the Windows e2e test checks which ONNX Runtime ran).
+#[cfg(all(test, target_os = "windows"))]
+fn loaded_module_path(name: &str) -> Result<String, String> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let module = unsafe { GetModuleHandleW(wide.as_ptr()) };
+    if module.is_null() {
+        return Err(format!("{name} is not loaded"));
     }
-    if length >= buffer.len() {
-        return Err(format!("loaded {} but its path does not fit in {} characters", path.display(), buffer.len()));
-    }
-    Ok(String::from_utf16_lossy(&buffer[..length]))
+    module_file_name(module, std::path::Path::new(name))
 }
 
 #[cfg(target_os = "windows")]

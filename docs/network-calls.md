@@ -9,6 +9,7 @@ Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src` (exclud
 | Host | Where (file:line) | Purpose | Decision |
 |---|---|---|---|
 | huggingface.co | `src-tauri/src/whisper_engine/whisper_engine.rs:1104-1115` (download via `Client::builder` at `:1172`); `src-tauri/src/parakeet_engine/parakeet_engine.rs:136` (Parakeet v2 base URL); `src-tauri/src/summary/summary_engine/models.rs:172,185,198,211,342,355,369,383` (GGUF summary models, downloaded by `model_manager.rs:473`); `src/lib/parakeet.ts:78` (comment only) | Whisper, Parakeet v2 and local summary model downloads | Allowed (model host) |
+| huggingface.co | `src-tauri/src/speakers/models.rs` (`MODELS` URLs, pinned to commit hashes; `download_models`) | Speaker identification models (pyannote segmentation 3.0, TitaNet-large), downloaded only on the user's request and SHA-256 verified | Allowed (model host) |
 | meetily.towardsgeneralintelligence.com | `src-tauri/src/parakeet_engine/parakeet_engine.rs:127` (Parakeet v3 base URL, used at `:865-912`) | Parakeet v3 model download; contacted only when the user downloads a Parakeet model | Allowed — Meetily-owned, reported to user |
 | api.anthropic.com | `src-tauri/src/anthropic/anthropic.rs:103` (model list, `:100`); `src-tauri/src/summary/llm_client.rs:345` (messages, POST at `:398`/`:457`) | User-configured LLM summaries | Allowed (user-configured) |
 | api.openai.com | `src-tauri/src/openai/openai.rs:130` (`:127`); `src-tauri/src/summary/llm_client.rs:303` | User-configured LLM summaries | Allowed (user-configured) |
@@ -64,7 +65,8 @@ These run while the installer is built, not when Conclave runs. They are not in 
 | Host | Where (file:line) | Purpose | Decision |
 |---|---|---|---|
 | github.com/Zackriya-Solutions/ffmpeg-binaries | `src-tauri/build/ffmpeg.rs:134-166` | ffmpeg archive bundled as `externalBin` in the installer | Allowed — Meetily-owned, reported to user; archive pinned by SHA-256 |
-| github.com/microsoft/onnxruntime | `src-tauri/build/onnxruntime.rs:14` | ONNX Runtime 1.22.0 Windows archive (`build.rs`) | Allowed (build-time only) |
+| api.nuget.org | `src-tauri/build/onnxruntime.rs` (`PACKAGES` URLs) | ONNX Runtime 1.22.0 DirectML build and DirectML 1.15.4 NuGet packages (`build.rs`); both archives SHA-256 pinned | Allowed (build-time only) |
+| cdn.pyke.io | `ort-sys` build script (`ort-sys-2.0.0-rc.10/dist.txt`, `build.rs` `real_main`), reached through `ort`'s default `download-binaries` on Windows; URL `https://cdn.pyke.io/0/pyke:ort-rs/ms@1.22.0/x86_64-pc-windows-msvc.tgz` | `ort-sys`'s prebuilt ONNX Runtime 1.22.0 tarball, fetched in the CI build only. Hash-checked by ort-sys (SHA-256 `540d19b3…190d`); extracted to the cargo cache and copied to `OUT_DIR`; not bundled, not used by Conclave | Allowed (build-time only); to be removed by the later fix: set `ORT_SKIP_DOWNLOAD=1` or `ORT_LIB_LOCATION` in the Windows build. Not yet applied |
 | fonts.googleapis.com (via `next/font/google`) | `src/app/layout.tsx:4` | Source Sans 3 font, fetched by Next.js at build time and self-hosted | Allowed (build-time only) |
 
 ## Removed (updater tooling)

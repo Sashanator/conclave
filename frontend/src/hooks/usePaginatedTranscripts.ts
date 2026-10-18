@@ -27,6 +27,7 @@ interface UsePaginatedTranscriptsReturn {
     reset: () => void;
     refetch: () => Promise<void>;
     setTranscriptMark: (id: string, mark: TranscriptMark | null) => Promise<void>;
+    setTranscriptSpeaker: (id: string, idx: number | null) => void;
 }
 
 /**
@@ -40,6 +41,7 @@ function convertTranscriptsToSegments(transcripts: Transcript[]): TranscriptSegm
         text: t.text,
         confidence: t.confidence,
         mark: t.mark ?? null,
+        speaker_idx: t.speaker_idx,
     }));
 }
 
@@ -219,6 +221,11 @@ export function usePaginatedTranscripts({
         return run;
     }, []);
 
+    // A moved line changes its label in place; a refetch would reset the list and its scroll position
+    const setTranscriptSpeaker = useCallback((id: string, idx: number | null) => {
+        setTranscripts(prev => prev.map(t => (t.id === id ? { ...t, speaker_idx: idx } : t)));
+    }, []);
+
     // Convert to segments (memoized)
     const segments = useMemo(() =>
         convertTranscriptsToSegments(transcripts),
@@ -239,5 +246,6 @@ export function usePaginatedTranscripts({
         reset,
         refetch,
         setTranscriptMark,
+        setTranscriptSpeaker,
     };
 }

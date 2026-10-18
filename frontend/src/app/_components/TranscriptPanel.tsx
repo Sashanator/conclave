@@ -11,6 +11,8 @@ import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
 import { useMemo } from 'react';
 import { annotationsLocked } from '@/lib/meeting-notes';
+import { lineSpeakerName } from '@/lib/speakers';
+import type { TranscriptSegmentData } from '@/types';
 
 /**
  * TranscriptPanel Component
@@ -33,7 +35,7 @@ export function TranscriptPanel({
 }: TranscriptPanelProps) {
   // Contexts
   const { transcripts, transcriptContainerRef, copyTranscript, setTranscriptMark } = useTranscripts();
-  const { transcriptModelConfig } = useConfig();
+  const { transcriptModelConfig, speakerIdActive } = useConfig();
   const { isRecording, isPaused, isSaving } = useRecordingState();
   // Marks freeze with the notes once a stop begins (the save takes a snapshot)
   const marksLocked = annotationsLocked({ isRecording, isStopping, isProcessing: isProcessingStop, isSaving });
@@ -49,8 +51,15 @@ export function TranscriptPanel({
       text: t.text,
       confidence: t.confidence,
       mark: t.mark,
+      speaker_idx: t.speaker_idx,
     })),
     [transcripts]
+  );
+
+  // Live You/Others label only while speaker ID is active; otherwise rows render as before
+  const getSpeakerLabel = useMemo(
+    () => (speakerIdActive ? (s: TranscriptSegmentData) => lineSpeakerName(s.speaker_idx, [], false) : undefined),
+    [speakerIdActive]
   );
 
   return (
@@ -118,6 +127,7 @@ export function TranscriptPanel({
               enableStreaming={isRecording}
               showConfidence={true}
               onMarkChange={marksLocked ? undefined : setTranscriptMark}
+              getSpeakerLabel={getSpeakerLabel}
             />
           </div>
         </div>

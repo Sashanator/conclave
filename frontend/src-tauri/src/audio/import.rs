@@ -5,8 +5,13 @@ use crate::audio::decoder::{decode_audio_file, decode_audio_file_with_progress};
 use crate::audio::vad::get_speech_chunks_with_progress;
 use crate::config::{DEFAULT_WHISPER_MODEL, DEFAULT_PARAKEET_MODEL};
 use crate::parakeet_engine::ParakeetEngine;
+use crate::database::repositories::speakers::SpeakersRepository;
+use crate::speakers::sentences::{to_meeting_time, Sentence};
 use crate::state::AppState;
 use crate::whisper_engine::WhisperEngine;
+use crate::whisper_engine::dtw::{should_apply, Job};
+use crate::audio::recording_commands::is_recording_now;
+use crate::audio::retranscription::is_retranscription_in_progress;
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -548,7 +553,7 @@ async fn run_import<R: Runtime>(
 
     // Process each speech segment
     let mut policy = crate::whisper_engine::language_policy::LanguagePolicy::new(crate::get_allowed_languages_internal());
-    let mut all_transcripts: Vec<(String, f64, f64)> = Vec::new();
+    let mut all_transcripts: Vec<(String, f64, f64, Option<Vec<Sentence>>)> = Vec::new();
     let mut total_confidence = 0.0f32;
 
     for (i, segment) in processable_segments.iter().enumerate() {
@@ -582,20 +587,20 @@ async fn run_import<R: Runtime>(
         }
 
         // Transcribe
-        let (text, conf) = if use_parakeet {
+        let (text, conf, local_sentences) = if use_parakeet {
             let engine = parakeet_engine.as_ref().unwrap();
             let text = engine
                 .transcribe_audio(segment.samples.clone())
                 .await
                 .map_err(|e| anyhow!("Parakeet transcription failed on segment {}: {}", i, e))?;
-            (text, 0.9f32)
+            (text, 0.9f32, Vec::new())
         } else {
             let engine = whisper_engine.as_ref().unwrap();
-            let (text, conf, _) = engine
+            let (text, conf, _, sentences) = engine
                 .transcribe_audio_with_confidence(segment.samples.clone(), language.clone(), Some(&mut policy))
                 .await
                 .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;
-            (text, conf)
+            (text, conf, sentences)
         };
 
         let trimmed = text.trim();
@@ -605,7 +610,8 @@ async fn run_import<R: Runtime>(
                 i + 1, processable_count, segment_duration_sec, conf,
                 if trimmed.len() > 80 { let mut end = 80; while !trimmed.is_char_boundary(end) { end -= 1; } &trimmed[..end] } else { trimmed }
             );
-            all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms));
+            let sentences = to_meeting_time(&local_sentences, &text, segment.start_timestamp_ms / 1000.0, segment.end_timestamp_ms / 1000.0);
+            all_transcripts.push((text, segment.start_timestamp_ms, segment.end_timestamp_ms, sentences));
             total_confidence += conf;
         } else {
             debug!("Segment {}/{}: {:.1}s — empty transcription", i + 1, processable_count, segment_duration_sec);
@@ -640,13 +646,19 @@ async fn run_import<R: Runtime>(
         .try_state::<AppState>()
         .ok_or_else(|| anyhow!("App state not available"))?;
 
+    let speakers_active = tokio::task::spawn_blocking(crate::speakers::is_active).await.unwrap_or(false);
     let meeting_id = create_meeting_with_transcripts(
         app_state.db_manager.pool(),
         &title,
         &segments,
         meeting_folder.to_string_lossy().to_string(),
+        speakers_active,
     )
     .await?;
+    if speakers_active {
+        crate::speakers::job::wake();
+        let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
+    }
 
     // Write transcripts.json and metadata.json to the meeting folder
     emit_progress(&app, "saving", 90, "Writing transcript files...");
@@ -695,6 +707,7 @@ async fn create_meeting_with_transcripts(
     title: &str,
     segments: &[TranscriptSegment],
     folder_path: String,
+    enqueue_speakers: bool,
 ) -> Result<String> {
     let meeting_id = format!("meeting-{}", Uuid::new_v4());
     let now = chrono::Utc::now();
@@ -722,8 +735,8 @@ async fn create_meeting_with_transcripts(
     // Insert transcripts
     for segment in segments {
         sqlx::query(
-            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration)
-             VALUES (?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, speaker_idx, sentences)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&segment.id)
         .bind(&meeting_id)
@@ -732,9 +745,17 @@ async fn create_meeting_with_transcripts(
         .bind(segment.audio_start_time)
         .bind(segment.audio_end_time)
         .bind(segment.duration)
+        .bind(segment.speaker_idx)
+        .bind(segment.sentences.as_ref().and_then(|s| serde_json::to_string(s).ok()))
         .execute(&mut *tx)
         .await
         .map_err(|e| anyhow!("Failed to insert transcript: {}", e))?;
+    }
+
+    if enqueue_speakers {
+        SpeakersRepository::enqueue_in_tx(&mut *tx, &meeting_id)
+            .await
+            .map_err(|e| anyhow!("Failed to queue speaker analysis: {}", e))?;
     }
 
     tx.commit()
@@ -790,6 +811,10 @@ async fn get_or_init_whisper<R: Runtime>(
                     .map_err(|e| anyhow!("Failed to load model '{}': {}", target_model, e))?;
             }
 
+            // Other jobs keep the context they run with; the setting applies at the next idle start
+            if should_apply(is_recording_now(), is_import_in_progress(), is_retranscription_in_progress(), Job::Import) {
+                e.apply_speaker_setting().await;
+            }
             Ok(e)
         }
         None => Err(anyhow!("Whisper engine not initialized")),
@@ -1021,14 +1046,14 @@ mod tests {
 
     #[test]
     fn test_create_transcript_segments_empty() {
-        let transcripts: Vec<(String, f64, f64)> = vec![];
+        let transcripts: Vec<(String, f64, f64, Option<Vec<Sentence>>)> = vec![];
         let segments = create_transcript_segments(&transcripts);
         assert!(segments.is_empty());
     }
 
     #[test]
     fn test_create_transcript_segments_single() {
-        let transcripts = vec![("Hello world".to_string(), 0.0, 1500.0)];
+        let transcripts = vec![("Hello world".to_string(), 0.0, 1500.0, None)];
         let segments = create_transcript_segments(&transcripts);
 
         assert_eq!(segments.len(), 1);
@@ -1185,6 +1210,8 @@ mod tests {
                 audio_end_time: Some(1.5),
                 duration: Some(1.5),
                 mark: None,
+                sentences: None,
+                speaker_idx: None,
             },
             TranscriptSegment {
                 id: "t-2".to_string(),
@@ -1194,6 +1221,8 @@ mod tests {
                 audio_end_time: Some(3.5),
                 duration: Some(1.5),
                 mark: None,
+                sentences: None,
+                speaker_idx: None,
             },
         ];
 

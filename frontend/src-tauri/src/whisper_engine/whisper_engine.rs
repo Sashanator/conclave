@@ -3,18 +3,23 @@
 use std::path::{PathBuf};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::sync::{watch, Mutex, RwLock};
 use tokio_util::sync::CancellationToken;
-use whisper_rs::{WhisperContext, WhisperContextParameters, WhisperState, FullParams, SamplingStrategy};
+use whisper_rs::{DtwMode, DtwParameters, WhisperContext, WhisperContextParameters, WhisperState, FullParams, SamplingStrategy};
 use serde::{Serialize, Deserialize};
 use anyhow::{Result, anyhow};
 use reqwest::Client;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+use crate::audio::import::is_import_in_progress;
+use crate::audio::recording_commands::is_recording_now;
+use crate::audio::retranscription::is_retranscription_in_progress;
 use crate::config::WHISPER_MODEL_CATALOG;
-use super::acceleration::{whisper_context_acceleration_for, WhisperCompiledBackend};
+use super::acceleration::{whisper_context_acceleration_for, WhisperCompiledBackend, WhisperContextAcceleration};
 use super::language_policy::{pad_to_min_duration, LanguagePolicy};
+use super::dtw::{dtw_context_options, dtw_timed_tokens, sentences_enabled, ContextMode};
+use crate::speakers::sentences::{build_sentences, Sentence};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum ModelStatus {
@@ -70,6 +75,8 @@ pub struct WhisperEngine {
     models_dir: PathBuf,
     current_context: Arc<RwLock<Option<WhisperContext>>>,
     current_model: Arc<RwLock<Option<String>>>,
+    // Written only under the current_context write lock, so it always matches the loaded context
+    context_mode: Arc<RwLock<ContextMode>>,
     available_models: Arc<RwLock<HashMap<String, ModelInfo>>>,
     // State tracking for smart logging
     last_transcription_was_short: Arc<RwLock<bool>>,
@@ -186,6 +193,7 @@ impl WhisperEngine {
             models_dir,
             current_context: Arc::new(RwLock::new(None)),
             current_model: Arc::new(RwLock::new(None)),
+            context_mode: Arc::new(RwLock::new(ContextMode::default())),
             available_models: Arc::new(RwLock::new(HashMap::new())),
             // Initialize state tracking
             last_transcription_was_short: Arc::new(RwLock::new(false)),
@@ -301,74 +309,42 @@ impl WhisperEngine {
 
         match model_info.status {
             ModelStatus::Available => {
-                // FIX 5: Check if this model is already loaded
-                if let Some(current_model) = self.current_model.read().await.as_ref() {
+                let speakers_enabled = crate::speakers::settings::is_enabled();
+                // FIX 5: Check if this model is already loaded. Copy the name out so the read guard is released before unloading.
+                let current_model = self.current_model.read().await.clone();
+                if let Some(current_model) = current_model.as_deref() {
                     if current_model == model_name {
-                        log::info!("Model {} is already loaded, skipping reload", model_name);
-                        return Ok(());
+                        if self.context_mode.read().await.speakers_enabled == speakers_enabled {
+                            log::info!("Model {} is already loaded, skipping reload", model_name);
+                            return Ok(());
+                        }
+                        // Same model, other speaker mode: reload only while idle, the same rule as apply_speaker_setting's
+                        // callers. A busy app keeps the loaded context, and the next idle start applies the change.
+                        let idle = !is_recording_now() && !is_import_in_progress() && !is_retranscription_in_progress();
+                        if !idle {
+                            log::info!("Speaker mode changed while busy; {} keeps its context until the next idle start", model_name);
+                            return Ok(());
+                        }
                     }
-
-                    // FIX 5: Unload current model before loading new one
-                    log::info!("Unloading current model '{}' before loading '{}'", current_model, model_name);
-                    self.unload_model().await;
+                    if current_model != model_name {
+                        // FIX 5: Unload current model before loading new one
+                        log::info!("Unloading current model '{}' before loading '{}'", current_model, model_name);
+                        self.unload_model().await;
+                    }
                 }
 
                 log::info!("Loading model: {}", model_name);
 
-                // PERFORMANCE OPTIMIZATION: Use comprehensive hardware profile for optimal GPU configuration
-                let hardware_profile = crate::audio::HardwareProfile::detect();
-                let adaptive_config = hardware_profile.get_whisper_config();
-                let missing_cuda = crate::whisper_engine::cuda_runtime::missing_cuda_runtime_dlls();
-                if !missing_cuda.is_empty() {
-                    log::warn!(
-                        "CUDA 12 runtime not found ({}); Whisper will run on CPU. See CUDA_SETUP.md",
-                        missing_cuda.join(", ")
-                    );
+                let (ctx, mode) = Self::create_context(model_name, &model_info.path, speakers_enabled)?;
+
+                // Context, mode and name change under one write guard, so no reader sees them out of step
+                {
+                    let mut ctx_guard = self.current_context.write().await;
+                    *ctx_guard = Some(ctx);
+                    *self.context_mode.write().await = mode;
+                    *self.current_model.write().await = Some(model_name.to_string());
                 }
-                let acceleration = whisper_context_acceleration_for(
-                    WhisperCompiledBackend::current(),
-                    hardware_profile.gpu_type,
-                    hardware_profile.performance_tier,
-                    missing_cuda.is_empty(),
-                );
 
-                let context_param = WhisperContextParameters {
-                    use_gpu: acceleration.use_gpu,
-                    gpu_device: acceleration.gpu_device,
-                    flash_attn: acceleration.flash_attn,
-                    ..Default::default()
-                };
-
-                log::info!(
-                    "Whisper acceleration decision: compiled_backend={} runtime_detected_gpu={:?} use_gpu={} flash_attn={} gpu_device={}",
-                    acceleration.compiled_backend.as_str(),
-                    acceleration.runtime_detected_gpu,
-                    acceleration.use_gpu,
-                    acceleration.flash_attn,
-                    acceleration.gpu_device,
-                );
-
-                // PERFORMANCE: Suppress verbose C library logs during model loading
-                // This hides the excessive Metal/GGML initialization logs in release builds
-                let ctx = {
-                    // let _suppressor = crate::whisper_engine::StderrSuppressor::new();
-
-                    // Load whisper context with hardware-optimized parameters
-                    WhisperContext::new_with_params(&model_info.path.to_string_lossy(), context_param)
-                        .map_err(|e| anyhow!("Failed to load model {}: {}", model_name, e))?
-                    // Suppressor dropped here, stderr restored
-                };
-
-                // Update current context and model
-                *self.current_context.write().await = Some(ctx);
-                *self.current_model.write().await = Some(model_name.to_string());
-
-                // Enhanced acceleration status reporting
-                let acceleration_status = acceleration.status_label();
-
-                log::info!("Successfully loaded model: {} with {} (Performance Tier: {:?}, Beam Size: {}, Threads: {:?})",
-                          model_name, acceleration_status, hardware_profile.performance_tier,
-                          adaptive_config.beam_size, adaptive_config.max_threads);
                 Ok(())
             },
             ModelStatus::Missing => {
@@ -383,6 +359,96 @@ impl WhisperEngine {
             ModelStatus::Corrupted { .. } => {
                 Err(anyhow!("Model {} is corrupted and cannot be loaded", model_name))
             }
+        }
+    }
+
+    /// Builds a context with the current acceleration. With speaker ID on, a model that has DTW
+    /// heads gets DTW and no flash attention; everything else is exactly the non-speaker options.
+    fn create_context(model_name: &str, model_path: &std::path::Path, speakers_enabled: bool) -> Result<(WhisperContext, ContextMode)> {
+        // PERFORMANCE OPTIMIZATION: Use comprehensive hardware profile for optimal GPU configuration
+        let hardware_profile = crate::audio::HardwareProfile::detect();
+        let adaptive_config = hardware_profile.get_whisper_config();
+        let missing_cuda = crate::whisper_engine::cuda_runtime::missing_cuda_runtime_dlls();
+        if !missing_cuda.is_empty() {
+            log::warn!(
+                "CUDA 12 runtime not found ({}); Whisper will run on CPU. See CUDA_SETUP.md",
+                missing_cuda.join(", ")
+            );
+        }
+        let acceleration = whisper_context_acceleration_for(
+            WhisperCompiledBackend::current(),
+            hardware_profile.gpu_type,
+            hardware_profile.performance_tier,
+            missing_cuda.is_empty(),
+        );
+        let (flash_attn, dtw_mode) = dtw_context_options(acceleration.flash_attn, speakers_enabled, model_name);
+        let acceleration = WhisperContextAcceleration { flash_attn, ..acceleration };
+        let dtw_label = match dtw_mode {
+            DtwMode::None => "off",
+            DtwMode::Custom { .. } => "custom alignment heads",
+            _ => "model preset",
+        };
+        let mode = ContextMode { speakers_enabled, dtw: !matches!(dtw_mode, DtwMode::None), flash_attn };
+
+        let context_param = WhisperContextParameters {
+            use_gpu: acceleration.use_gpu,
+            gpu_device: acceleration.gpu_device,
+            flash_attn,
+            dtw_parameters: DtwParameters { mode: dtw_mode, ..Default::default() },
+            ..Default::default()
+        };
+
+        log::info!(
+            "Whisper acceleration decision: compiled_backend={} runtime_detected_gpu={:?} use_gpu={} flash_attn={} gpu_device={}",
+            acceleration.compiled_backend.as_str(),
+            acceleration.runtime_detected_gpu,
+            acceleration.use_gpu,
+            acceleration.flash_attn,
+            acceleration.gpu_device,
+        );
+        log::info!("Whisper DTW: {} (speaker ID enabled={}); flash_attn={}", dtw_label, speakers_enabled, flash_attn);
+
+        // PERFORMANCE: Suppress verbose C library logs during model loading
+        // This hides the excessive Metal/GGML initialization logs in release builds
+        let ctx = {
+            // let _suppressor = crate::whisper_engine::StderrSuppressor::new();
+
+            // Load whisper context with hardware-optimized parameters
+            WhisperContext::new_with_params(&model_path.to_string_lossy(), context_param)
+                .map_err(|e| anyhow!("Failed to load model {}: {}", model_name, e))?
+            // Suppressor dropped here, stderr restored
+        };
+
+        log::info!("Successfully loaded model: {} with {} (Performance Tier: {:?}, Beam Size: {}, Threads: {:?})",
+                  model_name, acceleration.status_label(), hardware_profile.performance_tier,
+                  adaptive_config.beam_size, adaptive_config.max_threads);
+        Ok((ctx, mode))
+    }
+
+    /// Reloads the loaded model when its speaker-ID mode differs from the setting. Called before a
+    /// recording, import or re-transcribe starts. It never waits for a transcription: while one holds
+    /// the context it does nothing, and the next start applies the change.
+    pub async fn apply_speaker_setting(&self) {
+        let speakers_enabled = crate::speakers::settings::is_enabled();
+        let Some(model_name) = self.current_model.read().await.clone() else { return };
+        if self.context_mode.read().await.speakers_enabled == speakers_enabled {
+            return;
+        }
+        let Some(model_path) = self.available_models.read().await.get(&model_name).map(|info| info.path.clone()) else { return };
+        let Ok(mut ctx_guard) = self.current_context.try_write() else {
+            log::info!("Whisper DTW setting change waits: a transcription is running; the next start applies it");
+            return;
+        };
+        // A model switch changes the name under this same lock, so check it again now
+        if self.current_model.read().await.as_deref() != Some(model_name.as_str()) {
+            return;
+        }
+        match Self::create_context(&model_name, &model_path, speakers_enabled) {
+            Ok((ctx, mode)) => {
+                *ctx_guard = Some(ctx);
+                *self.context_mode.write().await = mode;
+            }
+            Err(e) => log::warn!("Whisper DTW setting not applied, keeping the loaded context: {}", e),
         }
     }
 
@@ -578,11 +644,32 @@ impl WhisperEngine {
         }
     }
 
-    /// Transcribe audio with streaming support for partial results and adaptive quality
-    pub async fn transcribe_audio_with_confidence(&self, audio_data: Vec<f32>, language: Option<String>, policy: Option<&mut LanguagePolicy>) -> Result<(String, f32, bool)> {
+    /// Token bytes and DTW start times for sentence timing. Special tokens (id >= EOT) are skipped.
+    fn dtw_token_starts(state: &WhisperState, ctx: &WhisperContext) -> Result<Vec<(Vec<u8>, i64)>> {
+        let eot = ctx.token_eot();
+        let mut tokens = Vec::new();
+        for segment in 0..state.full_n_segments()? {
+            for token in 0..state.full_n_tokens(segment)? {
+                let id = state.full_get_token_id(segment, token)?;
+                if id >= eot {
+                    continue;
+                }
+                let data = state.full_get_token_data(segment, token)?;
+                let bytes = ctx.token_to_cstr(id)?.to_bytes().to_vec();
+                tokens.push((bytes, data.t_dtw));
+            }
+        }
+        Ok(tokens)
+    }
+
+    /// Transcribe audio with streaming support for partial results and adaptive quality.
+    /// The sentences are chunk-local and empty when their timing is unusable.
+    pub async fn transcribe_audio_with_confidence(&self, audio_data: Vec<f32>, language: Option<String>, policy: Option<&mut LanguagePolicy>) -> Result<(String, f32, bool, Vec<Sentence>)> {
+        let started = Instant::now();
         let ctx_lock = self.current_context.read().await;
         let ctx = ctx_lock.as_ref()
             .ok_or_else(|| anyhow!("No model loaded. Please load a model first."))?;
+        let mode = *self.context_mode.read().await;
 
         // Get adaptive configuration based on hardware
         let hardware_profile = crate::audio::HardwareProfile::detect();
@@ -639,7 +726,10 @@ impl WhisperEngine {
 
         let duration_seconds = audio_data.len() as f64 / 16000.0;
         let is_partial = duration_seconds < 15.0; // Consider chunks under 15s as partial
-        let audio_data = pad_to_min_duration(audio_data);
+        let audio_len = audio_data.len();
+        let (audio_data, pad_before) = pad_to_min_duration(audio_data);
+        // The last token ends at the end of the audio, not at the zero padding after it (centiseconds)
+        let end_cs = ((pad_before + audio_len) / 160) as i64;
         let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(4);
         params.set_n_threads(n_threads as i32);
 
@@ -703,7 +793,28 @@ impl WhisperEngine {
             0.0
         };
 
-        Ok((cleaned_result, avg_confidence, is_partial))
+        // Sentences never fail the transcription; a line whose text was changed keeps none
+        let sentences = if sentences_enabled(mode, cleaned_result == final_result) {
+            match Self::dtw_token_starts(&state, ctx) {
+                Ok(tokens) => build_sentences(&dtw_timed_tokens(tokens, end_cs), pad_before as f64 / 16000.0, duration_seconds),
+                Err(e) => {
+                    log::warn!("Sentence timing skipped: {}", e);
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
+
+        let on_off = |on: bool| if on { "on" } else { "off" };
+        log::info!(
+            "whisper: chunk {:.1}s transcribed in {} ms (dtw={}, flash_attn={})",
+            duration_seconds,
+            started.elapsed().as_millis(),
+            on_off(mode.dtw),
+            on_off(mode.flash_attn)
+        );
+        Ok((cleaned_result, avg_confidence, is_partial, sentences))
     }
 
     pub async fn transcribe_audio(&self, audio_data: Vec<f32>, language: Option<String>) -> Result<String> {
@@ -812,7 +923,7 @@ impl WhisperEngine {
                       transcription_count, audio_data.len(), duration_seconds);
         }
         let mut state = ctx.create_state()?;
-        let audio_data = pad_to_min_duration(audio_data);
+        let audio_data = pad_to_min_duration(audio_data).0;
         state.full(params, &audio_data)?;
 
         // Extract text with improved segment handling

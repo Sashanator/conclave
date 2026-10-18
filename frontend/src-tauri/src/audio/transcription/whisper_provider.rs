@@ -29,7 +29,7 @@ impl TranscriptionProvider for WhisperProvider {
             .transcribe_audio_with_confidence(audio, language, None)
             .await
         {
-            Ok((text, confidence, is_partial)) => Ok(TranscriptResult {
+            Ok((text, confidence, is_partial, _)) => Ok(TranscriptResult {
                 text: text.trim().to_string(),
                 confidence: Some(confidence),
                 is_partial,

@@ -3,9 +3,10 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw } from 'lucide-react';
+import { Copy, FolderOpen, RefreshCw, Users } from 'lucide-react';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { useConfig } from '@/contexts/ConfigContext';
+import type { MeetingSpeakers } from '@/lib/speakers';
 
 
 interface TranscriptButtonGroupProps {
@@ -17,6 +18,12 @@ interface TranscriptButtonGroupProps {
   onRefetchTranscripts?: () => Promise<void>;
   /** Why the audio cannot be re-transcribed; disables Enhance and explains why on hover. */
   audioMissingReason?: string | null;
+  /** Speaker analysis job of this meeting; Re-identify once it is done */
+  speakerJob?: MeetingSpeakers['job'];
+  /** Labels already exist, so Identify asks before replacing them */
+  hasSpeakers?: boolean;
+  speakersBusy?: boolean;
+  onIdentifySpeakers?: () => Promise<void>;
 }
 
 
@@ -28,9 +35,20 @@ export function TranscriptButtonGroup({
   meetingFolderPath,
   onRefetchTranscripts,
   audioMissingReason,
+  speakerJob,
+  hasSpeakers = false,
+  speakersBusy = false,
+  onIdentifySpeakers,
 }: TranscriptButtonGroupProps) {
-  const { betaFeatures } = useConfig();
+  const { betaFeatures, speakerIdActive } = useConfig();
+  const reidentify = speakerJob?.status === 'done';
+  const replacesLabels = reidentify || hasSpeakers;
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
+
+  const handleIdentify = () => {
+    if (replacesLabels && !window.confirm('Labels, including your manual fixes, will be replaced. Continue?')) return;
+    void onIdentifySpeakers?.();
+  };
 
   const handleRetranscribeComplete = useCallback(async () => {
     // Refetch transcripts to show the updated data
@@ -68,6 +86,20 @@ export function TranscriptButtonGroup({
           <FolderOpen className="@[22rem]:mr-2" size={18} />
           <span className="hidden @[22rem]:inline">Recording</span>
         </Button>
+
+        {speakerIdActive && meetingFolderPath && !audioMissingReason && onIdentifySpeakers && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="px-2 @[22rem]:px-3"
+            onClick={handleIdentify}
+            disabled={speakersBusy}
+            title={reidentify ? 'Re-identify' : 'Identify speakers'}
+          >
+            <Users />
+            <span className="hidden @[22rem]:inline">{reidentify ? 'Re-identify' : 'Identify speakers'}</span>
+          </Button>
+        )}
 
         {betaFeatures.importAndRetranscribe && meetingId && meetingFolderPath && (
           <Button

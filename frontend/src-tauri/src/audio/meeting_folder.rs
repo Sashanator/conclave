@@ -14,7 +14,7 @@ use tauri::{AppHandle, Manager, Runtime};
 /// The import formats (`import.rs` copies a file in as `audio.<ext>`), so every format is found.
 pub use crate::audio::constants::AUDIO_EXTENSIONS;
 
-pub const MEETING_FILES: [&str; 4] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp"];
+pub const MEETING_FILES: [&str; 6] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp", "levels.bin", ".levels.bin.tmp"];
 
 /// Every deleting function takes this, so tests never touch the real Recycle Bin.
 /// `Sync` keeps the async commands that hold it across `.await` `Send`.
@@ -471,6 +471,20 @@ mod tests {
         assert_eq!(names.last().unwrap(), "m");
         assert!(!m.exists());
         assert!(delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).is_ok()); // already gone
+    }
+
+    #[test]
+    fn meeting_delete_accepts_levels_file() {
+        let b = base();
+        let m = b.path().join("m");
+        fs::create_dir(&m).unwrap();
+        for f in ["audio.mp4", "transcripts.json", "metadata.json", "levels.bin", ".levels.bin.tmp"] {
+            fs::write(m.join(f), "x").unwrap();
+        }
+        let bin = FakeBin::new();
+        delete_meeting_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap();
+        assert!(!m.exists());
+        assert!(bin.names().contains(&"levels.bin".to_string()));
     }
 
     #[test]

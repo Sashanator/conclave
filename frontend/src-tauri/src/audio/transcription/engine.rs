@@ -6,6 +6,10 @@ use super::provider::TranscriptionProvider;
 use log::{info, warn};
 use std::sync::Arc;
 use tauri::{AppHandle, Manager, Runtime};
+use crate::audio::import::is_import_in_progress;
+use crate::audio::recording_commands::is_recording_now;
+use crate::audio::retranscription::is_retranscription_in_progress;
+use crate::whisper_engine::dtw::{should_apply, Job};
 
 // ============================================================================
 // TRANSCRIPTION ENGINE ENUM
@@ -215,6 +219,9 @@ pub async fn get_or_init_transcription_engine<R: Runtime>(
         "localWhisper" | _ => {
             info!("🎤 Initializing Whisper transcription engine");
             let whisper_engine = get_or_init_whisper(app).await?;
+            if should_apply(is_recording_now(), is_import_in_progress(), is_retranscription_in_progress(), Job::Recording) {
+                whisper_engine.apply_speaker_setting().await;
+            }
             Ok(TranscriptionEngine::Whisper(whisper_engine))
         }
     }

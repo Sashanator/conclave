@@ -342,6 +342,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             audio_start_time: update.audio_start_time,
             audio_end_time: update.audio_end_time,
             duration: update.duration,
+            speaker_idx: update.speaker_idx,
+            sentences: update.sentences,
           };
 
           // Add to buffer
@@ -410,6 +412,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             audio_start_time: segment.audio_start_time,
             audio_end_time: segment.audio_end_time,
             duration: segment.duration,
+            speaker_idx: segment.speaker_idx,
+            sentences: segment.sentences,
           }));
 
           // Marks live only in the recovery record; the restore effect below loads them
@@ -474,6 +478,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       audio_start_time: update.audio_start_time,
       audio_end_time: update.audio_end_time,
       duration: update.duration,
+      speaker_idx: update.speaker_idx,
+      sentences: update.sentences,
     };
 
     setTranscripts(prev => {

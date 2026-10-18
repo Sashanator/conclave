@@ -10,6 +10,7 @@ use std::path::PathBuf;
 use super::recording_state::AudioChunk;
 use super::audio_processing::create_meeting_folder;
 use super::incremental_saver::IncrementalAudioSaver;
+use crate::speakers::levels;
 
 /// Structured transcript segment for JSON export
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -22,6 +23,10 @@ pub struct TranscriptSegment {
     pub display_time: String,   // Formatted time for display like "[02:15]"
     pub confidence: f32,
     pub sequence_id: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub speaker_idx: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<Vec<crate::speakers::sentences::Sentence>>,
 }
 
 /// Meeting metadata structure
@@ -127,6 +132,8 @@ impl RecordingSaver {
             display_time: "[00:00]".to_string(),
             confidence: 1.0,
             sequence_id: 0,
+            speaker_idx: None,
+            sentences: None,
         };
         self.add_transcript_segment(segment);
     }
@@ -391,6 +398,13 @@ impl RecordingSaver {
             return Err("No incremental saver initialized".to_string());
         };
 
+        // Level track next to the merged audio. A failed write only costs the You labels, never the save.
+        if let Some(folder) = &self.meeting_folder {
+            if let Err(e) = finish_levels(folder) {
+                warn!("Could not write levels.bin: {}", e);
+            }
+        }
+
         // Save final transcripts.json with validation
         if let Some(folder) = &self.meeting_folder {
             if let Err(e) = self.write_transcripts_json(folder) {
@@ -475,5 +489,58 @@ impl RecordingSaver {
 impl Default for RecordingSaver {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Writes `levels.bin` for the track of the recording that just ended. `Ok(false)` when there was none.
+fn finish_levels(folder: &std::path::Path) -> std::io::Result<bool> {
+    let Some(pairs) = levels::live_take() else { return Ok(false) };
+    levels::write_levels_file(folder, &pairs)?;
+    Ok(true)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::TranscriptSegment;
+    use super::finish_levels;
+    use crate::speakers::levels::{self, LevelPair, LIVE_TEST_LOCK, SLICES_PER_WINDOW};
+    use std::sync::PoisonError;
+
+    #[test]
+    fn inactive_feature_writes_no_levels() {
+        let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let folder = tempfile::tempdir().unwrap();
+        levels::live_reset(false);
+        levels::live_push([(0.1, 0.1); SLICES_PER_WINDOW]);
+        assert_eq!(levels::live_take(), None);
+        levels::live_reset(false);
+        levels::live_push([(0.1, 0.1); SLICES_PER_WINDOW]);
+        assert_eq!(finish_levels(folder.path()).unwrap(), false);
+        assert!(!folder.path().join("levels.bin").exists());
+    }
+
+    #[test]
+    fn active_feature_writes_levels_file() {
+        let _guard = LIVE_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let folder = tempfile::tempdir().unwrap();
+        let window: [LevelPair; SLICES_PER_WINDOW] = std::array::from_fn(|k| (k as f32 / 12.0, 0.5));
+        levels::live_reset(true);
+        levels::live_push(window);
+        assert_eq!(finish_levels(folder.path()).unwrap(), true);
+        let bytes = std::fs::read(folder.path().join("levels.bin")).unwrap();
+        assert_eq!(levels::decode(&bytes).unwrap(), window.to_vec());
+        assert!(!folder.path().join(".levels.bin.tmp").exists());
+        assert!(!levels::live_is_active());
+    }
+
+    #[test]
+    fn unset_speaker_fields_are_omitted_from_the_export() {
+        let segment = TranscriptSegment {
+            id: "seg_1".into(), text: "Hi.".into(), audio_start_time: 0.0, audio_end_time: 1.0, duration: 1.0,
+            display_time: "[00:00]".into(), confidence: 0.9, sequence_id: 1, speaker_idx: None, sentences: None,
+        };
+        let json = serde_json::to_value(&segment).unwrap();
+        assert!(json.get("speaker_idx").is_none());
+        assert!(json.get("sentences").is_none());
     }
 }

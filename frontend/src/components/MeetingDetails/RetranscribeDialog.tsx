@@ -57,7 +57,7 @@ export function RetranscribeDialog({
   meetingFolderPath,
   onComplete,
 }: RetranscribeDialogProps) {
-  const { selectedLanguage, transcriptModelConfig } = useConfig();
+  const { selectedLanguage, transcriptModelConfig, speakerIdActive } = useConfig();
   const [isProcessing, setIsProcessing] = useState(false);
   const [progress, setProgress] = useState<RetranscriptionProgress | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -345,6 +345,10 @@ export function RetranscribeDialog({
                 Choose a transcription model
               </p>
             </div>
+          )}
+
+          {speakerIdActive && !isProcessing && !error && (
+            <p className="text-xs text-muted-foreground">Speaker labels will be rebuilt afterwards.</p>
           )}
 
           {isProcessing && progress && (

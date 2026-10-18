@@ -5,8 +5,10 @@
 use super::engine::TranscriptionEngine;
 use super::provider::TranscriptionError;
 use crate::audio::AudioChunk;
+use crate::speakers::levels;
+use crate::speakers::sentences::{to_meeting_time, Sentence};
 use crate::whisper_engine::language_policy::LanguagePolicy;
-use log::{error, info, warn};
+use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -43,6 +45,12 @@ pub struct TranscriptUpdate {
     pub audio_start_time: f64, // Seconds from recording start (e.g., 125.3)
     pub audio_end_time: f64,   // Seconds from recording start (e.g., 128.6)
     pub duration: f64,          // Segment duration in seconds (e.g., 3.3)
+    // Timed sentences in meeting seconds; None when their timing is unusable
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<Vec<Sentence>>,
+    // Speaker index from the live "You" label (0), None for Others or when speaker identification is off
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_idx: Option<i64>,
 }
 
 // NOTE: get_transcript_history and get_recording_meeting_name functions
@@ -165,7 +173,7 @@ pub fn start_transcription_task<R: Runtime>(
                             )
                             .await
                             {
-                                Ok((transcript, confidence_opt, is_partial)) => {
+                                Ok((transcript, confidence_opt, is_partial, local_sentences)) => {
                                     let confidence_str = match confidence_opt {
                                         Some(c) => format!("{:.2}", c),
                                         None => "N/A".to_string(),
@@ -200,6 +208,11 @@ pub fn start_transcription_task<R: Runtime>(
                                         let sequence_id = SEQUENCE_COUNTER.fetch_add(1, Ordering::SeqCst);
                                         let audio_start_time = chunk_timestamp; // Already in seconds from recording start
                                         let audio_end_time = chunk_timestamp + chunk_duration;
+                                        let sentences = to_meeting_time(&local_sentences, &transcript, audio_start_time, audio_end_time);
+                                        let mic_only_share = levels::live_fraction(audio_start_time, audio_end_time);
+                                        if let Some(fraction) = mic_only_share {
+                                            debug!("speakers: mic-only fraction {:.2} for {:.1}-{:.1}s", fraction, audio_start_time, audio_end_time);
+                                        }
 
                                         // Save structured transcript segment to recording manager (only final results)
                                         // Save ALL segments (partial and final) to ensure complete JSON
@@ -222,6 +235,8 @@ pub fn start_transcription_task<R: Runtime>(
                                             audio_start_time,
                                             audio_end_time,
                                             duration: chunk_duration,
+                                            sentences,
+                                            speaker_idx: levels::live_label(audio_start_time, audio_end_time),
                                         };
 
                                         if let Err(e) = app_clone.emit("transcript-update", &update)
@@ -403,14 +418,14 @@ pub fn start_transcription_task<R: Runtime>(
 }
 
 /// Transcribe audio chunk using the appropriate provider (Whisper, Parakeet, or trait-based)
-/// Returns: (text, confidence Option, is_partial)
+/// Returns: (text, confidence Option, is_partial, chunk-local sentences; empty when the engine gives none)
 async fn transcribe_chunk_with_provider<R: Runtime>(
     engine: &TranscriptionEngine,
     chunk: AudioChunk,
     app: &AppHandle<R>,
     language: &Option<String>,
     policy: &mut LanguagePolicy,
-) -> std::result::Result<(String, Option<f32>, bool), TranscriptionError> {
+) -> std::result::Result<(String, Option<f32>, bool, Vec<Sentence>), TranscriptionError> {
     // Convert to 16kHz mono for transcription
     let transcription_data = if chunk.sample_rate != 16000 {
         crate::audio::audio_processing::resample_audio(&chunk.data, chunk.sample_rate, 16000)
@@ -450,10 +465,10 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 .transcribe_audio_with_confidence(speech_samples, language.clone(), Some(policy))
                 .await
             {
-                Ok((text, confidence, is_partial)) => {
+                Ok((text, confidence, is_partial, sentences)) => {
                     let cleaned_text = text.trim().to_string();
                     if cleaned_text.is_empty() {
-                        return Ok((String::new(), Some(confidence), is_partial));
+                        return Ok((String::new(), Some(confidence), is_partial, Vec::new()));
                     }
 
                     info!(
@@ -461,7 +476,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                         chunk.chunk_id, cleaned_text, confidence, is_partial
                     );
 
-                    Ok((cleaned_text, Some(confidence), is_partial))
+                    Ok((cleaned_text, Some(confidence), is_partial, sentences))
                 }
                 Err(e) => {
                     error!(
@@ -489,7 +504,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 Ok(text) => {
                     let cleaned_text = text.trim().to_string();
                     if cleaned_text.is_empty() {
-                        return Ok((String::new(), None, false));
+                        return Ok((String::new(), None, false, Vec::new()));
                     }
 
                     info!(
@@ -498,7 +513,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                     );
 
                     // Parakeet doesn't provide confidence or partial results
-                    Ok((cleaned_text, None, false))
+                    Ok((cleaned_text, None, false, Vec::new()))
                 }
                 Err(e) => {
                     error!(
@@ -527,7 +542,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                 Ok(result) => {
                     let cleaned_text = result.text.trim().to_string();
                     if cleaned_text.is_empty() {
-                        return Ok((String::new(), result.confidence, result.is_partial));
+                        return Ok((String::new(), result.confidence, result.is_partial, Vec::new()));
                     }
 
                     let confidence_str = match result.confidence {
@@ -544,7 +559,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                         result.is_partial
                     );
 
-                    Ok((cleaned_text, result.confidence, result.is_partial))
+                    Ok((cleaned_text, result.confidence, result.is_partial, Vec::new()))
                 }
                 Err(e) => {
                     error!(
@@ -610,3 +625,37 @@ fn format_recording_time(seconds: f64) -> String {
             assert!(!should_emit_transcript("   "));
         }
     }
+
+#[cfg(test)]
+mod payload_tests {
+    use super::*;
+
+    fn update(sentences: Option<Vec<Sentence>>, speaker_idx: Option<i64>) -> TranscriptUpdate {
+        TranscriptUpdate {
+            text: "Hi.".into(), timestamp: "10:00:00".into(), source: "Audio".into(), sequence_id: 1,
+            chunk_start_time: 0.0, is_partial: false, confidence: 0.9, audio_start_time: 0.0,
+            audio_end_time: 1.0, duration: 1.0, sentences, speaker_idx,
+        }
+    }
+
+    #[test]
+    fn unset_speaker_fields_are_omitted_from_the_event() {
+        let json = serde_json::to_value(update(None, None)).unwrap();
+        assert!(json.get("speaker_idx").is_none());
+        assert!(json.get("sentences").is_none());
+    }
+
+    #[test]
+    fn set_speaker_fields_are_serialized() {
+        let json = serde_json::to_value(update(Some(vec![Sentence(0.0, 1.0, "Hi.".into())]), Some(0))).unwrap();
+        assert_eq!(json["speaker_idx"], 0);
+        assert_eq!(json["sentences"], serde_json::json!([[0.0, 1.0, "Hi."]]));
+    }
+
+    #[test]
+    fn an_event_without_the_keys_still_deserializes() {
+        let json = serde_json::to_value(update(None, None)).unwrap();
+        let back: TranscriptUpdate = serde_json::from_value(json).unwrap();
+        assert_eq!((back.speaker_idx, back.sentences), (None, None));
+    }
+}

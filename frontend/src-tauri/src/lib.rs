@@ -55,6 +55,7 @@ pub mod summary;
 pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
+mod speakers;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
@@ -75,6 +76,53 @@ pub(crate) fn ensure_onnx_runtime_available() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(target_os = "windows")]
+#[link(name = "kernel32")]
+extern "system" {
+    fn LoadLibraryExW(name: *const u16, file: *mut std::ffi::c_void, flags: u32) -> *mut std::ffi::c_void;
+    fn GetModuleHandleW(name: *const u16) -> *mut std::ffi::c_void;
+    fn GetModuleFileNameW(module: *mut std::ffi::c_void, filename: *mut u16, size: u32) -> u32;
+}
+
+/// The file a loaded module came from. `what` names the module in errors.
+#[cfg(target_os = "windows")]
+fn module_file_name(module: *mut std::ffi::c_void, what: &std::path::Path) -> Result<String, String> {
+    // 32,768 UTF-16 units is the longest path Windows returns; a result that fills the buffer was cut off.
+    let mut buffer = vec![0u16; 32_768];
+    let length = unsafe { GetModuleFileNameW(module, buffer.as_mut_ptr(), buffer.len() as u32) } as usize;
+    if length == 0 {
+        return Err(format!("loaded {} but could not read its path: {}", what.display(), std::io::Error::last_os_error()));
+    }
+    if length >= buffer.len() {
+        return Err(format!("loaded {} but its path does not fit in {} characters", what.display(), buffer.len()));
+    }
+    Ok(String::from_utf16_lossy(&buffer[..length]))
+}
+
+/// Loads the bundled DirectML.dll and returns the path it loaded from. The module is never freed, so it stays loaded.
+#[cfg(target_os = "windows")]
+fn preload_directml(path: &std::path::Path) -> Result<String, String> {
+    use std::os::windows::ffi::OsStrExt;
+    let wide: Vec<u16> = path.as_os_str().encode_wide().chain(std::iter::once(0)).collect();
+    // LOAD_WITH_ALTERED_SEARCH_PATH (0x8): the DLL's own folder is searched for its dependencies.
+    let module = unsafe { LoadLibraryExW(wide.as_ptr(), std::ptr::null_mut(), 0x8) };
+    if module.is_null() {
+        return Err(format!("failed to load {}: {}", path.display(), std::io::Error::last_os_error()));
+    }
+    module_file_name(module, path)
+}
+
+/// The file the process loaded the module `name` from (the Windows e2e test checks which ONNX Runtime ran).
+#[cfg(all(test, target_os = "windows"))]
+fn loaded_module_path(name: &str) -> Result<String, String> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    let module = unsafe { GetModuleHandleW(wide.as_ptr()) };
+    if module.is_null() {
+        return Err(format!("{name} is not loaded"));
+    }
+    module_file_name(module, std::path::Path::new(name))
 }
 
 #[cfg(target_os = "windows")]
@@ -542,6 +590,14 @@ pub fn run() {
                 tauri::path::BaseDirectory::Resource,
             ) {
                 Ok(runtime_path) => {
+                    // Before ort::init_from, so onnxruntime.dll binds to the bundled DirectML. A failure only leaves speakers on CPU.
+                    match _app.path().resolve("DirectML.dll", tauri::path::BaseDirectory::Resource) {
+                        Ok(directml_path) => match preload_directml(&directml_path) {
+                            Ok(loaded) => log::info!("Preloaded bundled DirectML from {loaded}"),
+                            Err(error) => log::warn!("DirectML preload failed, speakers will use the CPU: {error}"),
+                        },
+                        Err(error) => log::warn!("Failed to resolve bundled DirectML.dll, speakers will use the CPU: {error}"),
+                    }
                     match catch_onnx_runtime_init(|| {
                         ort::init_from(runtime_path.to_string_lossy().into_owned())
                             .with_telemetry(false)
@@ -571,6 +627,16 @@ pub fn run() {
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
             }
+            // Speaker models sit beside the Whisper models. The models hash is warmed off the runtime,
+            // so later is_active() calls on async paths only read the cache.
+            match _app.path().app_data_dir() {
+                Ok(data) => speakers::models::set_models_dir(data.join("models").join("speakers")),
+                Err(e) => log::error!("speakers: no app data folder, the feature stays off: {e}"),
+            }
+            tauri::async_runtime::spawn_blocking(|| {
+                let _ = speakers::models::models_ready();
+            });
+            speakers::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
@@ -646,6 +712,13 @@ pub fn run() {
                 database::setup::initialize_database_on_startup(&_app.handle()).await
             })
             .expect("Failed to initialize database");
+
+            // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
+            if let Ok(data) = _app.path().app_data_dir() {
+                speakers::temp_audio::clear_temp_dir(&data.join("speakers-tmp"));
+            }
+            // The worker waits for the database (a first launch has none yet) and requeues interrupted jobs once it exists.
+            speakers::job::start_worker(_app.handle().clone());
 
             // Copy the shipped templates into the user's templates folder once; deleted ones stay deleted.
             match summary::templates::seed_templates() {
@@ -877,6 +950,19 @@ pub fn run() {
             audio::import::start_import_audio_command,
             audio::import::cancel_import_command,
             audio::import::is_import_in_progress_command,
+            // Speaker identification commands
+            speakers::commands::speakers_get_settings,
+            speakers::commands::speakers_set_enabled,
+            speakers::commands::speakers_download_models,
+            speakers::commands::speakers_delete_models,
+            speakers::commands::speakers_get_meeting,
+            speakers::commands::speakers_identify,
+            speakers::commands::speakers_name,
+            speakers::commands::speakers_move_line,
+            speakers::commands::people_list,
+            speakers::commands::people_rename,
+            speakers::commands::people_delete,
+            speakers::commands::people_merge,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

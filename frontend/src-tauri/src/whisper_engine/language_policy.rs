@@ -65,14 +65,15 @@ impl LanguagePolicy {
 }
 
 /// Whisper drops input under 1 s, so short chunks are padded with silence to 1.1 s.
-pub fn pad_to_min_duration(audio: Vec<f32>) -> Vec<f32> {
+/// Returns the audio and the number of silent samples added before it.
+pub fn pad_to_min_duration(audio: Vec<f32>) -> (Vec<f32>, usize) {
     if audio.is_empty() || audio.len() >= 16_000 {
-        return audio;
+        return (audio, 0);
     }
     let before = (17_600 - audio.len()) / 2;
     let mut padded = vec![0.0; 17_600];
     padded[before..before + audio.len()].copy_from_slice(&audio);
-    padded
+    (padded, before)
 }
 
 #[cfg(test)]
@@ -137,7 +138,7 @@ mod tests {
 
     #[test]
     fn pad_to_min_duration_centres_short_audio() {
-        let padded = pad_to_min_duration(vec![1.0; 12_800]);
+        let (padded, _) = pad_to_min_duration(vec![1.0; 12_800]);
         assert_eq!(padded.len(), 17_600);
         assert_eq!(padded[2_399], 0.0);
         assert_eq!(padded[2_400], 1.0);
@@ -147,7 +148,15 @@ mod tests {
 
     #[test]
     fn pad_to_min_duration_leaves_long_and_empty_audio_unchanged() {
-        assert_eq!(pad_to_min_duration(vec![1.0; 16_000]).len(), 16_000);
-        assert!(pad_to_min_duration(Vec::new()).is_empty());
+        assert_eq!(pad_to_min_duration(vec![1.0; 16_000]), (vec![1.0; 16_000], 0));
+        assert_eq!(pad_to_min_duration(Vec::new()), (Vec::new(), 0));
+    }
+
+    #[test]
+    fn pad_reports_offset_before_audio() {
+        let (padded, before) = pad_to_min_duration(vec![1.0; 8_000]);
+        assert_eq!((padded.len(), before), (17_600, 4_800));
+        let (padded, before) = pad_to_min_duration(vec![1.0; 16_000]);
+        assert_eq!((padded.len(), before), (16_000, 0));
     }
 }

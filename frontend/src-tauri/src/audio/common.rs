@@ -1,4 +1,5 @@
 use crate::api::TranscriptSegment;
+use crate::speakers::sentences::Sentence;
 use anyhow::Result;
 use log::{debug, info};
 use once_cell::sync::Lazy;
@@ -47,11 +48,11 @@ pub(crate) async fn unload_engine_after_batch(use_parakeet: bool) {
 }
 
 /// Create transcript segments from transcription results.
-/// Each tuple is (text, start_ms, end_ms) from VAD timestamps.
-pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> Vec<TranscriptSegment> {
+/// Each tuple is (text, start_ms, end_ms, sentences) from VAD timestamps; sentences are already in meeting time.
+pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64, Option<Vec<Sentence>>)]) -> Vec<TranscriptSegment> {
     transcripts
         .iter()
-        .map(|(text, start_ms, end_ms)| {
+        .map(|(text, start_ms, end_ms, sentences)| {
             let start_seconds = start_ms / 1000.0;
             let end_seconds = end_ms / 1000.0;
             let duration = end_seconds - start_seconds;
@@ -64,6 +65,8 @@ pub(crate) fn create_transcript_segments(transcripts: &[(String, f64, f64)]) -> 
                 audio_end_time: Some(end_seconds),
                 duration: Some(duration),
                 mark: None,
+                sentences: sentences.clone(),
+                speaker_idx: None,
             }
         })
         .collect()

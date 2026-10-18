@@ -18,13 +18,17 @@ export function formatRecordingTime(seconds: number | null | undefined): string 
   return `${String(Math.floor(total / 60)).padStart(2, '0')}:${String(total % 60).padStart(2, '0')}`;
 }
 
-/** Transcript text for the summary; marks go inline as words (spec §7). */
-export function formatSummaryTranscript(transcripts: Transcript[]): string {
+/** Transcript text for the summary; marks go inline as words (spec §7). No name function means today's exact text. */
+export function formatSummaryTranscript(
+  transcripts: Transcript[],
+  speakerName?: (t: Transcript) => string | undefined,
+): string {
   return transcripts
     .map((t) => {
       const time = t.audio_start_time === undefined ? t.timestamp : `[${formatRecordingTime(t.audio_start_time)}]`;
       const mark = t.mark ? ` [MARKED: ${t.mark}]` : '';
-      return `${time}${mark} ${t.text}`;
+      const name = speakerName?.(t);
+      return `${time}${mark} ${name ? `${name}: ` : ''}${t.text}`;
     })
     .join('\n');
 }

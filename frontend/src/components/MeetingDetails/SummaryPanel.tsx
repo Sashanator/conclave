@@ -56,6 +56,9 @@ interface SummaryPanelProps {
   onTemplateSelect: (templateId: string, templateName: string) => void;
   isModelConfigLoading?: boolean;
   onOpenModelSettings?: (openFn: () => void) => void;
+  speakerWaiting?: boolean;
+  onSummarizeNow?: () => void;
+  namesChanged?: boolean;
 }
 
 export function SummaryPanel({
@@ -88,6 +91,9 @@ export function SummaryPanel({
   onTemplateSelect,
   isModelConfigLoading = false,
   onOpenModelSettings,
+  speakerWaiting = false,
+  onSummarizeNow,
+  namesChanged = false,
 }: SummaryPanelProps) {
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
@@ -312,11 +318,36 @@ export function SummaryPanel({
         </div>
       </div>
 
+      {/* Names changed after a summary: it only uses them once regenerated, and the user decides */}
+      {namesChanged && hasSummary && !isSummaryLoading && (
+        <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-border text-sm text-muted-foreground">
+          <span>Speaker names changed. Regenerate the summary to use them</span>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => {
+              if (shouldRegenerate(isSummaryDirty)) void onRegenerateSummary();
+            }}
+          >
+            Regenerate
+          </Button>
+        </div>
+      )}
+
       {isSummaryLoading ? (
         <div className="flex items-center justify-center flex-1">
           <div className="text-center">
             <div className="inline-block animate-spin rounded-full h-12 w-12 border-t-2 border-b-2 border-blue-500 mb-4"></div>
             <p className="text-muted-foreground">Generating AI Summary...</p>
+          </div>
+        </div>
+      ) : speakerWaiting && !hasSummary ? (
+        <div className="flex items-center justify-center flex-1">
+          <div className="text-center">
+            <p className="text-muted-foreground mb-4">Waiting for speaker analysis…</p>
+            <Button variant="outline" size="sm" onClick={() => onSummarizeNow?.()}>
+              Summarize now
+            </Button>
           </div>
         </div>
       ) : !hasSummary ? (

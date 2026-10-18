@@ -1,9 +1,10 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
-use tauri::{AppHandle, Runtime};
+use tauri::{AppHandle, Emitter, Runtime};
 use tauri_plugin_store::StoreExt;
 
+use crate::speakers::sentences::Sentence;
 use crate::{
     database::{
         models::MeetingModel,
@@ -139,6 +140,8 @@ pub struct MeetingTranscript {
     pub duration: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub mark: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub speaker_idx: Option<i64>,
 }
 
 /// Meeting metadata without transcripts (for pagination)
@@ -194,11 +197,27 @@ pub struct TranscriptSegment {
     pub duration: Option<f64>,
     #[serde(default, deserialize_with = "lenient_mark", skip_serializing_if = "Option::is_none")]
     pub mark: Option<String>,
+    #[serde(default, deserialize_with = "lenient_sentences", skip_serializing_if = "Option::is_none")]
+    pub sentences: Option<Vec<Sentence>>,
+    #[serde(default, deserialize_with = "lenient_speaker_idx", skip_serializing_if = "Option::is_none")]
+    pub speaker_idx: Option<i64>,
 }
 
 /// A mark that is not a string is dropped here, so it can never fail the save at stop.
 fn lenient_mark<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Ok(Option::<serde_json::Value>::deserialize(d)?.and_then(|v| v.as_str().map(str::to_string)))
+}
+
+/// Sentences are kept only as a well-formed, finite list. Anything else is dropped, so it never fails the save.
+fn lenient_sentences<'de, D: Deserializer<'de>>(d: D) -> Result<Option<Vec<Sentence>>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?
+        .and_then(|v| serde_json::from_value::<Vec<Sentence>>(v).ok())
+        .filter(|s| s.iter().all(|Sentence(t0, t1, _)| t0.is_finite() && t1.is_finite())))
+}
+
+/// The live path can only tell "You" (speaker 0), so any other index is dropped.
+fn lenient_speaker_idx<'de, D: Deserializer<'de>>(d: D) -> Result<Option<i64>, D::Error> {
+    Ok(Option::<serde_json::Value>::deserialize(d)?.and_then(|v| v.as_i64()).filter(|&i| i == 0))
 }
 
 /// Decodes the segments sent with a save. Shared by `api_save_transcript` and its tests.
@@ -898,6 +917,7 @@ pub async fn api_get_meeting_transcripts<R: Runtime>(
                     audio_end_time: t.audio_end_time,
                     duration: t.duration,
                     mark: t.mark,
+                    speaker_idx: t.speaker_idx,
                 })
                 .collect::<Vec<_>>();
 
@@ -948,7 +968,7 @@ pub async fn api_save_meeting_title<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_save_transcript<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_title: String,
     transcripts: Vec<serde_json::Value>,
@@ -990,6 +1010,8 @@ pub async fn api_save_transcript<R: Runtime>(
 
     let pool = state.db_manager.pool();
 
+    // Speaker analysis is queued in the save's transaction only while the feature is active.
+    let speakers_active = tokio::task::spawn_blocking(crate::speakers::is_active).await.unwrap_or(false);
     // Now, call the repository with the correctly typed data.
     match TranscriptsRepository::save_transcript(
         pool,
@@ -997,6 +1019,7 @@ pub async fn api_save_transcript<R: Runtime>(
         &transcripts_to_save,
         folder_path,
         &parse_notes(notes.unwrap_or_default()),
+        speakers_active,
     )
     .await
     {
@@ -1005,6 +1028,10 @@ pub async fn api_save_transcript<R: Runtime>(
                 "Successfully saved transcript and created meeting with id: {}",
                 meeting_id
             );
+            if speakers_active {
+                crate::speakers::job::wake();
+                let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
+            }
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Transcript saved successfully",
@@ -1524,6 +1551,24 @@ mod segment_parse_tests {
             .unwrap_or_else(|e| panic!("save rejected by mark {bad}: {e}"));
             assert_eq!(segs[0].mark, None);
         }
+    }
+
+    #[test]
+    fn unset_speaker_fields_are_omitted_from_the_json() {
+        let seg = parse_transcript_segments(vec![json!({"id": "a", "text": "x", "timestamp": "t"})]).unwrap();
+        let json = serde_json::to_value(&seg[0]).unwrap();
+        assert!(json.get("speaker_idx").is_none());
+        assert!(json.get("sentences").is_none());
+    }
+
+    #[test]
+    fn a_speaker_zero_and_sentences_survive_a_round_trip() {
+        let seg = parse_transcript_segments(vec![json!({
+            "id": "a", "text": "Hi.", "timestamp": "t", "speaker_idx": 0, "sentences": [[0.0, 1.0, "Hi."]],
+        })]).unwrap();
+        let json = serde_json::to_value(&seg[0]).unwrap();
+        assert_eq!(json["speaker_idx"], 0);
+        assert_eq!(json["sentences"], json!([[0.0, 1.0, "Hi."]]));
     }
 
     #[test]

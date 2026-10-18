@@ -9,6 +9,7 @@ import { BetaFeatures, BetaFeatureKey, loadBetaFeatures, saveBetaFeatures } from
 import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { parseAllowedLanguages } from '@/lib/allowed-languages';
 import { toast } from 'sonner';
+import type { SpeakerSettings } from '@/types';
 
 export interface OllamaModel {
   name: string;
@@ -98,6 +99,11 @@ interface ConfigContextType {
   isLoadingPreferences: boolean;
   loadPreferences: () => Promise<void>;
   updateNotificationSettings: (settings: NotificationSettings) => Promise<void>;
+
+  // Speaker identification: active only when enabled and its models are ready; settingsLoaded is false until the first lookup answers
+  speakerIdActive: boolean;
+  speakerSettingsLoaded: boolean;
+  refreshSpeakerSettings: () => Promise<void>;
 }
 
 const ConfigContext = createContext<ConfigContextType | undefined>(undefined);
@@ -187,6 +193,10 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
   const [isLoadingPreferences, setIsLoadingPreferences] = useState(false);
   const preferencesLoadedRef = useRef(false);
   const isLoadingRef = useRef(false);
+
+  // Speaker identification state (off until speakers_get_settings answers)
+  const [speakerIdActive, setSpeakerIdActive] = useState(false);
+  const [speakerSettingsLoaded, setSpeakerSettingsLoaded] = useState(false);
 
   // Load Ollama models (uses saved endpoint, re-runs when endpoint changes after config load)
   useEffect(() => {
@@ -370,6 +380,38 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // A failed lookup leaves speaker id off, so the summary is never blocked waiting for it
+  const refreshSpeakerSettings = useCallback(async () => {
+    try {
+      const settings = await invoke<SpeakerSettings>('speakers_get_settings');
+      setSpeakerIdActive(settings.enabled && settings.models_ready);
+    } catch (err) {
+      console.error('[ConfigContext] Failed to load speaker settings:', err);
+      setSpeakerIdActive(false);
+    } finally {
+      setSpeakerSettingsLoaded(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    let cleanedUp = false;
+    let unlisten: (() => void) | undefined;
+    refreshSpeakerSettings();
+    const setupListener = async () => {
+      const { listen } = await import('@tauri-apps/api/event');
+      const fn = await listen('speaker-settings-changed', () => {
+        refreshSpeakerSettings();
+      });
+      if (cleanedUp) fn();
+      else unlisten = fn;
+    };
+    setupListener().catch(console.error);
+    return () => {
+      cleanedUp = true;
+      unlisten?.();
+    };
+  }, [refreshSpeakerSettings]);
+
   // Load device preferences on mount
   useEffect(() => {
     const loadDevicePreferences = async () => {
@@ -546,6 +588,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     isLoadingPreferences,
     loadPreferences,
     updateNotificationSettings,
+    speakerIdActive,
+    speakerSettingsLoaded,
+    refreshSpeakerSettings,
   }), [
     modelConfig,
     isModelConfigLoading,
@@ -571,6 +616,9 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     isLoadingPreferences,
     loadPreferences,
     updateNotificationSettings,
+    speakerIdActive,
+    speakerSettingsLoaded,
+    refreshSpeakerSettings,
   ]);
 
   return (

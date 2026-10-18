@@ -1131,8 +1131,41 @@ mod tests {
         eprintln!("e2e: ours {ours:.1?}");
         eprintln!("e2e: merged.json {theirs:.1?}");
         assert_eq!(ours.len(), theirs.len(), "speaker count");
+        // Printed, not asserted: this decodes the container clock, while merged.json came from the naive-concatenation
+        // fixture (about 4.5 s/h longer), so the diarization input differs and per-speaker seconds can shift.
+        // The merge itself is checked by `merge_parity_on_fixture_audio`.
         for (a, b) in ours.iter().zip(&theirs) {
-            assert!((a - b).abs() <= 0.02 * b, "{a:.1} s vs {b:.1} s");
+            eprintln!("e2e: seconds {a:.1} vs merged.json {b:.1} ({:+.1} %)", (a - b) / b * 100.0);
+        }
+    }
+
+    /// The merge alone, on the fixture audio that merged.json was made from (no decode, no clock difference):
+    /// diarize, embed the centroids as the job does, then resolve with no self evidence and no known people.
+    /// Needs SPEAKER_MODELS_DIR. Speaker count must match; each sorted seconds value within 0.5 s.
+    #[test]
+    #[ignore]
+    fn merge_parity_on_fixture_audio() {
+        let models_dir = std::env::var("SPEAKER_MODELS_DIR").expect("set SPEAKER_MODELS_DIR");
+        let reference: serde_json::Value =
+            serde_json::from_slice(&std::fs::read("/workspace/.superpowers/speaker-parity/meetup/merged.json").unwrap()).unwrap();
+        let bytes = std::fs::read("/workspace/.superpowers/speaker-parity/meetup/audio16k.f32").unwrap();
+        let audio: Vec<f32> = bytes.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+        let step = window_step_secs(audio.len() as f64 / SAMPLE_RATE);
+        let mut models = OrtSpeakerModels::load(Path::new(&models_dir), false).unwrap();
+
+        let turns = diarize(&audio, &mut models, step, &mut |_| {}).unwrap();
+        let mut clusters = clusters_from_turns(&turns);
+        embed_centroids(&audio, &mut models, &mut clusters, &mut |_| {}).unwrap();
+        let speakers = resolve_speakers(clusters, &SelfEvidence::None, &[]);
+
+        let mut ours: Vec<f64> = speakers.iter().map(|s| s.seconds).collect();
+        ours.sort_by(|a, b| b.total_cmp(a));
+        let theirs: Vec<f64> = reference["seconds"].as_array().unwrap().iter().map(|v| v.as_f64().unwrap()).collect();
+        eprintln!("merge parity: step {step} s, ours {ours:.2?}");
+        eprintln!("merge parity: merged.json {theirs:.2?}");
+        assert_eq!(ours.len(), theirs.len(), "speaker count");
+        for (a, b) in ours.iter().zip(&theirs) {
+            assert!((a - b).abs() <= 0.5, "{a:.2} s vs {b:.2} s");
         }
     }
 

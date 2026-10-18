@@ -3,11 +3,9 @@
 // sherpa's compute_confidence is off. Float arithmetic keeps sherpa's f32 order so that frame and
 // sample indexes match sherpa's.
 
-use std::collections::HashMap;
+use ndarray::Array2;
 
-use ndarray::{s, Array2};
-
-use super::cluster::complete_linkage_labels;
+use super::cluster::{complete_linkage_labels, MAX_EMBEDDINGS};
 use super::runtime::{SegMeta, SpeakerModels};
 
 /// Cut distance for complete linkage on `1 - cosine` (spec §8.2). sherpa's default 0.5 is overridden.
@@ -188,6 +186,14 @@ impl Geometry {
             rf_size: meta.receptive_field_size,
             rf_shift: meta.receptive_field_shift,
         })
+    }
+
+    /// Start and end times of a run from frame `from` to frame `to`, in seconds (sherpa ComputeResult,
+    /// :752-769). Computed in f32 as sherpa does.
+    fn span(&self, from: usize, to: usize) -> (f32, f32) {
+        let scale = self.rf_shift as f32 / self.sample_rate as f32;
+        let offset = (0.5 * self.rf_size as f64 / self.sample_rate as f64) as f32;
+        (from as f32 * scale + offset, to as f32 * scale + offset)
     }
 }
 
@@ -388,22 +394,6 @@ fn push_heap(h: &mut [usize], mut hole: usize, top: usize, value: usize, greater
     h[hole] = value;
 }
 
-/// Speakers per frame, as 0/1 (sherpa FinalizeLabels, :697-720): the top-k clusters by vote count.
-fn finalize_labels(count: &Array2<i32>, speakers_per_frame: &[i32]) -> Array2<u8> {
-    let mut out = Array2::zeros(count.dim());
-    for i in 0..count.nrows() {
-        let k = speakers_per_frame[i];
-        if k <= 0 {
-            continue;
-        }
-        let row: Vec<i32> = count.row(i).to_vec();
-        for m in topk_index(&row, k as usize) {
-            out[[i, m]] = 1;
-        }
-    }
-    out
-}
-
 /// Speaker clustering over the windows (sherpa Process, :155-240). Returns no turns when nothing is clustered.
 fn multi_chunk_turns(
     audio: &dyn AudioSource,
@@ -413,8 +403,8 @@ fn multi_chunk_turns(
     progress: &mut dyn FnMut(f32),
 ) -> Result<Vec<Turn>, String> {
     let n = audio.len();
-    let frames = labels[0].nrows();
-    if chunk_frame_start(labels.len() - 1, g) + frames > frames_total(labels.len(), g) {
+    let window_frames = labels[0].nrows();
+    if chunk_frame_start(labels.len() - 1, g) + window_frames > frames_total(labels.len(), g) {
         return Err("segmentation windows do not fit the frame grid".into());
     }
     let per_frame = speakers_per_frame(labels, g);
@@ -422,6 +412,13 @@ fn multi_chunk_turns(
         return Ok(vec![]);
     }
     let pairs = chunk_speaker_intervals(labels, g);
+    // Bounds the embeddings, and so the clustering matrix, whatever step the caller chose.
+    if pairs.len() > MAX_EMBEDDINGS {
+        return Err(format!(
+            "{} speaker windows exceed the {MAX_EMBEDDINGS} embedding cap; use a longer step",
+            pairs.len()
+        ));
+    }
 
     // sherpa ComputeEmbeddings (:536-590): one embedding per pair, from its clean samples only.
     // A pair without a usable embedding is dropped, as sherpa does for NaN.
@@ -447,15 +444,12 @@ fn multi_chunk_turns(
     // complete-linkage port does itself.
     let cluster = complete_linkage_labels(&embeddings, CLUSTER_THRESHOLD);
     let clusters = cluster.iter().max().map_or(0, |m| m + 1);
-    // sherpa ConvertChunkSpeakerToCluster (:592-609).
-    let map: HashMap<(usize, usize), usize> = kept
-        .iter()
-        .zip(&cluster)
-        .map(|(&k, &c)| ((pairs[k].chunk, pairs[k].speaker), c))
-        .collect();
-    let count = speaker_count(labels, &map, clusters, n, g);
-    let fin = finalize_labels(&count, &per_frame);
-    Ok(compute_result(&fin, g))
+    // sherpa ConvertChunkSpeakerToCluster (:592-609), as a table per window and speaker.
+    let mut window_cluster = vec![vec![None; labels[0].ncols()]; labels.len()];
+    for (&k, &c) in kept.iter().zip(&cluster) {
+        window_cluster[pairs[k].chunk][pairs[k].speaker] = Some(c);
+    }
+    Ok(vote_turns(labels, &window_cluster, clusters, n, g, &per_frame))
 }
 
 /// The samples of a pair's intervals, joined. Parts past the end of the audio are dropped.
@@ -473,96 +467,120 @@ fn clip_samples(audio: &dyn AudioSource, intervals: &[(i32, i32)]) -> Result<Vec
     Ok(clip)
 }
 
-/// How many speakers each frame has, counting one cluster once per window (sherpa ReLabel and
-/// ComputeSpeakerCount, :611-695). Windows are relabelled one at a time, so only one is held at a time.
-fn speaker_count(
+/// Turns from the per-window votes (sherpa ReLabel, ComputeSpeakerCount, FinalizeLabels and ComputeResult,
+/// :611-795), streamed. Frame by frame it counts the clusters that the covering windows vote for, takes
+/// the top speakers-per-frame clusters, and extends the runs. Memory is one vote row, plus the windows.
+fn vote_turns(
     labels: &[Array2<u8>],
-    map: &HashMap<(usize, usize), usize>,
+    window_cluster: &[Vec<Option<usize>>],
     clusters: usize,
     n: usize,
     g: &Geometry,
-) -> Array2<i32> {
+    per_frame: &[i32],
+) -> Vec<Turn> {
     let total = frames_total(labels.len(), g);
-    let mut count = Array2::<i32>::zeros((total, clusters));
-    for (c, label) in labels.iter().enumerate() {
-        let start = chunk_frame_start(c, g);
-        for ((f, cl), &v) in relabel_chunk(label, c, clusters, map).indexed_iter() {
-            count[[start + f, cl]] += v as i32;
+    // sherpa trims the counts to n / receptive_field_shift frames when a padded window follows (:684-693).
+    let frames = if has_last_chunk(n, g) {
+        (n / g.rf_shift).min(total - 1) + 1
+    } else {
+        total
+    };
+    let window_frames = labels[0].nrows();
+    let starts: Vec<usize> = (0..labels.len()).map(|c| chunk_frame_start(c, g)).collect();
+    let mut runs = TurnRuns::new(clusters, g);
+    let mut votes = vec![0i32; clusters];
+    let mut active = vec![false; clusters];
+    let mut seen: Vec<usize> = Vec::new();
+    // The windows covering frame f are lo..hi. Their starts are in order, so the range only moves forward.
+    let (mut lo, mut hi) = (0, 0);
+    for f in 0..frames {
+        while hi < labels.len() && starts[hi] <= f {
+            hi += 1;
         }
-    }
-    if !has_last_chunk(n, g) {
-        return count;
-    }
-    let last = (n / g.rf_shift).min(total - 1);
-    count.slice(s![..=last, ..]).to_owned()
-}
-
-/// One window with its speakers renamed to clusters. Two speakers in one cluster count once.
-fn relabel_chunk(
-    label: &Array2<u8>,
-    chunk: usize,
-    clusters: usize,
-    map: &HashMap<(usize, usize), usize>,
-) -> Array2<u8> {
-    let mut out = Array2::zeros((label.nrows(), clusters));
-    for s in 0..label.ncols() {
-        let Some(&cl) = map.get(&(chunk, s)) else {
-            continue;
-        };
-        for f in 0..label.nrows() {
-            if label[[f, s]] == 1 {
-                out[[f, cl]] = 1;
-            }
+        while lo < hi && starts[lo] + window_frames <= f {
+            lo += 1;
         }
-    }
-    out
-}
-
-/// Frame runs become turns, with `min_duration_off` merging and `min_duration_on` filtering (sherpa
-/// ComputeResult, :722-795; MergeSegments, :863-880; Segment::Merge, offline-speaker-diarization-result.cc:38-56).
-fn compute_result(fin: &Array2<u8>, g: &Geometry) -> Vec<Turn> {
-    let frames = fin.nrows();
-    let mut turns = Vec::new();
-    if frames == 0 {
-        return turns;
-    }
-    // sherpa computes these in f32 (:737-738). The offset is a double before the cast.
-    let scale = g.rf_shift as f32 / g.sample_rate as f32;
-    let scale_offset = (0.5 * g.rf_size as f64 / g.sample_rate as f64) as f32;
-    let span = |from: usize, to: usize| (from as f32 * scale + scale_offset, to as f32 * scale + scale_offset);
-    for s in 0..fin.ncols() {
-        let mut segs: Vec<(f32, f32)> = Vec::new();
-        let mut open: Option<usize> = (fin[[0, s]] > 0).then_some(0);
-        for f in 1..frames {
-            match open {
-                Some(st) => {
-                    if fin[[f, s]] == 0 {
-                        segs.push(span(st, f));
-                        open = None;
-                    }
-                }
-                None => {
-                    if fin[[f, s]] == 1 {
-                        open = Some(f);
+        votes.fill(0);
+        for c in lo..hi {
+            let local = f - starts[c];
+            // A window votes once per cluster, however many of its speakers map to it (ReLabel).
+            seen.clear();
+            for (s, cl) in window_cluster[c].iter().enumerate() {
+                if let Some(cl) = *cl {
+                    if labels[c][[local, s]] == 1 && !seen.contains(&cl) {
+                        seen.push(cl);
+                        votes[cl] += 1;
                     }
                 }
             }
         }
-        if let Some(st) = open {
-            segs.push(span(st, frames - 1));
+        active.fill(false);
+        let k = per_frame[f];
+        if k > 0 {
+            for m in topk_index(&votes, k as usize) {
+                active[m] = true;
+            }
         }
-        merge_segments(&mut segs);
-        for (start, end) in segs {
-            if end - start > MIN_DURATION_ON {
-                turns.push(Turn {
-                    start: start as f64,
-                    end: end as f64,
-                    cluster: s,
-                });
+        runs.push(f, &active);
+    }
+    runs.finish(frames)
+}
+
+/// Turns of each cluster, built one frame at a time (sherpa ComputeResult, :722-795).
+struct TurnRuns<'a> {
+    g: &'a Geometry,
+    /// The first frame of the run that is open for each cluster.
+    open: Vec<Option<usize>>,
+    /// Closed runs per cluster, as (start, end) in seconds.
+    segs: Vec<Vec<(f32, f32)>>,
+}
+
+impl<'a> TurnRuns<'a> {
+    fn new(clusters: usize, g: &'a Geometry) -> Self {
+        Self {
+            g,
+            open: vec![None; clusters],
+            segs: vec![Vec::new(); clusters],
+        }
+    }
+
+    /// Feeds frame `f`. `active[c]` says whether cluster c speaks in it. Frames come in order, from 0.
+    fn push(&mut self, f: usize, active: &[bool]) {
+        for (c, open) in self.open.iter_mut().enumerate() {
+            match *open {
+                Some(st) if !active[c] => {
+                    self.segs[c].push(self.g.span(st, f));
+                    *open = None;
+                }
+                None if active[c] => *open = Some(f),
+                _ => {}
             }
         }
     }
-    turns
+
+    /// Closes the open runs at the last of `frames` frames, then returns the merged, filtered turns.
+    fn finish(self, frames: usize) -> Vec<Turn> {
+        let mut turns = Vec::new();
+        if frames == 0 {
+            return turns;
+        }
+        for (c, (open, mut segs)) in self.open.into_iter().zip(self.segs).enumerate() {
+            if let Some(st) = open {
+                segs.push(self.g.span(st, frames - 1));
+            }
+            merge_segments(&mut segs);
+            for (start, end) in segs {
+                if end - start > MIN_DURATION_ON {
+                    turns.push(Turn {
+                        start: start as f64,
+                        end: end as f64,
+                        cluster: c,
+                    });
+                }
+            }
+        }
+        turns
+    }
 }
 
 /// Joins same-speaker segments whose gap is below `MIN_DURATION_OFF`, until none is left.
@@ -592,19 +610,29 @@ fn merge_pair(a: (f32, f32), b: (f32, f32), gap: f32) -> Option<(f32, f32)> {
     }
 }
 
-/// sherpa HandleOneChunkSpecialCase (:841-861). A single window is the only case here: the trim
-/// applies only when a padded window follows it.
+/// sherpa HandleOneChunkSpecialCase (:841-861). Only a single window reaches here, so the trim applies
+/// only when a padded window follows it.
 fn handle_one_chunk(labels: &Array2<u8>, n: usize, g: &Geometry) -> Vec<Turn> {
-    if !has_last_chunk(n, g) {
-        return compute_result(labels, g);
+    let frames = if has_last_chunk(n, g) {
+        (n / g.rf_shift).min(labels.nrows())
+    } else {
+        labels.nrows()
+    };
+    let mut runs = TurnRuns::new(labels.ncols(), g);
+    let mut active = vec![false; labels.ncols()];
+    for f in 0..frames {
+        for (s, a) in active.iter_mut().enumerate() {
+            *a = labels[[f, s]] == 1;
+        }
+        runs.push(f, &active);
     }
-    let keep = (n / g.rf_shift).min(labels.nrows());
-    compute_result(&labels.slice(s![..keep, ..]).to_owned(), g)
+    runs.finish(frames)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ndarray::s;
     use std::collections::{BTreeMap, HashSet};
 
     const CHUNK_FRAMES: usize = 589;
@@ -680,6 +708,20 @@ mod tests {
         }
 
         fn fall_back_to_cpu(&mut self) -> Result<(), String> {
+            Ok(())
+        }
+    }
+
+    /// Silent audio that is never allocated, so that the embedding cap can be reached cheaply.
+    struct Silence(usize);
+
+    impl AudioSource for Silence {
+        fn len(&self) -> usize {
+            self.0
+        }
+
+        fn read(&self, _start: usize, out: &mut [f32]) -> Result<(), String> {
+            out.fill(0.0);
             Ok(())
         }
     }
@@ -769,12 +811,13 @@ mod tests {
 
     #[test]
     fn diarize_drops_invalid_embeddings() {
-        // Speaker 0 is active in every 10 s window. Embedding 3 is None and embedding 5 has a NaN.
+        // Six 10 s windows. Speaker 0 talks in windows 0-4. Speaker 1 talks only in window 5, and that
+        // window's embedding is None. Window 2's embedding is NaN, so speaker 0 loses that window too.
         let mut m = FakeModels::new(
-            |_| logits_all(1),
+            |i| logits_all(if i == 5 { 2 } else { 1 }),
             |i, _| match i {
-                3 => None,
-                5 => {
+                5 => None,
+                2 => {
                     let mut v = unit(0);
                     v[7] = f32::NAN;
                     Some(v)
@@ -782,11 +825,26 @@ mod tests {
                 _ => Some(unit(0)),
             },
         );
-        let audio = vec![0.1f32; 16_000 * 30];
-        let turns = diarize(&audio, &mut m, 1.0, &mut |_| {}).unwrap();
-        assert_eq!(m.embed_calls, 21);
-        assert!(!turns.is_empty());
-        assert!(turns.iter().all(|t| t.cluster == 0));
+        let audio = vec![0.1f32; 16_000 * 60];
+        let turns = diarize(&audio, &mut m, 10.0, &mut |_| {}).unwrap();
+        assert_eq!(m.embed_calls, 6);
+        // No dropped speaker may get a cluster of its own, so every turn is cluster 0.
+        assert!(turns.iter().all(|t| t.cluster == 0), "{turns:?}");
+        // Window 5 has no vote, because its only speaker was dropped. sherpa's FinalizeLabels still takes
+        // the top speaker: an all-zero row gives index 0. So cluster 0 covers window 5 too, as in sherpa.
+        assert_eq!(turns.len(), 1, "{turns:?}");
+        assert!(turns[0].end > 59.0, "{turns:?}");
+    }
+
+    #[test]
+    fn diarize_refuses_more_embeddings_than_the_cap() {
+        // One speaker in every 1 s window: one more window than the cap allows.
+        let windows = MAX_EMBEDDINGS + 1;
+        let audio = Silence(160_000 + (windows - 1) * 16_000);
+        let mut m = FakeModels::new(|_| logits_all(1), |_, _| panic!("the cap is checked before embedding"));
+        let err = diarize(&audio, &mut m, 1.0, &mut |_| {}).unwrap_err();
+        assert!(err.contains("embedding cap"), "{err}");
+        assert_eq!(m.embed_calls, 0);
     }
 
     #[test]
@@ -857,12 +915,144 @@ mod tests {
 
     #[test]
     fn handle_one_chunk_keeps_frames_within_audio() {
-        // A window longer than one chunk has a second chunk, so the trim applies. Here it keeps every frame.
+        // Speaker 0 is active in every frame of one window. A padded window after it would trim to
+        // n / 270 frames, which is all 589 here, so both lengths give the same single turn.
         let g = geometry();
         let mut labels = Array2::<u8>::zeros((CHUNK_FRAMES, 3));
-        labels[[0, 0]] = 1;
-        let full = compute_result(&labels, &g);
+        for f in 0..CHUNK_FRAMES {
+            labels[[f, 0]] = 1;
+        }
+        let full = handle_one_chunk(&labels, 160_000, &g);
+        assert_eq!(full.len(), 1);
+        assert_eq!(full[0].cluster, 0);
         assert_eq!(handle_one_chunk(&labels, 160_100, &g), full);
+    }
+
+    /// Small deterministic generator, so that the random oracle test is reproducible.
+    struct Lcg(u64);
+
+    impl Lcg {
+        fn next(&mut self) -> u64 {
+            self.0 = self.0.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
+            self.0 >> 33
+        }
+    }
+
+    /// The dense computation that `vote_turns` replaced: the full count matrix, the finalized 0/1 labels,
+    /// then ComputeResult per cluster. Kept only as the oracle for the streamed version.
+    fn dense_turns(
+        labels: &[Array2<u8>],
+        window_cluster: &[Vec<Option<usize>>],
+        clusters: usize,
+        n: usize,
+        g: &Geometry,
+        per_frame: &[i32],
+    ) -> Vec<Turn> {
+        let total = frames_total(labels.len(), g);
+        let mut count = Array2::<i32>::zeros((total, clusters));
+        for (c, label) in labels.iter().enumerate() {
+            let start = chunk_frame_start(c, g);
+            let mut rel = Array2::<u8>::zeros((label.nrows(), clusters));
+            for (s, cl) in window_cluster[c].iter().enumerate() {
+                let Some(cl) = *cl else { continue };
+                for f in 0..label.nrows() {
+                    if label[[f, s]] == 1 {
+                        rel[[f, cl]] = 1;
+                    }
+                }
+            }
+            for ((f, cl), &v) in rel.indexed_iter() {
+                count[[start + f, cl]] += v as i32;
+            }
+        }
+        let frames = if has_last_chunk(n, g) {
+            (n / g.rf_shift).min(total - 1) + 1
+        } else {
+            total
+        };
+        let count = count.slice(s![..frames, ..]).to_owned();
+        let mut fin = Array2::<u8>::zeros(count.dim());
+        for i in 0..frames {
+            let k = per_frame[i];
+            if k <= 0 {
+                continue;
+            }
+            let row: Vec<i32> = count.row(i).to_vec();
+            for m in topk_index(&row, k as usize) {
+                fin[[i, m]] = 1;
+            }
+        }
+        let mut turns = Vec::new();
+        if frames == 0 {
+            return turns;
+        }
+        for c in 0..clusters {
+            let on = |f: usize| fin[[f, c]] == 1;
+            let mut segs = Vec::new();
+            let mut open = if on(0) { Some(0) } else { None };
+            for f in 1..frames {
+                match open {
+                    Some(st) if !on(f) => {
+                        segs.push(g.span(st, f));
+                        open = None;
+                    }
+                    None if on(f) => open = Some(f),
+                    _ => {}
+                }
+            }
+            if let Some(st) = open {
+                segs.push(g.span(st, frames - 1));
+            }
+            merge_segments(&mut segs);
+            for (start, end) in segs {
+                if end - start > MIN_DURATION_ON {
+                    turns.push(Turn {
+                        start: start as f64,
+                        end: end as f64,
+                        cluster: c,
+                    });
+                }
+            }
+        }
+        turns
+    }
+
+    #[test]
+    fn streaming_votes_match_dense_oracle() {
+        // Random windows, speakers and cluster maps, with and without a padded last window.
+        let g = geometry();
+        let mut rng = Lcg(7);
+        let mut turns_seen = 0;
+        for seed in 0..40 {
+            let clusters = 1 + (rng.next() % 5) as usize;
+            // 5 or 6 windows, depending on whether a padded window follows the full ones.
+            let n = 160_000 + 4 * 16_000 + if seed % 2 == 0 { 5_000 } else { 0 };
+            let windows = num_chunks(n, &g);
+            let labels: Vec<Array2<u8>> = (0..windows)
+                .map(|_| {
+                    let mut l = Array2::zeros((CHUNK_FRAMES, 3));
+                    for v in l.iter_mut() {
+                        *v = (rng.next() % 3 == 0) as u8;
+                    }
+                    l
+                })
+                .collect();
+            let window_cluster: Vec<Vec<Option<usize>>> = (0..windows)
+                .map(|_| {
+                    (0..3)
+                        .map(|_| {
+                            (rng.next() % 4 != 0).then(|| (rng.next() % clusters as u64) as usize)
+                        })
+                        .collect()
+                })
+                .collect();
+            let per_frame = speakers_per_frame(&labels, &g);
+            let streamed = vote_turns(&labels, &window_cluster, clusters, n, &g, &per_frame);
+            let dense = dense_turns(&labels, &window_cluster, clusters, n, &g, &per_frame);
+            assert_eq!(streamed, dense, "seed {seed}");
+            turns_seen += streamed.len();
+        }
+        assert!(turns_seen > 0, "the random case should produce turns");
     }
 
     /// Needs ONNX Runtime and `SPEAKER_MODELS_DIR` (both models) and `SPEAKER_PARITY_DIR` (the recordings).

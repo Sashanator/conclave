@@ -197,7 +197,9 @@ impl SpeakersRepository {
         for s in &p.speakers {
             let centroid = s.centroid.as_deref().map(encode).transpose()?;
             sqlx::query(
-                "INSERT INTO meeting_speakers (meeting_id, idx, person_id, name, centroid, seconds) VALUES (?, ?, ?, NULL, ?, ?)",
+                // A person deleted or merged mid-run becomes NULL ("Speaker n") instead of failing the foreign key
+                "INSERT INTO meeting_speakers (meeting_id, idx, person_id, name, centroid, seconds)
+                 VALUES (?, ?, (SELECT id FROM people WHERE id = ?), NULL, ?, ?)",
             )
             .bind(meeting_id)
             .bind(s.idx)
@@ -542,16 +544,24 @@ fn encode(v: &[f32]) -> Result<Vec<u8>, SqlxError> {
     if v.len() != DIM {
         return Err(SqlxError::Protocol(format!("speaker vector has {} values, expected {DIM}", v.len())));
     }
+    if v.iter().any(|f| !f.is_finite()) {
+        return Err(SqlxError::Protocol("speaker vector has a non-finite value".into()));
+    }
     Ok(v.iter().flat_map(|f| f.to_le_bytes()).collect())
 }
 
-/// Any other stored length is skipped, with a warning.
+/// Any other stored length, or a non-finite value, is skipped with a warning.
 fn decode(b: &[u8]) -> Option<Vec<f32>> {
     if b.len() != DIM * 4 {
         warn!("speakers: skipped a stored vector of {} bytes", b.len());
         return None;
     }
-    Some(b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect())
+    let v: Vec<f32> = b.chunks_exact(4).map(|c| f32::from_le_bytes([c[0], c[1], c[2], c[3]])).collect();
+    if v.iter().any(|f| !f.is_finite()) {
+        warn!("speakers: skipped a stored vector with a non-finite value");
+        return None;
+    }
+    Some(v)
 }
 
 fn clean_name(name: &str) -> Result<String, String> {
@@ -1035,6 +1045,72 @@ mod tests {
         assert!(SpeakersRepository::publish(&pool, &m, &token, &publish_of(vec![bad], vec![], None)).await.is_err());
         // The failed publish rolled back, so the run is still the owner's.
         assert_eq!(status(&pool, &m).await, "running");
+    }
+
+    #[tokio::test]
+    async fn publish_tolerates_people_deleted_or_merged_mid_run() {
+        let pool = test_pool().await;
+        let alice = new_person(&pool, "Alice").await;
+        let bob = new_person(&pool, "Bob").await;
+        let carol = new_person(&pool, "Carol").await;
+        let m = meeting(&pool, true).await;
+        SpeakersRepository::enqueue(&pool, &m).await.unwrap();
+        let token = claim(&pool, &m).await;
+        SpeakersRepository::delete_person(&pool, &alice).await.unwrap();
+        SpeakersRepository::merge_people(&pool, &bob, &carol).await.unwrap();
+        let p = publish_of(vec![speaker(1, Some(&alice), 25.0), speaker(2, Some(&bob), 25.0)], vec![], None);
+        assert!(SpeakersRepository::publish(&pool, &m, &token, &p).await.unwrap());
+        let shown: Vec<(i64, String, Option<String>)> = SpeakersRepository::meeting_speakers(&pool, &m)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|s| (s.idx, s.name, s.person_id))
+            .collect();
+        assert_eq!(shown, vec![(1, "Speaker 1".into(), None), (2, "Speaker 2".into(), None)]);
+    }
+
+    #[tokio::test]
+    async fn replacing_transcripts_with_feature_off_and_no_job_writes_nothing() {
+        let pool = test_pool().await;
+        let m = meeting(&pool, false).await;
+        let mut tx = pool.begin().await.unwrap();
+        SpeakersRepository::transcripts_replaced_in_tx(&mut tx, &m, false).await.unwrap();
+        tx.commit().await.unwrap();
+        assert!(SpeakersRepository::get_job(&pool, &m).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn replacing_transcripts_with_feature_on_queues_pending_job() {
+        let pool = test_pool().await;
+        let m = meeting(&pool, false).await;
+        let mut tx = pool.begin().await.unwrap();
+        SpeakersRepository::transcripts_replaced_in_tx(&mut tx, &m, true).await.unwrap();
+        tx.commit().await.unwrap();
+        let job = SpeakersRepository::get_job(&pool, &m).await.unwrap().unwrap();
+        assert_eq!((job.status.as_str(), job.reason.as_deref()), ("pending", None));
+    }
+
+    #[tokio::test]
+    async fn non_finite_vectors_are_refused_and_skipped() {
+        let pool = test_pool().await;
+        let m = meeting(&pool, true).await;
+        SpeakersRepository::enqueue(&pool, &m).await.unwrap();
+        let token = claim(&pool, &m).await;
+        let mut nan = speaker(1, None, 25.0);
+        nan.centroid = Some(vec![f32::NAN; DIM]);
+        assert!(SpeakersRepository::publish(&pool, &m, &token, &publish_of(vec![nan], vec![], None)).await.is_err());
+        assert_eq!(status(&pool, &m).await, "running");
+
+        // A non-finite print already stored is skipped on read
+        let bad: Vec<u8> = (0..DIM).flat_map(|_| f32::INFINITY.to_le_bytes()).collect();
+        sqlx::query("INSERT INTO voiceprints (id, person_id, source_meeting_id, source_idx, vector, seconds, created_at) VALUES ('bad-3', ?, NULL, NULL, ?, 1.0, 'ts-1')")
+            .bind(SELF_ID)
+            .bind(bad)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (self_prints, _) = SpeakersRepository::known_people(&pool).await.unwrap();
+        assert!(self_prints.is_empty());
     }
 
     #[tokio::test]

@@ -646,6 +646,8 @@ struct Bounds {
     max_gap: u64,
     /// Timestamp differences up to this many frames are treated as continuous.
     tolerance: u64,
+    /// One second of frames: the most silence that may be inserted past the declared length.
+    rate_1s: u64,
 }
 
 impl Bounds {
@@ -655,6 +657,7 @@ impl Bounds {
             limit: declared.map(|d| d.saturating_add(rate as u64)),
             max_gap: MAX_GAP_SECS * rate as u64,
             tolerance: JITTER_MS * rate as u64 / 1000,
+            rate_1s: rate as u64,
         }
     }
 }
@@ -664,9 +667,9 @@ impl Bounds {
 /// `ts` is where the packet starts, `frames` is its decoded length and `written` is the timeline
 /// position reached so far. Returns `(skip, zero_fill, write)`: drop the first `skip` frames
 /// (they repeat audio already written), insert `zero_fill` silent frames (a forward gap), then
-/// keep `write` frames. Real decoded frames are always kept. Only inserted silence is bounded: a
-/// gap that would run past the declared end is an error, and so is a gap over `max_gap` when no
-/// length is declared.
+/// keep `write` frames. Real decoded frames are always kept. Only inserted silence is bounded:
+/// with no declared length a gap over `max_gap` is an error; past the declared length a gap over
+/// one second is an error, so that a skipped packet (a short gap) does not fail the decode.
 fn align_packet(ts: u64, frames: u64, written: u64, bounds: Bounds) -> Result<(u64, u64, u64)> {
     if ts.abs_diff(written) <= bounds.tolerance {
         return Ok((0, 0, frames));
@@ -677,8 +680,8 @@ fn align_packet(ts: u64, frames: u64, written: u64, bounds: Bounds) -> Result<(u
     }
     let gap = ts - written;
     let too_long = match bounds.limit {
-        Some(limit) => ts > limit,
         None => gap > bounds.max_gap,
+        Some(limit) => ts > limit && gap > bounds.rate_1s,
     };
     if too_long {
         return Err(anyhow!(
@@ -1255,7 +1258,7 @@ mod streaming_tests {
     }
 
     fn exact(limit: Option<u64>, max_gap: u64) -> Bounds {
-        Bounds { limit, max_gap, tolerance: 0 }
+        Bounds { limit, max_gap, tolerance: 0, rate_1s: 16_000 }
     }
 
     fn place(ts: u64, frames: u64, written: u64) -> (u64, u64, u64) {
@@ -1317,8 +1320,21 @@ mod streaming_tests {
 
     #[test]
     fn align_packet_rejects_a_gap_past_the_declared_length() {
-        assert!(align_packet(200, 50, 120, exact(Some(150), u64::MAX)).is_err());
-        assert!(align_packet(151, 50, 120, exact(Some(150), u64::MAX)).is_err());
+        // Two seconds of silence past the declared end is corrupt.
+        assert!(align_packet(1000 + 32_000, 50, 1000, exact(Some(1000), u64::MAX)).is_err());
+    }
+
+    #[test]
+    fn align_packet_zero_fills_a_short_gap_past_the_declared_length() {
+        // A skipped packet leaves a short gap, even when the declared length has already run out.
+        assert_eq!(
+            align_packet(1000 + 768, 50, 1000, exact(Some(1000), u64::MAX)).unwrap(),
+            (0, 768, 50)
+        );
+        assert_eq!(
+            align_packet(1000 + 16_000, 50, 1000, exact(Some(1000), u64::MAX)).unwrap(),
+            (0, 16_000, 50)
+        );
     }
 
     #[test]
@@ -1335,7 +1351,7 @@ mod streaming_tests {
 
     #[test]
     fn align_packet_treats_small_offsets_as_jitter() {
-        let jitter = Bounds { limit: None, max_gap: u64::MAX, tolerance: 220 };
+        let jitter = Bounds { limit: None, max_gap: u64::MAX, tolerance: 220, rate_1s: 44_100 };
         // Up to the tolerance either side: no skip and no silence.
         assert_eq!(align_packet(900, 50, 1000, jitter).unwrap(), (0, 0, 50));
         assert_eq!(align_packet(1200, 50, 1000, jitter).unwrap(), (0, 0, 50));
@@ -1367,6 +1383,7 @@ mod streaming_tests {
         assert_eq!(b.limit, Some(16_100));
         assert_eq!(b.tolerance, 80);
         assert_eq!(b.max_gap, 60 * 16_000);
+        assert_eq!(b.rate_1s, 16_000);
     }
 
     #[test]
@@ -1522,6 +1539,27 @@ mod streaming_tests {
         );
         assert!((whole.duration_seconds - 120.0).abs() <= 0.05, "{}", whole.duration_seconds);
         assert!((streamed - 120.0).abs() <= 0.05, "{streamed}");
+    }
+
+    #[test]
+    #[ignore = "needs the gitignored synthetic corrupt VBR MP3 fixture (4 KB overwritten at 85 %)"]
+    fn corrupt_vbr_mp3_decodes_fully_with_both_decoders() {
+        // Two packets fail to decode and are zero-filled by their timestamp gap. The demuxer also
+        // resyncs past about 0.5 s of frames without any error or timestamp gap, so the result is
+        // short of 120 s by that amount, not by a decode error.
+        let src = Path::new(env!("CARGO_MANIFEST_DIR")).join(
+            "../../.superpowers/sdd/2026-10-17-conclave-speaker-id/fixtures/vbr_corrupt.mp3",
+        );
+        let whole = decode_audio_file(&src).unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("corrupt.f32");
+        let streamed = decode_to_mono_16k_file(&src, &out, &mut |_| {}).unwrap();
+        println!(
+            "corrupt mp3: decode_audio_file {:.3} s, decode_to_mono_16k_file {streamed:.3} s",
+            whole.duration_seconds
+        );
+        assert!((119.0..=120.05).contains(&whole.duration_seconds), "{}", whole.duration_seconds);
+        assert!((119.0..=120.05).contains(&streamed), "{streamed}");
     }
 
     #[test]

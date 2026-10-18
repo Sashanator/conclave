@@ -88,9 +88,11 @@ jobs:
           mkdir -p frontend/src-tauri/binaries
           touch frontend/src-tauri/binaries/llama-helper-x86_64-pc-windows-msvc.exe
 
-      # Serial, so the test that crashes (STATUS_ACCESS_VIOLATION in app_lib) is named in the log.
+      # ort loads onnxruntime.dll by name unless ORT_DYLIB_PATH is set; without it the runner's 1.17 copy is used.
       - name: Rust tests (Windows)
-        run: cargo test --workspace --exclude llama-helper -- --test-threads=1
+        env:
+          ORT_DYLIB_PATH: ${{ github.workspace }}\frontend\src-tauri\binaries\onnxruntime\onnxruntime.dll
+        run: cargo test --workspace --exclude llama-helper
 
       - name: Cache Parakeet v2 model (speaker e2e)
         uses: actions/cache@v4

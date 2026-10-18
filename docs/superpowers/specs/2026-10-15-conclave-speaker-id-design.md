@@ -1,8 +1,8 @@
 # Conclave: Speaker identification — Design
 
 Date: 2026-10-15
-Status: Design approved section by section in conversation (2026-10-15); written spec awaiting the user's review
-Target release: v0.4.0 (together with Phase 3, which is merged but not tagged)
+Status: Implemented in v0.6.0 (2026-10-18)
+Target release: v0.6.0
 
 ## 1. Purpose
 

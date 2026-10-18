@@ -403,18 +403,32 @@ fn assign_lines_with(lines: &[Line], speakers: &[ResolvedSpeaker], split: bool) 
             });
             continue;
         }
-        // A sentence takes its own speaker only with >= 60 % and >= 1 s of it. Otherwise it inherits the majority.
-        let finals: Vec<Option<usize>> = sents
+        // A strong sentence (>= 60 % and >= 1 s with one speaker) takes that speaker. A weak one, including a
+        // zero-length one, inherits the previous sentence. Leading weak ones inherit the first strong one.
+        // The line majority is used only when no sentence is strong.
+        let strong: Vec<Option<usize>> = sents
             .iter()
             .map(|Sentence(t0, t1, _)| {
-                let strong = split
+                split
                     .then(|| best_speaker(speakers, *t0, *t1))
                     .flatten()
                     .filter(|&(_, ov)| ov >= SPLIT_MIN_SHARE * (t1 - t0) && ov >= SPLIT_MIN_SECS)
-                    .map(|(k, _)| k);
-                strong.or(majority)
+                    .map(|(k, _)| k)
             })
             .collect();
+        let finals: Vec<Option<usize>> = match strong.iter().flatten().next() {
+            None => vec![majority; sents.len()],
+            Some(&first) => {
+                let mut prev = first;
+                strong
+                    .iter()
+                    .map(|s| {
+                        prev = s.unwrap_or(prev);
+                        Some(prev)
+                    })
+                    .collect()
+            }
+        };
         let mut starts = vec![0];
         starts.extend((1..sents.len()).filter(|&i| finals[i] != finals[i - 1]));
         if starts.len() == 1 {
@@ -857,5 +871,121 @@ mod tests {
         let got = assign_lines(&[l], &two_speakers());
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].speaker_idx, None);
+    }
+
+    #[test]
+    fn weak_sentences_follow_neighbours_not_line_majority() {
+        // Probe from review: A 0-6 s, B 6-10 s. The weak "c." (0.8 s of B) sits inside B's run and must not split it.
+        let speakers = vec![
+            ResolvedSpeaker {
+                idx: 1,
+                person_id: None,
+                centroid: None,
+                seconds: 6.0,
+                turns: vec![(0.0, 6.0)],
+            },
+            ResolvedSpeaker {
+                idx: 2,
+                person_id: None,
+                centroid: None,
+                seconds: 4.0,
+                turns: vec![(6.0, 10.0)],
+            },
+        ];
+        let l = line(
+            "L1",
+            0.0,
+            10.0,
+            "a. b. c. d.",
+            Some(vec![
+                sent(0.0, 6.0, "a."),
+                sent(6.0, 7.5, "b."),
+                sent(7.5, 8.3, "c."),
+                sent(8.3, 10.0, "d."),
+            ]),
+        );
+        let got = assign_lines_with(&[l], &speakers, true);
+        let pieces: Vec<(Option<&str>, &str, f64, f64, Option<i64>)> = got
+            .iter()
+            .map(|o| {
+                (
+                    o.id.as_deref(),
+                    o.text.as_str(),
+                    o.start,
+                    o.end,
+                    o.speaker_idx,
+                )
+            })
+            .collect();
+        assert_eq!(
+            pieces,
+            vec![
+                (Some("L1"), "a.", 0.0, 6.0, Some(1)),
+                (None, "b. c. d.", 6.0, 10.0, Some(2))
+            ]
+        );
+    }
+
+    #[test]
+    fn zero_length_sentence_stays_with_its_run() {
+        let speakers = vec![
+            ResolvedSpeaker {
+                idx: 1,
+                person_id: None,
+                centroid: None,
+                seconds: 6.0,
+                turns: vec![(0.0, 6.0)],
+            },
+            ResolvedSpeaker {
+                idx: 2,
+                person_id: None,
+                centroid: None,
+                seconds: 4.0,
+                turns: vec![(6.0, 10.0)],
+            },
+        ];
+        let l = line(
+            "L1",
+            0.0,
+            10.0,
+            "a. b. x. c.",
+            Some(vec![
+                sent(0.0, 6.0, "a."),
+                sent(6.0, 7.0, "b."),
+                sent(7.0, 7.0, "x."),
+                sent(7.0, 10.0, "c."),
+            ]),
+        );
+        let got = assign_lines_with(&[l], &speakers, true);
+        let pieces: Vec<(&str, Option<i64>)> = got
+            .iter()
+            .map(|o| (o.text.as_str(), o.speaker_idx))
+            .collect();
+        assert_eq!(pieces, vec![("a.", Some(1)), ("b. x. c.", Some(2))]);
+    }
+
+    #[test]
+    fn small_cluster_matching_self_is_self_not_attached() {
+        // The 10 s cluster is 0.8 from the anchor, so it would attach to it, but it matches self at 0.92 first.
+        let small = v(&[(0, 0.8), (1, 0.6)]);
+        let print = v(&[(0, 0.5), (1, 0.75f32.sqrt())]);
+        let clusters = vec![cl(0, 60.0, Some(e(0))), cl(1, 10.0, Some(small))];
+        let out = resolve_speakers(clusters, &SelfEvidence::Prints(vec![print]), &[]);
+        assert_eq!(
+            names(&out),
+            vec![(0, Some("self".into()), 10), (1, None, 60)]
+        );
+    }
+
+    #[test]
+    fn small_cluster_matching_known_person_is_that_person_not_attached() {
+        let small = v(&[(0, 0.8), (1, 0.6)]);
+        let person = KnownPerson {
+            person_id: "p1".into(),
+            prints: vec![v(&[(0, 0.5), (1, 0.75f32.sqrt())])],
+        };
+        let clusters = vec![cl(0, 60.0, Some(e(0))), cl(1, 10.0, Some(small))];
+        let out = resolve_speakers(clusters, &SelfEvidence::None, &[person]);
+        assert_eq!(names(&out), vec![(1, None, 60), (2, Some("p1".into()), 10)]);
     }
 }

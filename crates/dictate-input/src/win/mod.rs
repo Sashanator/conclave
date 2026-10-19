@@ -1,7 +1,4 @@
 //! Windows keyboard hook. The pure helpers compile on every target so their tests run on Linux.
-use std::sync::OnceLock;
-use std::time::Instant;
-
 #[cfg(windows)]
 pub mod clipboard;
 #[cfg(windows)]
@@ -22,11 +19,6 @@ pub fn is_injected(flags: u32) -> bool {
 
 pub fn is_altgr_fake_ctrl(vk: u16, scan_code: u32) -> bool {
     vk == 0xA2 && scan_code == ALTGR_FAKE_CTRL_SCAN
-}
-
-pub fn monotonic_ms() -> u64 {
-    static START: OnceLock<Instant> = OnceLock::new();
-    START.get_or_init(Instant::now).elapsed().as_millis() as u64
 }
 
 #[cfg(test)]

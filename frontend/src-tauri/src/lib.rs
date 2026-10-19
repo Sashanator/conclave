@@ -55,6 +55,7 @@ pub mod summary;
 pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
+mod dictate;
 mod speakers;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
@@ -637,6 +638,7 @@ pub fn run() {
                 let _ = speakers::models::models_ready();
             });
             speakers::settings::load_at_startup(_app.handle());
+            dictate::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
@@ -712,6 +714,8 @@ pub fn run() {
                 database::setup::initialize_database_on_startup(&_app.handle()).await
             })
             .expect("Failed to initialize database");
+            // Dictate that was on comes back only now: its model load needs the database.
+            dictate::apply_after_db_ready(_app.handle());
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {
@@ -950,6 +954,12 @@ pub fn run() {
             audio::import::start_import_audio_command,
             audio::import::cancel_import_command,
             audio::import::is_import_in_progress_command,
+            // Dictate commands
+            dictate::settings::dictate_get_settings,
+            dictate::session::dictate_save_settings,
+            dictate::session::dictate_pill_action,
+            dictate::session::dictate_status,
+            dictate::pill::dictate_pill_view,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

@@ -683,7 +683,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_save_transcript_config<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     provider: String,
     model: String,
@@ -711,6 +711,10 @@ pub async fn api_save_transcript_config<R: Runtime>(
             }
         }
     }
+
+    tauri::async_runtime::spawn(async move {
+        crate::dictate::on_transcript_config_saved(&app).await;
+    });
 
     log_info!("Successfully saved transcript configuration.");
     Ok(

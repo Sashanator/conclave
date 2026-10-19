@@ -42,6 +42,7 @@ These are the request sites, with the base URL each one builds from.
 |---|---|---|
 | `src-tauri/src/summary/llm_client.rs:303-345` (`api_url` match), POST at `:398` and `:457` | Fixed provider URLs, or Ollama `{host}/v1/chat/completions` (`:319`), or custom `{endpoint}/chat/completions` (`:327`) | Allowed (user-configured) |
 | `src-tauri/src/summary/service.rs:546` (`Client::new`) | Passed to `generate_meeting_summary` (llm_client) | Allowed (as above) |
+| `src-tauri/src/dictate/cleanup.rs` (Dictate cleanup; `summary/llm_target.rs` `complete` → `summary/llm_client.rs` `generate_summary`) | The same URLs as the summary rows above: the user's configured summary provider, or the cleanup model if one is set (the built-in local AI sidecar is not used) | Allowed (user-configured; no new hosts) |
 | `src-tauri/src/ollama/ollama.rs:162,281,440` (`Client::new`) with `{base_url}/api/tags` (`:164`), `/api/pull` (`:283`), `/api/delete` (`:442`) | Ollama endpoint (default localhost:11434) | Allowed (localhost Ollama) |
 | `src-tauri/src/ollama/metadata.rs:144` (`Client::new`), `{base_url}/api/show` (`:146`) | Ollama endpoint | Allowed (localhost Ollama) |
 | `src-tauri/src/api/api.rs:247-250` (`make_api_request`), called by `api.rs:401`, `:421`, `:455`; `:1085`, `:1127` (`/docs`) | `APP_SERVER_URL` (localhost:5167) plus endpoint | Reported to user (unreachable from the UI) |
@@ -53,6 +54,8 @@ These are the request sites, with the base URL each one builds from.
 | `src/components/ModelSettingsModal.tsx:739,1236` (`invoke('open_external_url')`) | `https://ollama.com/download` | Allowed (see above) |
 
 Auto-pick of a summary template: one short request to the same provider before the summary (first 4,000 characters of the transcript plus template names and "Use when" lines).
+
+Dictate sends only the transcribed text to the LLM, never audio, and only when a cloud mode (Cleaned up or a custom mode) is used. The As spoken mode makes no request.
 
 Test-only clients (`reqwest::Client::new()` at `llm_client.rs:698,784,860`, `whisper_engine.rs:1601,1641,1796`, `parakeet_engine.rs:1341`) talk only to local mock servers in `mod tests`.
 

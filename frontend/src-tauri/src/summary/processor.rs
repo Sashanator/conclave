@@ -249,12 +249,16 @@ pub(crate) fn build_final_prompts(
     chunked: bool,
     custom_prompt: &str,
     notes_block: Option<&str>,
+    dictionary: &[String],
 ) -> (String, String) {
     use crate::summary::user_notes::{marked_lines_block, transcript_has_marks, NOTES_INSTRUCTION};
     let mut system = template.render_system_prompt(language_name);
     // Look at the original transcript: after chunking, `content` is model-written summaries.
     if notes_block.is_some() || transcript_has_marks(original_text) {
         system.push_str(NOTES_INSTRUCTION);
+    }
+    if !dictionary.is_empty() {
+        system.push_str(&format!("Correct spellings of names and terms: {}.\n", dictionary.join(", ")));
     }
     let mut user = format!("<transcript_chunks>\n{content}\n</transcript_chunks>\n");
     if chunked {
@@ -286,6 +290,7 @@ pub(crate) async fn generate_meeting_summary(
     text: &str,
     custom_prompt: &str,
     notes_block: Option<&str>,
+    dictionary: &[String],
     template: &Template,
     language_name: &str,
     token_threshold: usize,
@@ -404,7 +409,7 @@ pub(crate) async fn generate_meeting_summary(
 
     info!("Generating final markdown report with template: {}", template.name);
     let (final_system_prompt, final_user_prompt) = build_final_prompts(
-        template, language_name, &content_to_summarize, text, chunked, custom_prompt, notes_block,
+        template, language_name, &content_to_summarize, text, chunked, custom_prompt, notes_block, dictionary,
     );
     let completion = generate_summary(
         client, provider, model_name, api_key, &final_system_prompt, &final_user_prompt,
@@ -544,17 +549,17 @@ mod tests {
     fn final_prompts_add_notes_only_when_present() {
         let t: crate::summary::templates::Template =
             serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
-        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None);
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, &[]);
         assert!(!sys.contains("marked transcript lines"));
         assert!(!user.contains("<user_notes>"));
 
         let marked = "[00:01] [MARKED: action] hi";
-        let (sys, user) = build_final_prompts(&t, "English", marked, marked, false, "", None);
+        let (sys, user) = build_final_prompts(&t, "English", marked, marked, false, "", None, &[]);
         assert!(sys.contains("marked transcript lines"));
         assert!(!user.contains("<user_notes>"));
         assert!(!user.contains("<marked_lines>")); // not chunked: the lines are already in the transcript
 
-        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "ctx", Some("<user_notes>\n[00:01] x\n</user_notes>"));
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "ctx", Some("<user_notes>\n[00:01] x\n</user_notes>"), &[]);
         assert!(sys.contains("marked transcript lines"));
         assert!(user.contains("</transcript_chunks>\n\n<user_notes>"));
         assert!(user.contains("<user_context>\nctx"));
@@ -565,9 +570,27 @@ mod tests {
         let t: crate::summary::templates::Template =
             serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
         let original = "[00:01] hi\n[00:05] [MARKED: action] send deck";
-        let (sys, user) = build_final_prompts(&t, "English", "Chunk summary without marks", original, true, "", None);
+        let (sys, user) = build_final_prompts(&t, "English", "Chunk summary without marks", original, true, "", None, &[]);
         assert!(sys.contains("marked transcript lines"));
         assert!(user.contains("<marked_lines>\n[00:05] [MARKED: action] send deck\n</marked_lines>"));
+    }
+
+    #[test]
+    fn final_prompt_spelling_hints_only_when_dictionary_is_not_empty() {
+        let t: crate::summary::templates::Template =
+            serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
+        let base = t.render_system_prompt("English");
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, &[]);
+        assert_eq!(sys, base);
+
+        let words = vec!["Tauri".to_string()];
+        let (hinted_sys, hinted_user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, &words);
+        assert_eq!(hinted_sys, format!("{base}Correct spellings of names and terms: Tauri.\n"));
+        assert_eq!(hinted_user, user);
+
+        let words = vec!["Tauri".to_string(), "Claude Code".to_string()];
+        let (sys, _) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, &words);
+        assert!(sys.ends_with("Correct spellings of names and terms: Tauri, Claude Code.\n"), "{sys}");
     }
 
     #[test]

@@ -79,6 +79,12 @@
                     "description": "Meeting banner windows: read their content, act, follow the theme",
                     "windows": ["meeting-banner-*"],
                     "permissions": ["core:window:allow-set-theme"]
+                },
+                {
+                    "identifier": "dictate-pill",
+                    "description": "Dictate pill windows: listen for the state, follow the theme",
+                    "windows": ["dictate-pill-*"],
+                    "permissions": ["core:event:allow-listen", "core:event:allow-unlisten", "core:window:allow-set-theme"]
                 }
             ]
         }

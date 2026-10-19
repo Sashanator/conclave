@@ -1,9 +1,10 @@
 use crate::database::repositories::{
-    meeting::MeetingsRepository, setting::SettingsRepository, summary::SummaryProcessesRepository,
+    meeting::MeetingsRepository, summary::SummaryProcessesRepository,
 };
 use crate::summary::llm_client::{generate_summary, LLMProvider};
 use crate::summary::language_choice::{resolve_summary_language, LanguageChoice};
 use crate::summary::language_detection::detect_summary_language;
+use crate::summary::llm_target::{resolve_llm_target, LlmTarget};
 use crate::summary::metadata::{
     read_detected_summary_language_from_metadata, read_template_choice_from_metadata,
     write_template_choice_to_metadata,
@@ -230,83 +231,22 @@ impl SummaryService {
             meeting_id
         );
 
-        // Parse provider
-        let provider = match LLMProvider::from_str(&model_provider) {
-            Ok(p) => p,
-            Err(e) => {
-                Self::fail_and_cleanup(&pool, &meeting_id, started_at, &e).await;
+        // Provider, key and endpoints from the saved settings
+        let LlmTarget {
+            provider,
+            api_key: final_api_key,
+            ollama_endpoint,
+            custom_openai_endpoint,
+            max_tokens: custom_openai_max_tokens,
+            temperature: custom_openai_temperature,
+            top_p: custom_openai_top_p,
+            ..
+        } = match resolve_llm_target(&pool, &model_provider, &model_name).await {
+            Ok(target) => target,
+            Err(err) => {
+                Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err).await;
                 return;
             }
-        };
-
-        // Validate and setup api_key, Flexible for Ollama, BuiltInAI, and CustomOpenAI
-        let api_key = if provider == LLMProvider::Ollama || provider == LLMProvider::BuiltInAI || provider == LLMProvider::CustomOpenAI {
-            // These providers don't require API keys from the standard database column
-            String::new()
-        } else {
-            match SettingsRepository::get_api_key(&pool, &model_provider).await {
-                Ok(Some(key)) if !key.is_empty() => key,
-                Ok(None) | Ok(Some(_)) => {
-                    let err_msg = format!("API key not found for {}", &model_provider);
-                    Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
-                    return;
-                }
-                Err(e) => {
-                    let err_msg = format!("Failed to retrieve API key for {}: {}", &model_provider, e);
-                    Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
-                    return;
-                }
-            }
-        };
-
-        // Get Ollama endpoint if provider is Ollama
-        let ollama_endpoint = if provider == LLMProvider::Ollama {
-            match SettingsRepository::get_model_config(&pool).await {
-                Ok(Some(config)) => config.ollama_endpoint,
-                Ok(None) => None,
-                Err(e) => {
-                    info!("Failed to retrieve Ollama endpoint: {}, using default", e);
-                    None
-                }
-            }
-        } else {
-            None
-        };
-
-        // Get CustomOpenAI config if provider is CustomOpenAI
-        let (custom_openai_endpoint, custom_openai_api_key, custom_openai_max_tokens, custom_openai_temperature, custom_openai_top_p) =
-            if provider == LLMProvider::CustomOpenAI {
-                match SettingsRepository::get_custom_openai_config(&pool).await {
-                    Ok(Some(config)) => {
-                        info!("✓ Using custom OpenAI endpoint: {}", config.endpoint);
-                        (
-                            Some(config.endpoint),
-                            config.api_key,
-                            config.max_tokens.map(|t| t as u32),
-                            config.temperature,
-                            config.top_p,
-                        )
-                    }
-                    Ok(None) => {
-                        let err_msg = "Custom OpenAI provider selected but no configuration found";
-                        Self::fail_and_cleanup(&pool, &meeting_id, started_at, err_msg).await;
-                        return;
-                    }
-                    Err(e) => {
-                        let err_msg = format!("Failed to retrieve custom OpenAI config: {}", e);
-                        Self::fail_and_cleanup(&pool, &meeting_id, started_at, &err_msg).await;
-                        return;
-                    }
-                }
-            } else {
-                (None, None, None, None, None)
-            };
-
-        // For CustomOpenAI, use its API key (if any) instead of the empty string
-        let final_api_key = if provider == LLMProvider::CustomOpenAI {
-            custom_openai_api_key.unwrap_or_default()
-        } else {
-            api_key
         };
 
         // Dynamically fetch context size based on provider and model
@@ -381,11 +321,13 @@ impl SummaryService {
             Choice::Decided(id, source) => (id, source),
             Choice::AskModel => {
                 let (system, user) = auto_pick_prompts(&text, &listing.templates);
+                // Only a custom endpoint has ever received this temperature; other providers keep the default.
+                let temperature = if provider == LLMProvider::CustomOpenAI { Some(0.0) } else { None };
                 let answer = tokio::time::timeout(
                     Duration::from_secs(30),
                     generate_summary(&client, &provider, &model_name, &final_api_key, &system, &user,
                         ollama_endpoint.as_deref(), custom_openai_endpoint.as_deref(), custom_openai_max_tokens,
-                        Some(0.0), custom_openai_top_p, app_data_dir.as_ref(), Some(&cancellation_token)),
+                        temperature, custom_openai_top_p, app_data_dir.as_ref(), Some(&cancellation_token)),
                 ).await;
                 match answer {
                     Ok(Ok(c)) => match auto_pick_answer_id(&c.content, &listing.templates) {
@@ -440,6 +382,7 @@ impl SummaryService {
                 Vec::new()
             });
         let notes_block = crate::summary::user_notes::render_notes_block(&notes);
+        let dictionary = crate::dictate::settings::current().dictionary;
 
         let result = generate_meeting_summary(
             &client,
@@ -449,6 +392,7 @@ impl SummaryService {
             &text,
             &custom_prompt,
             notes_block.as_deref(),
+            &dictionary,
             &template,
             language.name,
             token_threshold,

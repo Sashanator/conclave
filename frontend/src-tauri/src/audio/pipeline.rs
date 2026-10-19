@@ -615,6 +615,9 @@ impl AudioCapture {
         //     }
         // }
 
+        // Decided here, at capture: a backlog in the pipeline must not let the last dictated audio through.
+        apply_dictate_mute(&self.device_type, &mut mono_data, crate::dictate::mute::meeting_mic_muted);
+
         // Use global recording timestamp for proper synchronization
         let timestamp = self.state.get_recording_duration().unwrap_or(0.0);
 
@@ -1110,9 +1113,32 @@ impl Default for AudioPipelineManager {
         Self::new()
     }
 }
+/// While a dictation mutes the meeting mic, zero microphone samples. The length is kept so timing and levels stay aligned.
+fn apply_dictate_mute(device: &DeviceType, data: &mut [f32], muted: impl FnOnce() -> bool) {
+    if *device == DeviceType::Microphone && muted() {
+        data.fill(0.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_zeroes_mic_only() {
+        let mut mic = vec![1.0f32; 48_000];
+        apply_dictate_mute(&DeviceType::Microphone, &mut mic, || true);
+        assert_eq!(mic.len(), 48_000);
+        assert!(mic.iter().all(|&x| x == 0.0));
+
+        let mut system = vec![1.0f32; 48_000];
+        apply_dictate_mute(&DeviceType::System, &mut system, || true);
+        assert!(system.iter().all(|&x| x == 1.0));
+
+        let mut unmuted = vec![1.0f32; 48_000];
+        apply_dictate_mute(&DeviceType::Microphone, &mut unmuted, || false);
+        assert!(unmuted.iter().all(|&x| x == 1.0));
+    }
 
     #[test]
     fn test_live_vad_redemption_matches_pro_policy() {

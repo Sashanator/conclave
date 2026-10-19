@@ -125,6 +125,9 @@ jobs:
       - name: Test meeting-detector (incl. Windows-only registry/COM tests)
         run: cargo test -p meeting-detector
 
+      - name: Test dictate-input
+        run: cargo test -p dictate-input
+
       - name: Build conclave-probe
         run: cargo build --release -p meeting-detector --bin conclave-probe
 

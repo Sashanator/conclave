@@ -112,6 +112,9 @@ pub async fn start_retranscription<R: Runtime>(
 
     // Unload the engine after the batch job (success, failure, or cancellation)
     super::common::unload_engine_after_batch(use_parakeet).await;
+    // The job is over: a Whisper unload or reload that Dictate deferred during it runs now.
+    drop(_guard);
+    crate::dictate::finish_pending_unload(&app).await;
 
     // Guard will automatically clear flag on drop
     // No need for manual: RETRANSCRIPTION_IN_PROGRESS.store(false, Ordering::SeqCst);
@@ -385,7 +388,7 @@ async fn run_retranscription<R: Runtime>(
         } else {
             let engine = whisper_engine.as_ref().unwrap();
             let (text, conf, _, sentences) = engine
-                .transcribe_audio_with_confidence(segment.samples.clone(), language.clone(), Some(&mut policy))
+                .transcribe_audio_with_confidence(segment.samples.clone(), language.clone(), Some(&mut policy), None)
                 .await
                 .map_err(|e| anyhow!("Whisper transcription failed on segment {}: {}", i, e))?;
             (text, conf, sentences)

@@ -201,6 +201,7 @@ pub fn bindings(s: &DictateSettings) -> Vec<Binding> {
 }
 
 // unused since the 2026-10-19 dictionary gate failed; kept for a per-language prompt experiment
+    let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
 /// Dictionary words joined for Whisper's initial prompt. Adds whole words only, in order, up to the cap.
 pub fn whisper_prompt(words: &[String]) -> Option<String> {
     let mut out = String::new();
@@ -251,7 +252,6 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     };
     let s = sanitize(raw);
     info!("dictate: {}", if s.enabled { "on" } else { "off" });
-    let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     set_cache(s);
 }
 

@@ -4,14 +4,25 @@
 use crate::hotkey::{modifier_bit, Hotkey, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, VK_ESCAPE};
 
 /// Largest gap between two downs of a key that is still auto-repeat. Windows'
-/// keyboard delay is at most 1000 ms; repeat intervals are far shorter.
-const MAX_REPEAT_GAP_MS: u32 = 1100;
+/// keyboard delay is at most 1000 ms, and keyboards time their own repeat with
+/// about ±20% tolerance, so 1300 ms leaves room for that.
+const MAX_REPEAT_GAP_MS: u32 = 1300;
+
+/// Milliseconds from `from` to `to` on the wrapping KBDLLHOOKSTRUCT.time tick.
+/// A stamp that steps backwards reads as 0, not as a ~49-day gap.
+fn elapsed_ms(from: u32, to: u32) -> u32 {
+    let gap = to.wrapping_sub(from);
+    if gap > i32::MAX as u32 {
+        0
+    } else {
+        gap
+    }
+}
 
 /// True when a down of a swallowed key, `now - last_down` ms after its last down,
-/// is a new press (its key-up was lost) rather than auto-repeat. Times are
-/// KBDLLHOOKSTRUCT.time, which wraps, so the gap uses wrapping subtraction.
+/// is a new press (its key-up was lost) rather than auto-repeat.
 pub fn is_fresh_press(last_down: u32, now: u32) -> bool {
-    now.wrapping_sub(last_down) > MAX_REPEAT_GAP_MS
+    elapsed_ms(last_down, now) > MAX_REPEAT_GAP_MS
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -222,7 +233,7 @@ impl HotkeyMachine {
     }
 
     fn within_threshold(&self, t0: u32, now: u32) -> bool {
-        u64::from(now.wrapping_sub(t0)) < self.hold_threshold_ms
+        u64::from(elapsed_ms(t0, now)) < self.hold_threshold_ms
     }
 
     fn is_swallowed(&self, vk: u16) -> bool {
@@ -668,17 +679,19 @@ mod tests {
 
     #[test]
     fn fresh_press_rule() {
-        // Repeat intervals are far below the 1100 ms cut-off.
+        // Repeat intervals are far below the 1300 ms cut-off.
         assert!(!is_fresh_press(0, 30));
-        assert!(!is_fresh_press(0, 1100));
-        assert!(is_fresh_press(0, 1101));
+        assert!(!is_fresh_press(0, 1300));
+        assert!(is_fresh_press(0, 1301));
+        // A stamp that steps backwards is not a ~49-day gap.
+        assert!(!is_fresh_press(1000, 999));
         assert!(is_fresh_press(0, 5000));
     }
 
     #[test]
     fn fresh_press_rule_across_tick_wrap() {
         assert!(!is_fresh_press(u32::MAX - 100, 400));
-        assert!(is_fresh_press(u32::MAX - 100, 1200));
+        assert!(is_fresh_press(u32::MAX - 100, 1400));
     }
 
     #[test]
@@ -704,7 +717,35 @@ mod tests {
         const SPACE: u16 = 0x20;
         let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
         press(&mut m, SPACE, u32::MAX - 100);
-        assert_eq!(press(&mut m, SPACE, 1200), none());
+        assert_eq!(press(&mut m, SPACE, 1400), none());
         assert!(m.swallow_ups.is_empty());
+    }
+
+    #[test]
+    fn release_stamped_before_arming_is_still_hands_free() {
+        // Out-of-order stamp: 1 ms before the arming down. Must not read as a ~49-day hold.
+        let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        assert_eq!(
+            press(&mut m, LWIN, 1000),
+            dec(Action::Start(Target::Main), false, true)
+        );
+        assert_eq!(
+            release(&mut m, LWIN, 999),
+            dec(Action::HandsFree(Target::Main), false, false)
+        );
+    }
+
+    #[test]
+    fn repeat_stamped_before_last_down_stays_swallowed() {
+        const SPACE: u16 = 0x20;
+        let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(
+            press(&mut m, SPACE, 500),
+            dec(Action::Start(Target::Main), true, true)
+        );
+        assert_eq!(press(&mut m, SPACE, 499), dec(Action::None, true, false));
     }
 }

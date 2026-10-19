@@ -46,10 +46,10 @@ pub struct ChatRequest {
 }
 
 /// OpenAI reasoning models reject any temperature but the default, so it is left out for them.
+/// Only the part after the last '/' is checked, so OpenRouter ids such as `openai/gpt-5-mini` match.
 fn rejects_temperature(model_name: &str) -> bool {
-    ["o1", "o3", "o4", "gpt-5"]
-        .iter()
-        .any(|prefix| model_name.starts_with(prefix))
+    let id = model_name.rsplit('/').next().unwrap_or(model_name);
+    ["o1", "o3", "o4", "gpt-5"].iter().any(|prefix| id.starts_with(prefix))
 }
 
 /// Build OpenAI-compat JSON body.
@@ -67,7 +67,12 @@ pub fn build_openai_compat_chat_body(
     } else {
         (None, None)
     };
-    let temperature_val = temperature.filter(|_| !rejects_temperature(model_name));
+    // A configured custom endpoint always gets its temperature, as summaries always had it.
+    let temperature_val = if *provider == LLMProvider::CustomOpenAI {
+        temperature
+    } else {
+        temperature.filter(|_| !rejects_temperature(model_name))
+    };
 
     serde_json::json!(ChatRequest {
         model: model_name.to_string(),
@@ -638,6 +643,18 @@ mod tests {
             );
             assert!(body.get("temperature").is_none(), "{model}");
         }
+        let openrouter = build_openai_compat_chat_body(
+            &LLMProvider::OpenRouter, "openai/gpt-5-mini", "sys", "user", None, Some(0.0), None,
+        );
+        assert!(openrouter.get("temperature").is_none());
+    }
+
+    #[test]
+    fn custom_openai_keeps_configured_temperature_for_any_model() {
+        let body = build_openai_compat_chat_body(
+            &LLMProvider::CustomOpenAI, "gpt-5-x", "sys", "user", None, Some(0.3), None,
+        );
+        assert_eq!(body["temperature"].as_f64(), Some(0.3_f32 as f64));
     }
 
     #[test]

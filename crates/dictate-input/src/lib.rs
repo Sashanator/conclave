@@ -2,17 +2,23 @@
 //! and the Windows low-level keyboard hook that drives it.
 pub mod hotkey;
 pub mod machine;
+pub mod paste_logic;
 pub mod win;
 
 pub use win::{is_injected, monotonic_ms};
 
+pub use paste_logic::{decide_paste, should_restore, CopiedReason, PasteOutcome, PasteTarget};
+
 #[cfg(windows)]
-pub use win::{start_hook, HookHandle};
+pub use win::{clipboard, paste, start_hook, HookHandle};
 
 // Non-Windows stubs so the app crate compiles and tests on Linux.
 #[cfg(not(windows))]
 mod stub {
+    use std::time::Duration;
+
     use crate::machine::{Action, Binding};
+    use crate::paste_logic::PasteOutcome;
 
     pub struct HookHandle;
 
@@ -29,7 +35,52 @@ mod stub {
     ) -> Result<HookHandle, String> {
         Err("Dictate needs Windows".into())
     }
+
+    pub mod clipboard {
+        pub struct SavedClipboard;
+
+        pub fn save() -> Result<SavedClipboard, String> {
+            Err("Dictate needs Windows".into())
+        }
+
+        pub fn set_private_text(_text: &str) -> Result<(), String> {
+            Err("Dictate needs Windows".into())
+        }
+
+        pub fn restore(_saved: &SavedClipboard) -> Result<(), String> {
+            Err("Dictate needs Windows".into())
+        }
+
+        pub fn sequence_number() -> u32 {
+            0
+        }
+    }
+
+    pub mod paste {
+        use super::*;
+        use crate::paste_logic::PasteTarget;
+
+        pub fn foreground_target(_own_pid: u32) -> PasteTarget {
+            PasteTarget::NoWindow
+        }
+
+        pub fn foreground_monitor_point() -> Option<(i32, i32)> {
+            None
+        }
+
+        pub fn wait_keys_released(_timeout: Duration) -> bool {
+            false
+        }
+
+        pub fn send_ctrl_v() -> Result<(), String> {
+            Err("Dictate needs Windows".into())
+        }
+
+        pub fn paste_text(_text: &str, _own_pid: u32, _restore_delay: Duration) -> PasteOutcome {
+            PasteOutcome::Failed
+        }
+    }
 }
 
 #[cfg(not(windows))]
-pub use stub::{start_hook, HookHandle};
+pub use stub::{clipboard, paste, start_hook, HookHandle};

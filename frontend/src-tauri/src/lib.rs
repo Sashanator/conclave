@@ -714,6 +714,8 @@ pub fn run() {
                 database::setup::initialize_database_on_startup(&_app.handle()).await
             })
             .expect("Failed to initialize database");
+            // Dictate that was on comes back only now: its model load needs the database.
+            dictate::apply_after_db_ready(_app.handle());
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {
@@ -954,6 +956,9 @@ pub fn run() {
             audio::import::is_import_in_progress_command,
             // Dictate commands
             dictate::settings::dictate_get_settings,
+            dictate::session::dictate_save_settings,
+            dictate::session::dictate_pill_action,
+            dictate::session::dictate_status,
             dictate::pill::dictate_pill_view,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,

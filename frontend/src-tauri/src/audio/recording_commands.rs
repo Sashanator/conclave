@@ -959,6 +959,9 @@ async fn stop_recording_inner<R: Runtime>(
                 warn!("⚠️ No Parakeet engine found to unload model");
             }
         }
+        _ if crate::dictate::keeps_model_loaded() => {
+            info!("Keeping Whisper loaded for Dictate");
+        }
         _ => {
             // Default to Whisper
             info!("🎤 Unloading Whisper model...");
@@ -1036,6 +1039,8 @@ async fn stop_recording_inner<R: Runtime>(
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
+    // A Whisper unload that Dictate deferred while recording is completed here, without the lifecycle lock.
+    crate::dictate::finish_pending_unload(&app).await;
     // IS_RECORDING_STOPPING is cleared by _stopping_guard on scope exit.
 
     // Step 4.5: Prepare metadata for frontend (NO database save)

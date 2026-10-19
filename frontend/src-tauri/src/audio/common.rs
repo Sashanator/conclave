@@ -35,6 +35,8 @@ pub(crate) async fn unload_engine_after_batch(use_parakeet: bool) {
         if let Some(e) = engine {
             e.unload_model().await;
         }
+    } else if crate::dictate::keeps_model_loaded() {
+        info!("Keeping Whisper loaded for Dictate");
     } else {
         use crate::whisper_engine::commands::WHISPER_ENGINE;
         let engine = {

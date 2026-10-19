@@ -580,9 +580,9 @@ export function showsControls(s: PillState): boolean;     // true only for 'hand
 // mod.rs
 pub fn keeps_model_loaded() -> bool;   // settings::current().enabled (both unload sites are already Whisper-only)
 pub fn should_unload_now(dictate_on: bool, recording: bool, importing: bool, retranscribing: bool) -> bool; // !dictate_on && !recording && !importing && !retranscribing
-pub async fn ensure_model<R: Runtime>(app: &AppHandle<R>) -> Result<(), String>; // under acquire_engine_lifecycle_lock: if still enabled → get_or_init_whisper(app); else no-op
+pub async fn ensure_model<R: Runtime>(app: &AppHandle<R>) -> Result<(), String>; // under acquire_engine_lifecycle_lock: if still enabled → if a model is loaded and a recording/import/retranscription is running, reuse it (never swap the model under a meeting; set RELOAD_PENDING) else get_or_init_whisper(app); disabled → no-op
 pub async fn unload_if_idle<R: Runtime>(app: &AppHandle<R>);  // under the lock: re-check should_unload_now; unload Whisper, else set UNLOAD_PENDING
-pub async fn finish_pending_unload<R: Runtime>(app: &AppHandle<R>); // called at the end of stop_recording (after IS_RECORDING=false) and of unload_engine_after_batch; runs unload_if_idle if UNLOAD_PENDING
+pub async fn finish_pending_unload<R: Runtime>(app: &AppHandle<R>); // runs unload_if_idle if UNLOAD_PENDING, or ensure_model if RELOAD_PENDING. Called WITHOUT the lifecycle lock held: in stop_recording after IS_RECORDING.store(false) (:1038; stop never holds the lock), and in import.rs / retranscription.rs right after their ImportGuard / RetranscriptionGuard is dropped (explicit drop before the call), never inside unload_engine_after_batch (it holds the non-reentrant lock)
 pub async fn apply<R: Runtime>(app: &AppHandle<R>, old: &DictateSettings, new: &DictateSettings); // see Model lifetime
 pub fn apply_after_db_ready<R: Runtime>(app: &AppHandle<R>);  // spawned right after initialize_database_on_startup (lib.rs:711-714); uses app.try_state::<AppState>()
 // session.rs
@@ -591,26 +591,26 @@ pub fn check_speech(speech_secs: f32) -> SpeechCheck;    // < MIN_SPEECH_SECS �
 pub struct LastDictation { pub as_spoken: String, pub final_text: String }
 pub fn last_dictation() -> Option<LastDictation>;        // in memory only
 pub fn final_pill_state(cleanup_failed: bool, outcome: PasteOutcome) -> Option<PillState>; // Pasted→Pasted|PastedAsSpoken, Copied→Copied, Failed→Copied (text stays in last dictation)
-pub enum SessionEvent { Hotkey(Action), PillStop, PillCancel, CapTimer, ShowPillTimer(u64), Disable }
+pub enum SessionEvent { Hotkey(Action), PillStop, PillCancel, CapTimer(u64), ShowPillTimer(u64), CaptureFailed, ProcessingDone, ReopenMic, Disable }
 pub struct SessionCore { /* phase: Idle|Capturing{target, hands_free, id}|Processing, … */ }
 impl SessionCore { pub fn on_event(&mut self, ev: SessionEvent) -> Vec<Effect>; } // pure; the tokio task executes Effects
-pub enum Effect { BeginCapture, CancelCapture, EndCaptureAndProcess(Target), MuteOn, MuteOff, ShowPill, PillState(PillState), HidePill, ResetMachine, StartCapTimer, StartShowPillTimer(u64) }
+pub enum Effect { BeginCapture, CancelCapture, EndCaptureAndProcess(Target), MuteOn, MuteOff, ShowPill, PillState(PillState), HidePill, ResetMachine, StartCapTimer(u64), StartShowPillTimer(u64), ReopenMic }
 #[tauri::command] pub async fn dictate_save_settings<R: Runtime>(app: AppHandle<R>, settings: DictateSettings) -> Result<DictateSettings, String>; // validate, save, apply
 #[tauri::command] pub async fn dictate_pill_action<R: Runtime>(app: AppHandle<R>, action: String) -> Result<(), String>; // "stop" | "cancel"
 #[tauri::command] pub async fn dictate_status() -> DictateStatus; // { enabled, model_downloaded, mic_ok, engine_is_whisper, reason: Option<String> }
 ```
 
-**Files also modified:** `lib.rs` (register commands; spawn `apply_after_db_ready` after the database init at `:711-714`, not next to `load_at_startup`), `api/api.rs:685` (`api_save_transcript_config`: if `keeps_model_loaded()` → spawn `ensure_model`, so a Whisper model change reloads while Dictate is on; if the provider became non-Whisper → turn Dictate off through `apply`), `audio/recording_preferences.rs:222` (`set_recording_preferences` → tell the session to reopen the mic), `audio/recording_commands.rs` (skip unload at `:979`; call `finish_pending_unload` after `IS_RECORDING.store(false)` at `:1038`), `audio/common.rs:21` (skip in `unload_engine_after_batch` when `!use_parakeet`; then `finish_pending_unload`).
+**Files also modified:** `lib.rs` (register commands; spawn `apply_after_db_ready` after the database init at `:711-714`, not next to `load_at_startup`), `api/api.rs:685` (`api_save_transcript_config`: if `keeps_model_loaded()` → spawn `ensure_model`, so a Whisper model change reloads while Dictate is on; if the provider became non-Whisper → turn Dictate off through `apply`), `audio/recording_preferences.rs:222` (`set_recording_preferences` → send `SessionEvent::ReopenMic`), `audio/recording_commands.rs` (skip unload at `:979`; call `finish_pending_unload` after `IS_RECORDING.store(false)` at `:1038`), `audio/common.rs:21` (skip in `unload_engine_after_batch` when `!use_parakeet`), `audio/import.rs:287` and `audio/retranscription.rs:114` (after the batch unload, `drop` the in-progress guard, then `finish_pending_unload`).
 
 **Flow:** one tokio task owns the session. It receives `SessionEvent`s on an `mpsc` channel: the hook's `on_action` sends `Hotkey(action)`, the pill command sends `PillStop`/`PillCancel`, and timers send theirs. It runs `SessionCore::on_event`, a pure state machine, and executes the returned `Effect`s.
 
 1. **`Start(target)`:**
    - In `Processing` → `[ResetMachine]` only (the machine must not stay Armed or HandsFree).
-   - In Idle → `[BeginCapture, MuteOn, StartShowPillTimer(id), StartCapTimer]`. `MuteOn` (a `MuteGuard`) is taken for **every** dictation, recording or not.
-   - **The pill isn't shown yet:** `ShowPillTimer(id)` fires after `HOLD_THRESHOLD_MS` and gives `[ShowPill, PillState(Listening)]` if the session is still capturing with that id. So an abandoned Ctrl+Win+→ never flashes it.
+   - In Idle → new session id; `[BeginCapture, MuteOn, StartShowPillTimer(id), StartCapTimer(id)]`. `MuteOn` (a `MuteGuard`) is taken for **every** dictation, recording or not.
+   - **The pill isn't shown yet:** `ShowPillTimer(id)` fires after `HOLD_THRESHOLD_MS` and gives `[ShowPill, PillState(Listening)]` only if the session is still capturing with that id **and the pill is not shown yet** (hands-free already showed it). So an abandoned Ctrl+Win+→ never flashes it. Timers with a stale id do nothing (`CapTimer(id)` likewise).
    - `ShowPill` calls `pill::show(app, foreground_monitor_point())`.
-   - If the mic is absent or dead and a reopen fails → pill `NoMicrophone`, hide after `COPIED_SHOW_MS`, `ResetMachine`.
-2. **`HandsFree(target)`** → `[ShowPill, PillState(HandsFree)]` (timer, stop, cancel).
+   - If the mic is absent or dead and a reopen fails, the executor sends `CaptureFailed` → `[MuteOff, ShowPill, PillState(NoMicrophone), ResetMachine]`, phase Idle (the executor hides it after `COPIED_SHOW_MS`).
+2. **`HandsFree(target)`** → `[ShowPill, PillState(HandsFree)]` (timer, stop, cancel); marks the pill shown.
 3. **`Retarget(t)`** → change the mode used at stop.
 4. **`Abandon`/`Cancel`/`PillCancel`** → `[CancelCapture, MuteOff, HidePill]` (`PillCancel` adds `ResetMachine`). Nothing is pasted.
 5. **`Stop`/`PillStop`/`CapTimer`** → `[MuteOff, EndCaptureAndProcess(target)]` (`PillStop` and `CapTimer` add `ResetMachine`). Phase becomes `Processing`.
@@ -620,7 +620,7 @@ pub enum Effect { BeginCapture, CancelCapture, EndCaptureAndProcess(Target), Mut
    - Pill `Transcribing` (`LoadingModel` first if `ensure_model` actually has to load).
    - `ensure_model(app)` → `let mut policy = DICTATE_POLICY.lock().unwrap();` → `transcribe_audio_with_confidence(a16, Some("auto".into()), Some(&mut *policy), settings::current_whisper_prompt().as_deref())`. `DICTATE_POLICY` is a `std::sync::Mutex<LanguagePolicy>`, rebuilt only when `get_allowed_languages_internal()` changes. Take the policy out, or use a `tokio::sync::Mutex`, so no std guard is held across `.await`. The language is never `"auto-translate"`.
    - **Mode:** `resolve_mode` of the target (`Main` → default mode). For a cloud mode: `resolve_llm_target(pool, provider, model)` (cleanup provider/model, else the summary `get_model_config`) → `cleanup::clean`. On `Err`, use the as-spoken text and set `cleanup_failed`.
-   - Store `LastDictation` and rebuild the tray. Unless a `Disable` arrived meanwhile, run `paste_text(final, std::process::id(), RESTORE_DELAY_MS)` on a blocking thread. The pill shows `final_pill_state`, then hides after `PASTED_FADE_MS` or `COPIED_SHOW_MS`. Phase becomes Idle.
+   - Store `LastDictation` and rebuild the tray. Unless a `Disable` arrived meanwhile, run `paste_text(final, std::process::id(), RESTORE_DELAY_MS)` on a blocking thread. The pill shows `final_pill_state`, then hides after `PASTED_FADE_MS` or `COPIED_SHOW_MS`. On every exit path (pasted, nothing heard, error) the executor sends `ProcessingDone` → phase Idle.
    - Log only lengths, durations, mode id and outcome.
 7. **Errors:**
    - A Whisper failure → pill `NothingHeard`, logged.
@@ -644,6 +644,10 @@ pub enum Effect { BeginCapture, CancelCapture, EndCaptureAndProcess(Target), Mut
   - `unload_rule`: `should_unload_now(false,false,false,false)` true; any of the others true → false; `dictate_on` true → false.
   - `final_states`: `(false, Pasted)` → `Pasted`; `(true, Pasted)` → `PastedAsSpoken`; `(false, Copied(Elevated))` → `Copied`; `(false, Failed)` → `Copied`.
   - `start_while_processing_resets_machine` (`SessionCore`): Stop → Processing; `Hotkey(Start(Main))` → effects `== [ResetMachine]`.
+  - `processing_done_returns_to_idle`: Start, Stop, `ProcessingDone`, Start → effects contain `BeginCapture`.
+  - `capture_failed_releases`: Start, `CaptureFailed` → `[MuteOff, ShowPill, PillState(NoMicrophone), ResetMachine]`, phase Idle.
+  - `hands_free_pill_not_overwritten`: Start(id), `HandsFree(Main)`, `ShowPillTimer(id)` → no effects.
+  - `stale_cap_timer_ignored`: Start(id1), Abandon, Start(id2), `CapTimer(id1)` → no effects.
   - `abandon_never_shows_pill`: Start then Abandon → effects contain `CancelCapture`, `MuteOff` and no `ShowPill`; a later `ShowPillTimer(old_id)` → no effects.
   - `mute_taken_for_every_start`: `Hotkey(Start(Main))` from Idle → effects contain `MuteOn`.
   - `pill_stop_resets_machine`: HandsFree then `PillStop` → contains `EndCaptureAndProcess(Main)` and `ResetMachine`.

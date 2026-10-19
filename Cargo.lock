@@ -1555,6 +1555,9 @@ dependencies = [
 [[package]]
 name = "dictate-input"
 version = "0.1.0"
+dependencies = [
+ "windows 0.61.3",
+]
 
 [[package]]
 name = "digest"

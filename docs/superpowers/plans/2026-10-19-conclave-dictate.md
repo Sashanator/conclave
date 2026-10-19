@@ -93,7 +93,7 @@
 | `crates/dictate-input/src/win/clipboard.rs` | save/set-private/restore clipboard, exclusion formats (Windows) |
 | `crates/dictate-input/src/win/paste.rs` | foreground target, elevation check, Ctrl+V via SendInput (Windows) |
 | `frontend/src-tauri/src/dictate/mod.rs` | Constants, `apply()`, lifecycle, `keeps_model_loaded()` |
-| `frontend/src-tauri/src/dictate/settings.rs` | `DictateSettings`, sanitize/validate, store, cache, `whisper_prompt()` |
+| `frontend/src-tauri/src/dictate/settings.rs` | `DictateSettings`, sanitize/validate, store, cache, `whisper_prompt()`. Removed after Task 7 (ruling R24: dictation passes no initial prompt); see commit bcee985. |
 | `frontend/src-tauri/src/dictate/cleanup.rs` | Mode resolution, prompts, output acceptance, cloud call |
 | `frontend/src-tauri/src/dictate/capture.rs` | Always-open cpal stream, `PreRollBuffer`, levels |
 | `frontend/src-tauri/src/dictate/mute.rs` | Meeting-mic mute flag + `MuteGuard` |

@@ -27,6 +27,7 @@ use crate::api::api::api_get_transcript_config;
 use crate::audio::audio_processing::resample_audio;
 use crate::audio::vad;
 use crate::audio::devices::{list_audio_devices, parse_audio_device};
+use crate::audio::default_input_device;
 use crate::audio::recording_preferences::load_recording_preferences;
 use crate::database::repositories::setting::SettingsRepository;
 use crate::get_allowed_languages_internal;
@@ -236,14 +237,19 @@ impl SessionCore {
         matches!(self.phase, Phase::Capturing { id: current, .. } if current == id)
     }
 
-    /// Ends the capture and hands it to processing.
+    /// Ends the capture and hands it to processing. A hold that ends just past the threshold never showed
+    /// the pill, so it is shown here, and the processing states are visible.
     fn finish(&mut self, reset: bool) -> Vec<Effect> {
-        let target = match &self.phase {
-            Phase::Capturing { target, .. } => target.clone(),
+        let (target, pill_shown) = match &self.phase {
+            Phase::Capturing { target, pill_shown, .. } => (target.clone(), *pill_shown),
             _ => return Vec::new(),
         };
         self.phase = Phase::Processing;
-        let mut effects = vec![Effect::MuteOff, Effect::EndCaptureAndProcess(target)];
+        let mut effects = vec![Effect::MuteOff];
+        if !pill_shown {
+            effects.push(Effect::ShowPill);
+        }
+        effects.push(Effect::EndCaptureAndProcess(target));
         if reset {
             effects.push(Effect::ResetMachine);
         }
@@ -272,6 +278,12 @@ static SENDER: OnceLock<UnboundedSender<SessionEvent>> = OnceLock::new();
 static MIC: Mutex<Option<MicCapture>> = Mutex::new(None);
 /// Set while a reopen runs, so two reopens never overlap.
 static OPENING: AtomicBool = AtomicBool::new(false);
+/// True from a capture's start to its end. Set and read under the MIC lock, so a reopen never replaces the mic
+/// under a dictation.
+static CAPTURING: AtomicBool = AtomicBool::new(false);
+/// The microphone preference the last reopen acted on (the bare device name, or None for no preference).
+/// None outside: no reopen has run yet.
+static REQUESTED: Mutex<Option<Option<String>>> = Mutex::new(None);
 /// Dictation's language policy, kept between dictations. Taken out while a dictation uses it.
 static DICTATE_POLICY: Mutex<Option<LanguagePolicy>> = Mutex::new(None);
 static LAST: Mutex<Option<LastDictation>> = Mutex::new(None);
@@ -288,6 +300,24 @@ fn with_live_mic<T>(f: impl FnOnce(&MicCapture) -> T) -> Option<T> {
 /// The mic for the lifecycle code to drop off the async runtime.
 pub(super) fn take_mic() -> Option<MicCapture> {
     lock(&MIC).take()
+}
+
+/// Starts a capture on the live mic. False when there is none.
+fn begin_capture() -> bool {
+    let slot = lock(&MIC);
+    match slot.as_ref().filter(|m| m.is_alive()) {
+        Some(mic) => {
+            mic.begin();
+            CAPTURING.store(true, Ordering::SeqCst);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Dictate is still on, and it was not turned off (and on again) since the dictation began.
+fn still_on(epoch: u64) -> bool {
+    epoch == EPOCH.load(Ordering::SeqCst) && settings::current().enabled
 }
 
 pub fn mic_ok() -> bool {
@@ -346,6 +376,8 @@ struct Exec {
     mode: String,
     pill_state: Option<PillState>,
     started: Option<Instant>,
+    /// Dictate's epoch when the current capture began.
+    epoch: u64,
 }
 
 impl Exec {
@@ -354,7 +386,9 @@ impl Exec {
             Effect::BeginCapture => {
                 self.mode = settings::current().default_mode;
                 self.started = Some(Instant::now());
-                if with_live_mic(|m| m.begin()).is_none() {
+                self.epoch = EPOCH.load(Ordering::SeqCst);
+                self.pill_state = None;
+                if !begin_capture() {
                     warn!("dictate: no microphone to capture from");
                     let _ = tx.send(SessionEvent::CaptureFailed);
                     tauri::async_runtime::spawn(reopen(app.clone()));
@@ -362,11 +396,12 @@ impl Exec {
             }
             Effect::CancelCapture => {
                 with_live_mic(|m| m.cancel());
+                CAPTURING.store(false, Ordering::SeqCst);
             }
             Effect::EndCaptureAndProcess(target) => {
                 let captured = with_live_mic(|m| m.end());
-                let epoch = EPOCH.load(Ordering::SeqCst);
-                tauri::async_runtime::spawn(process(app.clone(), tx.clone(), target, captured, epoch));
+                CAPTURING.store(false, Ordering::SeqCst);
+                tauri::async_runtime::spawn(process(app.clone(), tx.clone(), target, captured, self.epoch));
             }
             Effect::MuteOn => self.muted = Some(MuteGuard::new()),
             Effect::MuteOff => self.muted = None,
@@ -435,42 +470,60 @@ fn set_pill<R: Runtime>(app: &AppHandle<R>, state: PillState, mode: &str) {
     }
 }
 
-/// Opens the preferred microphone when it is missing or dead, or when the preferred one is back after a
-/// fallback. Runs off the async runtime; never during a dictation's capture is the open mic replaced (the
-/// session only asks for a reopen between events).
+/// Opens the microphone the preferences ask for, when needed: no live mic, the preference changed since the
+/// last reopen, or the preferred device is listed again after a fallback. A reopen during a capture is
+/// deferred; the retry tick picks it up once the capture has ended.
 async fn reopen<R: Runtime>(app: AppHandle<R>) {
     if OPENING.swap(true, Ordering::SeqCst) {
         return;
     }
-    let preferred = match load_recording_preferences(&app).await {
-        Ok(prefs) => prefs.preferred_mic_device,
-        Err(_) => None,
-    };
-    let epoch = EPOCH.load(Ordering::SeqCst);
-    let wanted = preferred
-        .as_deref()
-        .and_then(|p| parse_audio_device(p).ok())
-        .map(|d| d.name);
-    let _ = tokio::task::spawn_blocking(move || {
-        // Absent or dead (no live mic) always reopens; a fallback mic reopens once its preferred device is listed.
-        let need = match with_live_mic(|m| m.device_name()) {
-            None => true,
-            Some(name) => wanted.as_ref().is_some_and(|w| &name != w && device_listed(w)),
-        };
-        if need {
-            match MicCapture::open(preferred) {
-                Ok(mic) => {
-                    if epoch == EPOCH.load(Ordering::SeqCst) && settings::current().enabled {
-                        let old = lock(&MIC).replace(mic);
-                        drop(old);
-                    }
-                }
-                Err(e) => warn!("dictate: microphone not opened: {e}"),
-            }
-        }
-    })
-    .await;
+    if let Ok(prefs) = load_recording_preferences(&app).await {
+        let raw = prefs.preferred_mic_device;
+        let wanted = raw
+            .as_deref()
+            .and_then(|p| parse_audio_device(p).ok())
+            .map(|d| d.name);
+        let epoch = EPOCH.load(Ordering::SeqCst);
+        let _ = tokio::task::spawn_blocking(move || reopen_blocking(raw, wanted, epoch)).await;
+    }
     OPENING.store(false, Ordering::SeqCst);
+}
+
+fn reopen_blocking(raw: Option<String>, wanted: Option<String>, epoch: u64) {
+    if CAPTURING.load(Ordering::SeqCst) {
+        return;
+    }
+    let changed = lock(&REQUESTED).as_ref() != Some(&wanted);
+    // The device the preference resolves to; with no preference, the default input.
+    let target = wanted
+        .clone()
+        .or_else(|| default_input_device().ok().map(|d| d.name));
+    let need = match with_live_mic(|m| m.device_name()) {
+        None => true,
+        Some(name) => target
+            .as_ref()
+            .is_some_and(|t| &name != t && (changed || device_listed(t))),
+    };
+    if !need {
+        *lock(&REQUESTED) = Some(wanted);
+        return;
+    }
+    match MicCapture::open(raw) {
+        Ok(mic) => {
+            let mut slot = lock(&MIC);
+            // Checked under the lock: a capture or a turn-off that started meanwhile wins, and the new mic is dropped.
+            if CAPTURING.load(Ordering::SeqCst) || !still_on(epoch) {
+                drop(slot);
+                drop(mic);
+                return;
+            }
+            let old = slot.replace(mic);
+            drop(slot);
+            drop(old);
+            *lock(&REQUESTED) = Some(wanted);
+        }
+        Err(e) => warn!("dictate: microphone not opened: {e}"),
+    }
 }
 
 fn device_listed(name: &str) -> bool {
@@ -607,6 +660,12 @@ async fn process<R: Runtime>(
         return;
     }
     info!("dictate: transcribed {} chars in {} ms", text.chars().count(), started.elapsed().as_millis());
+    if !still_on(epoch) {
+        // Dictate went off while Whisper ran: the text stays for the tray, but nothing is cleaned up or pasted.
+        info!("dictate: Dictate was turned off during transcription, nothing pasted");
+        store_last(&app, text.clone(), text);
+        return;
+    }
 
     let spec = cleanup::resolve_mode(&s, &mode_id);
     let (final_text, cleanup_failed) = match &spec {
@@ -626,13 +685,8 @@ async fn process<R: Runtime>(
         }
     };
     // Kept before the paste, so a failed paste can still be copied from the tray.
-    *lock(&LAST) = Some(LastDictation {
-        as_spoken: text,
-        final_text: final_text.clone(),
-    });
-    crate::tray::update_tray_menu(&app);
-
-    if epoch != EPOCH.load(Ordering::SeqCst) {
+    store_last(&app, text, final_text.clone());
+    if !still_on(epoch) {
         info!("dictate: Dictate was turned off, paste skipped");
         return;
     }
@@ -654,6 +708,11 @@ async fn process<R: Runtime>(
     }
 }
 
+fn store_last<R: Runtime>(app: &AppHandle<R>, as_spoken: String, final_text: String) {
+    *lock(&LAST) = Some(LastDictation { as_spoken, final_text });
+    crate::tray::update_tray_menu(app);
+}
+
 /// The last dictation's text, for the tray. Memory only.
 pub fn last_dictation() -> Option<LastDictation> {
     lock(&LAST).clone()
@@ -664,13 +723,7 @@ pub async fn dictate_save_settings<R: Runtime>(
     app: AppHandle<R>,
     settings: DictateSettings,
 ) -> Result<DictateSettings, String> {
-    let old = settings::current();
-    if settings.enabled && !old.enabled && !engine_is_whisper(&app).await {
-        return Err("Dictate needs the local Whisper transcription. Choose it in the transcript settings.".into());
-    }
-    let saved = validate_then_store(settings, |valid| settings::save(&app, valid))?;
-    super::apply(&app, &old, &saved).await;
-    Ok(saved)
+    super::save_and_apply(&app, settings).await
 }
 
 #[tauri::command]
@@ -743,6 +796,24 @@ async fn model_downloaded<R: Runtime>(app: &AppHandle<R>) -> bool {
 mod tests {
     use super::*;
     use crate::dictate::settings::{self as settings_mod, CustomMode};
+
+    #[test]
+    fn stop_without_a_shown_pill_shows_it_first() {
+        // A hold that ends just past HOLD_THRESHOLD_MS: the pill timer has not fired yet.
+        let mut core = SessionCore::new();
+        start(&mut core);
+        let fx = core.on_event(SessionEvent::Hotkey(Action::Stop));
+        assert_eq!(
+            fx,
+            vec![
+                Effect::MuteOff,
+                Effect::ShowPill,
+                Effect::EndCaptureAndProcess(Target::Main)
+            ]
+        );
+        // The timer that was already in flight does nothing now.
+        assert!(core.on_event(SessionEvent::ShowPillTimer(0)).is_empty());
+    }
 
     fn start(core: &mut SessionCore) -> Vec<Effect> {
         core.on_event(SessionEvent::Hotkey(Action::Start(Target::Main)))

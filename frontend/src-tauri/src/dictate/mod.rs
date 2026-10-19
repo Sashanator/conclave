@@ -9,7 +9,7 @@ pub mod session;
 pub mod settings;
 
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, PoisonError};
+use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 
 use dictate_input::machine::Action;
 use dictate_input::HookHandle;
@@ -201,31 +201,51 @@ async fn turn_off<R: Runtime>(_app: &AppHandle<R>) {
     unload_if_idle().await;
 }
 
+/// Serialises settings changes. Each change reads the old settings, saves and applies while holding this, so
+/// two changes (or a change and the startup apply) never interleave and leave the hook out of step.
+static APPLY_LOCK: LazyLock<tokio::sync::Mutex<()>> = LazyLock::new(|| tokio::sync::Mutex::new(()));
+
+/// The one way to change Dictate's settings. Validates and stores `new`, then applies the change. Turning
+/// Dictate on needs the local Whisper transcription.
+pub async fn save_and_apply<R: Runtime>(
+    app: &AppHandle<R>,
+    new: DictateSettings,
+) -> Result<DictateSettings, String> {
+    let _apply = APPLY_LOCK.lock().await;
+    let old = settings::current();
+    if new.enabled && !old.enabled && !engine_is_whisper(app).await {
+        return Err("Dictate needs the local Whisper transcription. Choose it in the transcript settings.".into());
+    }
+    let saved = session::validate_then_store(new, |valid| settings::save(app, valid))?;
+    apply(app, &old, &saved).await;
+    Ok(saved)
+}
+
 /// Turns Dictate off when the transcript provider is not Whisper (Dictate only works on Whisper).
 pub async fn disable_for_non_whisper<R: Runtime>(app: &AppHandle<R>) {
-    let old = settings::current();
-    let new = DictateSettings {
+    let off = DictateSettings {
         enabled: false,
-        ..old.clone()
+        ..settings::current()
     };
-    if settings::save(app, new.clone()).is_err() {
-        warn!("dictate: could not save the switch-off, Dictate stays off until restart");
+    if save_and_apply(app, off).await.is_err() {
+        warn!("dictate: could not switch Dictate off for a non-Whisper provider");
     }
-    apply(app, &old, &new).await;
 }
 
 /// Startup: Dictate that was on comes back on once the database is ready.
 pub fn apply_after_db_ready<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
-        let new = settings::current();
-        if !new.enabled {
+        if !settings::current().enabled {
             return;
         }
         if !engine_is_whisper(&app).await {
             disable_for_non_whisper(&app).await;
             return;
         }
+        let _apply = APPLY_LOCK.lock().await;
+        // Read under the lock: a change that finished meanwhile is what applies.
+        let new = settings::current();
         apply(&app, &DictateSettings { enabled: false, ..new.clone() }, &new).await;
     });
 }

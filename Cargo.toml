@@ -3,7 +3,8 @@ resolver = "2"
 members = [
     "frontend/src-tauri",
     "llama-helper",
-    "crates/meeting-detector"
+    "crates/meeting-detector",
+    "crates/dictate-input"
 ]
 
 # Shared workspace settings

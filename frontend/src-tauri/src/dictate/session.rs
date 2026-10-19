@@ -726,6 +726,27 @@ pub async fn dictate_save_settings<R: Runtime>(
     super::save_and_apply(&app, settings).await
 }
 
+/// A built-in mode or one of the custom modes.
+fn is_known_mode(s: &DictateSettings, id: &str) -> bool {
+    id == settings::AS_SPOKEN_ID || id == settings::CLEANED_UP_ID || s.modes.iter().any(|m| m.id == id)
+}
+
+/// Makes `id` the default mode and saves it, as the settings page does. An id that is not a mode is refused
+/// without a save.
+pub async fn set_default_mode<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<(), String> {
+    if !is_known_mode(&settings::current(), id) {
+        return Err("unknown mode".into());
+    }
+    super::update_and_apply(app, |old| with_default_mode(old, id)).await.map(|_| ())
+}
+
+fn with_default_mode(old: &DictateSettings, id: &str) -> DictateSettings {
+    DictateSettings {
+        default_mode: id.to_string(),
+        ..old.clone()
+    }
+}
+
 #[tauri::command]
 pub fn dictate_pill_action(action: String) -> Result<(), String> {
     match action.as_str() {
@@ -817,6 +838,36 @@ mod tests {
 
     fn start(core: &mut SessionCore) -> Vec<Effect> {
         core.on_event(SessionEvent::Hotkey(Action::Start(Target::Main)))
+    }
+
+    #[test]
+    fn default_mode_change_keeps_the_other_settings() {
+        let s = DictateSettings {
+            enabled: true,
+            dictionary: vec!["Kubernetes".into()],
+            ..DictateSettings::default()
+        };
+        let next = with_default_mode(&s, "as-spoken");
+        assert_eq!(next.default_mode, "as-spoken");
+        assert!(next.enabled);
+        assert_eq!(next.dictionary, vec!["Kubernetes".to_string()]);
+    }
+
+    #[test]
+    fn known_modes_are_builtin_or_custom() {
+        let mut s = DictateSettings::default();
+        s.modes.push(CustomMode {
+            id: "mine".into(),
+            name: "Mine".into(),
+            instructions: String::new(),
+            examples: vec![],
+            hotkey: None,
+        });
+        assert!(is_known_mode(&s, "as-spoken"));
+        assert!(is_known_mode(&s, "cleaned-up"));
+        assert!(is_known_mode(&s, "mine"));
+        assert!(!is_known_mode(&s, "deleted-mode"));
+        assert!(!is_known_mode(&s, ""));
     }
 
     #[test]

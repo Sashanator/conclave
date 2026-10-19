@@ -673,6 +673,27 @@ pub async fn dictate_save_settings<R: Runtime>(
     Ok(saved)
 }
 
+/// A built-in mode or one of the custom modes.
+fn is_known_mode(s: &DictateSettings, id: &str) -> bool {
+    id == settings::AS_SPOKEN_ID || id == settings::CLEANED_UP_ID || s.modes.iter().any(|m| m.id == id)
+}
+
+/// Makes `id` the default mode and saves it, as the settings page does. An id that is not a mode is refused
+/// without a save.
+pub async fn set_default_mode<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<(), String> {
+    let old = settings::current();
+    if !is_known_mode(&old, id) {
+        return Err("unknown mode".into());
+    }
+    let new = DictateSettings {
+        default_mode: id.to_string(),
+        ..old.clone()
+    };
+    let saved = validate_then_store(new, |valid| settings::save(app, valid))?;
+    super::apply(app, &old, &saved).await;
+    Ok(())
+}
+
 #[tauri::command]
 pub fn dictate_pill_action(action: String) -> Result<(), String> {
     match action.as_str() {
@@ -746,6 +767,23 @@ mod tests {
 
     fn start(core: &mut SessionCore) -> Vec<Effect> {
         core.on_event(SessionEvent::Hotkey(Action::Start(Target::Main)))
+    }
+
+    #[test]
+    fn known_modes_are_builtin_or_custom() {
+        let mut s = DictateSettings::default();
+        s.modes.push(CustomMode {
+            id: "mine".into(),
+            name: "Mine".into(),
+            instructions: String::new(),
+            examples: vec![],
+            hotkey: None,
+        });
+        assert!(is_known_mode(&s, "as-spoken"));
+        assert!(is_known_mode(&s, "cleaned-up"));
+        assert!(is_known_mode(&s, "mine"));
+        assert!(!is_known_mode(&s, "deleted-mode"));
+        assert!(!is_known_mode(&s, ""));
     }
 
     #[test]

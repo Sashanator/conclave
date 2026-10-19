@@ -1,11 +1,19 @@
 use tauri::{
     Emitter,
-    menu::{MenuBuilder, MenuItemBuilder, PredefinedMenuItem},
+    menu::{CheckMenuItemBuilder, MenuBuilder, MenuItemBuilder, PredefinedMenuItem, Submenu},
     tray::TrayIconBuilder,
     AppHandle, Manager, Runtime,
 };
 
+use crate::dictate::cleanup::{mode_name, resolve_mode};
+use crate::dictate::session;
+use crate::dictate::settings::{self, DictateSettings, AS_SPOKEN_ID, CLEANED_UP_ID};
+
 use std::sync::atomic::{AtomicBool, Ordering};
+
+const DICTATE_COPY_LAST: &str = "dictate_copy_last";
+const DICTATE_COPY_LAST_RAW: &str = "dictate_copy_last_raw";
+const DICTATE_MODE_PREFIX: &str = "dictate_mode:";
 
 /// One pending tray re-check while a save shows "Stopping and saving".
 static SAVE_RECHECK: AtomicBool = AtomicBool::new(false);
@@ -40,7 +48,13 @@ pub fn create_tray<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
 }
 
 fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
+    if let Some(mode) = item_id.strip_prefix(DICTATE_MODE_PREFIX) {
+        set_dictate_mode(app, mode);
+        return;
+    }
     match item_id {
+        DICTATE_COPY_LAST => copy_last_dictation(false),
+        DICTATE_COPY_LAST_RAW => copy_last_dictation(true),
         "toggle_recording" => toggle_recording_handler(app),
         "pause_recording" => pause_recording_handler(app),
         "resume_recording" => resume_recording_handler(app),
@@ -368,6 +382,33 @@ fn build_menu<R: Runtime>(
         }
     }
 
+    let spec = dictate_menu_spec(&settings::current(), session::last_dictation().is_some());
+    if !spec.is_empty() {
+        let modes = Submenu::new(app, "Dictate mode", true)?;
+        let mut copies = Vec::new();
+        for (id, label, enabled, checked) in &spec {
+            if id.starts_with(DICTATE_MODE_PREFIX) {
+                modes.append(
+                    &CheckMenuItemBuilder::with_id(id.as_str(), label.as_str())
+                        .enabled(*enabled)
+                        .checked(*checked)
+                        .build(app)?,
+                )?;
+            } else {
+                copies.push(
+                    MenuItemBuilder::with_id(id.as_str(), label.as_str())
+                        .enabled(*enabled)
+                        .build(app)?,
+                );
+            }
+        }
+        builder = builder.item(&PredefinedMenuItem::separator(app)?);
+        for item in &copies {
+            builder = builder.item(item);
+        }
+        builder = builder.item(&modes);
+    }
+
     builder
         .item(&PredefinedMenuItem::separator(app)?)
         .item(&MenuItemBuilder::with_id("open_window", "Open Main Window").build(app)?)
@@ -375,6 +416,55 @@ fn build_menu<R: Runtime>(
         .item(&PredefinedMenuItem::separator(app)?)
         .item(&MenuItemBuilder::with_id("quit", "Quit").build(app)?)
         .build()
+}
+
+/// The Dictate tray rows (id, label, enabled, checked): the two copy items, then one mode per mode, in order.
+/// Empty while Dictate is off. The mode rows are the ones with the `dictate_mode:` prefix.
+fn dictate_menu_spec(s: &DictateSettings, has_last: bool) -> Vec<(String, String, bool, bool)> {
+    if !s.enabled {
+        return Vec::new();
+    }
+    let mut rows = vec![
+        (DICTATE_COPY_LAST.to_string(), "Copy last dictation".to_string(), has_last, false),
+        (
+            DICTATE_COPY_LAST_RAW.to_string(),
+            "Copy last dictation (as spoken)".to_string(),
+            has_last,
+            false,
+        ),
+    ];
+    let ids = [AS_SPOKEN_ID, CLEANED_UP_ID]
+        .into_iter()
+        .map(str::to_string)
+        .chain(s.modes.iter().map(|m| m.id.clone()));
+    for id in ids {
+        let label = mode_name(&resolve_mode(s, &id));
+        let checked = id == s.default_mode;
+        rows.push((format!("{DICTATE_MODE_PREFIX}{id}"), label, true, checked));
+    }
+    rows
+}
+
+/// Copies the last dictation to the clipboard. The exclusion formats keep it out of clipboard history.
+/// The text is never logged.
+fn copy_last_dictation(as_spoken: bool) {
+    let Some(last) = session::last_dictation() else {
+        return;
+    };
+    let text = if as_spoken { last.as_spoken } else { last.final_text };
+    if dictate_input::clipboard::set_private_text(&text, None).is_err() {
+        log::warn!("Tray: could not copy the last dictation");
+    }
+}
+
+fn set_dictate_mode<R: Runtime>(app: &AppHandle<R>, mode: &str) {
+    let app = app.clone();
+    let mode = mode.to_string();
+    tauri::async_runtime::spawn(async move {
+        if session::set_default_mode(&app, &mode).await.is_err() {
+            log::warn!("Tray: could not switch the Dictate mode to {mode}");
+        }
+    });
 }
 
 pub(crate) fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
@@ -396,5 +486,88 @@ pub(crate) fn focus_main_window<R: Runtime>(app: &AppHandle<R>) {
         }
     } else {
         log::warn!("Could not find main window");
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::dictate::settings::{CustomMode, DictateSettings};
+
+    fn row(id: &str, label: &str, enabled: bool, checked: bool) -> (String, String, bool, bool) {
+        (id.to_string(), label.to_string(), enabled, checked)
+    }
+
+    fn on() -> DictateSettings {
+        DictateSettings {
+            enabled: true,
+            ..DictateSettings::default()
+        }
+    }
+
+    #[test]
+    fn dictate_off_adds_nothing() {
+        assert!(dictate_menu_spec(&DictateSettings::default(), true).is_empty());
+        assert!(dictate_menu_spec(&DictateSettings::default(), false).is_empty());
+    }
+
+    #[test]
+    fn copy_items_disabled_without_a_last_dictation() {
+        let spec = dictate_menu_spec(&on(), false);
+        assert_eq!(spec[0], row("dictate_copy_last", "Copy last dictation", false, false));
+        assert_eq!(
+            spec[1],
+            row("dictate_copy_last_raw", "Copy last dictation (as spoken)", false, false)
+        );
+    }
+
+    #[test]
+    fn copy_items_enabled_with_a_last_dictation() {
+        let spec = dictate_menu_spec(&on(), true);
+        assert!(spec[0].2);
+        assert!(spec[1].2);
+    }
+
+    #[test]
+    fn mode_items_are_checked_only_on_the_default_mode() {
+        let mut s = on();
+        s.default_mode = "cleaned-up".to_string();
+        let modes: Vec<(String, bool)> = dictate_menu_spec(&s, true)
+            .into_iter()
+            .filter(|r| r.0.starts_with("dictate_mode:"))
+            .map(|r| (r.0, r.3))
+            .collect();
+        assert_eq!(
+            modes,
+            vec![
+                ("dictate_mode:as-spoken".to_string(), false),
+                ("dictate_mode:cleaned-up".to_string(), true),
+                ("dictate_mode:prompt-for-claude".to_string(), false),
+            ]
+        );
+    }
+
+    #[test]
+    fn custom_modes_follow_the_built_ins_in_order_with_their_names() {
+        let mut s = on();
+        s.default_mode = "as-spoken".to_string();
+        s.modes = vec![
+            CustomMode { id: "b-mode".into(), name: "Second".into(), instructions: String::new(), examples: vec![], hotkey: None },
+            CustomMode { id: "a-mode".into(), name: "First".into(), instructions: String::new(), examples: vec![], hotkey: None },
+        ];
+        let labels: Vec<(String, String, bool)> = dictate_menu_spec(&s, true)
+            .into_iter()
+            .filter(|r| r.0.starts_with("dictate_mode:"))
+            .map(|r| (r.0, r.1, r.3))
+            .collect();
+        assert_eq!(
+            labels,
+            vec![
+                ("dictate_mode:as-spoken".to_string(), "As spoken".to_string(), true),
+                ("dictate_mode:cleaned-up".to_string(), "Cleaned up".to_string(), false),
+                ("dictate_mode:b-mode".to_string(), "Second".to_string(), false),
+                ("dictate_mode:a-mode".to_string(), "First".to_string(), false),
+            ]
+        );
     }
 }

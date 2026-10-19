@@ -144,6 +144,7 @@ pub async fn finish_pending_unload<R: Runtime>(app: &AppHandle<R>) {
 
 /// Applies a settings change: starts or stops the hook and the mic, and keeps the model in step.
 pub async fn apply<R: Runtime>(app: &AppHandle<R>, old: &DictateSettings, new: &DictateSettings) {
+    crate::tray::update_tray_menu(app);
     match (old.enabled, new.enabled) {
         (false, true) => turn_on(app, new).await,
         (true, false) => turn_off(app).await,

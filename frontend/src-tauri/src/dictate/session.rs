@@ -94,7 +94,9 @@ pub enum SessionEvent {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum Effect {
-    BeginCapture,
+    BeginCapture(Target),
+    /// The capture's hotkey target changed. Sent only while capturing.
+    SetMode(Target),
     CancelCapture,
     EndCaptureAndProcess(Target),
     MuteOn,
@@ -188,13 +190,13 @@ impl SessionCore {
                     let id = self.next_id;
                     self.next_id += 1;
                     self.phase = Phase::Capturing {
-                        target,
+                        target: target.clone(),
                         hands_free: false,
                         id,
                         pill_shown: false,
                     };
                     vec![
-                        Effect::BeginCapture,
+                        Effect::BeginCapture(target),
                         Effect::MuteOn,
                         Effect::StartShowPillTimer(id),
                         Effect::StartCapTimer(id),
@@ -210,9 +212,9 @@ impl SessionCore {
                     pill_shown,
                     ..
                 } => {
+                    let mut effects = vec![Effect::SetMode(target.clone())];
                     *current = target;
                     *hands_free = true;
-                    let mut effects = Vec::new();
                     if !*pill_shown {
                         *pill_shown = true;
                         effects.push(Effect::ShowPill);
@@ -222,12 +224,13 @@ impl SessionCore {
                 }
                 _ => Vec::new(),
             },
-            Action::Retarget(target) => {
-                if let Phase::Capturing { target: current, .. } = &mut self.phase {
-                    *current = target;
+            Action::Retarget(target) => match &mut self.phase {
+                Phase::Capturing { target: current, .. } => {
+                    *current = target.clone();
+                    vec![Effect::SetMode(target)]
                 }
-                Vec::new()
-            }
+                _ => Vec::new(),
+            },
             Action::Stop => self.finish(false),
             Action::Cancel | Action::Abandon => self.abort(false),
         }
@@ -384,8 +387,8 @@ struct Exec {
 impl Exec {
     fn run<R: Runtime>(&mut self, app: &AppHandle<R>, tx: &UnboundedSender<SessionEvent>, effect: Effect) {
         match effect {
-            Effect::BeginCapture => {
-                self.mode = settings::current().default_mode;
+            Effect::BeginCapture(target) => {
+                self.mode = resolve_mode_id(&target, &settings::current().default_mode);
                 self.started = Some(Instant::now());
                 self.epoch = EPOCH.load(Ordering::SeqCst);
                 self.pill_state = None;
@@ -393,6 +396,13 @@ impl Exec {
                     warn!("dictate: no microphone to capture from");
                     let _ = tx.send(SessionEvent::CaptureFailed);
                     tauri::async_runtime::spawn(reopen(app.clone()));
+                }
+            }
+            Effect::SetMode(target) => {
+                self.mode = resolve_mode_id(&target, &settings::current().default_mode);
+                // A visible pill is re-sent so it shows the new mode.
+                if let Some(state) = self.pill_state {
+                    set_pill(app, state, &self.mode);
                 }
             }
             Effect::CancelCapture => {
@@ -449,6 +459,14 @@ fn spawn_timer(tx: &UnboundedSender<SessionEvent>, after: Duration, ev: SessionE
         tokio::time::sleep(after).await;
         let _ = tx.send(ev);
     });
+}
+
+/// The mode a dictation runs in: the hotkey's mode, or the default mode for the main hotkey.
+fn resolve_mode_id(target: &Target, default_mode: &str) -> String {
+    match target {
+        Target::Main => default_mode.to_string(),
+        Target::Mode(id) => id.clone(),
+    }
 }
 
 /// Shows a pill state. The final states hide the pill after their own delay.
@@ -600,10 +618,7 @@ async fn process<R: Runtime>(
 ) {
     let _done = DoneGuard(tx);
     let s = settings::current();
-    let mode_id = match &target {
-        Target::Main => s.default_mode.clone(),
-        Target::Mode(id) => id.clone(),
-    };
+    let mode_id = resolve_mode_id(&target, &s.default_mode);
     let started = Instant::now();
     let Some(audio) = captured else {
         warn!("dictate: no audio captured");
@@ -923,7 +938,7 @@ mod tests {
         start(&mut core);
         core.on_event(SessionEvent::Hotkey(Action::Stop));
         core.on_event(SessionEvent::ProcessingDone);
-        assert!(start(&mut core).contains(&Effect::BeginCapture));
+        assert!(start(&mut core).contains(&Effect::BeginCapture(Target::Main)));
     }
 
     #[test]
@@ -968,6 +983,50 @@ mod tests {
         assert!(fx.contains(&Effect::MuteOff));
         assert!(!fx.contains(&Effect::ShowPill));
         assert!(core.on_event(SessionEvent::ShowPillTimer(0)).is_empty());
+    }
+
+    #[test]
+    fn start_with_a_mode_begins_in_that_mode() {
+        let mut core = SessionCore::new();
+        let fx = core.on_event(SessionEvent::Hotkey(Action::Start(Target::Mode("x".into()))));
+        assert!(fx.contains(&Effect::BeginCapture(Target::Mode("x".into()))));
+    }
+
+    #[test]
+    fn retarget_while_capturing_sets_the_mode() {
+        let mut core = SessionCore::new();
+        start(&mut core);
+        assert_eq!(
+            core.on_event(SessionEvent::Hotkey(Action::Retarget(Target::Mode("y".into())))),
+            vec![Effect::SetMode(Target::Mode("y".into()))]
+        );
+    }
+
+    #[test]
+    fn retarget_while_idle_or_processing_does_nothing() {
+        let mut core = SessionCore::new();
+        assert!(core
+            .on_event(SessionEvent::Hotkey(Action::Retarget(Target::Mode("y".into()))))
+            .is_empty());
+        start(&mut core);
+        core.on_event(SessionEvent::Hotkey(Action::Stop));
+        assert!(core
+            .on_event(SessionEvent::Hotkey(Action::Retarget(Target::Mode("y".into()))))
+            .is_empty());
+    }
+
+    #[test]
+    fn hands_free_with_a_mode_sets_the_mode() {
+        let mut core = SessionCore::new();
+        start(&mut core);
+        let fx = core.on_event(SessionEvent::Hotkey(Action::HandsFree(Target::Mode("y".into()))));
+        assert_eq!(fx.first(), Some(&Effect::SetMode(Target::Mode("y".into()))));
+    }
+
+    #[test]
+    fn mode_id_resolves_main_to_the_default() {
+        assert_eq!(resolve_mode_id(&Target::Main, "cleaned-up"), "cleaned-up");
+        assert_eq!(resolve_mode_id(&Target::Mode("x".into()), "cleaned-up"), "x");
     }
 
     #[test]

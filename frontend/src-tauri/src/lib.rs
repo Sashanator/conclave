@@ -954,6 +954,7 @@ pub fn run() {
             audio::import::is_import_in_progress_command,
             // Dictate commands
             dictate::settings::dictate_get_settings,
+            dictate::pill::dictate_pill_view,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

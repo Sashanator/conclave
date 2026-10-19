@@ -3,6 +3,7 @@
 
 pub mod capture;
 pub mod mute;
+pub mod pill;
 pub mod settings;
 
 /// A press shorter than this is a tap (hands-free), not a push-to-talk hold.

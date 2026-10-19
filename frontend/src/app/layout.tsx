@@ -294,16 +294,19 @@ export default function RootLayout({
 }: {
   children: React.ReactNode
 }) {
-  // The meeting banner window (spec §5.1) loads /banner. It must not mount the app's providers: a second
-  // RecordingPostProcessingProvider would save every meeting twice.
-  const isBanner = usePathname()?.startsWith('/banner') ?? false;
+  // The meeting banner (spec §5.1) and the Dictate pill (spec §11) are small windows. They must not mount the
+  // app's providers: a second RecordingPostProcessingProvider would save every meeting twice.
+  const pathname = usePathname() ?? '';
+  const isLightWindow = pathname.startsWith('/banner') || pathname.startsWith('/dictate-pill');
+  // The pill window is transparent around the pill, so the page background must be too.
+  const transparent = pathname.startsWith('/dictate-pill') ? { background: 'transparent' } : undefined;
   return (
-    <html lang="en" suppressHydrationWarning>
+    <html lang="en" suppressHydrationWarning style={transparent}>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
-      <body className={`${sourceSans3.variable} font-sans antialiased`}>
-        <ThemeProvider>{isBanner ? children : <AppShell>{children}</AppShell>}</ThemeProvider>
+      <body className={`${sourceSans3.variable} font-sans antialiased`} style={transparent}>
+        <ThemeProvider>{isLightWindow ? children : <AppShell>{children}</AppShell>}</ThemeProvider>
       </body>
     </html>
   )

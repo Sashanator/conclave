@@ -72,6 +72,11 @@ pub fn start_hook(
 }
 
 impl HookHandle {
+    /// False once the hook thread has exited, e.g. after a panic.
+    pub fn is_alive(&self) -> bool {
+        self.join.as_ref().is_some_and(|join| !join.is_finished())
+    }
+
     /// Applied by the hook thread between events.
     pub fn set_bindings(&self, bindings: Vec<Binding>) {
         *self.pending.lock().unwrap_or_else(PoisonError::into_inner) = Some(bindings);

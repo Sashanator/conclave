@@ -149,20 +149,48 @@ pub async fn apply<R: Runtime>(app: &AppHandle<R>, old: &DictateSettings, new: &
         (false, true) => turn_on(app, new).await,
         (true, false) => turn_off(app).await,
         (true, true) => {
-            if let Some(hook) = HOOK.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-                hook.set_bindings(settings::bindings(new));
+            if !rebind_hook(new) {
+                install_hook(app, new).await;
             }
         }
         (false, false) => {}
     }
 }
 
+/// Pushes `new`'s bindings to the running hook. Returns false when no live hook is installed. A hook whose
+/// thread died (e.g. a panic) is dropped here, so the caller starts a fresh one.
+fn rebind_hook(new: &DictateSettings) -> bool {
+    let mut slot = HOOK.lock().unwrap_or_else(PoisonError::into_inner);
+    match slot.as_ref() {
+        Some(hook) if hook.is_alive() => {
+            hook.set_bindings(settings::bindings(new));
+            true
+        }
+        Some(_) => {
+            warn!("dictate: hotkey thread stopped, starting a new one");
+            *slot = None;
+            false
+        }
+        None => false,
+    }
+}
+
 async fn turn_on<R: Runtime>(app: &AppHandle<R>, new: &DictateSettings) {
-    // A hook already installed means Dictate is on: rebind it rather than start a second one.
-    if let Some(hook) = HOOK.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
-        hook.set_bindings(settings::bindings(new));
+    // A live hook means Dictate is on: rebind it rather than start a second one.
+    if rebind_hook(new) {
         return;
     }
+    install_hook(app, new).await;
+    session::send(SessionEvent::ReopenMic);
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if ensure_model(&app).await.is_err() {
+            warn!("dictate: Whisper model not loaded");
+        }
+    });
+}
+
+async fn install_hook<R: Runtime>(app: &AppHandle<R>, new: &DictateSettings) {
     let events = session::start(app);
     let hotkeys = settings::bindings(new);
     let started = tokio::task::spawn_blocking(move || {
@@ -182,13 +210,6 @@ async fn turn_on<R: Runtime>(app: &AppHandle<R>, new: &DictateSettings) {
         Ok(Err(e)) => warn!("dictate: hotkeys not started: {e}"),
         Err(_) => warn!("dictate: hotkeys not started"),
     }
-    session::send(SessionEvent::ReopenMic);
-    let app = app.clone();
-    tauri::async_runtime::spawn(async move {
-        if ensure_model(&app).await.is_err() {
-            warn!("dictate: Whisper model not loaded");
-        }
-    });
 }
 
 async fn turn_off<R: Runtime>(_app: &AppHandle<R>) {
@@ -204,7 +225,8 @@ async fn turn_off<R: Runtime>(_app: &AppHandle<R>) {
         drop(mic);
     })
     .await;
-    unload_if_idle().await;
+    // Spawned, not awaited: the caller holds APPLY_LOCK, and the unload can wait for an in-flight transcription.
+    tauri::async_runtime::spawn(unload_if_idle());
 }
 
 /// Serialises settings changes. Each change reads the old settings, saves and applies while holding this, so

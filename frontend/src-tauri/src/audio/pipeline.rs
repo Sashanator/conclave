@@ -805,7 +805,7 @@ impl AudioPipeline {
                 std::time::Duration::from_millis(50), // Shorter timeout for responsiveness
                 self.receiver.recv()
             ).await {
-                Ok(Some(chunk)) => {
+                Ok(Some(mut chunk)) => {
                     // PERFORMANCE: Check for flush signal (special chunk with ID >= u64::MAX - 10)
                     // Multiple flush signals may be sent to ensure processing
                     if chunk.chunk_id >= u64::MAX - 10 {
@@ -845,6 +845,7 @@ impl AudioPipeline {
                     // STEP 1: Add raw audio to ring buffer for mixing
                     // Microphone audio is already normalized at capture level (AudioCapture)
                     // System audio remains raw
+                    apply_dictate_mute(&chunk.device_type, &mut chunk.data, crate::dictate::mute::meeting_mic_muted);
                     self.ring_buffer.add_samples(chunk.device_type.clone(), chunk.data);
 
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data
@@ -1110,9 +1111,32 @@ impl Default for AudioPipelineManager {
         Self::new()
     }
 }
+/// While a dictation mutes the meeting mic, zero microphone samples. The length is kept so timing and levels stay aligned.
+fn apply_dictate_mute(device: &DeviceType, data: &mut [f32], muted: impl FnOnce() -> bool) {
+    if *device == DeviceType::Microphone && muted() {
+        data.fill(0.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pipeline_zeroes_mic_only() {
+        let mut mic = vec![1.0f32; 48_000];
+        apply_dictate_mute(&DeviceType::Microphone, &mut mic, || true);
+        assert_eq!(mic.len(), 48_000);
+        assert!(mic.iter().all(|&x| x == 0.0));
+
+        let mut system = vec![1.0f32; 48_000];
+        apply_dictate_mute(&DeviceType::System, &mut system, || true);
+        assert!(system.iter().all(|&x| x == 1.0));
+
+        let mut unmuted = vec![1.0f32; 48_000];
+        apply_dictate_mute(&DeviceType::Microphone, &mut unmuted, || false);
+        assert!(unmuted.iter().all(|&x| x == 1.0));
+    }
 
     #[test]
     fn test_live_vad_redemption_matches_pro_policy() {

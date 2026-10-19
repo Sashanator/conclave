@@ -713,7 +713,7 @@ pub async fn api_save_transcript_config<R: Runtime>(
     }
 
     tauri::async_runtime::spawn(async move {
-        crate::dictate::on_transcript_config_saved(&app, &provider).await;
+        crate::dictate::on_transcript_config_saved(&app).await;
     });
 
     log_info!("Successfully saved transcript configuration.");

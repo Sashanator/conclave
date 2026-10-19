@@ -249,6 +249,14 @@ pub async fn update_and_apply<R: Runtime, F: FnOnce(&DictateSettings) -> Dictate
     f: F,
 ) -> Result<DictateSettings, String> {
     let _apply = APPLY_LOCK.lock().await;
+    update_and_apply_locked(app, f).await
+}
+
+/// `update_and_apply` for a caller that already holds APPLY_LOCK.
+async fn update_and_apply_locked<R: Runtime, F: FnOnce(&DictateSettings) -> DictateSettings>(
+    app: &AppHandle<R>,
+    f: F,
+) -> Result<DictateSettings, String> {
     let old = settings::current();
     let new = f(&old);
     if new.enabled && !old.enabled && !engine_is_whisper(app).await {
@@ -269,7 +277,13 @@ fn switched_off(old: &DictateSettings) -> DictateSettings {
 
 /// Turns Dictate off when the transcript provider is not Whisper (Dictate only works on Whisper).
 pub async fn disable_for_non_whisper<R: Runtime>(app: &AppHandle<R>) {
-    match update_and_apply(app, switched_off).await {
+    let _apply = APPLY_LOCK.lock().await;
+    disable_for_non_whisper_locked(app).await;
+}
+
+/// `disable_for_non_whisper` for a caller that already holds APPLY_LOCK.
+async fn disable_for_non_whisper_locked<R: Runtime>(app: &AppHandle<R>) {
+    match update_and_apply_locked(app, switched_off).await {
         // The open Dictate page keeps its own copy, so it must hear that Dictate went off.
         Ok(saved) => {
             if let Err(e) = app.emit("dictate-settings-changed", saved) {
@@ -281,25 +295,23 @@ pub async fn disable_for_non_whisper<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// The transcript provider was saved. Dictate keeps the Whisper model loaded: Whisper reloads it, any other
-/// provider turns Dictate off. The decision reads the settings under APPLY_LOCK, so it sees the latest change.
-pub async fn on_transcript_config_saved<R: Runtime>(app: &AppHandle<R>, provider: &str) {
-    {
-        let _apply = APPLY_LOCK.lock().await;
-        if !settings::current().enabled {
-            return;
-        }
-        if provider == crate::config::DEFAULT_TRANSCRIPT_PROVIDER {
-            let app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if ensure_model(&app).await.is_err() {
-                    warn!("dictate: Whisper model not loaded");
-                }
-            });
-            return;
-        }
+/// provider turns Dictate off. The saved provider is read under APPLY_LOCK, and the switch-off happens under the
+/// same lock, so a task spawned for an older save cannot switch off a Dictate that was enabled since.
+pub async fn on_transcript_config_saved<R: Runtime>(app: &AppHandle<R>) {
+    let _apply = APPLY_LOCK.lock().await;
+    if !settings::current().enabled {
+        return;
     }
-    // Released first: the switch-off takes APPLY_LOCK itself.
-    disable_for_non_whisper(app).await;
+    if engine_is_whisper(app).await {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if ensure_model(&app).await.is_err() {
+                warn!("dictate: Whisper model not loaded");
+            }
+        });
+    } else {
+        disable_for_non_whisper_locked(app).await;
+    }
 }
 
 /// Startup: Dictate that was on comes back on once the database is ready.

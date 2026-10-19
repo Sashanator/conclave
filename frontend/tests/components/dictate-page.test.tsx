@@ -41,12 +41,14 @@ let settings: DictateSettings;
 let status: DictateStatus;
 let saveFails: string | null = null;
 let statusFails = false;
+let loadFails = false;
 // When set, every settings read waits for it, so a test can hold the reload that follows a failed save
 let holdLoad: Promise<void> | null = null;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'dictate_get_settings') {
     if (holdLoad) await holdLoad;
+    if (loadFails) throw new Error('settings unavailable');
     return structuredClone(settings);
   }
   if (command === 'dictate_status') {
@@ -148,6 +150,7 @@ beforeEach(async () => {
   status = { ...READY_STATUS };
   saveFails = null;
   statusFails = false;
+  loadFails = false;
   holdLoad = null;
   invoke.mockClear();
   toast.error.mockClear();
@@ -193,6 +196,30 @@ describe('Dictate page', () => {
     expect(JSON.stringify(toast.error.mock.calls[0])).toContain('Dictionary is full');
     expect(calls('dictate_get_settings').length).toBeGreaterThanOrEqual(2);
     // The rejected word is gone from the screen, and only the saved word remains
+    expect(chipLabels()).toEqual(['Remove Conclave']);
+  });
+
+  test('a failed save and a failed reload take the rejected word off the screen', async () => {
+    saveFails = 'Dictionary is full';
+    loadFails = true;
+    await typeWord('Tauri');
+    await flush();
+    expect(toast.error).toHaveBeenCalled();
+    expect(calls('dictate_get_settings').length).toBeGreaterThanOrEqual(2);
+    // The screen falls back to the last settings the backend confirmed
+    expect(chipLabels()).toEqual(['Remove Conclave']);
+  });
+
+  test('a failed save and a failed reload keep a default mode the tray changed', async () => {
+    await act(async () => {
+      listeners.get('dictate-settings-changed')!({ payload: { ...settings, default_mode: 'as-spoken' } });
+    });
+    await flush();
+    saveFails = 'Dictionary is full';
+    loadFails = true;
+    await typeWord('Tauri');
+    await flush();
+    expect(defaultMode()).toBe('as-spoken');
     expect(chipLabels()).toEqual(['Remove Conclave']);
   });
 

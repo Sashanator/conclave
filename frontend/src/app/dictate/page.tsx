@@ -14,6 +14,8 @@ export default function DictatePage() {
   const [status, setStatus] = useState<DictateStatus | null>(null);
   // Edits show at once. Saves run one after another, each from the latest edit.
   const latest = useRef<DictateSettings | null>(null);
+  // The last settings the backend confirmed (loaded or saved). A failed reload falls back to them.
+  const confirmed = useRef<DictateSettings | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
   // Bumped when a save fails: saves queued before the reload are dropped, the reload wins
   const generation = useRef(0);
@@ -27,9 +29,13 @@ export default function DictatePage() {
 
   const load = useCallback(async () => {
     try {
-      show(await invoke<DictateSettings>('dictate_get_settings'));
+      const loaded = await invoke<DictateSettings>('dictate_get_settings');
+      confirmed.current = loaded;
+      show(loaded);
     } catch (err) {
       toast.error('Could not load Dictate settings', { description: String(err) });
+      // The shown copy may hold a rejected edit: go back to what the backend last confirmed
+      if (confirmed.current) show(confirmed.current);
     }
   }, []);
 
@@ -39,8 +45,10 @@ export default function DictatePage() {
       .then(setStatus)
       .catch((err) => toast.error('Could not read Dictate status', { description: String(err) }));
     const unlisten = listen<DictateSettings>('dictate-settings-changed', (e) => {
-      if (pending.current === 0) show(e.payload);
-      else queue.current = queue.current.then(load);
+      if (pending.current === 0) {
+        confirmed.current = e.payload;
+        show(e.payload);
+      } else queue.current = queue.current.then(load);
     });
     return () => {
       unlisten.then((stop) => stop());
@@ -57,6 +65,7 @@ export default function DictatePage() {
       try {
         if (gen !== generation.current) return;
         const saved = await invoke<DictateSettings>('dictate_save_settings', { settings: next });
+        confirmed.current = saved;
         // A newer edit has already replaced this one, so only the newest result is shown
         if (latest.current === next) show(saved);
       } catch (err) {

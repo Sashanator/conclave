@@ -55,6 +55,7 @@ pub mod summary;
 pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
+mod dictate;
 mod speakers;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
@@ -637,6 +638,7 @@ pub fn run() {
                 let _ = speakers::models::models_ready();
             });
             speakers::settings::load_at_startup(_app.handle());
+            dictate::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
@@ -950,6 +952,8 @@ pub fn run() {
             audio::import::start_import_audio_command,
             audio::import::cancel_import_command,
             audio::import::is_import_in_progress_command,
+            // Dictate commands
+            dictate::settings::dictate_get_settings,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

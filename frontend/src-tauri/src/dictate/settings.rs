@@ -8,7 +8,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::{BTreeMap, HashSet};
-use std::sync::{LazyLock, PoisonError, RwLock};
+use std::sync::{LazyLock, Mutex, PoisonError, RwLock};
 use tauri::{AppHandle, Runtime};
 use tauri_plugin_store::StoreExt;
 
@@ -87,9 +87,21 @@ impl Default for DictateSettings {
     }
 }
 
-static SETTINGS: LazyLock<RwLock<DictateSettings>> =
-    LazyLock::new(|| RwLock::new(DictateSettings::default()));
-static PROMPT: RwLock<Option<String>> = RwLock::new(None);
+/// The settings and the prompt derived from them share one lock, so readers never see a mismatched pair.
+struct Cache {
+    settings: DictateSettings,
+    prompt: Option<String>,
+}
+
+fn cache_of(settings: DictateSettings) -> Cache {
+    let prompt = whisper_prompt(&settings.dictionary);
+    Cache { settings, prompt }
+}
+
+static CACHE: LazyLock<RwLock<Cache>> =
+    LazyLock::new(|| RwLock::new(cache_of(DictateSettings::default())));
+/// Held across validate, store write and cache update, so concurrent saves cannot interleave.
+static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 /// Startup read. Never fails: a broken entry is dropped and logged, the rest is kept.
 pub fn sanitize(raw: Option<Value>) -> DictateSettings {
@@ -107,11 +119,59 @@ pub fn sanitize(raw: Option<Value>) -> DictateSettings {
         default_mode: field(&obj, "default_mode", CLEANED_UP_ID.to_string()),
         cleanup_provider: field(&obj, "cleanup_provider", None),
         cleanup_model: field(&obj, "cleanup_model", None),
-        builtin_hotkeys: field(&obj, "builtin_hotkeys", BTreeMap::new()),
-        modes: list(&obj, "modes"),
+        builtin_hotkeys: builtin_hotkeys(&obj),
+        modes: modes(&obj),
         dictionary: list(&obj, "dictionary"),
     };
     normalise(candidate, false).unwrap_or_default()
+}
+
+/// Each built-in hotkey is read on its own, so one wrong-typed value keeps the others.
+fn builtin_hotkeys(obj: &Map<String, Value>) -> BTreeMap<String, String> {
+    match obj.get("builtin_hotkeys") {
+        None | Some(Value::Null) => BTreeMap::new(),
+        Some(Value::Object(entries)) => entries
+            .iter()
+            .filter_map(|(id, value)| match value.as_str() {
+                Some(text) => Some((id.clone(), text.to_string())),
+                None => {
+                    warn!("dictate: dropped a 'builtin_hotkeys' entry that is not text");
+                    None
+                }
+            })
+            .collect(),
+        Some(_) => {
+            warn!("dictate: 'builtin_hotkeys' is not an object, ignored");
+            BTreeMap::new()
+        }
+    }
+}
+
+/// Each mode is read field by field, so a bad hotkey or example drops only that part.
+fn modes(obj: &Map<String, Value>) -> Vec<CustomMode> {
+    match obj.get("modes") {
+        None | Some(Value::Null) => Vec::new(),
+        Some(Value::Array(items)) => items
+            .iter()
+            .filter_map(|item| match item {
+                Value::Object(mode) => Some(CustomMode {
+                    id: field(mode, "id", String::new()),
+                    name: field(mode, "name", String::new()),
+                    instructions: field(mode, "instructions", String::new()),
+                    examples: list(mode, "examples"),
+                    hotkey: field(mode, "hotkey", None),
+                }),
+                _ => {
+                    warn!("dictate: dropped a 'modes' entry that is not an object");
+                    None
+                }
+            })
+            .collect(),
+        Some(_) => {
+            warn!("dictate: 'modes' is not a list, ignored");
+            Vec::new()
+        }
+    }
 }
 
 /// Save check. Returns the normalised copy, or the first problem as a user-readable message.
@@ -155,23 +215,23 @@ pub fn whisper_prompt(words: &[String]) -> Option<String> {
 }
 
 pub fn current() -> DictateSettings {
-    SETTINGS
+    CACHE
         .read()
         .unwrap_or_else(PoisonError::into_inner)
+        .settings
         .clone()
 }
 
 pub fn current_whisper_prompt() -> Option<String> {
-    PROMPT
+    CACHE
         .read()
         .unwrap_or_else(PoisonError::into_inner)
+        .prompt
         .clone()
 }
 
 fn set_cache(s: DictateSettings) {
-    let prompt = whisper_prompt(&s.dictionary);
-    *SETTINGS.write().unwrap_or_else(PoisonError::into_inner) = s;
-    *PROMPT.write().unwrap_or_else(PoisonError::into_inner) = prompt;
+    *CACHE.write().unwrap_or_else(PoisonError::into_inner) = cache_of(s);
 }
 
 #[cfg(test)]
@@ -189,10 +249,12 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     };
     let s = sanitize(raw);
     info!("dictate: {}", if s.enabled { "on" } else { "off" });
+    let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     set_cache(s);
 }
 
 pub fn save<R: Runtime>(app: &AppHandle<R>, s: DictateSettings) -> Result<DictateSettings, String> {
+    let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let valid = validate_for_save(&s)?;
     let value = serde_json::to_value(&valid).map_err(|e| e.to_string())?;
     let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
@@ -245,7 +307,7 @@ fn normalise(s: DictateSettings, strict: bool) -> Result<DictateSettings, String
     let main = match check_hotkey(&s.main_hotkey, &[]) {
         Ok(hotkey) => hotkey,
         Err(e) => {
-            reject(strict, format!("main hotkey {e}"))?;
+            reject_hotkey(strict, "main", e)?;
             DEFAULT_MAIN
         }
     };
@@ -256,10 +318,14 @@ fn normalise(s: DictateSettings, strict: bool) -> Result<DictateSettings, String
 
     let mut builtin_hotkeys = BTreeMap::new();
     for (id, text) in &s.builtin_hotkeys {
+        if text.trim().is_empty() {
+            // A blank value means "no hotkey", the same as a blank mode hotkey.
+            continue;
+        }
         let checked = if is_builtin(id) {
             check_hotkey(text, &bindings)
         } else {
-            Err("is for an unknown mode".to_string())
+            Err(HotkeyError::fixed("is for an unknown mode"))
         };
         match checked {
             Ok(hotkey) => {
@@ -269,7 +335,7 @@ fn normalise(s: DictateSettings, strict: bool) -> Result<DictateSettings, String
                     target: Target::Mode(id.clone()),
                 });
             }
-            Err(e) => reject(strict, format!("built-in hotkey {e}"))?,
+            Err(e) => reject_hotkey(strict, "built-in", e)?,
         }
     }
 
@@ -310,7 +376,7 @@ fn normalise(s: DictateSettings, strict: bool) -> Result<DictateSettings, String
                     Some(hotkey.display())
                 }
                 Err(e) => {
-                    reject(strict, format!("{label} hotkey {e}"))?;
+                    reject_hotkey(strict, &label, e)?;
                     None
                 }
             },
@@ -375,18 +441,46 @@ fn reject(strict: bool, problem: String) -> Result<(), String> {
     Ok(())
 }
 
+/// A hotkey problem. `detail` may echo the user's text, so it goes to strict errors only.
+#[derive(Debug)]
+struct HotkeyError {
+    reason: &'static str,
+    detail: String,
+}
+
+impl HotkeyError {
+    fn fixed(reason: &'static str) -> Self {
+        Self {
+            reason,
+            detail: reason.to_string(),
+        }
+    }
+}
+
+fn reject_hotkey(strict: bool, label: &str, e: HotkeyError) -> Result<(), String> {
+    if strict {
+        return Err(format!("{label} hotkey {}", e.detail));
+    }
+    warn!("dictate: dropped a setting: {label} hotkey {}", e.reason);
+    Ok(())
+}
+
 /// Parses the hotkey and checks it against the bindings already accepted, in order.
-fn check_hotkey(text: &str, accepted: &[Binding]) -> Result<Hotkey, String> {
-    let hotkey = Hotkey::parse(text).map_err(|_| "is not a valid hotkey".to_string())?;
+fn check_hotkey(text: &str, accepted: &[Binding]) -> Result<Hotkey, HotkeyError> {
+    let hotkey = Hotkey::parse(text).map_err(|_| HotkeyError::fixed("is not a valid hotkey"))?;
     validate_bindings(&[Binding {
         hotkey,
         target: Target::Main,
-    }])?;
+    }])
+    .map_err(|detail| HotkeyError {
+        reason: "is not an allowed combination",
+        detail,
+    })?;
     if accepted.iter().any(|b| b.hotkey == hotkey) {
-        return Err(format!(
-            "'{}' is already used by another hotkey",
-            hotkey.display()
-        ));
+        return Err(HotkeyError {
+            reason: "is already used by another hotkey",
+            detail: format!("'{}' is already used by another hotkey", hotkey.display()),
+        });
     }
     Ok(hotkey)
 }
@@ -625,5 +719,56 @@ mod tests {
             current_whisper_prompt().as_deref(),
             Some("Conclave, Tauri.")
         );
+    }
+
+    #[test]
+    fn sanitize_keeps_mode_with_bad_parts() {
+        let s = sanitize(Some(json!({
+            "modes": [{
+                "id": "m",
+                "name": "M",
+                "instructions": "Do it.",
+                "hotkey": 42,
+                "examples": [{"said": 5, "want": "w"}, {"said": "s", "want": "w"}],
+            }],
+        })));
+        assert_eq!(s.modes.len(), 1);
+        assert_eq!(s.modes[0].hotkey, None);
+        assert_eq!(s.modes[0].examples.len(), 1);
+        assert_eq!(s.modes[0].examples[0].said, "s");
+        assert_eq!(validate_for_save(&s).unwrap(), s);
+    }
+
+    #[test]
+    fn sanitize_reads_builtin_hotkeys_entry_by_entry() {
+        let s = sanitize(Some(json!({
+            "builtin_hotkeys": {"as-spoken": 3, "cleaned-up": "Alt+P"},
+        })));
+        assert_eq!(s.builtin_hotkeys.len(), 1);
+        assert_eq!(s.builtin_hotkeys["cleaned-up"], "Alt+P");
+    }
+
+    #[test]
+    fn blank_builtin_hotkey_removes_the_entry() {
+        let mut s = DictateSettings::default();
+        s.builtin_hotkeys
+            .insert(AS_SPOKEN_ID.to_string(), "  ".to_string());
+        assert!(validate_for_save(&s).unwrap().builtin_hotkeys.is_empty());
+    }
+
+    #[test]
+    fn dictionary_word_length_counts_chars_not_bytes() {
+        let ok = "ж".repeat(64);
+        let too_long = "ж".repeat(65);
+        let s = sanitize(Some(json!({"dictionary": [ok, too_long]})));
+        assert_eq!(s.dictionary, ["ж".repeat(64)]);
+    }
+
+    #[test]
+    fn whisper_prompt_cyrillic_stays_within_cap() {
+        let words: Vec<String> = (0..200).map(|_| "слово".repeat(2)).collect();
+        let p = whisper_prompt(&words).unwrap();
+        assert!(p.chars().count() <= 600);
+        assert!(p.ends_with('.'));
     }
 }

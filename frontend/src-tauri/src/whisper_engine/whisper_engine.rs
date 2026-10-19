@@ -91,7 +91,6 @@ pub struct WhisperEngine {
     download_state_test_hook: std::sync::Mutex<Option<Arc<DownloadStateTestHook>>>,
 }
 
-// shortcut: whisper-rs 0.13 copies the prompt into a CString it never frees and panics on NUL, upgrade whisper-rs to fix both
 fn prompt_to_apply(prompt: Option<&str>) -> Option<&str> {
     prompt.filter(|p| !p.trim().is_empty() && !p.contains('\0'))
 }
@@ -751,8 +750,12 @@ impl WhisperEngine {
             _ => None,
         };
         params.set_language(detected_language.as_deref().or(language_code));
+        // Tokens, not set_initial_prompt: whisper-rs 0.13 leaks a CString on every call
+        let prompt_tokens;
         if let Some(prompt) = prompt_to_apply(initial_prompt) {
-            params.set_initial_prompt(prompt);
+            // Each token covers at least one byte, so prompt.len() + 1 never fails as too small
+            prompt_tokens = ctx.tokenize(prompt, prompt.len() + 1)?;
+            params.set_tokens(&prompt_tokens);
         }
 
         // PERFORMANCE: Suppress verbose C library logs during transcription
@@ -2221,7 +2224,7 @@ mod tests {
         assert_eq!(prompt_to_apply(None), None);
         assert_eq!(prompt_to_apply(Some("  ")), None);
         assert_eq!(prompt_to_apply(Some("Tauri.")), Some("Tauri."));
-        // whisper-rs panics on an interior NUL, so such a prompt is not applied
+        // A NUL cannot cross into C, and tokenizing one would fail the whole chunk
         assert_eq!(prompt_to_apply(Some("Tau\0ri")), None);
     }
 

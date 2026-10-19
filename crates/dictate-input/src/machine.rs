@@ -19,8 +19,8 @@ fn elapsed_ms(from: u32, to: u32) -> u32 {
     }
 }
 
-/// True when a down of a swallowed key, `now - last_down` ms after its last down,
-/// is a new press (its key-up was lost) rather than auto-repeat.
+/// True when, while Idle, a down of a swallowed key `now - last_down` ms after its
+/// last down is a new press (its key-up was lost) rather than auto-repeat.
 pub fn is_fresh_press(last_down: u32, now: u32) -> bool {
     elapsed_ms(last_down, now) > MAX_REPEAT_GAP_MS
 }
@@ -108,7 +108,8 @@ impl HotkeyMachine {
             (self.key_up(now), swallow)
         } else {
             if let Some(i) = self.swallow_ups.iter().position(|&(k, _)| k == vk) {
-                if is_fresh_press(self.swallow_ups[i].1, now) {
+                // During a session every down of a swallowed key is a repeat.
+                if matches!(self.state, State::Idle) && is_fresh_press(self.swallow_ups[i].1, now) {
                     // The key-up of the swallowed down was lost: this is a new press.
                     self.swallow_ups.swap_remove(i);
                     self.held.retain(|&k| k != vk);
@@ -140,19 +141,30 @@ impl HotkeyMachine {
     /// Drops keys the OS says are up (their key-up was missed, e.g. after Win+L).
     /// An `Armed` session whose combo is no longer down is cancelled: its
     /// key-up will never arrive, so the session would otherwise run on.
+    /// Once Idle, swallowed keys whose last down is stale are forgotten too.
     #[must_use]
-    pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool) -> Action {
-        // A swallowed key never updates the OS async state, so keep it until its up.
-        let swallow_ups = &self.swallow_ups;
-        self.held
-            .retain(|&vk| swallow_ups.iter().any(|&(k, _)| k == vk) || is_down(vk));
-        match self.state.clone() {
+    pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool, now: u32) -> Action {
+        self.retain_held(is_down);
+        let action = match self.state.clone() {
             State::Armed { hotkey, .. } if !self.combo_down(&hotkey) => {
                 self.state = State::Idle;
                 Action::Cancel
             }
             _ => Action::None,
+        };
+        if matches!(self.state, State::Idle) {
+            self.swallow_ups
+                .retain(|&(_, t)| elapsed_ms(t, now) <= MAX_REPEAT_GAP_MS);
+            self.retain_held(is_down);
         }
+        action
+    }
+
+    /// A swallowed key never updates the OS async state, so keep it until its up.
+    fn retain_held(&mut self, is_down: &dyn Fn(u16) -> bool) {
+        let swallow_ups = &self.swallow_ups;
+        self.held
+            .retain(|&vk| swallow_ups.iter().any(|&(k, _)| k == vk) || is_down(vk));
     }
 
     /// Back to Idle. Held keys stay tracked, so a repeated down cannot re-arm.
@@ -426,7 +438,7 @@ mod tests {
     fn stale_key_resynced() {
         let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
         press(&mut m, L, 0);
-        assert_eq!(m.sync_held(&|_| false), Action::None);
+        assert_eq!(m.sync_held(&|_| false, 0), Action::None);
         press(&mut m, LCTRL, 10);
         assert_eq!(
             press(&mut m, LWIN, 10),
@@ -513,7 +525,7 @@ mod tests {
         let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
         press(&mut m, LCTRL, 0);
         press(&mut m, LWIN, 0);
-        assert_eq!(m.sync_held(&|_| false), Action::Cancel);
+        assert_eq!(m.sync_held(&|_| false, 0), Action::Cancel);
         press(&mut m, LCTRL, 900);
         assert_eq!(
             press(&mut m, LWIN, 900),
@@ -526,7 +538,7 @@ mod tests {
         let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
         press(&mut m, LCTRL, 0);
         press(&mut m, LWIN, 0);
-        assert_eq!(m.sync_held(&|_| true), Action::None);
+        assert_eq!(m.sync_held(&|_| true, 0), Action::None);
         assert_eq!(release(&mut m, LWIN, 900), dec(Action::Stop, false, false));
     }
 
@@ -579,7 +591,7 @@ mod tests {
             dec(Action::Start(Target::Main), true, true)
         );
         let modifiers_only = |vk: u16| vk == LCTRL || vk == LWIN;
-        assert_eq!(m.sync_held(&modifiers_only), Action::None);
+        assert_eq!(m.sync_held(&modifiers_only, 10), Action::None);
         assert_eq!(press(&mut m, SPACE, 400), dec(Action::None, true, false));
         assert_eq!(release(&mut m, SPACE, 900), dec(Action::Stop, true, true));
     }
@@ -595,7 +607,7 @@ mod tests {
             dec(Action::Start(Target::Main), true, true)
         );
         // Win+L lost the ups: the OS now reports everything up.
-        assert_eq!(m.sync_held(&|_| false), Action::Cancel);
+        assert_eq!(m.sync_held(&|_| false, 10), Action::Cancel);
         // Ctrl+Win with the stale Space must not start a dictation.
         assert_eq!(press(&mut m, LCTRL, 900), none());
         assert_eq!(press(&mut m, LWIN, 900), none());
@@ -747,5 +759,42 @@ mod tests {
             dec(Action::Start(Target::Main), true, true)
         );
         assert_eq!(press(&mut m, SPACE, 499), dec(Action::None, true, false));
+    }
+
+    #[test]
+    fn slow_repeat_while_armed_stays_swallowed() {
+        // A session that is running treats every down of a swallowed key as repeat.
+        const SPACE: u16 = 0x20;
+        let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(
+            press(&mut m, SPACE, 10),
+            dec(Action::Start(Target::Main), true, true)
+        );
+        assert_eq!(press(&mut m, SPACE, 2010), dec(Action::None, true, false));
+        assert_eq!(m.swallow_ups, vec![(SPACE, 2010)]);
+        assert_eq!(release(&mut m, SPACE, 2100), dec(Action::Stop, true, true));
+    }
+
+    #[test]
+    fn lost_ups_after_retarget_do_not_block_next_hotkey() {
+        // Win+L loses every up after Ctrl+Win+P retargeted: P must not stay held.
+        let mut m = machine(vec![
+            bind("Ctrl+Win", Target::Main),
+            bind("Ctrl+Win+P", Target::Mode("m".into())),
+        ]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(
+            press(&mut m, P, 10),
+            dec(Action::Retarget(Target::Mode("m".into())), true, true)
+        );
+        assert_eq!(m.sync_held(&|_| false, 10_010), Action::Cancel);
+        assert_eq!(press(&mut m, LCTRL, 10_100), none());
+        assert_eq!(
+            press(&mut m, LWIN, 10_100),
+            dec(Action::Start(Target::Main), false, true)
+        );
     }
 }

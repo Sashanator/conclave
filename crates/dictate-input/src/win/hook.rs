@@ -208,7 +208,7 @@ fn handle_key(msg: u32, info: &KBDLLHOOKSTRUCT) -> bool {
     let now = info.time;
     let Some((sync, decision)) = with_state(|st| {
         let sync = if down {
-            st.machine.sync_held(&key_is_down)
+            st.machine.sync_held(&key_is_down, now)
         } else {
             Action::None
         };

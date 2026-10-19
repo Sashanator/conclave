@@ -7,14 +7,18 @@ use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::thread::JoinHandle;
 
-use cpal::traits::{DeviceTrait, StreamTrait};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use log::{info, warn};
 
 use super::{MAX_DICTATION_SECS, PRE_ROLL_MS};
-use crate::audio::{default_input_device, get_device_and_config, AudioDevice, DeviceType};
+use crate::audio::{
+    default_input_device, get_device_and_config, parse_audio_device, AudioDevice, DeviceType,
+};
 
 /// Window for the level meter.
 const LEVEL_WINDOW_MS: usize = 50;
+/// The session buffer is reserved this long at `begin`, so it does not reallocate under the lock.
+const SESSION_RESERVE_SECS: usize = 30;
 
 /// The newest samples, up to a fixed capacity. Oldest samples are dropped first.
 pub struct PreRollBuffer {
@@ -29,10 +33,14 @@ impl PreRollBuffer {
 
     pub fn push(&mut self, s: &[f32]) {
         for &x in s {
-            self.samples.push_back(x);
-            if self.samples.len() > self.capacity {
-                self.samples.pop_front();
-            }
+            self.push_one(x);
+        }
+    }
+
+    pub fn push_one(&mut self, x: f32) {
+        self.samples.push_back(x);
+        if self.samples.len() > self.capacity {
+            self.samples.pop_front();
         }
     }
 
@@ -52,16 +60,18 @@ impl PreRollBuffer {
     }
 }
 
-/// Averages interleaved frames to mono. Mono input is returned unchanged.
-pub fn downmix(interleaved: &[f32], channels: u16) -> Vec<f32> {
+/// Averages each interleaved frame to one mono sample and hands it to `sink`. Allocates nothing,
+/// because it runs in the audio callback. A trailing partial frame is ignored.
+pub fn downmix_into<T: Copy>(
+    interleaved: &[T],
+    channels: u16,
+    to_f32: fn(T) -> f32,
+    mut sink: impl FnMut(f32),
+) {
     let ch = channels.max(1) as usize;
-    if ch == 1 {
-        return interleaved.to_vec();
+    for frame in interleaved.chunks_exact(ch) {
+        sink(frame.iter().map(|&s| to_f32(s)).sum::<f32>() / ch as f32);
     }
-    interleaved
-        .chunks_exact(ch)
-        .map(|frame| frame.iter().sum::<f32>() / ch as f32)
-        .collect()
 }
 
 pub fn i16_to_f32(s: i16) -> f32 {
@@ -72,29 +82,48 @@ pub fn u16_to_f32(s: u16) -> f32 {
     (s as f32 - 32768.0) / 32768.0
 }
 
+/// The device to open: the preferred one when it is enumerated, else the default input.
+pub fn choose_device(preferred: Option<&str>, available: &[String], default: Option<&str>) -> Option<String> {
+    match preferred {
+        Some(p) if available.iter().any(|a| a == p) => Some(p.to_string()),
+        _ => default.map(str::to_string),
+    }
+}
+
 /// The pre-roll plus the live samples of one dictation. Samples past the session cap are dropped.
 /// The pre-roll is refilled during a session too, so it holds the newest audio at every `begin`.
 pub struct SessionBuffer {
     pre_roll: PreRollBuffer,
     session: Option<Vec<f32>>,
+    reserve: usize,
     cap: usize,
 }
 
 impl SessionBuffer {
-    pub fn new(pre_roll_capacity: usize, cap: usize) -> Self {
-        Self { pre_roll: PreRollBuffer::new(pre_roll_capacity), session: None, cap }
+    pub fn new(pre_roll_capacity: usize, reserve: usize, cap: usize) -> Self {
+        Self { pre_roll: PreRollBuffer::new(pre_roll_capacity), session: None, reserve, cap }
     }
 
     pub fn push(&mut self, s: &[f32]) {
-        self.pre_roll.push(s);
-        if let Some(buf) = &mut self.session {
-            let room = self.cap.saturating_sub(buf.len());
-            buf.extend_from_slice(&s[..s.len().min(room)]);
+        for &x in s {
+            self.push_one(x);
         }
     }
 
+    pub fn push_one(&mut self, x: f32) {
+        self.pre_roll.push_one(x);
+        if let Some(buf) = &mut self.session {
+            if buf.len() < self.cap {
+                buf.push(x);
+            }
+        }
+    }
+
+    /// Starts a session with the pre-roll. Calling this during a session discards that session.
     pub fn begin(&mut self) {
-        self.session = Some(self.pre_roll.take());
+        let mut session = self.pre_roll.take();
+        session.reserve(self.reserve);
+        self.session = Some(session);
     }
 
     pub fn end(&mut self) -> Vec<f32> {
@@ -139,7 +168,9 @@ pub struct MicCapture {
 }
 
 impl MicCapture {
-    /// Opens the named input device, or the default input when `preferred` is None.
+    /// Opens the preferred input, or the default input when it is missing or `preferred` is None.
+    /// `device_name()` reports the device actually opened, so a caller can compare it with its
+    /// preference and reopen later.
     pub fn open(preferred: Option<String>) -> Result<MicCapture, String> {
         let alive = Arc::new(AtomicBool::new(true));
         let (ready_tx, ready_rx) = mpsc::channel();
@@ -178,7 +209,8 @@ impl MicCapture {
         self.alive.load(Ordering::SeqCst)
     }
 
-    /// The session starts with the pre-roll, then collects live samples.
+    /// The session starts with the pre-roll, then collects live samples. Calling this during an
+    /// active session discards that session.
     pub fn begin(&self) {
         lock(&self.buf).begin();
     }
@@ -222,23 +254,46 @@ fn run(preferred: Option<String>, alive: Arc<AtomicBool>, ready: Sender<Result<R
 
 /// Runs on the capture thread: the cpal stream must be created and dropped here.
 fn start(preferred: Option<String>, alive: Arc<AtomicBool>) -> Result<(cpal::Stream, Ready), String> {
-    let audio_device = match preferred {
-        Some(name) => AudioDevice::new(name, DeviceType::Input),
-        None => default_input_device().map_err(|e| format!("No microphone: {e}"))?,
-    };
-    let (device, config) = tauri::async_runtime::block_on(get_device_and_config(&audio_device))
-        .map_err(|e| format!("Microphone '{}' unavailable: {e}", audio_device.name))?;
+    // Names from Recording preferences carry an " (input)" suffix; the device name is the bare part.
+    let preferred = preferred.and_then(|name| match parse_audio_device(&name) {
+        Ok(device) => Some(device.name),
+        Err(e) => {
+            warn!("Dictate: requested microphone name is unusable ({e}), using the default input");
+            None
+        }
+    });
+    // Same existence check as the recording path (resolve_mic_or_default), on every platform.
+    let available: Vec<String> = cpal::default_host()
+        .input_devices()
+        .map(|it| it.filter_map(|d| d.name().ok()).collect())
+        .unwrap_or_default();
+    let default = default_input_device().ok().map(|d| d.name);
+    let chosen = choose_device(preferred.as_deref(), &available, default.as_deref())
+        .ok_or_else(|| "No microphone found".to_string())?;
+
+    let (device, config) = tauri::async_runtime::block_on(get_device_and_config(&AudioDevice::new(
+        chosen.clone(),
+        DeviceType::Input,
+    )))
+    .map_err(|e| format!("Microphone '{chosen}' unavailable: {e}"))?;
+    let name = device.name().map_err(|e| format!("Microphone name unreadable: {e}"))?;
 
     let rate = config.sample_rate().0;
     let channels = config.channels();
     let buf: Shared = Arc::new(Mutex::new(SessionBuffer::new(
         PRE_ROLL_MS as usize * rate as usize / 1000,
+        SESSION_RESERVE_SECS * rate as usize,
         (MAX_DICTATION_SECS as usize + 1) * rate as usize,
     )));
     let stream = build_stream(&device, &config, channels, buf.clone(), alive)?;
     stream.play().map_err(|e| format!("Microphone stream did not start: {e}"))?;
-    info!("Dictate microphone '{}' open at {} Hz, {} channel(s)", audio_device.name, rate, channels);
-    Ok((stream, Ready { name: audio_device.name, rate, buf }))
+    match preferred.as_deref() {
+        Some(p) if p != chosen => info!(
+            "Dictate: requested microphone '{p}' is not available, opened '{name}' at {rate} Hz (fallback)"
+        ),
+        _ => info!("Dictate: opened microphone '{name}' at {rate} Hz, {channels} channel(s)"),
+    }
+    Ok((stream, Ready { name, rate, buf }))
 }
 
 fn build_stream(
@@ -269,8 +324,8 @@ fn build<T: cpal::SizedSample + 'static>(
     device.build_input_stream(
         config,
         move |data: &[T], _: &cpal::InputCallbackInfo| {
-            let floats: Vec<f32> = data.iter().map(|&s| to_f32(s)).collect();
-            lock(&buf).push(&downmix(&floats, channels));
+            let mut sb = lock(&buf);
+            downmix_into(data, channels, to_f32, |x| sb.push_one(x));
         },
         move |e: cpal::StreamError| {
             warn!("Dictate microphone stream error: {e}");
@@ -295,13 +350,18 @@ mod tests {
 
     #[test]
     fn downmix_averages_channels() {
-        assert_eq!(downmix(&[1.0, 3.0, 2.0, 4.0], 2), vec![2.0, 3.0]);
-        assert_eq!(downmix(&[1.0, 3.0], 1), vec![1.0, 3.0]);
+        let mut out = Vec::new();
+        downmix_into(&[1.0, 3.0, 2.0, 4.0], 2, |s| s, |x| out.push(x));
+        assert_eq!(out, vec![2.0, 3.0]);
+
+        let mut mono = Vec::new();
+        downmix_into(&[1.0, 3.0], 1, |s| s, |x| mono.push(x));
+        assert_eq!(mono, vec![1.0, 3.0]);
     }
 
     #[test]
     fn session_includes_preroll() {
-        let mut s = SessionBuffer::new(2, 100);
+        let mut s = SessionBuffer::new(2, 0, 100);
         s.push(&[1.0, 2.0]);
         s.begin();
         s.push(&[3.0]);
@@ -316,7 +376,7 @@ mod tests {
     #[test]
     fn session_keeps_preroll_rolling() {
         // The pre-roll is refilled while a session runs, so the next dictation starts with fresh audio.
-        let mut s = SessionBuffer::new(2, 100);
+        let mut s = SessionBuffer::new(2, 0, 100);
         s.begin();
         s.push(&[3.0, 4.0]);
         s.cancel();
@@ -326,18 +386,35 @@ mod tests {
 
     #[test]
     fn session_cap() {
-        let mut s = SessionBuffer::new(0, 3);
+        let mut s = SessionBuffer::new(0, 0, 3);
         s.begin();
         s.push(&[1.0, 2.0, 3.0, 4.0, 5.0]);
         assert_eq!(s.end().len(), 3);
     }
 
     #[test]
+    fn begin_reserves_session_capacity() {
+        let mut s = SessionBuffer::new(0, 1000, 5000);
+        s.begin();
+        assert!(s.session.as_ref().unwrap().capacity() >= 1000);
+    }
+
+    #[test]
     fn level_is_rms_of_newest_window() {
-        let mut s = SessionBuffer::new(10, 100);
+        let mut s = SessionBuffer::new(10, 0, 100);
         s.push(&[0.5, 0.5]);
         assert_eq!(s.level(2), 0.5);
         assert_eq!(s.level(0), 0.0);
+    }
+
+    #[test]
+    fn choose_device_prefers_available_then_default() {
+        let avail = vec!["Mic A".to_string(), "Mic B".to_string()];
+        assert_eq!(choose_device(Some("Mic B"), &avail, Some("Mic A")), Some("Mic B".into()));
+        assert_eq!(choose_device(Some("Gone"), &avail, Some("Mic A")), Some("Mic A".into()));
+        assert_eq!(choose_device(None, &avail, Some("Mic A")), Some("Mic A".into()));
+        assert_eq!(choose_device(Some("Gone"), &avail, None), None);
+        assert_eq!(choose_device(None, &[], None), None);
     }
 
     #[test]

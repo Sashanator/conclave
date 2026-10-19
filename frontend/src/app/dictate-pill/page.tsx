@@ -59,14 +59,15 @@ export default function DictatePill() {
 
   return (
     <div className="flex h-screen w-screen select-none items-center justify-center">
-      <div className="flex h-10 max-w-[344px] items-center gap-2.5 rounded-full bg-foreground px-4 text-sm font-medium text-background shadow-lg">
+      {/* `dark` forces the dark palette on this element, so the pill is dark in both themes. */}
+      <div className="dark flex h-10 max-w-[344px] items-center gap-2.5 rounded-full bg-background px-4 text-sm font-medium text-foreground shadow-lg">
         <span className={`h-2.5 w-2.5 shrink-0 rounded-full ${DOT[pillTone(view.state)]}`} aria-hidden />
         {showsLevel && (
           <span className="flex h-5 shrink-0 items-center gap-0.5" aria-hidden>
             {BAR_SCALE.map((scale, i) => (
               <span
                 key={i}
-                className="w-1 rounded-full bg-background/80"
+                className="w-1 rounded-full bg-foreground/80"
                 style={{ height: `${4 + 16 * level * scale}px` }}
               />
             ))}

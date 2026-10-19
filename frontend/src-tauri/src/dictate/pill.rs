@@ -119,8 +119,15 @@ pub fn show<R: Runtime>(app: &AppHandle<R>, near: Option<(i32, i32)>) {
     if let Some((x, y)) = position(app, near) {
         builder = builder.position(x, y);
     }
-    if let Err(e) = builder.build() {
-        log::error!("Dictate pill: cannot open window: {e}");
+    match builder.build() {
+        Ok(window) => {
+            // A close or a newer show may have run during the build, before this window was
+            // registered. Then it is stale.
+            if state().label.as_deref() != Some(label.as_str()) {
+                let _ = window.close();
+            }
+        }
+        Err(e) => log::error!("Dictate pill: cannot open window: {e}"),
     }
 }
 

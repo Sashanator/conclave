@@ -13,12 +13,14 @@ use windows::Win32::System::DataExchange::{
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
-use windows::Win32::System::Ole::{CF_DIB, CF_UNICODETEXT};
+use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_UNICODETEXT};
 
 /// What `save` read from the clipboard. Other formats (HTML, files) are not kept.
 pub struct SavedClipboard {
     text: Option<Vec<u16>>,
     dib: Option<Vec<u8>>,
+    dibv5: Option<Vec<u8>>,
+    png: Option<Vec<u8>>,
 }
 
 /// Closes the clipboard on drop, so every early return still releases it.
@@ -41,12 +43,14 @@ fn open() -> Result<OpenGuard, String> {
     Err("clipboard busy".into())
 }
 
-// shortcut: only CF_UNICODETEXT/CF_DIB survive a paste; save all formats if users copy files before dictating
+// shortcut: text and images (CF_DIB, CF_DIBV5, PNG) survive a paste; files and rich text don't, save those too if users copy them before dictating
 pub fn save() -> Result<SavedClipboard, String> {
     let _open = open()?;
     Ok(SavedClipboard {
         text: read_text()?,
         dib: read_bytes(u32::from(CF_DIB.0))?,
+        dibv5: read_bytes(u32::from(CF_DIBV5.0))?,
+        png: read_bytes(register(w!("PNG"))?)?,
     })
 }
 
@@ -82,11 +86,17 @@ pub fn restore(saved: &SavedClipboard, expected_seq: u32) -> Result<bool, String
 fn write_saved(saved: &SavedClipboard) -> Result<(), String> {
     unsafe { EmptyClipboard() }.map_err(|e| format!("EmptyClipboard: {e}"))?;
     write_exclusions()?;
-    if let Some(text) = &saved.text {
-        set_bytes(u32::from(CF_UNICODETEXT.0), &wide_bytes(text))?;
+    if let Some(png) = &saved.png {
+        set_bytes(register(w!("PNG"))?, png)?;
+    }
+    if let Some(dibv5) = &saved.dibv5 {
+        set_bytes(u32::from(CF_DIBV5.0), dibv5)?;
     }
     if let Some(dib) = &saved.dib {
         set_bytes(u32::from(CF_DIB.0), dib)?;
+    }
+    if let Some(text) = &saved.text {
+        set_bytes(u32::from(CF_UNICODETEXT.0), &wide_bytes(text))?;
     }
     Ok(())
 }

@@ -1,7 +1,7 @@
 //! Hold/tap state machine for the Dictate hotkeys (spec §4).
 //! Owned by the hook thread only; it has no locks, so it never blocks the hook.
 
-use crate::hotkey::{modifier_bit, Hotkey, MOD_ALT, MOD_CTRL, MOD_WIN, VK_ESCAPE};
+use crate::hotkey::{modifier_bit, Hotkey, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, VK_ESCAPE};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
@@ -104,9 +104,18 @@ impl HotkeyMachine {
     }
 
     /// Drops keys the OS says are up (their key-up was missed, e.g. after Win+L).
-    pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool) {
+    /// An `Armed` session whose combo is no longer down is cancelled: its
+    /// key-up will never arrive, so the session would otherwise run on.
+    pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool) -> Action {
         self.held.retain(|&vk| is_down(vk));
         self.swallow_ups.retain(|&vk| is_down(vk));
+        match self.state.clone() {
+            State::Armed { hotkey, .. } if !self.combo_down(&hotkey) => {
+                self.state = State::Idle;
+                Action::Cancel
+            }
+            _ => Action::None,
+        }
     }
 
     /// Back to Idle. Held keys stay tracked, so a repeated down cannot re-arm.
@@ -135,13 +144,16 @@ impl HotkeyMachine {
                     if b.hotkey == hotkey {
                         return (Action::None, false);
                     }
-                    let target = b.target.clone();
-                    self.state = State::Armed {
-                        hotkey,
-                        target: target.clone(),
-                        t0,
-                    };
-                    return (Action::Retarget(target), non_modifier);
+                    // After the threshold, another binding is just an other key.
+                    if self.within_threshold(t0, now_ms) {
+                        let target = b.target.clone();
+                        self.state = State::Armed {
+                            hotkey,
+                            target: target.clone(),
+                            t0,
+                        };
+                        return (Action::Retarget(target), non_modifier);
+                    }
                 }
                 if vk == VK_ESCAPE {
                     self.state = State::Idle;
@@ -240,6 +252,12 @@ pub fn validate_bindings(bindings: &[Binding]) -> Result<(), String> {
             None if h.mods.count_ones() < 2 => {
                 return Err(format!("'{}' needs at least two modifiers", h.display()));
             }
+            None if h.mods == MOD_CTRL | MOD_SHIFT || h.mods == MOD_ALT | MOD_SHIFT => {
+                return Err(format!(
+                    "'{}' is Windows' keyboard-layout switch",
+                    h.display()
+                ));
+            }
             Some(_) if h.mods & (MOD_CTRL | MOD_ALT | MOD_WIN) == 0 => {
                 return Err(format!("'{}' needs Ctrl, Alt or Win", h.display()));
             }
@@ -305,6 +323,10 @@ mod tests {
         assert!(validate_bindings(&[bind("Ctrl+Win", Target::Main)]).is_ok());
         assert!(validate_bindings(&[bind("Ctrl+A", Target::Main)]).is_ok());
         assert!(validate_bindings(&[bind("Alt+Shift+F9", Target::Main)]).is_ok());
+        assert!(validate_bindings(&[bind("Shift+F9", Target::Main)]).is_err());
+        assert!(validate_bindings(&[bind("Alt+Shift", Target::Main)]).is_err());
+        assert!(validate_bindings(&[bind("Ctrl+Shift", Target::Main)]).is_err());
+        assert!(validate_bindings(&[bind("Ctrl+Alt", Target::Main)]).is_ok());
         assert!(validate_bindings(&[
             bind("Ctrl+Win", Target::Main),
             bind("Win+Ctrl", Target::Mode("x".into())),
@@ -441,5 +463,77 @@ mod tests {
             press(&mut m, LWIN, 101),
             dec(Action::Start(Target::Main), false, true)
         );
+    }
+
+    #[test]
+    fn sync_cancels_stale_hold() {
+        let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(m.sync_held(&|_| false), Action::Cancel);
+        press(&mut m, LCTRL, 900);
+        assert_eq!(
+            press(&mut m, LWIN, 900),
+            dec(Action::Start(Target::Main), false, true)
+        );
+    }
+
+    #[test]
+    fn sync_keeps_session_when_combo_still_down() {
+        let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(m.sync_held(&|_| true), Action::None);
+        assert_eq!(release(&mut m, LWIN, 900), dec(Action::Stop, false, false));
+    }
+
+    #[test]
+    fn esc_while_armed_cancels_and_is_swallowed() {
+        let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(press(&mut m, ESC, 50), dec(Action::Cancel, true, true));
+        assert_eq!(release(&mut m, ESC, 60), dec(Action::None, true, false));
+    }
+
+    #[test]
+    fn other_binding_after_threshold_is_ignored() {
+        let mut m = machine(vec![
+            bind("Ctrl+Win", Target::Main),
+            bind("Ctrl+Win+P", Target::Mode("m".into())),
+        ]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(press(&mut m, P, 400), none());
+    }
+
+    #[test]
+    fn right_and_generic_modifiers_complete() {
+        let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
+        press(&mut m, 0xA3, 0);
+        assert_eq!(
+            press(&mut m, 0x5C, 0),
+            dec(Action::Start(Target::Main), false, true)
+        );
+        release(&mut m, 0x5C, 500);
+        release(&mut m, 0xA3, 510);
+        press(&mut m, 0x11, 600);
+        assert_eq!(
+            press(&mut m, 0x5B, 600),
+            dec(Action::Start(Target::Main), false, true)
+        );
+    }
+
+    #[test]
+    fn releasing_retarget_key_keeps_session() {
+        let mut m = machine(vec![
+            bind("Ctrl+Win", Target::Main),
+            bind("Ctrl+Win+P", Target::Mode("m".into())),
+        ]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        press(&mut m, P, 50);
+        assert_eq!(release(&mut m, P, 900), dec(Action::None, true, false));
+        assert_eq!(release(&mut m, LWIN, 950), dec(Action::Stop, false, false));
     }
 }

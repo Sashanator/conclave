@@ -81,7 +81,7 @@ fn parse_key(name: &str) -> Option<u16> {
         return Some(name.to_ascii_uppercase().as_bytes()[0] as u16);
     }
     let digits = name.strip_prefix('f')?;
-    if digits.is_empty() || !digits.bytes().all(|c| c.is_ascii_digit()) {
+    if digits.is_empty() || digits.starts_with('0') || !digits.bytes().all(|c| c.is_ascii_digit()) {
         return None;
     }
     let n: u16 = digits.parse().ok()?;
@@ -110,5 +110,8 @@ mod tests {
         assert!(Hotkey::parse("").is_err());
         assert!(Hotkey::parse("Ctrl+Ctrl").is_err());
         assert!(Hotkey::parse("Ctrl+Tab").is_err());
+        assert!(Hotkey::parse("F01").is_err());
+        assert!(Hotkey::parse("F001").is_err());
+        assert!(Hotkey::parse("F24").is_ok());
     }
 }

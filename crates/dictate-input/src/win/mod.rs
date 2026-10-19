@@ -3,7 +3,11 @@ use std::sync::OnceLock;
 use std::time::Instant;
 
 #[cfg(windows)]
+pub mod clipboard;
+#[cfg(windows)]
 pub mod hook;
+#[cfg(windows)]
+pub mod paste;
 #[cfg(windows)]
 pub use hook::{start_hook, HookHandle};
 

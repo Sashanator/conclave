@@ -19,7 +19,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
     WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
 };
 
-use super::{is_altgr_fake_ctrl, is_injected, monotonic_ms};
+use super::{is_altgr_fake_ctrl, is_injected};
 use crate::hotkey::VK_MASK;
 use crate::machine::{Action, Binding, HotkeyMachine};
 
@@ -199,7 +199,8 @@ fn handle_key(msg: u32, info: &KBDLLHOOKSTRUCT) -> bool {
     if !(down || up) || is_injected(info.flags.0) || is_altgr_fake_ctrl(vk, info.scanCode) {
         return false;
     }
-    let now = monotonic_ms();
+    // KBDLLHOOKSTRUCT.time: the tick the machine's gap rules use (wraps).
+    let now = info.time;
     let Some((sync, decision)) = with_state(|st| {
         let sync = if down {
             st.machine.sync_held(&key_is_down)

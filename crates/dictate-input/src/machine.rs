@@ -3,6 +3,17 @@
 
 use crate::hotkey::{modifier_bit, Hotkey, MOD_ALT, MOD_CTRL, MOD_SHIFT, MOD_WIN, VK_ESCAPE};
 
+/// Largest gap between two downs of a key that is still auto-repeat. Windows'
+/// keyboard delay is at most 1000 ms; repeat intervals are far shorter.
+const MAX_REPEAT_GAP_MS: u32 = 1100;
+
+/// True when a down of a swallowed key, `now - last_down` ms after its last down,
+/// is a new press (its key-up was lost) rather than auto-repeat. Times are
+/// KBDLLHOOKSTRUCT.time, which wraps, so the gap uses wrapping subtraction.
+pub fn is_fresh_press(last_down: u32, now: u32) -> bool {
+    now.wrapping_sub(last_down) > MAX_REPEAT_GAP_MS
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Target {
     Main,
@@ -40,7 +51,7 @@ enum State {
     Armed {
         hotkey: Hotkey,
         target: Target,
-        t0: u64,
+        t0: u32,
     },
     HandsFree {
         target: Target,
@@ -52,8 +63,8 @@ pub struct HotkeyMachine {
     hold_threshold_ms: u64,
     /// Every key the OS reported down and not yet up.
     held: Vec<u16>,
-    /// Keys whose down we swallowed; their up is swallowed too.
-    swallow_ups: Vec<u16>,
+    /// Swallowed keys with the time of their last down; their up is swallowed too.
+    swallow_ups: Vec<(u16, u32)>,
     state: State,
 }
 
@@ -72,28 +83,40 @@ impl HotkeyMachine {
         self.bindings = bindings;
     }
 
-    pub fn on_key(&mut self, vk: u16, down: bool, now_ms: u64) -> Decision {
+    /// `now` is KBDLLHOOKSTRUCT.time (ms, wrapping).
+    pub fn on_key(&mut self, vk: u16, down: bool, now: u32) -> Decision {
         let (action, swallow) = if !down {
             self.held.retain(|&k| k != vk);
-            let swallow = match self.swallow_ups.iter().position(|&k| k == vk) {
+            let swallow = match self.swallow_ups.iter().position(|&(k, _)| k == vk) {
                 Some(i) => {
                     self.swallow_ups.swap_remove(i);
                     true
                 }
                 None => false,
             };
-            (self.key_up(now_ms), swallow)
-        } else if self.held.contains(&vk) {
-            // Auto-repeat: the key is already down, so nothing changes.
-            let swallow = modifier_bit(vk).is_none() && self.swallow_ups.contains(&vk);
-            (Action::None, swallow)
+            (self.key_up(now), swallow)
         } else {
-            self.held.push(vk);
-            let (action, swallow) = self.key_down(vk, now_ms);
-            if swallow {
-                self.swallow_ups.push(vk);
+            if let Some(i) = self.swallow_ups.iter().position(|&(k, _)| k == vk) {
+                if is_fresh_press(self.swallow_ups[i].1, now) {
+                    // The key-up of the swallowed down was lost: this is a new press.
+                    self.swallow_ups.swap_remove(i);
+                    self.held.retain(|&k| k != vk);
+                } else {
+                    self.swallow_ups[i].1 = now;
+                }
             }
-            (action, swallow)
+            if self.held.contains(&vk) {
+                // Auto-repeat: the key is already down, so nothing changes.
+                let swallow = modifier_bit(vk).is_none() && self.is_swallowed(vk);
+                (Action::None, swallow)
+            } else {
+                self.held.push(vk);
+                let (action, swallow) = self.key_down(vk, now);
+                if swallow {
+                    self.swallow_ups.push((vk, now));
+                }
+                (action, swallow)
+            }
         };
         let mask_start_menu = self.mask_for(&action);
         Decision {
@@ -109,8 +132,9 @@ impl HotkeyMachine {
     #[must_use]
     pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool) -> Action {
         // A swallowed key never updates the OS async state, so keep it until its up.
+        let swallow_ups = &self.swallow_ups;
         self.held
-            .retain(|&vk| self.swallow_ups.contains(&vk) || is_down(vk));
+            .retain(|&vk| swallow_ups.iter().any(|&(k, _)| k == vk) || is_down(vk));
         match self.state.clone() {
             State::Armed { hotkey, .. } if !self.combo_down(&hotkey) => {
                 self.state = State::Idle;
@@ -126,7 +150,7 @@ impl HotkeyMachine {
     }
 
     /// Returns the action and whether to swallow this key-down.
-    fn key_down(&mut self, vk: u16, now_ms: u64) -> (Action, bool) {
+    fn key_down(&mut self, vk: u16, now: u32) -> (Action, bool) {
         let non_modifier = modifier_bit(vk).is_none();
         match self.state.clone() {
             State::Idle => match self.completing(vk) {
@@ -135,7 +159,7 @@ impl HotkeyMachine {
                     self.state = State::Armed {
                         hotkey: b.hotkey,
                         target: target.clone(),
-                        t0: now_ms,
+                        t0: now,
                     };
                     (Action::Start(target), non_modifier)
                 }
@@ -147,7 +171,7 @@ impl HotkeyMachine {
                         return (Action::None, false);
                     }
                     // After the threshold, another binding is just an other key.
-                    if self.within_threshold(t0, now_ms) {
+                    if self.within_threshold(t0, now) {
                         let target = b.target.clone();
                         self.state = State::Armed {
                             hotkey,
@@ -161,7 +185,7 @@ impl HotkeyMachine {
                     self.state = State::Idle;
                     return (Action::Cancel, true);
                 }
-                if self.within_threshold(t0, now_ms) {
+                if self.within_threshold(t0, now) {
                     self.state = State::Idle;
                     return (Action::Abandon, false);
                 }
@@ -181,10 +205,10 @@ impl HotkeyMachine {
         }
     }
 
-    fn key_up(&mut self, now_ms: u64) -> Action {
+    fn key_up(&mut self, now: u32) -> Action {
         if let State::Armed { hotkey, target, t0 } = self.state.clone() {
             if !self.combo_down(&hotkey) {
-                if self.within_threshold(t0, now_ms) {
+                if self.within_threshold(t0, now) {
                     self.state = State::HandsFree {
                         target: target.clone(),
                     };
@@ -197,8 +221,12 @@ impl HotkeyMachine {
         Action::None
     }
 
-    fn within_threshold(&self, t0: u64, now_ms: u64) -> bool {
-        now_ms.saturating_sub(t0) < self.hold_threshold_ms
+    fn within_threshold(&self, t0: u32, now: u32) -> bool {
+        u64::from(now.wrapping_sub(t0)) < self.hold_threshold_ms
+    }
+
+    fn is_swallowed(&self, vk: u16) -> bool {
+        self.swallow_ups.iter().any(|&(k, _)| k == vk)
     }
 
     /// Start-menu mask: Win is still down while the action is sent (spec §4).
@@ -300,11 +328,11 @@ mod tests {
         HotkeyMachine::new(bindings, 300)
     }
 
-    fn press(m: &mut HotkeyMachine, vk: u16, t: u64) -> Decision {
+    fn press(m: &mut HotkeyMachine, vk: u16, t: u32) -> Decision {
         m.on_key(vk, true, t)
     }
 
-    fn release(m: &mut HotkeyMachine, vk: u16, t: u64) -> Decision {
+    fn release(m: &mut HotkeyMachine, vk: u16, t: u32) -> Decision {
         m.on_key(vk, false, t)
     }
 
@@ -601,5 +629,82 @@ mod tests {
         press(&mut m, P, 50);
         assert_eq!(release(&mut m, P, 900), dec(Action::None, true, false));
         assert_eq!(release(&mut m, LWIN, 950), dec(Action::Stop, false, false));
+    }
+
+    #[test]
+    fn swallowed_repeat_within_gap_stays_swallowed() {
+        const SPACE: u16 = 0x20;
+        let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(
+            press(&mut m, SPACE, 10),
+            dec(Action::Start(Target::Main), true, true)
+        );
+        assert_eq!(press(&mut m, SPACE, 40), dec(Action::None, true, false));
+    }
+
+    #[test]
+    fn lost_up_then_fresh_press_is_not_swallowed() {
+        const A: u16 = 0x41;
+        let mut m = machine(vec![bind("Ctrl+A", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        assert_eq!(
+            press(&mut m, A, 10),
+            dec(Action::Start(Target::Main), true, false)
+        );
+        // Ctrl goes up (Stop); A's key-up is lost.
+        assert_eq!(release(&mut m, LCTRL, 500), dec(Action::Stop, false, false));
+        // A press 5 s later is a new press, not auto-repeat.
+        assert_eq!(press(&mut m, A, 5000), none());
+        assert_eq!(release(&mut m, A, 5010), none());
+        assert!(m.swallow_ups.is_empty());
+        press(&mut m, LCTRL, 5100);
+        assert_eq!(
+            press(&mut m, A, 5110),
+            dec(Action::Start(Target::Main), true, false)
+        );
+    }
+
+    #[test]
+    fn fresh_press_rule() {
+        // Repeat intervals are far below the 1100 ms cut-off.
+        assert!(!is_fresh_press(0, 30));
+        assert!(!is_fresh_press(0, 1100));
+        assert!(is_fresh_press(0, 1101));
+        assert!(is_fresh_press(0, 5000));
+    }
+
+    #[test]
+    fn fresh_press_rule_across_tick_wrap() {
+        assert!(!is_fresh_press(u32::MAX - 100, 400));
+        assert!(is_fresh_press(u32::MAX - 100, 1200));
+    }
+
+    #[test]
+    fn repeat_and_hold_threshold_across_tick_wrap() {
+        const SPACE: u16 = 0x20;
+        let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
+        press(&mut m, LCTRL, u32::MAX - 60);
+        press(&mut m, LWIN, u32::MAX - 60);
+        assert_eq!(
+            press(&mut m, SPACE, u32::MAX - 20),
+            dec(Action::Start(Target::Main), true, true)
+        );
+        assert_eq!(press(&mut m, SPACE, 30), dec(Action::None, true, false));
+        // 61 ms after the start, across the wrap: still within the hold threshold.
+        assert_eq!(
+            release(&mut m, SPACE, 40),
+            dec(Action::HandsFree(Target::Main), true, true)
+        );
+    }
+
+    #[test]
+    fn lost_up_after_wrap_is_a_fresh_press() {
+        const SPACE: u16 = 0x20;
+        let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
+        press(&mut m, SPACE, u32::MAX - 100);
+        assert_eq!(press(&mut m, SPACE, 1200), none());
+        assert!(m.swallow_ups.is_empty());
     }
 }

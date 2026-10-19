@@ -5,7 +5,7 @@ pub mod machine;
 pub mod paste_logic;
 pub mod win;
 
-pub use win::{is_injected, monotonic_ms};
+pub use win::is_injected;
 
 pub use paste_logic::{decide_paste, should_restore, CopiedReason, PasteOutcome, PasteTarget};
 

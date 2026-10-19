@@ -75,7 +75,7 @@ interface GroqModel {
 }
 
 // Fallback models for when API fetch fails or no API key provided
-const OPENAI_FALLBACK_MODELS = [
+export const OPENAI_FALLBACK_MODELS = [
   'gpt-4o',
   'gpt-4o-mini',
   'gpt-4-turbo',
@@ -87,14 +87,14 @@ const OPENAI_FALLBACK_MODELS = [
   'o3-mini',
 ];
 
-const CLAUDE_FALLBACK_MODELS = [
+export const CLAUDE_FALLBACK_MODELS = [
   'claude-haiku-5-5',
   'claude-sonnet-5-5',
   'claude-opus-5-5',
   'claude-fable-5-1',
 ];
 
-const GROQ_FALLBACK_MODELS = [
+export const GROQ_FALLBACK_MODELS = [
   'llama-3.3-70b-versatile',
   'llama-3.1-70b-versatile',
   'mixtral-8x7b-32768',

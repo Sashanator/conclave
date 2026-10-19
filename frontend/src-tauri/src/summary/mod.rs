@@ -34,6 +34,7 @@ pub mod commands;
 pub(crate) mod language_choice;
 pub(crate) mod language_detection;
 pub mod llm_client;
+pub mod llm_target;
 pub(crate) mod metadata;
 pub(crate) mod template_choice;
 pub mod processor;

@@ -462,7 +462,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
     match engine {
         TranscriptionEngine::Whisper(whisper_engine) => {
             match whisper_engine
-                .transcribe_audio_with_confidence(speech_samples, language.clone(), Some(policy))
+                .transcribe_audio_with_confidence(speech_samples, language.clone(), Some(policy), None)
                 .await
             {
                 Ok((text, confidence, is_partial, sentences)) => {

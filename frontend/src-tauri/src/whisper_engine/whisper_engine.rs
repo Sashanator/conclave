@@ -78,6 +78,8 @@ pub struct WhisperEngine {
     // Written only under the current_context write lock, so it always matches the loaded context
     context_mode: Arc<RwLock<ContextMode>>,
     available_models: Arc<RwLock<HashMap<String, ModelInfo>>>,
+    // Whisper calls run one at a time, first come first served (tokio's Mutex is fair)
+    inference_lock: Arc<Mutex<()>>,
     // State tracking for smart logging
     last_transcription_was_short: Arc<RwLock<bool>>,
     short_audio_warning_logged: Arc<RwLock<bool>>,
@@ -87,6 +89,11 @@ pub struct WhisperEngine {
     active_downloads: Arc<Mutex<HashMap<String, Arc<ActiveDownload>>>>,
     #[cfg(test)]
     download_state_test_hook: std::sync::Mutex<Option<Arc<DownloadStateTestHook>>>,
+}
+
+// shortcut: whisper-rs 0.13 copies the prompt into a CString it never frees and panics on NUL, upgrade whisper-rs to fix both
+fn prompt_to_apply(prompt: Option<&str>) -> Option<&str> {
+    prompt.filter(|p| !p.trim().is_empty() && !p.contains('\0'))
 }
 
 impl WhisperEngine {
@@ -195,6 +202,7 @@ impl WhisperEngine {
             current_model: Arc::new(RwLock::new(None)),
             context_mode: Arc::new(RwLock::new(ContextMode::default())),
             available_models: Arc::new(RwLock::new(HashMap::new())),
+            inference_lock: Arc::new(Mutex::new(())),
             // Initialize state tracking
             last_transcription_was_short: Arc::new(RwLock::new(false)),
             short_audio_warning_logged: Arc::new(RwLock::new(false)),
@@ -664,7 +672,7 @@ impl WhisperEngine {
 
     /// Transcribe audio with streaming support for partial results and adaptive quality.
     /// The sentences are chunk-local and empty when their timing is unusable.
-    pub async fn transcribe_audio_with_confidence(&self, audio_data: Vec<f32>, language: Option<String>, policy: Option<&mut LanguagePolicy>) -> Result<(String, f32, bool, Vec<Sentence>)> {
+    pub async fn transcribe_audio_with_confidence(&self, audio_data: Vec<f32>, language: Option<String>, policy: Option<&mut LanguagePolicy>, initial_prompt: Option<&str>) -> Result<(String, f32, bool, Vec<Sentence>)> {
         let started = Instant::now();
         let ctx_lock = self.current_context.read().await;
         let ctx = ctx_lock.as_ref()
@@ -733,6 +741,7 @@ impl WhisperEngine {
         let n_threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).min(4);
         params.set_n_threads(n_threads as i32);
 
+        let _inference = self.inference_lock.lock().await;
         let mut state = ctx.create_state()?;
         // Auto language: pick among the user's languages when a policy is active (see language_policy.rs)
         let detected_language = match policy {
@@ -742,6 +751,9 @@ impl WhisperEngine {
             _ => None,
         };
         params.set_language(detected_language.as_deref().or(language_code));
+        if let Some(prompt) = prompt_to_apply(initial_prompt) {
+            params.set_initial_prompt(prompt);
+        }
 
         // PERFORMANCE: Suppress verbose C library logs during transcription
         // This hides whisper_full_with_state debug logs and beam search details
@@ -922,6 +934,7 @@ impl WhisperEngine {
             log::info!("Starting transcription #{} of {} samples ({:.1}s duration)",
                       transcription_count, audio_data.len(), duration_seconds);
         }
+        let _inference = self.inference_lock.lock().await;
         let mut state = ctx.create_state()?;
         let audio_data = pad_to_min_duration(audio_data).0;
         state.full(params, &audio_data)?;
@@ -2201,5 +2214,40 @@ mod tests {
         assert!(model_path.exists(), "a failed re-download must keep the existing model");
         assert!(!part_path.exists());
         assert!(!engine.active_downloads.lock().await.contains_key("tiny"));
+    }
+
+    #[test]
+    fn initial_prompt_is_applied_only_when_non_blank() {
+        assert_eq!(prompt_to_apply(None), None);
+        assert_eq!(prompt_to_apply(Some("  ")), None);
+        assert_eq!(prompt_to_apply(Some("Tauri.")), Some("Tauri."));
+        // whisper-rs panics on an interior NUL, so such a prompt is not applied
+        assert_eq!(prompt_to_apply(Some("Tau\0ri")), None);
+    }
+
+    #[tokio::test]
+    async fn inference_lock_is_fifo() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = Arc::new(WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap());
+        let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let held = engine.inference_lock.lock().await;
+        let mut tasks = Vec::new();
+        for id in 1..=3 {
+            let engine = engine.clone();
+            let order = order.clone();
+            tasks.push(tokio::spawn(async move {
+                let _inference = engine.inference_lock.lock().await;
+                order.lock().unwrap().push(id);
+            }));
+            // Let each task queue on the lock before the next one starts
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        drop(held);
+        for task in tasks {
+            task.await.unwrap();
+        }
+
+        assert_eq!(*order.lock().unwrap(), vec![1, 2, 3]);
     }
 }

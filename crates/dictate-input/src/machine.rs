@@ -128,7 +128,7 @@ impl HotkeyMachine {
     fn key_down(&mut self, vk: u16, now_ms: u64) -> (Action, bool) {
         let non_modifier = modifier_bit(vk).is_none();
         match self.state.clone() {
-            State::Idle => match self.completing() {
+            State::Idle => match self.completing(vk) {
                 Some(b) => {
                     let target = b.target.clone();
                     self.state = State::Armed {
@@ -141,7 +141,7 @@ impl HotkeyMachine {
                 None => (Action::None, false),
             },
             State::Armed { hotkey, t0, .. } => {
-                if let Some(b) = self.completing() {
+                if let Some(b) = self.completing(vk) {
                     if b.hotkey == hotkey {
                         return (Action::None, false);
                     }
@@ -167,7 +167,7 @@ impl HotkeyMachine {
                 (Action::None, false)
             }
             State::HandsFree { .. } => {
-                if self.completing().is_some() {
+                if self.completing(vk).is_some() {
                     self.state = State::Idle;
                     return (Action::Stop, non_modifier);
                 }
@@ -221,11 +221,13 @@ impl HotkeyMachine {
             .fold(0, |m, bit| m | bit)
     }
 
-    /// The first binding that exactly matches the held keys, if any.
-    fn completing(&self) -> Option<&Binding> {
+    /// The first binding that exactly matches the held keys and is completed by
+    /// the key-down `vk`. A binding with a key completes only on that key, so a
+    /// stale swallowed key cannot complete a binding when a modifier goes down.
+    fn completing(&self, vk: u16) -> Option<&Binding> {
         self.bindings
             .iter()
-            .find(|b| self.matches_exactly(&b.hotkey))
+            .find(|b| self.matches_exactly(&b.hotkey) && b.hotkey.key.map_or(true, |key| key == vk))
     }
 
     fn matches_exactly(&self, h: &Hotkey) -> bool {
@@ -540,6 +542,51 @@ mod tests {
         assert_eq!(m.sync_held(&modifiers_only), Action::None);
         assert_eq!(press(&mut m, SPACE, 400), dec(Action::None, true, false));
         assert_eq!(release(&mut m, SPACE, 900), dec(Action::Stop, true, true));
+    }
+
+    #[test]
+    fn stale_swallowed_key_does_not_complete() {
+        const SPACE: u16 = 0x20;
+        let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(
+            press(&mut m, SPACE, 10),
+            dec(Action::Start(Target::Main), true, true)
+        );
+        // Win+L lost the ups: the OS now reports everything up.
+        assert_eq!(m.sync_held(&|_| false), Action::Cancel);
+        // Ctrl+Win with the stale Space must not start a dictation.
+        assert_eq!(press(&mut m, LCTRL, 900), none());
+        assert_eq!(press(&mut m, LWIN, 900), none());
+        assert_eq!(press(&mut m, SPACE, 910), dec(Action::None, true, false));
+        assert_eq!(release(&mut m, SPACE, 920), dec(Action::None, true, false));
+        assert_eq!(
+            press(&mut m, SPACE, 930),
+            dec(Action::Start(Target::Main), true, true)
+        );
+    }
+
+    #[test]
+    fn hands_free_stop_then_held_key_repeats_do_not_restart() {
+        const SPACE: u16 = 0x20;
+        let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(
+            press(&mut m, SPACE, 10),
+            dec(Action::Start(Target::Main), true, true)
+        );
+        assert_eq!(
+            release(&mut m, SPACE, 100),
+            dec(Action::HandsFree(Target::Main), true, true)
+        );
+        // Ctrl+Win are still held: the next Space press stops the session.
+        assert_eq!(press(&mut m, SPACE, 2000), dec(Action::Stop, true, true));
+        // Auto-repeat of that Space must not start a new session.
+        assert_eq!(press(&mut m, SPACE, 2030), dec(Action::None, true, false));
+        assert_eq!(press(&mut m, SPACE, 2060), dec(Action::None, true, false));
+        assert_eq!(release(&mut m, SPACE, 2100), dec(Action::None, true, false));
     }
 
     #[test]

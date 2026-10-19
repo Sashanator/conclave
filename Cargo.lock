@@ -1553,6 +1553,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "dictate-input"
+version = "0.1.0"
+
+[[package]]
 name = "digest"
 version = "0.10.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3501,6 +3505,7 @@ dependencies = [
  "crossbeam",
  "dashmap",
  "dasp",
+ "dictate-input",
  "dirs 5.0.1",
  "dunce",
  "ebur128",

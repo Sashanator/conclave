@@ -79,7 +79,12 @@ mod stub {
             Err("Dictate needs Windows".into())
         }
 
-        pub fn paste_text(_text: &str, _own_pid: u32, _restore_delay: Duration) -> PasteOutcome {
+        pub fn paste_text(
+            _text: &str,
+            _own_pid: u32,
+            _restore_delay: Duration,
+            _proceed: &dyn Fn() -> bool,
+        ) -> PasteOutcome {
             PasteOutcome::Failed
         }
     }

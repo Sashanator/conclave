@@ -11,7 +11,7 @@ use dictate_input::paste::{foreground_monitor_point, paste_text};
 use dictate_input::PasteOutcome;
 use log::{info, warn};
 use serde::Serialize;
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use super::capture::{CapturedAudio, MicCapture};
@@ -248,6 +248,7 @@ impl SessionCore {
         let mut effects = vec![Effect::MuteOff];
         if !pill_shown {
             effects.push(Effect::ShowPill);
+            effects.push(Effect::PillState(PillState::Transcribing));
         }
         effects.push(Effect::EndCaptureAndProcess(target));
         if reset {
@@ -490,7 +491,8 @@ async fn reopen<R: Runtime>(app: AppHandle<R>) {
 }
 
 fn reopen_blocking(raw: Option<String>, wanted: Option<String>, epoch: u64) {
-    if CAPTURING.load(Ordering::SeqCst) {
+    // Dictate off means no open microphone, so nothing is opened (the indicator must not flash).
+    if CAPTURING.load(Ordering::SeqCst) || !still_on(epoch) {
         return;
     }
     let changed = lock(&REQUESTED).as_ref() != Some(&wanted);
@@ -579,6 +581,15 @@ async fn cleanup_target<R: Runtime>(app: &AppHandle<R>) -> Result<LlmTarget, Str
     resolve_llm_target(pool, &provider, &model).await
 }
 
+/// No text to paste. With Dictate off meanwhile, the pill closes without a message.
+fn nothing_heard<R: Runtime>(app: &AppHandle<R>, mode_id: &str, epoch: u64) {
+    if still_on(epoch) {
+        set_pill(app, PillState::NothingHeard, mode_id);
+    } else {
+        pill::close(app);
+    }
+}
+
 /// One dictation after the mic is closed: VAD, Whisper, cleanup, paste. Errors end in a pill state, never a panic.
 async fn process<R: Runtime>(
     app: AppHandle<R>,
@@ -596,7 +607,7 @@ async fn process<R: Runtime>(
     let started = Instant::now();
     let Some(audio) = captured else {
         warn!("dictate: no audio captured");
-        set_pill(&app, PillState::NothingHeard, &mode_id);
+        nothing_heard(&app, &mode_id, epoch);
         return;
     };
     let rate = audio.sample_rate;
@@ -607,17 +618,17 @@ async fn process<R: Runtime>(
     })
     .await;
     let Ok((a16, secs)) = prepared else {
-        set_pill(&app, PillState::NothingHeard, &mode_id);
+        nothing_heard(&app, &mode_id, epoch);
         return;
     };
     if matches!(check_speech(secs), SpeechCheck::NothingHeard) {
         info!("dictate: nothing heard ({:.1} s of speech)", secs);
-        set_pill(&app, PillState::NothingHeard, &mode_id);
+        nothing_heard(&app, &mode_id, epoch);
         return;
     }
     if !engine_is_whisper(&app).await {
         warn!("dictate: transcript provider is not localWhisper, dictation skipped");
-        set_pill(&app, PillState::NothingHeard, &mode_id);
+        nothing_heard(&app, &mode_id, epoch);
         return;
     }
     let loaded = match whisper_engine() {
@@ -629,12 +640,12 @@ async fn process<R: Runtime>(
     }
     if ensure_model(&app).await.is_err() {
         warn!("dictate: Whisper model not ready");
-        set_pill(&app, PillState::NothingHeard, &mode_id);
+        nothing_heard(&app, &mode_id, epoch);
         return;
     }
     set_pill(&app, PillState::Transcribing, &mode_id);
     let Some(engine) = whisper_engine() else {
-        set_pill(&app, PillState::NothingHeard, &mode_id);
+        nothing_heard(&app, &mode_id, epoch);
         return;
     };
     let mut policy = take_policy();
@@ -651,12 +662,12 @@ async fn process<R: Runtime>(
         Ok((text, _, _, _)) => text.trim().to_string(),
         Err(_) => {
             warn!("dictate: transcription failed");
-            set_pill(&app, PillState::NothingHeard, &mode_id);
+            nothing_heard(&app, &mode_id, epoch);
             return;
         }
     };
     if text.is_empty() {
-        set_pill(&app, PillState::NothingHeard, &mode_id);
+        nothing_heard(&app, &mode_id, epoch);
         return;
     }
     info!("dictate: transcribed {} chars in {} ms", text.chars().count(), started.elapsed().as_millis());
@@ -692,7 +703,7 @@ async fn process<R: Runtime>(
     }
     let chars = final_text.chars().count();
     let outcome = tokio::task::spawn_blocking(move || {
-        paste_text(&final_text, std::process::id(), Duration::from_millis(RESTORE_DELAY_MS))
+        paste_text(&final_text, std::process::id(), Duration::from_millis(RESTORE_DELAY_MS), &|| still_on(epoch))
     })
     .await
     .unwrap_or(PasteOutcome::Failed);
@@ -737,7 +748,12 @@ pub async fn set_default_mode<R: Runtime>(app: &AppHandle<R>, id: &str) -> Resul
     if !is_known_mode(&settings::current(), id) {
         return Err("unknown mode".into());
     }
-    super::update_and_apply(app, |old| with_default_mode(old, id)).await.map(|_| ())
+    let saved = super::update_and_apply(app, |old| with_default_mode(old, id)).await?;
+    // The open Dictate page keeps its own copy. Only the tray changes the mode behind its back, so only this tells it.
+    if let Err(e) = app.emit("dictate-settings-changed", saved) {
+        warn!("dictate: settings change not sent to the page: {e}");
+    }
+    Ok(())
 }
 
 fn with_default_mode(old: &DictateSettings, id: &str) -> DictateSettings {
@@ -829,6 +845,7 @@ mod tests {
             vec![
                 Effect::MuteOff,
                 Effect::ShowPill,
+                Effect::PillState(PillState::Transcribing),
                 Effect::EndCaptureAndProcess(Target::Main)
             ]
         );

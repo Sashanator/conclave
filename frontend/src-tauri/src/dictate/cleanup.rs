@@ -91,7 +91,8 @@ fn escape(s: &str) -> String {
 
 /// Returns the text to paste, or None when the output is empty or, for Cleaned up, looks like an answer.
 pub fn accept_output(m: &ModeSpec, input: &str, output: &str) -> Option<String> {
-    let text = strip_tags(strip_fence(output.trim()));
+    // Fence, tags, then fence again: the model may wrap either way round.
+    let text = strip_fence(strip_tags(strip_fence(output.trim())));
     // An empty reply, or a lone fence left after stripping, has no text to paste.
     if text.chars().all(|c| c == '`') {
         return None;
@@ -282,6 +283,10 @@ mod tests {
             accept_output(&ModeSpec::CleanedUp, "hi", "<dictation>Hi</dictation>").as_deref(),
             Some("Hi")
         );
+        // Both orders of fence and tags
+        for reply in ["<dictation>```text\nHi\n```</dictation>", "```text\n<dictation>Hi</dictation>\n```"] {
+            assert_eq!(accept_output(&ModeSpec::CleanedUp, "hi", reply).as_deref(), Some("Hi"), "{reply}");
+        }
     }
 
     #[test]

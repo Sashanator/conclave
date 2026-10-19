@@ -21,7 +21,7 @@ use windows::Win32::UI::WindowsAndMessaging::{
 
 use super::clipboard;
 use crate::paste_logic::{
-    decide_paste, is_desktop_class, should_restore, PasteOutcome, PasteTarget,
+    decide_paste, is_desktop_class, should_restore, CopiedReason, PasteOutcome, PasteTarget,
 };
 
 const KEYS_RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
@@ -51,15 +51,16 @@ pub fn foreground_target(own_pid: u32) -> PasteTarget {
     }
     let mut pid = 0u32;
     unsafe { GetWindowThreadProcessId(hwnd, Some(&mut pid)) };
+    // pid 0: the window was destroyed between the calls. There is no process to paste into.
+    if pid == 0 {
+        return PasteTarget::NoWindow;
+    }
     if pid == own_pid {
         return PasteTarget::OwnWindow;
     }
     // Our own token failing counts as not elevated; a failed target query counts as elevated.
     let me_elevated = token_elevated(unsafe { GetCurrentProcess() }).unwrap_or(false);
-    let blocked = match process_elevated(pid) {
-        Ok(elevated) => elevated && !me_elevated,
-        Err(_) => true,
-    };
+    let blocked = !me_elevated && process_elevated(pid).unwrap_or(true);
     if blocked {
         PasteTarget::Elevated
     } else {
@@ -154,8 +155,14 @@ pub fn send_ctrl_v() -> Result<(), String> {
 }
 
 /// Never blocks the hook thread: call it from a worker thread. Sleeps `restore_delay` before
-/// restoring a paste, so the target app has read the clipboard first.
-pub fn paste_text(text: &str, own_pid: u32, restore_delay: Duration) -> PasteOutcome {
+/// restoring a paste, so the target app has read the clipboard first. `proceed` is asked right before
+/// Ctrl+V; false sends nothing and the text stays copied.
+pub fn paste_text(
+    text: &str,
+    own_pid: u32,
+    restore_delay: Duration,
+    proceed: &dyn Fn() -> bool,
+) -> PasteOutcome {
     let saved = match clipboard::save() {
         Ok(saved) => Some(saved),
         Err(e) => {
@@ -178,8 +185,11 @@ pub fn paste_text(text: &str, own_pid: u32, restore_delay: Duration) -> PasteOut
     let target = foreground_target(own_pid);
     let may_send = clipboard_set && keys_released && target == PasteTarget::App;
     let clipboard_changed = may_send && clipboard::sequence_number() != seq_after_set;
+    // The key wait can run for seconds: Dictate may have been turned off meanwhile.
+    let turned_off = may_send && !clipboard_changed && !proceed();
     let ctrl_v_sent = may_send
         && !clipboard_changed
+        && !turned_off
         && match send_ctrl_v() {
             Ok(()) => true,
             Err(e) => {
@@ -187,13 +197,17 @@ pub fn paste_text(text: &str, own_pid: u32, restore_delay: Duration) -> PasteOut
                 false
             }
         };
-    let outcome = decide_paste(
-        target,
-        clipboard_set,
-        keys_released,
-        clipboard_changed,
-        ctrl_v_sent,
-    );
+    let outcome = if turned_off {
+        PasteOutcome::Copied(CopiedReason::NoTarget)
+    } else {
+        decide_paste(
+            target,
+            clipboard_set,
+            keys_released,
+            clipboard_changed,
+            ctrl_v_sent,
+        )
+    };
     log::info!("dictate: paste {outcome:?}, {} chars", text.chars().count());
     if outcome == PasteOutcome::Pasted {
         thread::sleep(restore_delay);

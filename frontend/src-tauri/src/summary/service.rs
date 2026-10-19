@@ -382,6 +382,7 @@ impl SummaryService {
                 Vec::new()
             });
         let notes_block = crate::summary::user_notes::render_notes_block(&notes);
+        let dictionary = crate::dictate::settings::current().dictionary;
 
         let result = generate_meeting_summary(
             &client,
@@ -391,6 +392,7 @@ impl SummaryService {
             &text,
             &custom_prompt,
             notes_block.as_deref(),
+            &dictionary,
             &template,
             language.name,
             token_threshold,

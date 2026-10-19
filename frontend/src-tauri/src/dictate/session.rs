@@ -654,7 +654,7 @@ async fn process<R: Runtime>(
             a16,
             Some("auto".to_string()),
             Some(&mut policy),
-            settings::current_whisper_prompt().as_deref(),
+            None,
         )
         .await;
     *lock(&DICTATE_POLICY) = Some(policy);
@@ -714,6 +714,11 @@ async fn process<R: Runtime>(
         started.elapsed().as_millis(),
         outcome
     );
+    if !still_on(epoch) {
+        // Dictate went off during the paste: show nothing.
+        pill::close(&app);
+        return;
+    }
     if let Some(state) = final_pill_state(cleanup_failed, outcome) {
         set_pill(&app, state, &mode_id);
     }

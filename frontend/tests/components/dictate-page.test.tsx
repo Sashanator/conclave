@@ -162,6 +162,11 @@ describe('Dictate page', () => {
     expect(headings).toContain('Dictionary');
   });
 
+  test('the dictionary note says the words are spelling hints for meeting summaries', () => {
+    const notes = renderer!.root.findAll((n) => n.type === 'p').map(text);
+    expect(notes).toContain('Also used as spelling hints for meeting summaries.');
+  });
+
   test('the switch is disabled with the reason when the engine is not Whisper', async () => {
     status = { ...READY_STATUS, engine_is_whisper: false, reason: 'Dictate needs the Whisper engine.' };
     await mount();

@@ -51,7 +51,7 @@ export function DictionaryEditor({ settings, commit }: { settings: DictateSettin
         ))}
       </ul>
 
-      <p className="text-xs text-muted-foreground">Also used for meeting transcripts.</p>
+      <p className="text-xs text-muted-foreground">Also used as spelling hints for meeting summaries.</p>
     </section>
   );
 }

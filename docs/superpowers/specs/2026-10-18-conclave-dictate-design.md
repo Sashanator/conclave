@@ -105,6 +105,10 @@ Detection is restricted to the ticked "Languages spoken in your meetings" (the s
 - **Risk to check before shipping the meeting side:** a Whisper initial prompt can bias language detection and cause hallucinations on short chunks, which is exactly the problem the 2026-10-15 quality work fixed. The builder measures meeting language errors with and without a sample dictionary on the saved comparison recordings (`.superpowers/transcript-compare/`, `.superpowers/quality-debug/`, rule from `conclave-transcription-quality`). If the error rate rises, meetings do **not** get the initial prompt; instead the dictionary is passed to the summary prompt as spelling hints, and the user is told.
 - Empty dictionary = no initial prompt at all = today's behaviour.
 
+**Gate result (2026-10-19):** the Whisper-prompt measurement failed (Russian chunks flipped to Latin script; details in `docs/superpowers/plans/2026-10-19-dictate-dictionary-gate.md`). Two decisions follow:
+- **Meetings:** no Whisper initial prompt. A non-empty dictionary is added to the summary system prompt as `Correct spellings of names and terms: …`.
+- **Dictation:** no Whisper initial prompt either. Cloud cleanup modes get the dictionary as spelling hints; "As spoken" gets no dictionary help.
+
 ## 10. Paste and clipboard
 
 - Every dictation placed on the clipboard also carries the Windows formats that keep it out of clipboard history, cloud clipboard and clipboard monitors (`ExcludeClipboardContentFromMonitorProcessing`, `CanIncludeInClipboardHistory` = 0, `CanUploadToCloudClipboard` = 0). The restore of the old content must not add a second history entry (restore with the same exclusion formats or a method that does not re-trigger history; builder checks on Windows). The "couldn't paste" case keeps the text on the clipboard with the same exclusion formats; tray "Copy last dictation" uses them too.

@@ -20,6 +20,10 @@ const LEVEL_WINDOW_MS: usize = 50;
 /// The session buffer is reserved this long at `begin`, so it does not reallocate under the lock.
 const SESSION_RESERVE_SECS: usize = 30;
 
+fn session_reserve(rate: u32) -> usize {
+    SESSION_RESERVE_SECS * rate as usize
+}
+
 /// The newest samples, up to a fixed capacity. Oldest samples are dropped first.
 pub struct PreRollBuffer {
     samples: VecDeque<f32>,
@@ -46,9 +50,9 @@ impl PreRollBuffer {
         }
     }
 
-    /// Everything buffered, oldest first. The buffer is empty afterwards.
-    pub fn take(&mut self) -> Vec<f32> {
-        self.samples.drain(..).collect()
+    /// Appends everything buffered, oldest first, to `out`. The buffer is empty afterwards.
+    pub fn move_into(&mut self, out: &mut Vec<f32>) {
+        out.extend(self.samples.drain(..));
     }
 
     /// RMS of the newest `n` samples, or 0 when there are none.
@@ -97,13 +101,12 @@ pub fn choose_device(preferred: Option<&str>, available: &[String], default: Opt
 pub struct SessionBuffer {
     pre_roll: PreRollBuffer,
     session: Option<Vec<f32>>,
-    reserve: usize,
     cap: usize,
 }
 
 impl SessionBuffer {
-    pub fn new(pre_roll_capacity: usize, reserve: usize, cap: usize) -> Self {
-        Self { pre_roll: PreRollBuffer::new(pre_roll_capacity), session: None, reserve, cap }
+    pub fn new(pre_roll_capacity: usize, cap: usize) -> Self {
+        Self { pre_roll: PreRollBuffer::new(pre_roll_capacity), session: None, cap }
     }
 
     /// Test helper: the callback pushes one sample at a time.
@@ -123,10 +126,10 @@ impl SessionBuffer {
         }
     }
 
-    /// Starts a session with the pre-roll. Calling this during a session discards that session.
-    pub fn begin(&mut self) {
-        let mut session = self.pre_roll.take();
-        session.reserve(self.reserve);
+    /// Starts a session with the pre-roll, appended to `session`. The caller allocates `session` before
+    /// taking the lock. Calling this during a session discards that session.
+    pub fn begin(&mut self, mut session: Vec<f32>) {
+        self.pre_roll.move_into(&mut session);
         self.session = Some(session);
     }
 
@@ -216,7 +219,9 @@ impl MicCapture {
     /// The session starts with the pre-roll, then collects live samples. Calling this during an
     /// active session discards that session.
     pub fn begin(&self) {
-        lock(&self.buf).begin();
+        // Allocated before the lock: the audio callback takes the same lock.
+        let session = Vec::with_capacity(session_reserve(self.rate));
+        lock(&self.buf).begin(session);
     }
 
     pub fn end(&self) -> CapturedAudio {
@@ -286,7 +291,6 @@ fn start(preferred: Option<String>, alive: Arc<AtomicBool>) -> Result<(cpal::Str
     let channels = config.channels();
     let buf: Shared = Arc::new(Mutex::new(SessionBuffer::new(
         PRE_ROLL_MS as usize * rate as usize / 1000,
-        SESSION_RESERVE_SECS * rate as usize,
         (MAX_DICTATION_SECS as usize + 1) * rate as usize,
     )));
     let stream = build_stream(&device, &config, channels, buf.clone(), alive)?;
@@ -348,8 +352,12 @@ mod tests {
         let mut p = PreRollBuffer::new(4);
         p.push(&[1.0, 2.0, 3.0]);
         p.push(&[4.0, 5.0, 6.0]);
-        assert_eq!(p.take(), vec![3.0, 4.0, 5.0, 6.0]);
-        assert!(p.take().is_empty());
+        let mut out = Vec::new();
+        p.move_into(&mut out);
+        assert_eq!(out, vec![3.0, 4.0, 5.0, 6.0]);
+        out.clear();
+        p.move_into(&mut out);
+        assert!(out.is_empty());
     }
 
     #[test]
@@ -365,13 +373,13 @@ mod tests {
 
     #[test]
     fn session_includes_preroll() {
-        let mut s = SessionBuffer::new(2, 0, 100);
+        let mut s = SessionBuffer::new(2, 100);
         s.push(&[1.0, 2.0]);
-        s.begin();
+        s.begin(Vec::new());
         s.push(&[3.0]);
         assert_eq!(s.end(), vec![1.0, 2.0, 3.0]);
 
-        s.begin();
+        s.begin(Vec::new());
         s.push(&[7.0]);
         s.cancel();
         assert!(s.end().is_empty());
@@ -380,32 +388,35 @@ mod tests {
     #[test]
     fn session_keeps_preroll_rolling() {
         // The pre-roll is refilled while a session runs, so the next dictation starts with fresh audio.
-        let mut s = SessionBuffer::new(2, 0, 100);
-        s.begin();
+        let mut s = SessionBuffer::new(2, 100);
+        s.begin(Vec::new());
         s.push(&[3.0, 4.0]);
         s.cancel();
-        s.begin();
+        s.begin(Vec::new());
         assert_eq!(s.end(), vec![3.0, 4.0]);
     }
 
     #[test]
     fn session_cap() {
-        let mut s = SessionBuffer::new(0, 0, 3);
-        s.begin();
+        let mut s = SessionBuffer::new(0, 3);
+        s.begin(Vec::new());
         s.push(&[1.0, 2.0, 3.0, 4.0, 5.0]);
         assert_eq!(s.end().len(), 3);
     }
 
     #[test]
-    fn begin_reserves_session_capacity() {
-        let mut s = SessionBuffer::new(0, 1000, 5000);
-        s.begin();
-        assert!(s.session.as_ref().unwrap().capacity() >= 1000);
+    fn begin_appends_preroll_to_the_given_vec() {
+        let mut s = SessionBuffer::new(2, 5000);
+        s.push(&[1.0, 2.0, 3.0]);
+        s.begin(Vec::with_capacity(1000));
+        let session = s.session.as_ref().unwrap();
+        assert_eq!(session, &vec![2.0, 3.0]);
+        assert!(session.capacity() >= 1000);
     }
 
     #[test]
     fn level_is_rms_of_newest_window() {
-        let mut s = SessionBuffer::new(10, 0, 100);
+        let mut s = SessionBuffer::new(10, 100);
         s.push(&[0.5, 0.5]);
         assert_eq!(s.level(2), 0.5);
         assert_eq!(s.level(0), 0.0);

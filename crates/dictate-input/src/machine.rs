@@ -106,6 +106,7 @@ impl HotkeyMachine {
     /// Drops keys the OS says are up (their key-up was missed, e.g. after Win+L).
     /// An `Armed` session whose combo is no longer down is cancelled: its
     /// key-up will never arrive, so the session would otherwise run on.
+    #[must_use]
     pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool) -> Action {
         // A swallowed key never updates the OS async state, so keep it until its up.
         self.held
@@ -386,7 +387,7 @@ mod tests {
     fn stale_key_resynced() {
         let mut m = machine(vec![bind("Ctrl+Win", Target::Main)]);
         press(&mut m, L, 0);
-        m.sync_held(&|_| false);
+        assert_eq!(m.sync_held(&|_| false), Action::None);
         press(&mut m, LCTRL, 10);
         assert_eq!(
             press(&mut m, LWIN, 10),

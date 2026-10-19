@@ -5,6 +5,7 @@ import type { DictateSettings, DictateStatus } from '../../src/lib/dictate';
 
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
+  event: { ...await import('@tauri-apps/api/event') },
   sonner: { ...await import('sonner') },
   select: { ...await import('../../src/components/ui/select') },
   switchUi: { ...await import('../../src/components/ui/switch') },
@@ -13,6 +14,7 @@ const originals = {
 // Bun shares module mocks between test files; restore the application modules after this suite.
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
+  mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/components/ui/select', () => originals.select);
   mock.module('../../src/components/ui/switch', () => originals.switchUi);
@@ -63,7 +65,19 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
 });
 const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
 
+// The Rust side emits `dictate-settings-changed` when the tray changes the default mode
+const listeners = new Map<string, (e: { payload: unknown }) => void>();
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
+mock.module('@tauri-apps/api/event', () => ({
+  ...originals.event,
+  listen: async (event: string, handler: (e: { payload: unknown }) => void) => {
+    listeners.set(event, handler);
+    // Only removes its own handler: a remount registers before the previous unlisten runs
+    return () => {
+      if (listeners.get(event) === handler) listeners.delete(event);
+    };
+  },
+}));
 mock.module('sonner', () => ({ toast }));
 mock.module('../../src/components/ui/select', () => ({
   Select: passThrough,
@@ -117,6 +131,14 @@ function chipLabels(): string[] {
   return renderer!.root.findAll((n) => n.type === 'button' && String(n.props['aria-label'] ?? '').startsWith('Remove ')).map((n) => n.props['aria-label'] as string);
 }
 
+// The value of the Default mode select
+function defaultMode(): string {
+  const select = renderer!.root
+    .findAll((n) => n.props.onValueChange !== undefined && n.props.value !== undefined)
+    .find((n) => n.findAll((c) => c.props.id === 'dictate-default-mode').length > 0);
+  return select!.props.value;
+}
+
 function calls(command: string) {
   return invoke.mock.calls.filter(([c]) => c === command);
 }
@@ -138,6 +160,11 @@ describe('Dictate page', () => {
     expect(headings).toContain('General');
     expect(headings).toContain('Modes');
     expect(headings).toContain('Dictionary');
+  });
+
+  test('the dictionary note says the words are spelling hints for meeting summaries', () => {
+    const notes = renderer!.root.findAll((n) => n.type === 'p').map(text);
+    expect(notes).toContain('Also used as spelling hints for meeting summaries.');
   });
 
   test('the switch is disabled with the reason when the engine is not Whisper', async () => {
@@ -188,6 +215,16 @@ describe('Dictate page', () => {
     expect(saved).toEqual([['Conclave', 'Tauri']]);
     expect(settings.dictionary).toEqual(['Conclave']);
     expect(chipLabels()).toEqual(['Remove Conclave']);
+  });
+
+  test('a default mode changed by the tray replaces the page copy', async () => {
+    expect(defaultMode()).toBe('cleaned-up');
+    await act(async () => {
+      listeners.get('dictate-settings-changed')!({ payload: { ...settings, default_mode: 'as-spoken' } });
+    });
+    await flush();
+    expect(defaultMode()).toBe('as-spoken');
+    expect(calls('dictate_save_settings').length).toBe(0);
   });
 
   test('the switch can still be turned off when the status cannot be read', async () => {

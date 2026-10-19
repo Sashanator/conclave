@@ -200,6 +200,7 @@ pub fn bindings(s: &DictateSettings) -> Vec<Binding> {
     main.into_iter().chain(builtins).chain(modes).collect()
 }
 
+// unused since the 2026-10-19 dictionary gate failed; kept for a per-language prompt experiment
 /// Dictionary words joined for Whisper's initial prompt. Adds whole words only, in order, up to the cap.
 pub fn whisper_prompt(words: &[String]) -> Option<String> {
     let mut out = String::new();
@@ -222,6 +223,7 @@ pub fn current() -> DictateSettings {
         .clone()
 }
 
+// unused since the 2026-10-19 dictionary gate failed; kept for a per-language prompt experiment
 pub fn current_whisper_prompt() -> Option<String> {
     CACHE
         .read()

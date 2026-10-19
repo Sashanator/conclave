@@ -3,7 +3,7 @@ import { X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { addWord, type Commit, type DictateSettings } from '@/lib/dictate';
 
-// Stays editable while Dictate is off: the words also help meeting transcripts
+// Stays editable while Dictate is off: the words also help meeting summaries
 export function DictionaryEditor({ settings, commit }: { settings: DictateSettings; commit: Commit }) {
   const [word, setWord] = useState('');
 
@@ -51,7 +51,7 @@ export function DictionaryEditor({ settings, commit }: { settings: DictateSettin
         ))}
       </ul>
 
-      <p className="text-xs text-muted-foreground">Also used for meeting transcripts.</p>
+      <p className="text-xs text-muted-foreground">Also used as spelling hints for meeting summaries.</p>
     </section>
   );
 }

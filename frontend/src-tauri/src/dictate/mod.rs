@@ -14,7 +14,7 @@ use std::sync::{Arc, LazyLock, Mutex, PoisonError};
 use dictate_input::machine::Action;
 use dictate_input::HookHandle;
 use log::{info, warn};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 use crate::api::api::api_get_transcript_config;
 use crate::audio::common::acquire_engine_lifecycle_lock;
@@ -247,8 +247,14 @@ fn switched_off(old: &DictateSettings) -> DictateSettings {
 
 /// Turns Dictate off when the transcript provider is not Whisper (Dictate only works on Whisper).
 pub async fn disable_for_non_whisper<R: Runtime>(app: &AppHandle<R>) {
-    if update_and_apply(app, switched_off).await.is_err() {
-        warn!("dictate: could not switch Dictate off for a non-Whisper provider");
+    match update_and_apply(app, switched_off).await {
+        // The open Dictate page keeps its own copy, so it must hear that Dictate went off.
+        Ok(saved) => {
+            if let Err(e) = app.emit("dictate-settings-changed", saved) {
+                warn!("dictate: settings change not sent to the page: {e}");
+            }
+        }
+        Err(_) => warn!("dictate: could not switch Dictate off for a non-Whisper provider"),
     }
 }
 

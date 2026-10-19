@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { DictateGeneral } from '@/components/Dictate/DictateGeneral';
 import { ModeList } from '@/components/Dictate/ModeList';
@@ -16,6 +17,8 @@ export default function DictatePage() {
   const queue = useRef<Promise<void>>(Promise.resolve());
   // Bumped when a save fails: saves queued before the reload are dropped, the reload wins
   const generation = useRef(0);
+  // Saves queued or running. The tray can change settings meanwhile; then the page reloads after them.
+  const pending = useRef(0);
 
   const show = (s: DictateSettings) => {
     latest.current = s;
@@ -35,6 +38,13 @@ export default function DictatePage() {
     invoke<DictateStatus>('dictate_status')
       .then(setStatus)
       .catch((err) => toast.error('Could not read Dictate status', { description: String(err) }));
+    const unlisten = listen<DictateSettings>('dictate-settings-changed', (e) => {
+      if (pending.current === 0) show(e.payload);
+      else queue.current = queue.current.then(load);
+    });
+    return () => {
+      unlisten.then((stop) => stop());
+    };
   }, [load]);
 
   const commit = (change: (s: DictateSettings) => DictateSettings) => {
@@ -42,9 +52,10 @@ export default function DictatePage() {
     const next = change(latest.current);
     const gen = generation.current;
     show(next);
+    pending.current++;
     queue.current = queue.current.then(async () => {
-      if (gen !== generation.current) return;
       try {
+        if (gen !== generation.current) return;
         const saved = await invoke<DictateSettings>('dictate_save_settings', { settings: next });
         // A newer edit has already replaced this one, so only the newest result is shown
         if (latest.current === next) show(saved);
@@ -53,6 +64,8 @@ export default function DictatePage() {
         await load();
         // Bumped after the reload: edits made during it are queued under the old generation and dropped too
         generation.current++;
+      } finally {
+        pending.current--;
       }
     });
   };

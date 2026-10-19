@@ -172,4 +172,45 @@ mod tests {
         let pool = test_pool().await;
         assert!(resolve_llm_target(&pool, "nope", "m").await.is_err());
     }
+
+    #[tokio::test]
+    async fn ollama_reads_the_saved_endpoint() {
+        let pool = test_pool().await;
+        SettingsRepository::save_model_config(&pool, "ollama", "llama3", "", Some("http://h:1"))
+            .await
+            .unwrap();
+        let target = resolve_llm_target(&pool, "ollama", "llama3").await.unwrap();
+        assert_eq!(target.provider, LLMProvider::Ollama);
+        assert_eq!(target.model, "llama3");
+        assert_eq!(target.ollama_endpoint.as_deref(), Some("http://h:1"));
+        assert!(target.api_key.is_empty());
+        assert!(target.custom_openai_endpoint.is_none());
+    }
+
+    #[tokio::test]
+    async fn ollama_without_saved_config_uses_the_default_endpoint() {
+        let pool = test_pool().await;
+        let target = resolve_llm_target(&pool, "ollama", "llama3").await.unwrap();
+        assert!(target.ollama_endpoint.is_none());
+    }
+
+    #[tokio::test]
+    async fn builtin_ai_needs_no_key_or_endpoint() {
+        let pool = test_pool().await;
+        let target = resolve_llm_target(&pool, "builtin-ai", "gemma").await.unwrap();
+        assert_eq!(target.provider, LLMProvider::BuiltInAI);
+        assert!(target.api_key.is_empty());
+        assert!(target.ollama_endpoint.is_none());
+        assert!(target.custom_openai_endpoint.is_none());
+    }
+
+    #[tokio::test]
+    async fn custom_openai_without_config_errors_with_the_user_facing_text() {
+        let pool = test_pool().await;
+        let err = resolve_llm_target(&pool, "custom-openai", "m").await.err();
+        assert_eq!(
+            err.as_deref(),
+            Some("Custom OpenAI provider selected but no configuration found")
+        );
+    }
 }

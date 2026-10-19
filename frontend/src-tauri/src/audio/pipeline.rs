@@ -808,7 +808,7 @@ impl AudioPipeline {
                 std::time::Duration::from_millis(50), // Shorter timeout for responsiveness
                 self.receiver.recv()
             ).await {
-                Ok(Some(mut chunk)) => {
+                Ok(Some(chunk)) => {
                     // PERFORMANCE: Check for flush signal (special chunk with ID >= u64::MAX - 10)
                     // Multiple flush signals may be sent to ensure processing
                     if chunk.chunk_id >= u64::MAX - 10 {

@@ -734,17 +734,17 @@ fn is_known_mode(s: &DictateSettings, id: &str) -> bool {
 /// Makes `id` the default mode and saves it, as the settings page does. An id that is not a mode is refused
 /// without a save.
 pub async fn set_default_mode<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<(), String> {
-    let old = settings::current();
-    if !is_known_mode(&old, id) {
+    if !is_known_mode(&settings::current(), id) {
         return Err("unknown mode".into());
     }
-    let new = DictateSettings {
+    super::update_and_apply(app, |old| with_default_mode(old, id)).await.map(|_| ())
+}
+
+fn with_default_mode(old: &DictateSettings, id: &str) -> DictateSettings {
+    DictateSettings {
         default_mode: id.to_string(),
         ..old.clone()
-    };
-    let saved = validate_then_store(new, |valid| settings::save(app, valid))?;
-    super::apply(app, &old, &saved).await;
-    Ok(())
+    }
 }
 
 #[tauri::command]
@@ -838,6 +838,19 @@ mod tests {
 
     fn start(core: &mut SessionCore) -> Vec<Effect> {
         core.on_event(SessionEvent::Hotkey(Action::Start(Target::Main)))
+    }
+
+    #[test]
+    fn default_mode_change_keeps_the_other_settings() {
+        let s = DictateSettings {
+            enabled: true,
+            dictionary: vec!["Kubernetes".into()],
+            ..DictateSettings::default()
+        };
+        let next = with_default_mode(&s, "as-spoken");
+        assert_eq!(next.default_mode, "as-spoken");
+        assert!(next.enabled);
+        assert_eq!(next.dictionary, vec!["Kubernetes".to_string()]);
     }
 
     #[test]

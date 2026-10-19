@@ -158,6 +158,11 @@ pub async fn apply<R: Runtime>(app: &AppHandle<R>, old: &DictateSettings, new: &
 }
 
 async fn turn_on<R: Runtime>(app: &AppHandle<R>, new: &DictateSettings) {
+    // A hook already installed means Dictate is on: rebind it rather than start a second one.
+    if let Some(hook) = HOOK.lock().unwrap_or_else(PoisonError::into_inner).as_ref() {
+        hook.set_bindings(settings::bindings(new));
+        return;
+    }
     let events = session::start(app);
     let hotkeys = settings::bindings(new);
     let started = tokio::task::spawn_blocking(move || {
@@ -212,8 +217,18 @@ pub async fn save_and_apply<R: Runtime>(
     app: &AppHandle<R>,
     new: DictateSettings,
 ) -> Result<DictateSettings, String> {
+    update_and_apply(app, |_| new).await
+}
+
+/// Like `save_and_apply`, but `f` builds the new settings from the saved ones read under the lock, so a
+/// concurrent change is never overwritten with a stale copy.
+pub async fn update_and_apply<R: Runtime, F: FnOnce(&DictateSettings) -> DictateSettings>(
+    app: &AppHandle<R>,
+    f: F,
+) -> Result<DictateSettings, String> {
     let _apply = APPLY_LOCK.lock().await;
     let old = settings::current();
+    let new = f(&old);
     if new.enabled && !old.enabled && !engine_is_whisper(app).await {
         return Err("Dictate needs the local Whisper transcription. Choose it in the transcript settings.".into());
     }
@@ -222,13 +237,17 @@ pub async fn save_and_apply<R: Runtime>(
     Ok(saved)
 }
 
+/// The saved settings with Dictate off.
+fn switched_off(old: &DictateSettings) -> DictateSettings {
+    DictateSettings {
+        enabled: false,
+        ..old.clone()
+    }
+}
+
 /// Turns Dictate off when the transcript provider is not Whisper (Dictate only works on Whisper).
 pub async fn disable_for_non_whisper<R: Runtime>(app: &AppHandle<R>) {
-    let off = DictateSettings {
-        enabled: false,
-        ..settings::current()
-    };
-    if save_and_apply(app, off).await.is_err() {
+    if update_and_apply(app, switched_off).await.is_err() {
         warn!("dictate: could not switch Dictate off for a non-Whisper provider");
     }
 }
@@ -254,6 +273,20 @@ pub fn apply_after_db_ready<R: Runtime>(app: &AppHandle<R>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn switch_off_keeps_the_latest_saved_settings() {
+        let _guard = settings::CACHE_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+        let saved = DictateSettings {
+            enabled: true,
+            dictionary: vec!["Kubernetes".into()],
+            ..DictateSettings::default()
+        };
+        settings::set_cache_for_test(saved);
+        let off = switched_off(&settings::current());
+        assert!(!off.enabled);
+        assert_eq!(off.dictionary, vec!["Kubernetes".to_string()]);
+    }
 
     #[test]
     fn unload_rule() {

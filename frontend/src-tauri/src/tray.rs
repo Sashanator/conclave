@@ -452,9 +452,12 @@ fn copy_last_dictation(as_spoken: bool) {
         return;
     };
     let text = if as_spoken { last.as_spoken } else { last.final_text };
-    if dictate_input::clipboard::set_private_text(&text, None).is_err() {
-        log::warn!("Tray: could not copy the last dictation");
-    }
+    // OpenClipboard can retry for a while, so the write stays off the tray's event thread.
+    tauri::async_runtime::spawn_blocking(move || {
+        if dictate_input::clipboard::set_private_text(&text, None).is_err() {
+            log::warn!("Tray: could not copy the last dictation");
+        }
+    });
 }
 
 fn set_dictate_mode<R: Runtime>(app: &AppHandle<R>, mode: &str) {
@@ -463,6 +466,8 @@ fn set_dictate_mode<R: Runtime>(app: &AppHandle<R>, mode: &str) {
     tauri::async_runtime::spawn(async move {
         if session::set_default_mode(&app, &mode).await.is_err() {
             log::warn!("Tray: could not switch the Dictate mode to {mode}");
+            // The native check mark already moved on click; rebuild to show the real default.
+            update_tray_menu(&app);
         }
     });
 }

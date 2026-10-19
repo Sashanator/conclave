@@ -48,10 +48,21 @@ pub fn save() -> Result<SavedClipboard, String> {
     let _open = open()?;
     Ok(SavedClipboard {
         text: read_text()?,
-        dib: read_bytes(u32::from(CF_DIB.0))?,
-        dibv5: read_bytes(u32::from(CF_DIBV5.0))?,
-        png: read_bytes(register(w!("PNG"))?)?,
+        dib: best_effort("CF_DIB", read_bytes(u32::from(CF_DIB.0))).flatten(),
+        dibv5: best_effort("CF_DIBV5", read_bytes(u32::from(CF_DIBV5.0))).flatten(),
+        png: best_effort("PNG", register(w!("PNG")).and_then(read_bytes)).flatten(),
     })
+}
+
+/// Image formats are best effort: a failure logs the format name and drops that image only.
+fn best_effort<T>(format: &str, result: Result<T, String>) -> Option<T> {
+    match result {
+        Ok(value) => Some(value),
+        Err(e) => {
+            log::warn!("dictate: clipboard format {format} skipped: {e}");
+            None
+        }
+    }
 }
 
 /// If the write fails after the clipboard was emptied, `fallback` is put back in the same open session.
@@ -86,17 +97,18 @@ pub fn restore(saved: &SavedClipboard, expected_seq: u32) -> Result<bool, String
 fn write_saved(saved: &SavedClipboard) -> Result<(), String> {
     unsafe { EmptyClipboard() }.map_err(|e| format!("EmptyClipboard: {e}"))?;
     write_exclusions()?;
-    if let Some(png) = &saved.png {
-        set_bytes(register(w!("PNG"))?, png)?;
-    }
-    if let Some(dibv5) = &saved.dibv5 {
-        set_bytes(u32::from(CF_DIBV5.0), dibv5)?;
-    }
-    if let Some(dib) = &saved.dib {
-        set_bytes(u32::from(CF_DIB.0), dib)?;
-    }
+    // Text first: a failed image write must not lose it.
     if let Some(text) = &saved.text {
         set_bytes(u32::from(CF_UNICODETEXT.0), &wide_bytes(text))?;
+    }
+    if let Some(png) = &saved.png {
+        best_effort("PNG", register(w!("PNG")).and_then(|id| set_bytes(id, png)));
+    }
+    if let Some(dibv5) = &saved.dibv5 {
+        best_effort("CF_DIBV5", set_bytes(u32::from(CF_DIBV5.0), dibv5));
+    }
+    if let Some(dib) = &saved.dib {
+        best_effort("CF_DIB", set_bytes(u32::from(CF_DIB.0), dib));
     }
     Ok(())
 }

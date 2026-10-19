@@ -1,6 +1,7 @@
 // Dictate: hold a hotkey, speak, and the text is pasted where the cursor is.
 // The tunable values from the spec live here so they can be found and changed in one place.
 
+pub mod pill;
 pub mod settings;
 
 /// A press shorter than this is a tap (hands-free), not a push-to-talk hold.

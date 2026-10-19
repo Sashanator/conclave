@@ -1,8 +1,8 @@
 # Conclave: Dictate (phase 1) — Design
 
 Date: 2026-10-18
-Status: Approved by the user (2026-10-19)
-Target release: next minor after v0.6.0
+Status: Implemented in v0.7.0 (2026-10-19)
+Target release: v0.7.0
 
 ## 1. Purpose
 

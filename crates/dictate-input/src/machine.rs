@@ -107,8 +107,9 @@ impl HotkeyMachine {
     /// An `Armed` session whose combo is no longer down is cancelled: its
     /// key-up will never arrive, so the session would otherwise run on.
     pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool) -> Action {
-        self.held.retain(|&vk| is_down(vk));
-        self.swallow_ups.retain(|&vk| is_down(vk));
+        // A swallowed key never updates the OS async state, so keep it until its up.
+        self.held
+            .retain(|&vk| self.swallow_ups.contains(&vk) || is_down(vk));
         match self.state.clone() {
             State::Armed { hotkey, .. } if !self.combo_down(&hotkey) => {
                 self.state = State::Idle;
@@ -522,6 +523,23 @@ mod tests {
             press(&mut m, 0x5B, 600),
             dec(Action::Start(Target::Main), false, true)
         );
+    }
+
+    #[test]
+    fn sync_keeps_swallowed_keys() {
+        // Swallowed keys read as up to GetAsyncKeyState, so sync must not drop them.
+        const SPACE: u16 = 0x20;
+        let mut m = machine(vec![bind("Ctrl+Win+Space", Target::Main)]);
+        press(&mut m, LCTRL, 0);
+        press(&mut m, LWIN, 0);
+        assert_eq!(
+            press(&mut m, SPACE, 10),
+            dec(Action::Start(Target::Main), true, true)
+        );
+        let modifiers_only = |vk: u16| vk == LCTRL || vk == LWIN;
+        assert_eq!(m.sync_held(&modifiers_only), Action::None);
+        assert_eq!(press(&mut m, SPACE, 400), dec(Action::None, true, false));
+        assert_eq!(release(&mut m, SPACE, 900), dec(Action::Stop, true, true));
     }
 
     #[test]

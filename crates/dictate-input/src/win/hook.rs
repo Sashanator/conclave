@@ -1,7 +1,9 @@
 //! The WH_KEYBOARD_LL hook thread. It creates and solely owns the `HotkeyMachine`.
 use std::cell::RefCell;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::{mpsc, Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
+use std::time::Duration;
 
 use windows::core::PCWSTR;
 use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
@@ -85,10 +87,18 @@ impl HookHandle {
     }
 
     fn shutdown(&mut self) {
-        if let Some(join) = self.join.take() {
-            post(self.thread_id, WM_QUIT);
-            let _ = join.join();
+        let Some(join) = self.join.take() else {
+            return;
+        };
+        for _ in 0..5 {
+            // Joining only after the post succeeded (or the thread already ended) cannot hang.
+            if post(self.thread_id, WM_QUIT) || join.is_finished() {
+                let _ = join.join();
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
         }
+        log::warn!("dictate: hook thread refused WM_QUIT, detaching it");
     }
 }
 
@@ -98,9 +108,9 @@ impl Drop for HookHandle {
     }
 }
 
-fn post(thread_id: u32, msg: u32) {
-    // Fails only when the hook thread has already exited, which is harmless.
-    let _ = unsafe { PostThreadMessageW(thread_id, msg, WPARAM(0), LPARAM(0)) };
+/// False when the message was not queued, e.g. because the hook thread has already exited.
+fn post(thread_id: u32, msg: u32) -> bool {
+    unsafe { PostThreadMessageW(thread_id, msg, WPARAM(0), LPARAM(0)) }.is_ok()
 }
 
 fn run(
@@ -169,8 +179,12 @@ fn with_state<R>(f: impl FnOnce(&mut HookState) -> R) -> Option<R> {
 
 unsafe extern "system" fn hook_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0 {
-        let info = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
-        if handle_key(wparam.0 as u32, info) {
+        // A panic must not unwind out of an `extern "system"` fn: that aborts the app.
+        let swallow = panic::catch_unwind(AssertUnwindSafe(|| {
+            let info = &*(lparam.0 as *const KBDLLHOOKSTRUCT);
+            handle_key(wparam.0 as u32, info)
+        }));
+        if matches!(swallow, Ok(true)) {
             return LRESULT(1);
         }
     }

@@ -41,6 +41,7 @@ fn open() -> Result<OpenGuard, String> {
     Err("clipboard busy".into())
 }
 
+// shortcut: only CF_UNICODETEXT/CF_DIB survive a paste; save all formats if users copy files before dictating
 pub fn save() -> Result<SavedClipboard, String> {
     let _open = open()?;
     Ok(SavedClipboard {
@@ -49,18 +50,36 @@ pub fn save() -> Result<SavedClipboard, String> {
     })
 }
 
-pub fn set_private_text(text: &str) -> Result<(), String> {
+/// If the write fails after the clipboard was emptied, `fallback` is put back in the same open session.
+pub fn set_private_text(text: &str, fallback: Option<&SavedClipboard>) -> Result<(), String> {
     let wide: Vec<u16> = text.encode_utf16().collect();
     let _open = open()?;
     unsafe { EmptyClipboard() }.map_err(|e| format!("EmptyClipboard: {e}"))?;
     // Exclusions first: if a later step fails, the dictated text is not left on the clipboard.
-    write_exclusions()?;
-    set_bytes(u32::from(CF_UNICODETEXT.0), &wide_bytes(&wide))
+    let written = write_exclusions()
+        .and_then(|()| set_bytes(u32::from(CF_UNICODETEXT.0), &wide_bytes(&wide)));
+    if let (Err(e), Some(saved)) = (&written, fallback) {
+        log::warn!("dictate: clipboard set failed, putting the previous clipboard back: {e}");
+        if let Err(e) = write_saved(saved) {
+            log::warn!("dictate: previous clipboard not put back: {e}");
+        }
+    }
+    written
 }
 
-/// An empty `SavedClipboard` empties the clipboard.
-pub fn restore(saved: &SavedClipboard) -> Result<(), String> {
+/// Puts `saved` back unless the clipboard changed since `expected_seq`. Returns false when it was left alone.
+pub fn restore(saved: &SavedClipboard, expected_seq: u32) -> Result<bool, String> {
     let _open = open()?;
+    // Checked under the lock: an app that copies after an unlocked check would lose its copy to our write.
+    if sequence_number() != expected_seq {
+        return Ok(false);
+    }
+    write_saved(saved)?;
+    Ok(true)
+}
+
+/// Empties the open clipboard and writes `saved` back. An empty `saved` leaves it empty.
+fn write_saved(saved: &SavedClipboard) -> Result<(), String> {
     unsafe { EmptyClipboard() }.map_err(|e| format!("EmptyClipboard: {e}"))?;
     write_exclusions()?;
     if let Some(text) = &saved.text {

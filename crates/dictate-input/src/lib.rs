@@ -43,11 +43,14 @@ mod stub {
             Err("Dictate needs Windows".into())
         }
 
-        pub fn set_private_text(_text: &str) -> Result<(), String> {
+        pub fn set_private_text(
+            _text: &str,
+            _fallback: Option<&SavedClipboard>,
+        ) -> Result<(), String> {
             Err("Dictate needs Windows".into())
         }
 
-        pub fn restore(_saved: &SavedClipboard) -> Result<(), String> {
+        pub fn restore(_saved: &SavedClipboard, _expected_seq: u32) -> Result<bool, String> {
             Err("Dictate needs Windows".into())
         }
 

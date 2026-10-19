@@ -5,7 +5,7 @@ use std::mem::size_of;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use windows::Win32::Foundation::{CloseHandle, HANDLE, RECT};
+use windows::Win32::Foundation::{CloseHandle, HANDLE, HWND, RECT};
 use windows::Win32::Security::{GetTokenInformation, TokenElevation, TOKEN_ELEVATION, TOKEN_QUERY};
 use windows::Win32::System::Threading::{
     GetCurrentProcess, OpenProcess, OpenProcessToken, PROCESS_QUERY_LIMITED_INFORMATION,
@@ -15,11 +15,14 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetWindowRect, GetWindowThreadProcessId,
+    GetClassNameW, GetDesktopWindow, GetForegroundWindow, GetShellWindow, GetWindowRect,
+    GetWindowThreadProcessId,
 };
 
 use super::clipboard;
-use crate::paste_logic::{decide_paste, should_restore, PasteOutcome, PasteTarget};
+use crate::paste_logic::{
+    decide_paste, is_desktop_class, should_restore, PasteOutcome, PasteTarget,
+};
 
 const KEYS_RELEASE_TIMEOUT: Duration = Duration::from_secs(2);
 const KEY_POLL: Duration = Duration::from_millis(10);
@@ -42,6 +45,7 @@ pub fn foreground_target(own_pid: u32) -> PasteTarget {
     if hwnd.0.is_null()
         || hwnd == unsafe { GetShellWindow() }
         || hwnd == unsafe { GetDesktopWindow() }
+        || is_desktop_window(hwnd)
     {
         return PasteTarget::NoWindow;
     }
@@ -61,6 +65,13 @@ pub fn foreground_target(own_pid: u32) -> PasteTarget {
     } else {
         PasteTarget::App
     }
+}
+
+/// The desktop is drawn by a WorkerW or Progman window, not by the shell window.
+fn is_desktop_window(hwnd: HWND) -> bool {
+    let mut buf = [0u16; 256];
+    let len = unsafe { GetClassNameW(hwnd, &mut buf) };
+    usize::try_from(len).is_ok_and(|len| is_desktop_class(&String::from_utf16_lossy(&buf[..len])))
 }
 
 fn process_elevated(pid: u32) -> windows::core::Result<bool> {
@@ -154,7 +165,7 @@ pub fn paste_text(text: &str, own_pid: u32, restore_delay: Duration) -> PasteOut
             None
         }
     };
-    let clipboard_set = match clipboard::set_private_text(text) {
+    let clipboard_set = match clipboard::set_private_text(text, saved.as_ref()) {
         Ok(()) => true,
         Err(e) => {
             log::warn!("dictate: clipboard set failed: {e}");
@@ -162,10 +173,13 @@ pub fn paste_text(text: &str, own_pid: u32, restore_delay: Duration) -> PasteOut
         }
     };
     let seq_after_set = clipboard::sequence_number();
+    // The target is read after the wait, so an Alt+Tab during the wait is seen.
+    let keys_released = clipboard_set && wait_keys_released(KEYS_RELEASE_TIMEOUT);
     let target = foreground_target(own_pid);
-    let paste_ready = clipboard_set && target == PasteTarget::App;
-    let keys_released = paste_ready && wait_keys_released(KEYS_RELEASE_TIMEOUT);
-    let ctrl_v_sent = keys_released
+    let may_send = clipboard_set && keys_released && target == PasteTarget::App;
+    let clipboard_changed = may_send && clipboard::sequence_number() != seq_after_set;
+    let ctrl_v_sent = may_send
+        && !clipboard_changed
         && match send_ctrl_v() {
             Ok(()) => true,
             Err(e) => {
@@ -173,15 +187,23 @@ pub fn paste_text(text: &str, own_pid: u32, restore_delay: Duration) -> PasteOut
                 false
             }
         };
-    let outcome = decide_paste(target, clipboard_set, keys_released, ctrl_v_sent);
+    let outcome = decide_paste(
+        target,
+        clipboard_set,
+        keys_released,
+        clipboard_changed,
+        ctrl_v_sent,
+    );
     log::info!("dictate: paste {outcome:?}, {} chars", text.chars().count());
     if outcome == PasteOutcome::Pasted {
         thread::sleep(restore_delay);
     }
     if let Some(saved) = saved {
         if should_restore(outcome, seq_after_set, clipboard::sequence_number()) {
-            if let Err(e) = clipboard::restore(&saved) {
-                log::warn!("dictate: clipboard restore failed: {e}");
+            match clipboard::restore(&saved, seq_after_set) {
+                Ok(true) => {}
+                Ok(false) => log::info!("dictate: clipboard changed since the paste, not restored"),
+                Err(e) => log::warn!("dictate: clipboard restore failed: {e}"),
             }
         }
     }

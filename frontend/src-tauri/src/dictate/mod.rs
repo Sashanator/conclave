@@ -280,6 +280,28 @@ pub async fn disable_for_non_whisper<R: Runtime>(app: &AppHandle<R>) {
     }
 }
 
+/// The transcript provider was saved. Dictate keeps the Whisper model loaded: Whisper reloads it, any other
+/// provider turns Dictate off. The decision reads the settings under APPLY_LOCK, so it sees the latest change.
+pub async fn on_transcript_config_saved<R: Runtime>(app: &AppHandle<R>, provider: &str) {
+    {
+        let _apply = APPLY_LOCK.lock().await;
+        if !settings::current().enabled {
+            return;
+        }
+        if provider == crate::config::DEFAULT_TRANSCRIPT_PROVIDER {
+            let app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if ensure_model(&app).await.is_err() {
+                    warn!("dictate: Whisper model not loaded");
+                }
+            });
+            return;
+        }
+    }
+    // Released first: the switch-off takes APPLY_LOCK itself.
+    disable_for_non_whisper(app).await;
+}
+
 /// Startup: Dictate that was on comes back on once the database is ready.
 pub fn apply_after_db_ready<R: Runtime>(app: &AppHandle<R>) {
     let app = app.clone();

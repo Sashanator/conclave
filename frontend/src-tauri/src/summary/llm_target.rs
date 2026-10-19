@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use std::path::PathBuf;
 use tracing::info;
 
-#[derive(Debug, Clone)]
+// No Debug or Clone: api_key must never reach a log line or a copy.
 pub(crate) struct LlmTarget {
     pub provider: LLMProvider,
     pub model: String,

@@ -45,6 +45,13 @@ pub struct ChatRequest {
     pub reasoning_effort: Option<&'static str>,
 }
 
+/// OpenAI reasoning models reject any temperature but the default, so it is left out for them.
+/// Only the part after the last '/' is checked, so OpenRouter ids such as `openai/gpt-5-mini` match.
+fn rejects_temperature(model_name: &str) -> bool {
+    let id = model_name.rsplit('/').next().unwrap_or(model_name);
+    ["o1", "o3", "o4", "gpt-5"].iter().any(|prefix| id.starts_with(prefix))
+}
+
 /// Build OpenAI-compat JSON body.
 pub fn build_openai_compat_chat_body(
     provider: &LLMProvider,
@@ -55,10 +62,16 @@ pub fn build_openai_compat_chat_body(
     temperature: Option<f32>,
     top_p: Option<f32>,
 ) -> serde_json::Value {
-    let (max_tokens_val, temperature_val, top_p_val) = if *provider == LLMProvider::CustomOpenAI {
-        (max_tokens, temperature, top_p)
+    let (max_tokens_val, top_p_val) = if *provider == LLMProvider::CustomOpenAI {
+        (max_tokens, top_p)
     } else {
-        (None, None, None)
+        (None, None)
+    };
+    // A configured custom endpoint always gets its temperature, as summaries always had it.
+    let temperature_val = if *provider == LLMProvider::CustomOpenAI {
+        temperature
+    } else {
+        temperature.filter(|_| !rejects_temperature(model_name))
     };
 
     serde_json::json!(ChatRequest {
@@ -108,6 +121,29 @@ pub struct ClaudeRequest {
     pub max_tokens: u32,
     pub system: String,
     pub messages: Vec<ChatMessage>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+}
+
+/// Build the Claude messages body.
+pub fn build_claude_body(
+    model_name: &str,
+    system_prompt: &str,
+    user_prompt: &str,
+    temperature: Option<f32>,
+) -> serde_json::Value {
+    serde_json::json!(ClaudeRequest {
+        system: system_prompt.to_string(),
+        model: model_name.to_string(),
+        // Shared budget: on models with thinking enabled by default this
+        // covers thinking tokens as well as the answer.
+        max_tokens: 8192,
+        messages: vec![ChatMessage {
+            role: "user".to_string(),
+            content: user_prompt.to_string(),
+        }],
+        temperature,
+    })
 }
 
 // Claude-specific response structure
@@ -378,17 +414,7 @@ pub(crate) async fn generate_summary(
             top_p,
         )
     } else {
-        serde_json::json!(ClaudeRequest {
-            system: system_prompt.to_string(),
-            model: model_name.to_string(),
-            // Shared budget: on models with thinking enabled by default this
-            // covers thinking tokens as well as the answer.
-            max_tokens: 8192,
-            messages: vec![ChatMessage {
-                role: "user".to_string(),
-                content: user_prompt.to_string(),
-            }]
-        })
+        build_claude_body(model_name, system_prompt, user_prompt, temperature)
     };
 
     info!("🐞 LLM Request to {}: model={}", provider_name(provider), model_name);
@@ -562,6 +588,73 @@ mod tests {
             .map(|position| position + 4)
             .expect("request should contain complete headers");
         serde_json::from_slice(&request[headers_end..]).expect("request body should be valid JSON")
+    }
+
+    #[test]
+    fn summary_bodies_without_temperature_are_unchanged() {
+        // Summaries pass None for these providers, so the bodies must carry no sampling keys at all.
+        let groq = build_openai_compat_chat_body(
+            &LLMProvider::Groq, "llama-3", "sys", "user", None, None, None,
+        );
+        assert_eq!(
+            groq,
+            json!({
+                "model": "llama-3",
+                "messages": [
+                    {"role": "system", "content": "sys"},
+                    {"role": "user", "content": "user"}
+                ]
+            })
+        );
+        assert_eq!(
+            build_claude_body("claude-x", "sys", "user", None),
+            json!({
+                "model": "claude-x",
+                "max_tokens": 8192,
+                "system": "sys",
+                "messages": [{"role": "user", "content": "user"}]
+            })
+        );
+    }
+
+    #[test]
+    fn explicit_temperature_reaches_every_http_provider() {
+        for provider in [
+            LLMProvider::OpenAI,
+            LLMProvider::Groq,
+            LLMProvider::OpenRouter,
+            LLMProvider::Ollama,
+            LLMProvider::CustomOpenAI,
+        ] {
+            let body = build_openai_compat_chat_body(
+                &provider, "llama-3", "sys", "user", None, Some(0.0), None,
+            );
+            assert_eq!(body["temperature"].as_f64(), Some(0.0), "{provider:?}");
+        }
+        let claude = build_claude_body("claude-x", "sys", "user", Some(0.0));
+        assert_eq!(claude["temperature"].as_f64(), Some(0.0));
+    }
+
+    #[test]
+    fn openai_reasoning_models_never_get_temperature() {
+        for model in ["gpt-5-mini", "o1-mini", "o3", "o4-mini"] {
+            let body = build_openai_compat_chat_body(
+                &LLMProvider::OpenAI, model, "sys", "user", None, Some(0.0), None,
+            );
+            assert!(body.get("temperature").is_none(), "{model}");
+        }
+        let openrouter = build_openai_compat_chat_body(
+            &LLMProvider::OpenRouter, "openai/gpt-5-mini", "sys", "user", None, Some(0.0), None,
+        );
+        assert!(openrouter.get("temperature").is_none());
+    }
+
+    #[test]
+    fn custom_openai_keeps_configured_temperature_for_any_model() {
+        let body = build_openai_compat_chat_body(
+            &LLMProvider::CustomOpenAI, "gpt-5-x", "sys", "user", None, Some(0.3), None,
+        );
+        assert_eq!(body["temperature"].as_f64(), Some(0.3_f32 as f64));
     }
 
     #[test]

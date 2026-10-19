@@ -321,11 +321,13 @@ impl SummaryService {
             Choice::Decided(id, source) => (id, source),
             Choice::AskModel => {
                 let (system, user) = auto_pick_prompts(&text, &listing.templates);
+                // Only a custom endpoint has ever received this temperature; other providers keep the default.
+                let temperature = if provider == LLMProvider::CustomOpenAI { Some(0.0) } else { None };
                 let answer = tokio::time::timeout(
                     Duration::from_secs(30),
                     generate_summary(&client, &provider, &model_name, &final_api_key, &system, &user,
                         ollama_endpoint.as_deref(), custom_openai_endpoint.as_deref(), custom_openai_max_tokens,
-                        Some(0.0), custom_openai_top_p, app_data_dir.as_ref(), Some(&cancellation_token)),
+                        temperature, custom_openai_top_p, app_data_dir.as_ref(), Some(&cancellation_token)),
                 ).await;
                 match answer {
                     Ok(Ok(c)) => match auto_pick_answer_id(&c.content, &listing.templates) {

@@ -712,19 +712,9 @@ pub async fn api_save_transcript_config<R: Runtime>(
         }
     }
 
-    // Dictate keeps the Whisper model loaded: a changed model reloads now, and a non-Whisper provider turns it off.
-    if crate::dictate::keeps_model_loaded() {
-        if provider == crate::config::DEFAULT_TRANSCRIPT_PROVIDER {
-            let reload_app = app.clone();
-            tauri::async_runtime::spawn(async move {
-                if crate::dictate::ensure_model(&reload_app).await.is_err() {
-                    log_error!("Dictate could not load the Whisper model");
-                }
-            });
-        } else {
-            crate::dictate::disable_for_non_whisper(&app).await;
-        }
-    }
+    tauri::async_runtime::spawn(async move {
+        crate::dictate::on_transcript_config_saved(&app).await;
+    });
 
     log_info!("Successfully saved transcript configuration.");
     Ok(

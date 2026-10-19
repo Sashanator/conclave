@@ -23,6 +23,9 @@ mod stub {
     pub struct HookHandle;
 
     impl HookHandle {
+        pub fn is_alive(&self) -> bool {
+            false
+        }
         pub fn set_bindings(&self, _bindings: Vec<Binding>) {}
         pub fn reset(&self) {}
         pub fn stop(self) {}

@@ -992,12 +992,12 @@ impl WhisperEngine {
             }
         } else {
             if cleaned_result != final_result {
-                log::info!("Cleaned repetitive transcription #{}: '{}' -> '{}'", transcription_count, final_result, cleaned_result);
+                log::info!("Cleaned repetitive transcription #{}: {} -> {} chars", transcription_count, final_result.chars().count(), cleaned_result.chars().count());
             }
             // Reduce successful transcription logging frequency
             // Only log every 5th result or significant results (>50 chars) to reduce I/O overhead
             if transcription_count % 5 == 0 || cleaned_result.len() > 50 || duration_seconds > 10.0 {
-                log::info!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
+                log::info!("Transcription #{} result: {} chars", transcription_count, cleaned_result.chars().count());
             } else {
                 perf_debug!("Transcription #{} result: '{}'", transcription_count, cleaned_result);
             }
@@ -2239,12 +2239,14 @@ mod tests {
         for id in 1..=3 {
             let engine = engine.clone();
             let order = order.clone();
+            let (queued_tx, queued_rx) = oneshot::channel();
             tasks.push(tokio::spawn(async move {
+                // The first poll of `lock()` joins the queue, and the test resumes only after this task yields.
+                let _ = queued_tx.send(());
                 let _inference = engine.inference_lock.lock().await;
                 order.lock().unwrap().push(id);
             }));
-            // Let each task queue on the lock before the next one starts
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            queued_rx.await.unwrap();
         }
         drop(held);
         for task in tasks {

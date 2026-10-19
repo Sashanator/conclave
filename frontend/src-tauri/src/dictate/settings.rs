@@ -29,8 +29,6 @@ const MAX_EXAMPLES: usize = 3;
 const MAX_EXAMPLE_CHARS: usize = 2000;
 const MAX_WORDS: usize = 200;
 const MAX_WORD_CHARS: usize = 64;
-// Whisper's prompt window is about 224 tokens; the final "." counts toward the cap.
-const MAX_PROMPT_CHARS: usize = 600;
 const STARTER_INSTRUCTIONS: &str = "Rewrite the dictation as a clear, well-structured prompt for an AI coding assistant. Keep every requirement, constraint, file name and detail the speaker gave; add nothing they did not say. Use short paragraphs or a bulleted list when there are several points. Keep the speaker's language.";
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -87,19 +85,8 @@ impl Default for DictateSettings {
     }
 }
 
-/// The settings and the prompt derived from them share one lock, so readers never see a mismatched pair.
-struct Cache {
-    settings: DictateSettings,
-    prompt: Option<String>,
-}
 
-fn cache_of(settings: DictateSettings) -> Cache {
-    let prompt = whisper_prompt(&settings.dictionary);
-    Cache { settings, prompt }
-}
-
-static CACHE: LazyLock<RwLock<Cache>> =
-    LazyLock::new(|| RwLock::new(cache_of(DictateSettings::default())));
+static CACHE: LazyLock<RwLock<DictateSettings>> = LazyLock::new(|| RwLock::new(DictateSettings::default()));
 /// Held across validate, store write and cache update, so concurrent saves cannot interleave.
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
 
@@ -200,40 +187,12 @@ pub fn bindings(s: &DictateSettings) -> Vec<Binding> {
     main.into_iter().chain(builtins).chain(modes).collect()
 }
 
-// unused since the 2026-10-19 dictionary gate failed; kept for a per-language prompt experiment
-/// Dictionary words joined for Whisper's initial prompt. Adds whole words only, in order, up to the cap.
-pub fn whisper_prompt(words: &[String]) -> Option<String> {
-    let mut out = String::new();
-    for word in words {
-        let sep = if out.is_empty() { "" } else { ", " };
-        if out.chars().count() + sep.len() + word.chars().count() + 1 > MAX_PROMPT_CHARS {
-            break;
-        }
-        out.push_str(sep);
-        out.push_str(word);
-    }
-    (!out.is_empty()).then(|| format!("{out}."))
-}
-
 pub fn current() -> DictateSettings {
-    CACHE
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .settings
-        .clone()
-}
-
-// unused since the 2026-10-19 dictionary gate failed; kept for a per-language prompt experiment
-pub fn current_whisper_prompt() -> Option<String> {
-    CACHE
-        .read()
-        .unwrap_or_else(PoisonError::into_inner)
-        .prompt
-        .clone()
+    CACHE.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
 fn set_cache(s: DictateSettings) {
-    *CACHE.write().unwrap_or_else(PoisonError::into_inner) = cache_of(s);
+    *CACHE.write().unwrap_or_else(PoisonError::into_inner) = s;
 }
 
 #[cfg(test)]
@@ -242,6 +201,7 @@ pub fn set_cache_for_test(s: DictateSettings) {
 }
 
 pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
+    let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let raw = match app.store(STORE_FILE) {
         Ok(store) => store.get(KEY),
         Err(e) => {
@@ -251,7 +211,6 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     };
     let s = sanitize(raw);
     info!("dictate: {}", if s.enabled { "on" } else { "off" });
-    let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     set_cache(s);
 }
 
@@ -684,19 +643,6 @@ mod tests {
     }
 
     #[test]
-    fn whisper_prompt_format_and_cap() {
-        assert_eq!(whisper_prompt(&[]), None);
-        assert_eq!(
-            whisper_prompt(&["Conclave".to_string(), "Tauri".to_string()]),
-            Some("Conclave, Tauri.".to_string())
-        );
-        let words: Vec<String> = (0..200).map(|_| "a".repeat(10)).collect();
-        let p = whisper_prompt(&words).unwrap();
-        assert_eq!(p.len(), 599);
-        assert!(p.ends_with('.'));
-    }
-
-    #[test]
     fn bindings_map_targets() {
         let mut s = DictateSettings::default();
         s.builtin_hotkeys
@@ -722,10 +668,6 @@ mod tests {
         s.dictionary = vec!["Conclave".into(), "Tauri".into()];
         set_cache_for_test(s.clone());
         assert_eq!(current(), s);
-        assert_eq!(
-            current_whisper_prompt().as_deref(),
-            Some("Conclave, Tauri.")
-        );
     }
 
     #[test]
@@ -769,13 +711,5 @@ mod tests {
         let too_long = "ж".repeat(65);
         let s = sanitize(Some(json!({"dictionary": [ok, too_long]})));
         assert_eq!(s.dictionary, ["ж".repeat(64)]);
-    }
-
-    #[test]
-    fn whisper_prompt_cyrillic_stays_within_cap() {
-        let words: Vec<String> = (0..200).map(|_| "слово".repeat(2)).collect();
-        let p = whisper_prompt(&words).unwrap();
-        assert!(p.chars().count() <= 600);
-        assert!(p.ends_with('.'));
     }
 }

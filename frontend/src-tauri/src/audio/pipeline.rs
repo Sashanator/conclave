@@ -615,6 +615,9 @@ impl AudioCapture {
         //     }
         // }
 
+        // Decided here, at capture: a backlog in the pipeline must not let the last dictated audio through.
+        apply_dictate_mute(&self.device_type, &mut mono_data, crate::dictate::mute::meeting_mic_muted);
+
         // Use global recording timestamp for proper synchronization
         let timestamp = self.state.get_recording_duration().unwrap_or(0.0);
 
@@ -805,7 +808,7 @@ impl AudioPipeline {
                 std::time::Duration::from_millis(50), // Shorter timeout for responsiveness
                 self.receiver.recv()
             ).await {
-                Ok(Some(mut chunk)) => {
+                Ok(Some(chunk)) => {
                     // PERFORMANCE: Check for flush signal (special chunk with ID >= u64::MAX - 10)
                     // Multiple flush signals may be sent to ensure processing
                     if chunk.chunk_id >= u64::MAX - 10 {
@@ -845,7 +848,6 @@ impl AudioPipeline {
                     // STEP 1: Add raw audio to ring buffer for mixing
                     // Microphone audio is already normalized at capture level (AudioCapture)
                     // System audio remains raw
-                    apply_dictate_mute(&chunk.device_type, &mut chunk.data, crate::dictate::mute::meeting_mic_muted);
                     self.ring_buffer.add_samples(chunk.device_type.clone(), chunk.data);
 
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data

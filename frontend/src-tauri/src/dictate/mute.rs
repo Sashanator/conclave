@@ -119,14 +119,12 @@ mod tests {
     #[test]
     fn guard_drop_on_panic_releases() {
         let muted_while_alive = AtomicBool::new(false);
-        let previous_hook = std::panic::take_hook();
-        std::panic::set_hook(Box::new(|_| {}));
+        // The panic message on stderr is expected; the hook is not swapped, which would race other tests.
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             let _guard = MuteGuard::new();
             muted_while_alive.store(meeting_mic_muted(), Ordering::SeqCst);
             panic!("simulated panic while dictating");
         }));
-        std::panic::set_hook(previous_hook);
 
         assert!(result.is_err());
         assert!(muted_while_alive.load(Ordering::SeqCst));

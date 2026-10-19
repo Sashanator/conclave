@@ -15,6 +15,8 @@ const MODIFIERS = [
 
 interface HotkeyPickerProps {
   label: string;
+  /** id of the visible label, when there is one */
+  labelId?: string;
   /** The saved hotkey, or null for none. */
   value: string | null;
   /** Returns the problem with a candidate hotkey (null = none), or null when it is allowed. */
@@ -22,7 +24,7 @@ interface HotkeyPickerProps {
   onChange: (hotkey: string | null) => void;
 }
 
-export function HotkeyPicker({ label, value, check, onChange }: HotkeyPickerProps) {
+export function HotkeyPicker({ label, labelId, value, check, onChange }: HotkeyPickerProps) {
   // Only an invalid edit is kept here; a valid one is saved at once and the saved value shows again
   const [draft, setDraft] = useState<HotkeyParts | null>(null);
   const shown = draft ?? hotkeyToParts(value ?? '');
@@ -40,7 +42,7 @@ export function HotkeyPicker({ label, value, check, onChange }: HotkeyPickerProp
 
   return (
     <div className="space-y-1">
-      <div role="group" aria-label={label} className="flex flex-wrap items-center gap-3">
+      <div role="group" aria-label={label} aria-labelledby={labelId} className="flex flex-wrap items-center gap-3">
         {MODIFIERS.map((mod) => (
           <label key={mod.name} className="flex items-center gap-1.5 text-sm">
             <input

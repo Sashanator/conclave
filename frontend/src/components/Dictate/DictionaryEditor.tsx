@@ -23,6 +23,7 @@ export function DictionaryEditor({ settings, commit }: { settings: DictateSettin
       </div>
 
       <Input
+        aria-label="Add a word"
         placeholder="Add a word and press Enter"
         value={word}
         onChange={(e) => setWord(e.target.value)}

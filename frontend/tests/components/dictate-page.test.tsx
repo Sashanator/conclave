@@ -38,10 +38,19 @@ const READY_STATUS: DictateStatus = { enabled: false, model_downloaded: true, mi
 let settings: DictateSettings;
 let status: DictateStatus;
 let saveFails: string | null = null;
+let statusFails = false;
+// When set, every settings read waits for it, so a test can hold the reload that follows a failed save
+let holdLoad: Promise<void> | null = null;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'dictate_get_settings') return settings;
-  if (command === 'dictate_status') return status;
+  if (command === 'dictate_get_settings') {
+    if (holdLoad) await holdLoad;
+    return structuredClone(settings);
+  }
+  if (command === 'dictate_status') {
+    if (statusFails) throw new Error('status unavailable');
+    return status;
+  }
   if (command === 'dictate_save_settings') {
     if (saveFails) throw new Error(saveFails);
     settings = args?.settings as DictateSettings;
@@ -103,6 +112,11 @@ function wordInput(): ReactTestInstance {
   return renderer!.root.findAll((n) => n.type === 'input' && String(n.props.placeholder ?? '').startsWith('Add a word'))[0];
 }
 
+// The words shown as chips, from their remove buttons
+function chipLabels(): string[] {
+  return renderer!.root.findAll((n) => n.type === 'button' && String(n.props['aria-label'] ?? '').startsWith('Remove ')).map((n) => n.props['aria-label'] as string);
+}
+
 function calls(command: string) {
   return invoke.mock.calls.filter(([c]) => c === command);
 }
@@ -111,6 +125,8 @@ beforeEach(async () => {
   settings = structuredClone(BASE_SETTINGS);
   status = { ...READY_STATUS };
   saveFails = null;
+  statusFails = false;
+  holdLoad = null;
   invoke.mockClear();
   toast.error.mockClear();
   await mount();
@@ -144,11 +160,41 @@ describe('Dictate page', () => {
 
   test('a save error shows a toast and reloads from the backend', async () => {
     saveFails = 'Dictionary is full';
-    
     await typeWord('Tauri');
     await flush();
     expect(toast.error).toHaveBeenCalled();
     expect(JSON.stringify(toast.error.mock.calls[0])).toContain('Dictionary is full');
     expect(calls('dictate_get_settings').length).toBeGreaterThanOrEqual(2);
+    // The rejected word is gone from the screen, and only the saved word remains
+    expect(chipLabels()).toEqual(['Remove Conclave']);
+  });
+
+  test('an edit made while the reload after a failed save is pending is dropped, not saved', async () => {
+    let release!: () => void;
+    holdLoad = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    saveFails = 'Dictionary is full';
+    await typeWord('Tauri');
+    await flush();
+    // The reload is still pending: the user types another word
+    await typeWord('Good');
+    release();
+    holdLoad = null;
+    await flush();
+    await flush();
+
+    const saved = calls('dictate_save_settings').map(([, a]) => (a as { settings: DictateSettings }).settings.dictionary);
+    expect(saved).toEqual([['Conclave', 'Tauri']]);
+    expect(settings.dictionary).toEqual(['Conclave']);
+    expect(chipLabels()).toEqual(['Remove Conclave']);
+  });
+
+  test('the switch can still be turned off when the status cannot be read', async () => {
+    statusFails = true;
+    settings = { ...settings, enabled: true };
+    await mount();
+    const toggle = renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Dictate')[0];
+    expect(toggle.props.disabled).toBe(false);
   });
 });

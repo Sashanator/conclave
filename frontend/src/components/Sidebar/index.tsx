@@ -470,6 +470,7 @@ const Sidebar: React.FC = () => {
             <TooltipTrigger asChild>
               <button
                 onClick={() => go('/dictate')}
+                aria-label="Dictate"
                 className={`p-2 rounded-lg transition-colors duration-150 ${isDictatePage ? 'bg-muted' : 'hover:bg-accent'
                   }`}
               >
@@ -743,7 +744,15 @@ const Sidebar: React.FC = () => {
             )}
             {!isCollapsed && (
               <div
+                role="button"
+                tabIndex={0}
                 onClick={() => go('/dictate')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    go('/dictate');
+                  }
+                }}
                 className="p-3 text-lg font-semibold items-center hover:bg-accent h-10 flex mx-3 rounded-lg cursor-pointer"
               >
                 <AudioLines className="w-4 h-4 mr-2" />

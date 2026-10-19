@@ -49,9 +49,10 @@ export default function DictatePage() {
         // A newer edit has already replaced this one, so only the newest result is shown
         if (latest.current === next) show(saved);
       } catch (err) {
-        generation.current++;
         toast.error('Dictate settings were not saved', { description: String(err) });
         await load();
+        // Bumped after the reload: edits made during it are queued under the old generation and dropped too
+        generation.current++;
       }
     });
   };

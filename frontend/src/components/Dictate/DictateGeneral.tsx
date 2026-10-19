@@ -79,7 +79,7 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
           aria-label="Dictate"
           checked={settings.enabled}
           // Turning it off stays possible when the engine or model is missing
-          disabled={!status || (blocked && !settings.enabled)}
+          disabled={blocked && !settings.enabled}
           onCheckedChange={(enabled) => commit((s) => ({ ...s, enabled }))}
         />
       </div>
@@ -89,9 +89,10 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
       </p>
 
       <div className="space-y-1.5">
-        <Label>Main hotkey</Label>
+        <Label id="dictate-main-hotkey">Main hotkey</Label>
         <HotkeyPicker
           label="Main hotkey"
+          labelId="dictate-main-hotkey"
           value={settings.main_hotkey}
           check={(h) => hotkeyProblem(withHotkey(settings, 'main', h))}
           onChange={(h) => commit((s) => withHotkey(s, 'main', h))}
@@ -99,9 +100,9 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
       </div>
 
       <div className="flex items-center justify-between gap-4">
-        <Label>Default mode</Label>
+        <Label htmlFor="dictate-default-mode">Default mode</Label>
         <Select value={settings.default_mode} onValueChange={(mode) => commit((s) => ({ ...s, default_mode: mode }))}>
-          <SelectTrigger className="w-56" aria-label="Default mode">
+          <SelectTrigger id="dictate-default-mode" className="w-56" aria-label="Default mode">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
@@ -118,7 +119,7 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
       <div className="space-y-2">
         <div className="flex items-center justify-between gap-4">
           <div>
-            <Label>Cleanup provider</Label>
+            <Label htmlFor="dictate-cleanup-provider">Cleanup provider</Label>
             <p className="text-sm text-muted-foreground">Used by every mode except &quot;As spoken&quot;</p>
           </div>
           <Select
@@ -128,7 +129,7 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
               commit((s) => ({ ...s, cleanup_provider: provider === SAME_AS_SUMMARIES ? null : provider, cleanup_model: null }))
             }
           >
-            <SelectTrigger className="w-56" aria-label="Cleanup provider">
+            <SelectTrigger id="dictate-cleanup-provider" className="w-56" aria-label="Cleanup provider">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>

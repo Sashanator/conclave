@@ -683,7 +683,7 @@ pub async fn api_get_transcript_config<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_save_transcript_config<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     provider: String,
     model: String,
@@ -709,6 +709,20 @@ pub async fn api_save_transcript_config<R: Runtime>(
                 log_error!("Failed to save transcript API key: {}", e);
                 return Err(e.to_string());
             }
+        }
+    }
+
+    // Dictate keeps the Whisper model loaded: a changed model reloads now, and a non-Whisper provider turns it off.
+    if crate::dictate::keeps_model_loaded() {
+        if provider == crate::config::DEFAULT_TRANSCRIPT_PROVIDER {
+            let reload_app = app.clone();
+            tauri::async_runtime::spawn(async move {
+                if crate::dictate::ensure_model(&reload_app).await.is_err() {
+                    log_error!("Dictate could not load the Whisper model");
+                }
+            });
+        } else {
+            crate::dictate::disable_for_non_whisper(&app).await;
         }
     }
 

@@ -528,6 +528,10 @@ fn optional_text(value: Option<String>) -> Option<String> {
         .filter(|t| !t.is_empty())
 }
 
+/// Tests that set the global cache hold this, so they do not see each other's settings.
+#[cfg(test)]
+pub(crate) static CACHE_TEST_LOCK: Mutex<()> = Mutex::new(());
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -711,6 +715,7 @@ mod tests {
 
     #[test]
     fn cache_follows_set_cache_for_test() {
+        let _guard = CACHE_TEST_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
         let mut s = DictateSettings::default();
         s.dictionary = vec!["Conclave".into(), "Tauri".into()];
         set_cache_for_test(s.clone());

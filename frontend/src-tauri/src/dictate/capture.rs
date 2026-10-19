@@ -31,6 +31,8 @@ impl PreRollBuffer {
         Self { samples: VecDeque::with_capacity(capacity), capacity }
     }
 
+    /// Test helper: the callback pushes one sample at a time.
+    #[cfg(test)]
     pub fn push(&mut self, s: &[f32]) {
         for &x in s {
             self.push_one(x);
@@ -104,6 +106,8 @@ impl SessionBuffer {
         Self { pre_roll: PreRollBuffer::new(pre_roll_capacity), session: None, reserve, cap }
     }
 
+    /// Test helper: the callback pushes one sample at a time.
+    #[cfg(test)]
     pub fn push(&mut self, s: &[f32]) {
         for &x in s {
             self.push_one(x);

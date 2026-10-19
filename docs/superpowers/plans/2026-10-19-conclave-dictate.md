@@ -137,7 +137,7 @@ impl HotkeyMachine {
     pub fn new(bindings: Vec<Binding>, hold_threshold_ms: u64) -> Self;
     pub fn set_bindings(&mut self, bindings: Vec<Binding>);
     pub fn on_key(&mut self, vk: u16, down: bool, now_ms: u64) -> Decision;
-    pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool); // drop held keys the OS says are up (missed key-ups after Win+L, Ctrl+Alt+Del, UAC)
+    pub fn sync_held(&mut self, is_down: &dyn Fn(u16) -> bool) -> Action; // drop held keys the OS says are up (missed key-ups after Win+L, Ctrl+Alt+Del, UAC); Cancel if an Armed combo is no longer down
     pub fn reset(&mut self); // session ended or a Start was ignored; keys still held must be released before re-arming
 }
 pub fn validate_bindings(bindings: &[Binding]) -> Result<(), String>; // modifier-only: ≥2 modifiers; with a key: ≥1 of Ctrl/Alt/Win (Shift alone would eat capitals); no duplicates
@@ -400,7 +400,8 @@ pub fn monotonic_ms() -> u64;
 
 **Rules:**
 - A dedicated thread installs `SetWindowsHookExW(WH_KEYBOARD_LL)` and runs a `GetMessageW` loop.
-- The hook proc ignores injected events (our own Ctrl+V and mask key). On each non-injected key-down it first calls `machine.sync_held(&|vk| GetAsyncKeyState(vk) < 0)`, then `on_key(vk, down, monotonic_ms())`. The machine lives in a thread-local on the hook thread: no lock, nothing is lost.
+- The hook proc ignores injected events (our own Ctrl+V and mask key). On each non-injected key-down it first calls `machine.sync_held(&|vk| GetAsyncKeyState(vk) < 0)` and forwards a non-`None` result to `on_action`, then calls `on_key(vk, down, monotonic_ms())`.
+- AltGr (German layout) arrives as a fake LCtrl (scan code 0x21D) followed by RAlt: ignore that fake LCtrl so `Ctrl+Alt+<key>` bindings don't fire on AltGr characters. The machine lives in a thread-local on the hook thread: no lock, nothing is lost.
 - `WM_APP+1`/`WM_APP+2` messages in the loop apply queued bindings or `reset()`.
 - When `mask_start_menu` is set, the hook sends `VK_MASK` down and up with `SendInput` right away, while Win is still held. It returns `LRESULT(1)` when `swallow`, else `CallNextHookEx`.
 - It hands `action` to `on_action` (which must only send to a channel) and never blocks: Windows drops hooks that take more than about 300 ms.

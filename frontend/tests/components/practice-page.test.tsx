@@ -103,7 +103,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_retry_report') return retryImpl();
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
-const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
+const toast = { success: mock((_what: string) => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
 
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
 // When set, listen() for practice-prep waits on it, so a test can cancel while the listener registers
@@ -319,6 +319,16 @@ describe('Practice page', () => {
     const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
     expect(lines.some((l) => l.includes('<1 min'))).toBe(true);
     expect(lines.some((l) => l.includes('0 min'))).toBe(false);
+  });
+
+  test('new_questions_confirms_and_refreshes_the_setup', async () => {
+    await clickButton('Edit');
+    const listsBefore = calls('practice_list_setups').length;
+    await clickButton('New questions');
+    await flush();
+    expect(calls('practice_new_questions')[0][1]).toEqual({ setupId: 'seed-thesis' });
+    expect(toast.success.mock.calls.at(-1)?.[0]).toBe('New questions will be prepared at the next start');
+    expect(calls('practice_list_setups').length).toBeGreaterThan(listsBefore);
   });
 
   test('editor_validates_name_and_saves', async () => {

@@ -137,6 +137,8 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
     if (!setup) return;
     try {
       await invoke('practice_new_questions', { setupId: setup.id });
+      toast.success('New questions will be prepared at the next start');
+      await onChanged();
     } catch (err) {
       toast.error('Could not clear the questions', { description: String(err) });
     }

@@ -358,6 +358,32 @@ pub async fn practice_download_voices<R: Runtime>(app: AppHandle<R>) -> Result<(
 /// Plays one sentence in the chosen voice. Refused while a session runs, since the speaker is shared.
 #[tauri::command]
 pub async fn practice_preview_voice(voice: String) -> Result<(), String> {
+    speak(voice, PREVIEW_TEXT.to_string()).await
+}
+
+/// Plays the reference pronunciation of one word in the session's voice.
+#[tauri::command]
+pub async fn practice_speak_word(
+    state: State<'_, AppState>,
+    session_id: String,
+    word: String,
+) -> Result<(), String> {
+    let word = validate_word(&word)?;
+    let (row, _) = db::get_session(&pool_of(&state), &session_id).await?.ok_or("Session not found")?;
+    speak(row.voice, word).await
+}
+
+fn validate_word(word: &str) -> Result<String, String> {
+    let word = word.trim();
+    if (1..=40).contains(&word.chars().count()) {
+        Ok(word.to_string())
+    } else {
+        Err("A word must be 1–40 characters".to_string())
+    }
+}
+
+/// Refused while a session runs. Synthesizes `text` in `voice` and plays it on the default speaker.
+async fn speak(voice: String, text: String) -> Result<(), String> {
     if !matches!(*slot(), Slot::Idle) {
         return Err(RUNNING.to_string());
     }
@@ -371,12 +397,12 @@ pub async fn practice_preview_voice(voice: String) -> Result<(), String> {
     tokio::task::spawn_blocking(move || -> Result<(), String> {
         let mut tts = Supertonic::load(&dir, true)?;
         let v = load_voice(&dir.join(format!("{voice}.json")))?;
-        let wav = tts.synthesize(PREVIEW_TEXT, &v, TTS_STEPS, TTS_SPEED)?;
+        let wav = tts.synthesize(&text, &v, TTS_STEPS, TTS_SPEED)?;
         drop(tts);
         let wait = std::time::Duration::from_secs_f64(wav.len() as f64 / f64::from(TTS_RATE) + 5.0);
         let (player, finished) = Player::open()?;
         player.play(1, wav);
-        // The output stays open until the preview has played, then closes on this thread.
+        // The output stays open until the audio has played, then closes on this thread.
         std::thread::spawn(move || {
             let _ = finished.recv_timeout(wait);
             drop(player);
@@ -832,6 +858,15 @@ mod tests {
 
         let mut none = session_row(None);
         assert!(!read_stored_report(&mut none).1);
+    }
+
+    #[test]
+    fn speak_word_validates_input() {
+        assert!(validate_word("").is_err());
+        assert!(validate_word("   ").is_err());
+        assert!(validate_word(&"a".repeat(41)).is_err());
+        assert_eq!(validate_word(&"a".repeat(40)).unwrap().len(), 40);
+        assert_eq!(validate_word("  hypothesis ").unwrap(), "hypothesis");
     }
 
     fn ok_status() -> PracticeStatus {

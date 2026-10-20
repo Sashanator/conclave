@@ -77,6 +77,12 @@ pub struct Core {
     wrap_up: bool,
 }
 
+impl Default for Core {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Core {
     pub fn new() -> Self {
         Self {
@@ -180,7 +186,9 @@ impl Core {
                 }
             }
             Event::ReplyFailed { reply } if self.is_current(reply) => {
-                let mut fx: Vec<Effect> = self.close_reply(true).into_iter().collect();
+                // The stream is dead, so no CancelReply; queued sentences must still stop.
+                let mut fx = vec![Effect::StopSpeaking];
+                fx.extend(self.close_reply(true));
                 fx.push(Effect::Notice(Notice::ReplyFailed));
                 self.phase = Phase::UserTurn;
                 fx.push(Effect::Phase(Phase::UserTurn));
@@ -525,12 +533,55 @@ mod tests {
         assert_eq!(
             c.on_event(Event::ReplyFailed { reply: 1 }),
             vec![
+                Effect::StopSpeaking,
                 save_char("Hi.", true),
                 Effect::Notice(Notice::ReplyFailed),
                 Effect::Phase(Phase::UserTurn),
             ]
         );
         assert_eq!(c.phase(), Phase::UserTurn);
+    }
+
+    #[test]
+    fn reply_failure_stops_a_sentence_still_queued() {
+        let mut c = Core::new();
+        c.on_event(Event::Ready);
+        c.on_event(sentence(1, 0, "Hi."));
+        c.on_event(sentence(1, 1, "Still queued."));
+        c.on_event(played(1, 0));
+        assert_eq!(
+            c.on_event(Event::ReplyFailed { reply: 1 }),
+            vec![
+                Effect::StopSpeaking,
+                save_char("Hi.", true),
+                Effect::Notice(Notice::ReplyFailed),
+                Effect::Phase(Phase::UserTurn),
+            ]
+        );
+        // The queued sentence is stopped, so its late playback report is stale.
+        assert!(c.on_event(played(1, 1)).is_empty());
+        assert_eq!(c.phase(), Phase::UserTurn);
+    }
+
+    #[test]
+    fn tick_past_the_cap_from_user_turn_ends_without_warning() {
+        let mut c = at_user_turn();
+        assert_eq!(
+            c.on_event(Event::Tick { elapsed_secs: 4000 }),
+            vec![Effect::End(EndReason::TimeCap), Effect::Phase(Phase::Ended)]
+        );
+        assert_eq!(c.phase(), Phase::Ended);
+    }
+
+    #[test]
+    fn ended_saves_a_short_non_blank_turn() {
+        let mut c = at_user_turn();
+        c.on_event(Event::EndRequested);
+        assert_eq!(
+            c.on_event(turn("ok", 0.2)),
+            vec![Effect::SaveUserTurn { text: "ok".into() }]
+        );
+        assert!(c.on_event(turn("  ", 2.0)).is_empty());
     }
 
     #[test]

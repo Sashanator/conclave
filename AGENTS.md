@@ -22,6 +22,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
 |---|---|
 | `frontend/` | Next.js 14 + React 18 UI (pnpm), with Bun tests in `frontend/tests/` |
 | `frontend/src-tauri/` | Tauri 2 Rust core (crate `meetily`, lib `app_lib`): audio capture, Whisper/Parakeet, storage, summaries |
+| `frontend/src-tauri/src/practice/` | Speaking Practice: role-play sessions, Supertonic voice, report |
 | `crates/meeting-detector/` | Windows meeting detection: pure rules (`classify.rs`), the watch loop (`runner.rs`), the Win32 layer (`windows.rs`), and the `conclave-probe` diagnostic binary. |
 | `crates/dictate-input/` | Windows dictation input layer: pure hotkey state machine and paste decisions, the WH_KEYBOARD_LL hook, private clipboard paste |
 | `llama-helper/` | Sidecar for the local LLM (bundled; not used for summaries in v1) |

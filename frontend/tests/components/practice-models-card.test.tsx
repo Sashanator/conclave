@@ -23,9 +23,13 @@ const DEFAULTS: PracticeSettings = { chat_model: 'claude-haiku-5-5', plan_model:
 
 let settings: PracticeSettings;
 let saveFails: string | null = null;
+let loadFails = false;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'practice_get_settings') return structuredClone(settings);
+  if (command === 'practice_get_settings') {
+    if (loadFails) throw new Error('settings unavailable');
+    return structuredClone(settings);
+  }
   if (command === 'practice_save_settings') {
     if (saveFails) throw new Error(saveFails);
     settings = args?.settings as PracticeSettings;
@@ -83,6 +87,7 @@ function calls(command: string) {
 beforeEach(async () => {
   settings = structuredClone(DEFAULTS);
   saveFails = null;
+  loadFails = false;
   invoke.mockClear();
   toast.error.mockClear();
   await mount();
@@ -94,7 +99,7 @@ describe('Models card', () => {
     expect(selectOf('Plan and report').props.value).toBe('claude-opus-5-5');
     expect(selectOf('Effort').props.value).toBe('high');
     expect(paragraphs()).toContain('≈ $0.04 per 30-min session');
-    expect(paragraphs()).toContain('≈ $0.44 per 30-min session');
+    expect(paragraphs()).toContain('≈ $0.64 per 30-min session');
 
     await act(async () => selectOf('Conversation').props.onValueChange('claude-sonnet-5-5'));
     await flush();
@@ -108,6 +113,32 @@ describe('Models card', () => {
     });
     expect(selectOf('Conversation').props.value).toBe('claude-sonnet-5-5');
     expect(paragraphs()).toContain('≈ $0.77 per 30-min session');
+    expect(paragraphs()).toContain('≈ $0.84 per 30-min session');
+  });
+
+  test('effort_changes_the_plan_and_report_figure: the Effort row has no cost line of its own', async () => {
+    expect(paragraphs().filter((p) => p.startsWith('≈'))).toEqual(['≈ $0.04 per 30-min session', '≈ $0.64 per 30-min session']);
+
+    await act(async () => selectOf('Effort').props.onValueChange('medium'));
+    await flush();
+    expect(paragraphs()).toContain('≈ $0.54 per 30-min session');
+    expect(paragraphs().filter((p) => p.startsWith('≈'))).toHaveLength(2);
+  });
+
+  test('changing_the_plan_and_report_model_updates_its_figure_and_saves', async () => {
+    await act(async () => selectOf('Plan and report').props.onValueChange('claude-sonnet-5-5'));
+    await flush();
+    expect(paragraphs()).toContain('≈ $0.32 per 30-min session');
+    const saves = calls('practice_save_settings');
+    expect((saves.at(-1)![1] as { settings: PracticeSettings }).settings.plan_model).toBe('claude-sonnet-5-5');
+  });
+
+  test('a failed first load says so under the Models heading', async () => {
+    loadFails = true;
+    await mount();
+    const headings = renderer!.root.findAll((n) => n.type === 'h3').map(text);
+    expect(headings).toEqual(['Models']);
+    expect(paragraphs()).toContain('Could not load model settings');
   });
 
   test('a save error shows a toast, reloads the saved models and drops the edit', async () => {

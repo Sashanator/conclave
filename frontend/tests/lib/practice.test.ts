@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  MATERIAL_MAX_BYTES, NOTICE_TEXT, VOICES, blockedReason, characterName, estimateCost, fitsLimit, formatClock, materialKind, minutesLabel, phaseText, planText, type PracticeStatus,
+  type ChatModel, MATERIAL_MAX_BYTES, NOTICE_TEXT, VOICES, blockedReason, characterName, estimateCost, fitsLimit, formatClock, materialKind, minutesLabel, phaseText, planText, type PracticeStatus,
 } from '../../src/lib/practice';
 
 describe('estimateCost', () => {
@@ -8,8 +8,21 @@ describe('estimateCost', () => {
     expect(estimateCost('claude-haiku-5-5', 'chat')).toBe(0.04);
     expect(estimateCost('claude-sonnet-5-5', 'chat')).toBe(0.77);
     expect(estimateCost('claude-opus-5-5', 'chat')).toBe(1.54);
+    // Plan and report counts the report plus thinking at the chosen effort
+    expect(estimateCost('claude-opus-5-5', 'plan_report', 'medium')).toBe(0.54);
+    expect(estimateCost('claude-opus-5-5', 'plan_report', 'high')).toBe(0.64);
+    expect(estimateCost('claude-opus-5-5', 'plan_report', 'xhigh')).toBe(0.84);
+    expect(estimateCost('claude-sonnet-5-5', 'plan_report', 'medium')).toBe(0.27);
+    expect(estimateCost('claude-sonnet-5-5', 'plan_report', 'high')).toBe(0.32);
+    expect(estimateCost('claude-sonnet-5-5', 'plan_report', 'xhigh')).toBe(0.42);
+  });
+
+  test('without an effort, plan and report counts no thinking', () => {
     expect(estimateCost('claude-opus-5-5', 'plan_report')).toBe(0.44);
-    expect(estimateCost('claude-sonnet-5-5', 'plan_report')).toBe(0.22);
+  });
+
+  test('an unknown model is priced at the highest rate instead of throwing', () => {
+    expect(estimateCost('claude-unknown-9' as ChatModel, 'chat')).toBe(1.54);
   });
 });
 

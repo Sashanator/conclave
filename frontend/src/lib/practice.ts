@@ -144,19 +144,24 @@ export interface ReportStatusPayload {
 }
 
 // USD per million tokens, input and output
-export const PRICES: Record<string, [number, number]> = {
+export const PRICES: Record<ChatModel, [number, number]> = {
   'claude-haiku-5-5': [0.10, 0.50],
   'claude-sonnet-5-5': [2, 10],
   'claude-opus-5-5': [4, 20],
 };
 
-// Tokens per 30-min session, input and output. The plan and report output includes thinking at high effort.
+// Tokens per 30-min session, input and output. The plan and report output is the report itself plus thinking at the chosen effort.
 const SESSION_TOKENS = { chat: [360_000, 5_000], plan_report: [60_000, 10_000] };
+const THINKING_TOKENS: Record<PlanEffort, number> = { medium: 5_000, high: 10_000, xhigh: 20_000 };
 
-/** Estimated USD for one 30-min session of the kind, rounded to cents. */
-export function estimateCost(model: string, kind: 'chat' | 'plan_report'): number {
-  const [priceIn, priceOut] = PRICES[model];
-  const [tokensIn, tokensOut] = SESSION_TOKENS[kind];
+/**
+ * Estimated USD for one 30-min session of the kind, rounded to cents. Without an effort, plan and report counts no thinking.
+ * shortcut: an unknown model id is priced at Opus, the highest price, so the estimate never understates; the API only sends known ids.
+ */
+export function estimateCost(model: ChatModel | PlanModel, kind: 'chat' | 'plan_report', effort?: PlanEffort): number {
+  const [priceIn, priceOut] = PRICES[model] ?? PRICES['claude-opus-5-5'];
+  const [tokensIn, baseOut] = SESSION_TOKENS[kind];
+  const tokensOut = baseOut + (kind === 'plan_report' && effort ? THINKING_TOKENS[effort] ?? 0 : 0);
   const usd = (tokensIn * priceIn + tokensOut * priceOut) / 1_000_000;
   return Math.round(usd * 100) / 100;
 }

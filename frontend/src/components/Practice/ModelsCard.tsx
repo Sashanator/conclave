@@ -23,6 +23,8 @@ const EFFORTS: { id: PlanEffort; label: string }[] = [
 // The Models card on the Practice page. Saves follow the Dictate page: edits show at once, saves run in order.
 export function ModelsCard() {
   const [settings, setSettings] = useState<PracticeSettings | null>(null);
+  // Set when the last load failed. With no settings shown, the card says so.
+  const [loadFailed, setLoadFailed] = useState(false);
   // Edits show at once. Saves run one after another, each from the latest edit.
   const latest = useRef<PracticeSettings | null>(null);
   // The last settings the backend confirmed (loaded or saved). A failed reload falls back to them.
@@ -40,8 +42,10 @@ export function ModelsCard() {
     try {
       const loaded = await invoke<PracticeSettings>('practice_get_settings');
       confirmed.current = loaded;
+      setLoadFailed(false);
       show(loaded);
     } catch (err) {
+      setLoadFailed(true);
       toast.error('Could not load Practice models', { description: String(err) });
       // The shown copy may hold a rejected edit: go back to what the backend last confirmed
       if (confirmed.current) show(confirmed.current);
@@ -73,10 +77,18 @@ export function ModelsCard() {
     });
   };
 
-  if (!settings) return null;
+  if (!settings) {
+    if (!loadFailed) return null;
+    return (
+      <section className="bg-card rounded-lg border border-border p-6 shadow-sm">
+        <h3 className="text-lg font-semibold text-foreground">Models</h3>
+        <p className="text-sm text-muted-foreground">Could not load model settings</p>
+      </section>
+    );
+  }
 
   const chatCost = estimateCost(settings.chat_model, 'chat');
-  const planCost = estimateCost(settings.plan_model, 'plan_report');
+  const planCost = estimateCost(settings.plan_model, 'plan_report', settings.plan_effort);
 
   return (
     <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-5">
@@ -122,7 +134,6 @@ export function ModelsCard() {
       <div className="flex items-center justify-between gap-4">
         <div>
           <Label htmlFor="practice-plan-effort">Effort</Label>
-          <p className="text-sm text-muted-foreground">{`≈ $${planCost.toFixed(2)} per 30-min session`}</p>
         </div>
         <Select value={settings.plan_effort} onValueChange={(id) => commit((s) => ({ ...s, plan_effort: id as PlanEffort }))}>
           <SelectTrigger id="practice-plan-effort" aria-label="Effort" className="w-56">

@@ -2,7 +2,7 @@
 
 use crate::database::repositories::setting::SettingsRepository;
 use crate::practice::db::{Material, MaterialKind};
-use crate::practice::{CHAT_MAX_TOKENS, CHAT_MODEL, LONG_MAX_TOKENS, PLAN_MODEL, REPORT_MODEL};
+use crate::practice::{CHAT_MAX_TOKENS, LONG_MAX_TOKENS};
 use base64::Engine as _;
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -73,24 +73,37 @@ pub struct ChatMsg {
     pub content: String,
 }
 
-pub fn chat_body(system: &str, msgs: &[ChatMsg]) -> Value {
+/// Each model answers quickly in conversation with its own thinking setting. Opus 5.5 cannot turn thinking off,
+/// so it gets no `thinking` field.
+pub fn chat_body(model: &str, system: &str, msgs: &[ChatMsg]) -> Value {
     let messages: Vec<Value> = msgs
         .iter()
         .map(|m| json!({"role": m.role, "content": m.content}))
         .collect();
-    json!({
-        "model": CHAT_MODEL,
+    let mut body = json!({
+        "model": model,
         "max_tokens": CHAT_MAX_TOKENS,
         "stream": true,
         "system": system,
         "messages": messages,
-        "thinking": {"type": "disabled"},
         "output_config": {"effort": "low"},
         "cache_control": {"type": "ephemeral"},
-    })
+    });
+    match model {
+        "claude-haiku-5-5" => body["thinking"] = json!({"type": "disabled"}),
+        "claude-sonnet-5-5" => body["thinking"] = json!({"type": "between_tools"}),
+        _ => {}
+    }
+    body
 }
 
-pub fn plan_body(system: &str, user: &str, materials: &[Material]) -> Value {
+pub fn plan_body(
+    model: &str,
+    effort: &str,
+    system: &str,
+    user: &str,
+    materials: &[Material],
+) -> Value {
     let mut blocks: Vec<Value> = materials
         .iter()
         .map(|m| match m.meta.kind {
@@ -110,23 +123,23 @@ pub fn plan_body(system: &str, user: &str, materials: &[Material]) -> Value {
         .collect();
     blocks.push(json!({"type": "text", "text": user}));
     json!({
-        "model": PLAN_MODEL,
+        "model": model,
         "max_tokens": LONG_MAX_TOKENS,
         "stream": true,
         "system": system,
         "messages": [{"role": "user", "content": blocks}],
-        "output_config": {"effort": "high"},
+        "output_config": {"effort": effort},
     })
 }
 
-pub fn report_body(system: &str, user: &str, schema: &Value) -> Value {
+pub fn report_body(model: &str, effort: &str, system: &str, user: &str, schema: &Value) -> Value {
     json!({
-        "model": REPORT_MODEL,
+        "model": model,
         "max_tokens": LONG_MAX_TOKENS,
         "stream": true,
         "system": system,
         "messages": [{"role": "user", "content": user}],
-        "output_config": {"effort": "high", "format": {"type": "json_schema", "schema": schema}},
+        "output_config": {"effort": effort, "format": {"type": "json_schema", "schema": schema}},
     })
 }
 
@@ -441,8 +454,8 @@ mod tests {
                 content: "Hi there".into(),
             },
         ];
-        let body = chat_body("Be Mike.", &msgs);
-        assert_eq!(body["model"], CHAT_MODEL);
+        let body = chat_body("claude-haiku-5-5", "Be Mike.", &msgs);
+        assert_eq!(body["model"], "claude-haiku-5-5");
         assert_eq!(body["max_tokens"], CHAT_MAX_TOKENS);
         assert_eq!(body["stream"], true);
         assert_eq!(body["system"], "Be Mike.");
@@ -456,6 +469,28 @@ mod tests {
         assert_eq!(body["thinking"], json!({"type": "disabled"}));
         assert_eq!(body["output_config"], json!({"effort": "low"}));
         assert_eq!(body["cache_control"], json!({"type": "ephemeral"}));
+    }
+
+    #[test]
+    fn chat_body_per_model() {
+        let msgs = vec![ChatMsg {
+            role: "user",
+            content: "Hello".into(),
+        }];
+        let haiku = chat_body("claude-haiku-5-5", "s", &msgs);
+        assert_eq!(haiku["thinking"], json!({"type": "disabled"}));
+        assert_eq!(haiku["output_config"], json!({"effort": "low"}));
+
+        let sonnet = chat_body("claude-sonnet-5-5", "s", &msgs);
+        assert_eq!(sonnet["model"], "claude-sonnet-5-5");
+        assert_eq!(sonnet["thinking"], json!({"type": "between_tools"}));
+        assert_eq!(sonnet["output_config"], json!({"effort": "low"}));
+
+        // Opus 5.5 cannot turn thinking off, so the field is left out.
+        let opus = chat_body("claude-opus-5-5", "s", &msgs);
+        assert_eq!(opus["model"], "claude-opus-5-5");
+        assert!(opus.get("thinking").is_none());
+        assert_eq!(opus["output_config"], json!({"effort": "low"}));
     }
 
     #[test]
@@ -481,8 +516,14 @@ mod tests {
             },
             content: b"hello".to_vec(),
         };
-        let body = plan_body("Plan it.", "Make the plan.", &[pdf, notes]);
-        assert_eq!(body["model"], PLAN_MODEL);
+        let body = plan_body(
+            "claude-opus-5-5",
+            "high",
+            "Plan it.",
+            "Make the plan.",
+            &[pdf, notes],
+        );
+        assert_eq!(body["model"], "claude-opus-5-5");
         assert_eq!(body["max_tokens"], LONG_MAX_TOKENS);
         assert_eq!(body["stream"], true);
         assert_eq!(body["output_config"], json!({"effort": "high"}));
@@ -508,8 +549,8 @@ mod tests {
     #[test]
     fn report_body_sets_json_schema_format() {
         let schema = json!({"type": "object", "properties": {"score": {"type": "integer"}}});
-        let body = report_body("Score it.", "Report.", &schema);
-        assert_eq!(body["model"], REPORT_MODEL);
+        let body = report_body("claude-opus-5-5", "high", "Score it.", "Report.", &schema);
+        assert_eq!(body["model"], "claude-opus-5-5");
         assert_eq!(body["max_tokens"], LONG_MAX_TOKENS);
         assert_eq!(body["stream"], true);
         assert_eq!(body["system"], "Score it.");
@@ -520,6 +561,27 @@ mod tests {
         assert_eq!(
             body["output_config"],
             json!({"effort": "high", "format": {"type": "json_schema", "schema": schema}})
+        );
+    }
+
+    #[test]
+    fn plan_and_report_use_settings_model_and_effort() {
+        let plan = plan_body(
+            "claude-sonnet-5-5",
+            "xhigh",
+            "Plan it.",
+            "Make the plan.",
+            &[],
+        );
+        assert_eq!(plan["model"], "claude-sonnet-5-5");
+        assert_eq!(plan["output_config"], json!({"effort": "xhigh"}));
+
+        let schema = json!({"type": "object"});
+        let report = report_body("claude-opus-5-5", "medium", "Score it.", "Report.", &schema);
+        assert_eq!(report["model"], "claude-opus-5-5");
+        assert_eq!(
+            report["output_config"],
+            json!({"effort": "medium", "format": {"type": "json_schema", "schema": schema}})
         );
     }
 
@@ -616,7 +678,7 @@ mod tests {
     async fn run(url: &str, idle: Duration) -> Result<String, ClaudeError> {
         // no_proxy: an environment proxy must not capture the loopback server.
         let client = reqwest::Client::builder().no_proxy().build().unwrap();
-        let body = chat_body("s", &[]);
+        let body = chat_body("claude-haiku-5-5", "s", &[]);
         stream_with_idle(
             &client,
             url,
@@ -717,7 +779,7 @@ mod tests {
     async fn stream_returns_cancelled_when_already_cancelled() {
         let cancel = CancellationToken::new();
         cancel.cancel();
-        let body = chat_body("s", &[]);
+        let body = chat_body("claude-haiku-5-5", "s", &[]);
         let r = stream(&http_client(), SAMPLE_KEY, &body, &cancel, |_| {}).await;
         assert_eq!(r, Err(ClaudeError::Cancelled));
     }

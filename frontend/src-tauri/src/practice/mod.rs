@@ -7,7 +7,8 @@
 //!    Keep `frontend/src-tauri/migrations/20261020000000_practice.sql`: an applied migration must stay in the source.
 //! 2. `frontend/src-tauri/src/lib.rs`: the `mod practice;` line; the `practice::models::set_dir` line in setup, and the
 //!    "speaker ID and Practice stay off" log text next to it; the `practice::commands::recover_at_startup` spawn with its
-//!    comment; the 18 `practice::commands::practice_*` entries in `generate_handler!`.
+//!    comment; the `practice::settings::load_at_startup` line; the 18 `practice::commands::practice_*` and the 2
+//!    `practice::settings::practice_*` entries in `generate_handler!`.
 //! 3. `frontend/src-tauri/src/dictate/mod.rs`, `keeps_model_loaded`: drop the `|| crate::practice::holds_model()` clause and
 //!    the Practice part of its doc comment.
 //! 3a. `frontend/src-tauri/src/whisper_engine/whisper_engine.rs`: remove `transcribe_audio_raw` and fold `transcribe_inner`
@@ -36,12 +37,10 @@ pub mod report;
 pub mod report_job;
 pub mod prompts;
 pub mod runner;
+pub mod settings;
 pub mod tts_text;
 pub mod tts;
 
-pub const CHAT_MODEL: &str = "claude-haiku-5-5";
-pub const PLAN_MODEL: &str = "claude-opus-5-5";
-pub const REPORT_MODEL: &str = "claude-opus-5-5";
 pub const CHAT_MAX_TOKENS: u32 = 400;
 pub const LONG_MAX_TOKENS: u32 = 16_000;
 

@@ -30,6 +30,7 @@ use super::db::{self, SetupRow, TurnRow};
 use super::prompts::{character_system, Persona, SentenceSplitter, OPENING_USER, WRAP_UP_SYSTEM};
 use super::report_job;
 use super::session::{Core, EndReason, Effect, Event, Notice, Phase};
+use super::settings;
 use super::tts::{Supertonic, Voice};
 use super::{hold_model, ModelHold, LIVE_VAD_REDEMPTION_MS, MAX_TURN_SECS, TTS_SPEED, TTS_STEPS, YOU_WAV_RATE};
 
@@ -529,7 +530,7 @@ impl<R: Runtime> Runner<R> {
         } else {
             self.system.clone()
         };
-        let body = claude::chat_body(&system, &self.history);
+        let body = claude::chat_body(&settings::current().chat_model, &system, &self.history);
         tauri::async_runtime::spawn(chat_reply(
             self.client.clone(),
             self.key.clone(),

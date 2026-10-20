@@ -10,8 +10,10 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
-/// Longest silence between body chunks before the stream counts as stalled. Anthropic sends `ping` events well inside this.
+/// Longest silence before the response headers, or between body chunks, before the stream counts as stalled. Anthropic sends `ping` events well inside this.
 pub const STREAM_IDLE_SECS: u64 = 60;
+/// Longest unterminated SSE line kept in memory; a longer one is not Anthropic's format.
+const MAX_LINE_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, PartialEq)]
 pub enum SseEvent {
@@ -182,7 +184,10 @@ async fn stream_with_idle(
     let resp = tokio::select! {
         biased;
         _ = cancel.cancelled() => return Err(ClaudeError::Cancelled),
-        r = request => r.map_err(|e| ClaudeError::Network(e.to_string()))?,
+        r = tokio::time::timeout(idle, request) => {
+            r.map_err(|_| ClaudeError::Network("stalled".into()))?
+                .map_err(|e| ClaudeError::Network(e.to_string()))?
+        }
     };
     let status = resp.status().as_u16();
     if let Some(err) = map_status(status) {
@@ -208,9 +213,9 @@ async fn stream_with_idle(
         let (events, ended) = match next {
             Some(chunk) => {
                 let chunk = chunk.map_err(|e| ClaudeError::Network(e.to_string()))?;
-                (feed(&mut parser, &mut pending, &chunk), false)
+                (feed(&mut parser, &mut pending, &chunk)?, false)
             }
-            None => (feed(&mut parser, &mut pending, b"\n"), true),
+            None => (feed(&mut parser, &mut pending, b"\n")?, true),
         };
         for event in events {
             match event {
@@ -221,8 +226,8 @@ async fn stream_with_idle(
                 SseEvent::StopReason(reason) => stop_reason = Some(reason),
                 SseEvent::Stop => {
                     return match stop_reason.as_deref() {
-                        // A cut-off or refused reply must not pass as a finished answer.
-                        Some(r @ ("max_tokens" | "refusal")) => {
+                        // Only a finished turn counts: a cut-off, refused or paused reply must not pass as an answer.
+                        Some(r) if !matches!(r, "end_turn" | "stop_sequence") => {
                             Err(ClaudeError::Stream(r.to_string()))
                         }
                         _ => {
@@ -278,14 +283,17 @@ fn map_error_kind(kind: &str) -> ClaudeError {
 }
 
 /// Feeds raw bytes; only whole lines are decoded, so a character split across network chunks waits for its tail.
-fn feed(parser: &mut SseParser, pending: &mut Vec<u8>, bytes: &[u8]) -> Vec<SseEvent> {
+fn feed(parser: &mut SseParser, pending: &mut Vec<u8>, bytes: &[u8]) -> Result<Vec<SseEvent>, ClaudeError> {
     pending.extend_from_slice(bytes);
     let cut = pending
         .iter()
         .rposition(|&b| b == b'\n')
         .map_or(0, |i| i + 1);
     let complete: Vec<u8> = pending.drain(..cut).collect();
-    parser.push(&String::from_utf8_lossy(&complete))
+    if pending.len() > MAX_LINE_BYTES {
+        return Err(ClaudeError::Stream("line too long".into()));
+    }
+    Ok(parser.push(&String::from_utf8_lossy(&complete)))
 }
 
 #[cfg(test)]
@@ -416,8 +424,8 @@ mod tests {
         let cut = line.windows(2).position(|w| w == [0xD0, 0x9F]).unwrap() + 1;
         let mut p = SseParser::default();
         let mut pending = Vec::new();
-        let mut events = feed(&mut p, &mut pending, &line[..cut]);
-        events.extend(feed(&mut p, &mut pending, &line[cut..]));
+        let mut events = feed(&mut p, &mut pending, &line[..cut]).unwrap();
+        events.extend(feed(&mut p, &mut pending, &line[cut..]).unwrap());
         assert_eq!(events, vec![text("Привет")]);
     }
 
@@ -629,6 +637,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn stream_reports_stall_when_headers_never_arrive() {
+        // The server reads the request and then sends nothing for three seconds.
+        let url = serve_once(String::new(), Duration::from_secs(3)).await;
+        let r = run(&url, Duration::from_millis(200)).await;
+        assert_eq!(r, Err(ClaudeError::Network("stalled".into())));
+    }
+
+    #[tokio::test]
+    async fn stream_errors_when_one_line_grows_past_the_cap() {
+        // 1 MiB of one unterminated line, no newline, then the body ends.
+        let url = serve_once(sse(&"a".repeat(1024 * 1024 + 1)), Duration::ZERO).await;
+        assert_eq!(
+            run(&url, Duration::from_secs(5)).await,
+            Err(ClaudeError::Stream("line too long".into()))
+        );
+    }
+
+    #[tokio::test]
     async fn stream_reports_stall_when_body_goes_silent() {
         let url = serve_once(sse(&delta("Hi")), Duration::from_secs(3)).await;
         let r = run(&url, Duration::from_millis(200)).await;
@@ -649,10 +675,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stream_returns_text_on_end_turn_and_errors_on_truncation() {
+    async fn stream_accepts_only_end_turn_and_stop_sequence() {
+        let stream_err = |r: &str| Err(ClaudeError::Stream(r.into()));
         let cases = [
             ("end_turn", Ok("Hi".to_string())),
-            ("max_tokens", Err(ClaudeError::Stream("max_tokens".into()))),
+            ("stop_sequence", Ok("Hi".to_string())),
+            ("max_tokens", stream_err("max_tokens")),
+            ("refusal", stream_err("refusal")),
+            ("pause_turn", stream_err("pause_turn")),
+            (
+                "model_context_window_exceeded",
+                stream_err("model_context_window_exceeded"),
+            ),
         ];
         for (reason, expected) in cases {
             let body = format!(

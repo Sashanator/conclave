@@ -163,6 +163,7 @@ mod tests {
             past("r3", "s1", "2026-10-17T10:00", &[], 4, 90.0),  // 2.7
             past("r4", "s1", "2026-10-16T10:00", &[], 1, 45.0),  // 1.3
             past("r5", "s1", "2026-10-15T10:00", &[], 3, 30.0),  // 6.0, exactly 30 s is kept
+            past("r6", "s1", "2026-10-14T10:00", &[], 2, 60.0),  // 6th same-setup session: outside the window
         ];
         let got = compute(&current, &recent);
         assert_eq!(got.filler_trend, [6.0, 1.3, 2.7, 3.0].to_vec());

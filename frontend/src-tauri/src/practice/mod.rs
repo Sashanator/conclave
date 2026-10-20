@@ -47,6 +47,7 @@ pub mod tts_text;
 pub mod tts;
 pub mod pron;
 pub mod pron_align;
+pub mod recurring;
 
 pub const CHAT_MAX_TOKENS: u32 = 400;
 pub const LONG_MAX_TOKENS: u32 = 16_000;
@@ -88,6 +89,8 @@ pub const PRON_PAD_SECS: f64 = 0.08;
 pub const PRON_MAX_HINTS: usize = 6;
 /// Pattern keys from the newest reports that the next report prompt may reuse.
 pub const RECENT_PATTERNS_MAX: usize = 30;
+/// The window for "Keeps coming back": the current session and the newest earlier ones.
+pub const RECURRING_SESSIONS: usize = 5;
 
 /// Counts the live holds on the Whisper model. A session and a report job can overlap.
 static HOLDS: AtomicUsize = AtomicUsize::new(0);

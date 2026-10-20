@@ -178,6 +178,7 @@ impl Supertonic {
     }
 
     /// Predicted speaking time in seconds, after dividing by `speed`.
+    #[cfg(test)]
     pub fn duration(&mut self, text: &str, voice: &Voice, speed: f32) -> Result<f32, String> {
         let ids = self.text_ids(text);
         self.predict_duration(&ids, voice, speed)

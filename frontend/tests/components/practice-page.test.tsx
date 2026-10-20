@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import {
-  MATERIAL_MAX_BYTES, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow,
+  MATERIAL_MAX_BYTES, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow, VOICES,
 } from '../../src/lib/practice';
 
 const originals = {
@@ -40,7 +40,7 @@ const SESSION: SessionSummary = {
   report_status: 'ready', summary: '4 grammar · 31 fillers', end_reason: 'user',
 };
 const RUNNING_DETAIL = {
-  summary: { ...SESSION, id: 'run-1' }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null,
+  summary: { ...SESSION, id: 'run-1', end_reason: null }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null,
 };
 const READY: PracticeStatus = { has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null };
 const REPORT: Report = {
@@ -67,12 +67,16 @@ let status: PracticeStatus;
 let setups: SetupSummary[];
 let sessions: SessionSummary[];
 let detail: SessionDetail;
+// The running session the resume tests open (run-1)
+let running: SessionDetail;
 // What practice_start does in the next call; tests replace it
 let startImpl: () => Promise<unknown> = async () => 'session-1';
 // Starts left pending by holdStarts(), settled by the test in any order
 let pendingStarts: { resolve: (id: string) => void; reject: (err: Error) => void }[] = [];
 // What practice_retry_report does; a test replaces it to hold the call open
 let retryImpl: () => Promise<unknown> = async () => null;
+// What practice_download_voices does; a test replaces it to hold the download open
+let downloadImpl: () => Promise<unknown> = async () => null;
 function holdStarts() {
   startImpl = () => new Promise<string>((resolve, reject) => {
     pendingStarts.push({ resolve, reject });
@@ -80,6 +84,7 @@ function holdStarts() {
 }
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
+  trace.push(`invoke:${command}`);
   if (command === 'practice_status') return structuredClone(status);
   if (command === 'practice_list_setups') return structuredClone(setups);
   if (command === 'practice_list_sessions') return structuredClone(sessions);
@@ -88,23 +93,29 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_delete_setup') return null;
   if (command === 'practice_add_material') return null;
   if (command === 'practice_add_text') return null;
-  if (command === 'practice_download_voices') return null;
+  if (command === 'practice_download_voices') return downloadImpl();
   if (command === 'practice_preview_voice') return null;
   if (command === 'practice_new_questions') return null;
   if (command === 'practice_cancel_start') return null;
   if (command === 'practice_start') return startImpl();
-  // The resume test opens run-1 (a running session); the report tests open s1
-  if (command === 'practice_get_session') return structuredClone(args?.id === 'run-1' ? RUNNING_DETAIL : detail);
+  // The report tests open s1; a call (session-1, or run-1 on resume) reads the running detail
+  if (command === 'practice_get_session') return structuredClone(args?.id === 's1' ? detail : running);
   if (command === 'practice_retry_report') return retryImpl();
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
-const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
+const toast = { success: mock((_what: string) => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
 
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
+// When set, listen() for practice-prep waits on it, so a test can cancel while the listener registers
+let holdPrepListen: Promise<void> | null = null;
+// Order of listen() and invoke() calls, so a test can check one happened before the other
+const trace: string[] = [];
 mock.module('@tauri-apps/api/core', () => ({ invoke, convertFileSrc: (path: string) => `asset://${path}` }));
 mock.module('@tauri-apps/api/event', () => ({
   ...originals.event,
   listen: async (event: string, handler: (e: { payload: unknown }) => void) => {
+    trace.push(`listen:${event}`);
+    if (event === 'practice-prep' && holdPrepListen) await holdPrepListen;
     listeners.set(event, handler);
     return () => {
       if (listeners.get(event) === handler) listeners.delete(event);
@@ -210,8 +221,10 @@ beforeEach(async () => {
   setups = structuredClone([THESIS, INTERVIEW]);
   sessions = structuredClone([SESSION]);
   detail = structuredClone(DETAIL);
+  running = structuredClone(RUNNING_DETAIL) as SessionDetail;
   startImpl = async () => 'session-1';
   retryImpl = async () => null;
+  downloadImpl = async () => null;
   pendingStarts = [];
   invoke.mockClear();
   toast.error.mockClear();
@@ -233,6 +246,37 @@ describe('Practice page', () => {
     expect(cards.map((c) => text(c.findAll((n) => n.type === 'h3')[0]))).toEqual(['Your setups', 'Past sessions']);
   });
 
+  test('start_is_re_read_on_focus_and_every_5_s_while_the_list_shows', async () => {
+    const realSetInterval = window.setInterval;
+    let tick: (() => void) | undefined;
+    let every: number | undefined;
+    window.setInterval = ((fn: () => void, ms?: number) => {
+      tick = fn;
+      every = ms;
+      return 1;
+    }) as typeof window.setInterval;
+    try {
+      status = { ...READY, blocked: 'Practice is unavailable while a meeting is recording, importing or re-transcribing' };
+      await mount();
+    } finally {
+      window.setInterval = realSetInterval;
+    }
+    expect(every).toBe(5000);
+    expect(buttons('▶ Start').every((b) => b.props.disabled)).toBe(true);
+
+    status = { ...READY };
+    await act(async () => tick!());
+    await flush();
+    expect(buttons('▶ Start').some((b) => !b.props.disabled)).toBe(true);
+
+    status = { ...READY, blocked: 'Practice is unavailable while a meeting is recording, importing or re-transcribing' };
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await flush();
+    expect(buttons('▶ Start').every((b) => b.props.disabled)).toBe(true);
+  });
+
   test('start_is_disabled_with_the_blocked_reason', async () => {
     status = { ...READY, blocked: 'Practice is unavailable while a meeting is recording, importing or re-transcribing' };
     await mount();
@@ -252,6 +296,39 @@ describe('Practice page', () => {
   test('a session row shows the date, the minutes and the summary', () => {
     const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
     expect(lines.some((l) => l.includes('18 min') && l.includes('4 grammar · 31 fillers'))).toBe(true);
+  });
+
+  test('a cancel while the listener registers means nothing starts', async () => {
+    let release!: () => void;
+    holdPrepListen = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await clickButton('▶ Start');
+    await clickButton('Cancel');
+    await act(async () => release());
+    await flush();
+    holdPrepListen = null;
+    expect(calls('practice_start').length).toBe(0);
+    expect(listeners.has('practice-prep')).toBe(false);
+    expect(renderer!.root.findAll((n) => n.props.role === 'dialog').length).toBe(0);
+  });
+
+  test('a session under 30 s lists as less than a minute', async () => {
+    sessions = [{ ...SESSION, duration_secs: 20 }];
+    await mount();
+    const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
+    expect(lines.some((l) => l.includes('<1 min'))).toBe(true);
+    expect(lines.some((l) => l.includes('0 min'))).toBe(false);
+  });
+
+  test('new_questions_confirms_and_refreshes_the_setup', async () => {
+    await clickButton('Edit');
+    const listsBefore = calls('practice_list_setups').length;
+    await clickButton('New questions');
+    await flush();
+    expect(calls('practice_new_questions')[0][1]).toEqual({ setupId: 'seed-thesis' });
+    expect(toast.success.mock.calls.at(-1)?.[0]).toBe('New questions will be prepared at the next start');
+    expect(calls('practice_list_setups').length).toBeGreaterThan(listsBefore);
   });
 
   test('editor_validates_name_and_saves', async () => {
@@ -302,6 +379,36 @@ describe('Practice page', () => {
     await clickButton('Delete');
     await flush();
     expect(calls('practice_delete_session')[0][1]).toEqual({ id: 's1' });
+  });
+
+  test('preview_before_the_first_session_downloads_the_voices_first', async () => {
+    status = { ...READY, voices_ready: false };
+    await mount();
+    let release!: () => void;
+    downloadImpl = () => new Promise((resolve) => {
+      release = () => resolve(null);
+    });
+    await clickButton('+ New setup');
+    await clickButton('▶ Preview');
+    await act(async () => {
+      listeners.get('practice-voices-progress')?.({ payload: { percent: 40 } });
+    });
+    expect(hasDirectText('Downloading voices… 40%')).toBe(true);
+    expect(calls('practice_preview_voice').length).toBe(0);
+
+    await act(async () => release());
+    await flush();
+    expect(calls('practice_download_voices').length).toBe(1);
+    expect(calls('practice_preview_voice')[0][1]).toEqual({ voice: VOICES[0].id });
+    expect(hasDirectText('Downloading voices… 40%')).toBe(false);
+  });
+
+  test('preview_with_voices_ready_does_not_download', async () => {
+    await mount();
+    await clickButton('+ New setup');
+    await clickButton('▶ Preview');
+    expect(calls('practice_download_voices').length).toBe(0);
+    expect(calls('practice_preview_voice').length).toBe(1);
   });
 
   test('start_downloads_missing_voices_then_starts_the_session', async () => {
@@ -390,6 +497,32 @@ describe('Practice page', () => {
     expect(calls('practice_get_session')[0][1]).toEqual({ id: 'run-1' });
     expect(tapButtons().length).toBe(1);
     expect(hasText('Thesis defence · 00:00')).toBe(true);
+  });
+
+  test('a resumed session shows the turns said so far', async () => {
+    running = { ...running, turns: TURNS };
+    status = { ...READY, running_session: 'run-1' };
+    await mount();
+    await clickButton('Show full transcript ▾');
+    expect(hasDirectText('Tell me about your thesis.')).toBe(true);
+    expect(hasDirectText('If I will have more data')).toBe(true);
+  });
+
+  test('a resumed session that already ended opens its report', async () => {
+    running = { ...running, summary: { ...running.summary, end_reason: 'user' } };
+    status = { ...READY, running_session: 'run-1' };
+    await mount();
+    expect(tapButtons().length).toBe(0);
+    expect(renderer!.root.findAll((n) => n.type === 'h1' && text(n).startsWith('Thesis defence · ')).length).toBe(1);
+  });
+
+  test('a resumed session is listened to before it is read', async () => {
+    status = { ...READY, running_session: 'run-1' };
+    trace.length = 0;
+    await mount();
+    const listened = trace.indexOf('listen:practice-turn');
+    expect(listened).toBeGreaterThanOrEqual(0);
+    expect(listened).toBeLessThan(trace.lastIndexOf('invoke:practice_get_session'));
   });
 
   test('phase_and_notice_copy_render', async () => {
@@ -622,6 +755,31 @@ describe('Practice report view', () => {
     const heading = renderer!.root.findAll((n) => n.type === 'h1').map(text);
     expect(heading.length).toBe(1);
     expect(heading[0].endsWith('· <1 min')).toBe(true);
+  });
+
+  test('a session still finishing says so, without a Generate button', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'pending', end_reason: null }, report: null };
+    await openReport();
+    expect(hasDirectText('Finishing the session…')).toBe(true);
+    expect(buttons('Generate report').length).toBe(0);
+  });
+
+  test('the report that lands while the session finishes replaces the wait with Generate', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'pending', end_reason: null }, report: null };
+    await openReport();
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'pending', end_reason: 'user' }, report: null };
+    await emit('practice-report', { session_id: 's1', status: 'pending' });
+    await flush();
+    expect(hasDirectText('Finishing the session…')).toBe(false);
+    expect(buttons('Generate report').length).toBe(1);
+  });
+
+  test('the report listener is registered before the session is loaded', async () => {
+    trace.length = 0;
+    await openReport();
+    const listened = trace.indexOf('listen:practice-report');
+    expect(listened).toBeGreaterThanOrEqual(0);
+    expect(listened).toBeLessThan(trace.indexOf('invoke:practice_get_session'));
   });
 
   test('struck_quote_has_no_stray_spaces', async () => {

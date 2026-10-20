@@ -156,6 +156,11 @@ export function formatClock(secs: number): string {
   return `${pad(Math.floor(whole / 60))}:${pad(whole % 60)}`;
 }
 
+/** Session length for lists: under 30 s reads "<1 min", not "0 min". */
+export function minutesLabel(secs: number): string {
+  return secs < 30 ? '<1 min' : `${Math.round(secs / 60)} min`;
+}
+
 /** The kind a file is imported as, by extension (case-insensitive). Null means the file is refused. */
 export function materialKind(fileName: string): MaterialKind | null {
   const ext = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();

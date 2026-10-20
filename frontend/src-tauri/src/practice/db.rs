@@ -769,6 +769,8 @@ mod tests {
 
     #[test]
     fn model_holds_overlap() {
+        // The dictate tests read the same counter through keeps_model_loaded, so they take the same lock
+        let _guard = crate::dictate::settings::CACHE_TEST_LOCK.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
         let first = hold_model();
         let second = hold_model();
         assert!(holds_model());

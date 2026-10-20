@@ -52,6 +52,25 @@ export default function PracticePage() {
     }
   }, []);
 
+  // A meeting or an import can end while the list shows, so the start gate is re-read on focus and every 5 s
+  const refreshStatus = useCallback(async () => {
+    try {
+      setStatus(await invoke<PracticeStatus>('practice_status'));
+    } catch {
+      // Keeps the last status; the next focus or tick tries again
+    }
+  }, []);
+  const onList = view.kind === 'list';
+  useEffect(() => {
+    if (!onList) return;
+    const timer = window.setInterval(refreshStatus, 5000);
+    window.addEventListener('focus', refreshStatus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshStatus);
+    };
+  }, [onList, refreshStatus]);
+
   // A session still running when the page opens goes back to its call view (R22)
   useEffect(() => {
     refresh().then(async (s) => {
@@ -81,6 +100,11 @@ export default function PracticePage() {
       stage.current = e.payload.stage;
       setOverlay((o) => (o?.kind === 'start' ? { ...o, stage: e.payload.stage, error: e.payload.error } : o));
     });
+    // Cancel may have landed while the listener registered; then nothing starts
+    if (attempt.current !== id) {
+      stop();
+      return;
+    }
     try {
       const sessionId = await invoke<string>('practice_start', { setupId: setup.id, skipPlan });
       if (attempt.current !== id) return;
@@ -103,21 +127,26 @@ export default function PracticePage() {
     }
   };
 
+  // Downloads the voices, reporting progress, and marks them ready. Rejects when the download fails.
+  const downloadVoices = async (progress: (percent: number) => void) => {
+    const stop = await listen<VoicesProgressPayload>('practice-voices-progress', (e) => progress(e.payload.percent));
+    try {
+      await invoke('practice_download_voices');
+      setStatus((s) => (s ? { ...s, voices_ready: true } : s));
+    } finally {
+      stop();
+    }
+  };
+
   const start = async (setup: SetupSummary) => {
     if (status && !status.voices_ready) {
       setOverlay({ kind: 'voices', percent: 0 });
-      const stop = await listen<VoicesProgressPayload>('practice-voices-progress', (e) => {
-        setOverlay({ kind: 'voices', percent: e.payload.percent });
-      });
       try {
-        await invoke('practice_download_voices');
-        setStatus((s) => (s ? { ...s, voices_ready: true } : s));
+        await downloadVoices((percent) => setOverlay({ kind: 'voices', percent }));
       } catch (err) {
         setOverlay(null);
         toast.error('Could not download the voices', { description: String(err) });
         return;
-      } finally {
-        stop();
       }
     }
     await launch(setup, false);
@@ -156,7 +185,14 @@ export default function PracticePage() {
     return (
       <div className="h-full overflow-y-auto">
         <div className="max-w-3xl mx-auto p-8">
-          <SetupEditor key={view.id ?? 'new'} setup={editSetup ?? null} onDone={backToList} onChanged={refresh} />
+          <SetupEditor
+            key={view.id ?? 'new'}
+            setup={editSetup ?? null}
+            onDone={backToList}
+            onChanged={refresh}
+            voicesReady={status?.voices_ready ?? false}
+            onDownloadVoices={downloadVoices}
+          />
         </div>
       </div>
     );

@@ -2,6 +2,7 @@
 //! work. It feeds events to the pure state machine in `session.rs` and carries out the effects it returns.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -17,13 +18,13 @@ use tokio::sync::Notify;
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::audio::audio_processing::resample_audio;
 use crate::audio::recording_commands::is_recording_now;
+use crate::dictate;
 use crate::audio::vad::{ContinuousVadProcessor, SpeechSegment};
 use crate::whisper_engine::WhisperEngine;
 
-use super::audio::{Player, TurnMic, TurnRecorder};
-use super::claude::{self, ChatMsg};
+use super::audio::{Player, TurnMic, TurnRecorder, TurnResampler};
+use super::claude::{self, ChatMsg, ClaudeError};
 use super::commands::{release_slot, PracticeStatePayload, PracticeTurnPayload};
 use super::db::{self, SetupRow, TurnRow};
 use super::prompts::{character_system, Persona, SentenceSplitter, OPENING_USER, WRAP_UP_SYSTEM};
@@ -142,6 +143,34 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
         }
     }
     r.finish().await;
+}
+
+/// Runs a session. If it panics, the session still ends: the row is closed, the slot is freed and the model
+/// is released. Its hold is dropped while the panic unwinds.
+pub async fn supervise<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
+    let (session_id, pool, started) = (loaded.session_id.clone(), loaded.pool.clone(), Instant::now());
+    supervised(run(app, loaded), |e| async move {
+        warn!("practice: the session stopped unexpectedly: {e}");
+        let duration = started.elapsed().as_secs_f64();
+        if let Err(e) = db::end_session(&pool, &session_id, duration, EndReason::User.as_str()).await {
+            warn!("practice: could not close the session: {e}");
+        }
+        release_slot(&session_id);
+        dictate::unload_if_idle().await;
+    })
+    .await;
+}
+
+/// Awaits `task` on its own task. If that task panics or is aborted, `on_stop` runs with the error text.
+pub async fn supervised<F, C, Fut>(task: F, on_stop: C)
+where
+    F: Future<Output = ()> + Send + 'static,
+    C: FnOnce(String) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    if let Err(e) = tauri::async_runtime::spawn(task).await {
+        on_stop(e.to_string()).await;
+    }
 }
 
 /// Resolves when the capture finishes. Without a capture it never resolves.
@@ -367,7 +396,7 @@ impl<R: Runtime> Runner<R> {
         self.mic.set_recording(true);
         self.capture = Some(tokio::task::spawn_blocking(move || {
             let turn = capture_turn(&rx, rate, &stop, &engine);
-            (rx, Ok(turn))
+            (rx, turn)
         }));
         let tx = self.tx.clone();
         self.turn_timer = Some(tokio::spawn(async move {
@@ -715,6 +744,11 @@ async fn chat_reply(
     })
     .await;
     watchdog.abort();
+    // Hitting the CHAT_MAX_TOKENS cap ends the reply normally: the text so far is spoken.
+    let result = match result {
+        Err(e) if is_token_cap(&e) => Ok(String::new()),
+        other => other,
+    };
     match result {
         Ok(_) => {
             if let Some(text) = splitter.finish() {
@@ -727,6 +761,11 @@ async fn chat_reply(
             let _ = tx.send(Event::ReplyFailed { reply });
         }
     }
+}
+
+/// True when Claude stopped at the token cap, which ends a chat reply normally rather than failing it.
+pub fn is_token_cap(e: &ClaudeError) -> bool {
+    matches!(e, ClaudeError::Stream(reason) if reason == "max_tokens")
 }
 
 /// Transcribes the segments of one turn in order. Their lengths add to `speech_secs`. A segment that fails
@@ -759,7 +798,8 @@ fn transcribe_segments(
 
 /// Runs on a blocking thread for one turn: resamples to 16 kHz, keeps the whole turn, and transcribes
 /// each speech segment as the VAD closes it. A VAD or Whisper error loses only its segment, never the audio.
-fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &WhisperEngine) -> CapturedTurn {
+fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &WhisperEngine) -> Result<CapturedTurn, String> {
+    let mut resampler = TurnResampler::new(rate)?;
     let mut vad = match ContinuousVadProcessor::new(YOU_WAV_RATE, LIVE_VAD_REDEMPTION_MS as u32) {
         Ok(vad) => Some(vad),
         Err(e) => {
@@ -773,24 +813,25 @@ fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &
         speech_secs: 0.0,
     };
     let mut texts: Vec<String> = Vec::new();
+    let mut feed = |samples: &[f32]| {
+        turn.turn.extend_from_slice(samples);
+        if let Some(vad) = vad.as_mut() {
+            match vad.process_audio(samples) {
+                Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
+                Err(e) => warn!("practice: VAD failed on one chunk, it is skipped: {e}"),
+            }
+        }
+    };
     loop {
         match rx.recv_timeout(CAPTURE_POLL) {
-            Ok(chunk) => {
-                let a16 = resample_audio(&chunk, rate, YOU_WAV_RATE);
-                turn.turn.extend_from_slice(&a16);
-                if let Some(vad) = vad.as_mut() {
-                    match vad.process_audio(&a16) {
-                        Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
-                        Err(e) => warn!("practice: VAD failed on one chunk, it is skipped: {e}"),
-                    }
-                }
-            }
+            Ok(chunk) => feed(&resampler.push(&chunk)?),
             // The stop flag is read only once the queue is empty, so the tail of the turn is kept.
             Err(RecvTimeoutError::Timeout) if stop.load(Ordering::SeqCst) => break,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+    feed(&resampler.finish()?);
     if let Some(vad) = vad.as_mut() {
         match vad.flush() {
             Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
@@ -798,7 +839,7 @@ fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &
         }
     }
     turn.text = texts.join(" ");
-    turn
+    Ok(turn)
 }
 
 #[cfg(test)]
@@ -852,6 +893,35 @@ mod tests {
         for phase in [Loading, UserTurn, Listening, Transcribing, Ended] {
             assert_eq!(speaker_failure(phase, false, 3), None, "{phase:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_session_still_runs_its_stop_handler() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let flag = stopped.clone();
+        supervised(async { panic!("boom") }, move |_| async move {
+            flag.store(true, Ordering::SeqCst);
+        })
+        .await;
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ends_normally_skips_the_stop_handler() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let flag = stopped.clone();
+        supervised(async {}, move |_| async move {
+            flag.store(true, Ordering::SeqCst);
+        })
+        .await;
+        assert!(!stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn only_the_token_cap_ends_a_chat_reply_normally() {
+        assert!(is_token_cap(&ClaudeError::Stream("max_tokens".into())));
+        assert!(!is_token_cap(&ClaudeError::Stream("refusal".into())));
+        assert!(!is_token_cap(&ClaudeError::Http(500)));
     }
 
     #[test]

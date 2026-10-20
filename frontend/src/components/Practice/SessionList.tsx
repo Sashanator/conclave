@@ -1,10 +1,10 @@
 import { Button } from '@/components/ui/button';
-import type { SessionSummary } from '@/lib/practice';
+import { minutesLabel, type SessionSummary } from '@/lib/practice';
 
 // "Oct 19 · 18 min · 4 grammar · 31 fillers"
 function sessionLine(s: SessionSummary): string {
   const day = new Date(s.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  const parts = [day, `${Math.round(s.duration_secs / 60)} min`];
+  const parts = [day, minutesLabel(s.duration_secs)];
   if (s.summary) parts.push(s.summary);
   return parts.join(' · ');
 }

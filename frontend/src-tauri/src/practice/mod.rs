@@ -31,6 +31,7 @@ pub mod session;
 pub mod models;
 pub mod files;
 pub mod report;
+pub mod report_job;
 pub mod prompts;
 pub mod runner;
 pub mod tts_text;

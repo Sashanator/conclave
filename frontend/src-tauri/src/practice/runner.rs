@@ -20,7 +20,6 @@ use tokio_util::sync::CancellationToken;
 use crate::audio::audio_processing::resample_audio;
 use crate::audio::recording_commands::is_recording_now;
 use crate::audio::vad::{ContinuousVadProcessor, SpeechSegment};
-use crate::dictate;
 use crate::whisper_engine::WhisperEngine;
 
 use super::audio::{Player, TurnMic, TurnRecorder};
@@ -28,9 +27,10 @@ use super::claude::{self, ChatMsg};
 use super::commands::{release_slot, PracticeStatePayload, PracticeTurnPayload};
 use super::db::{self, SetupRow, TurnRow};
 use super::prompts::{character_system, Persona, SentenceSplitter, OPENING_USER, WRAP_UP_SYSTEM};
+use super::report_job;
 use super::session::{Core, EndReason, Effect, Event, Notice, Phase};
 use super::tts::{Supertonic, Voice};
-use super::{ModelHold, LIVE_VAD_REDEMPTION_MS, MAX_TURN_SECS, TTS_SPEED, TTS_STEPS, YOU_WAV_RATE};
+use super::{hold_model, ModelHold, LIVE_VAD_REDEMPTION_MS, MAX_TURN_SECS, TTS_SPEED, TTS_STEPS, YOU_WAV_RATE};
 
 /// The first text from Claude must arrive within this long, or the reply counts as failed.
 const FIRST_BYTE_SECS: u64 = 20;
@@ -587,10 +587,9 @@ impl<R: Runtime> Runner<R> {
         }
         // Dropping the speech worker's sender lets it exit and release the TTS model.
         drop(self.speak_tx);
-        // The hold goes before the unload check, so an unused model is freed.
-        self.hold.take();
-        dictate::unload_if_idle().await;
-        // The report job starts here (Task 12).
+        // The report job takes over the Whisper hold, so the model stays loaded across the hand-off.
+        let hold = self.hold.take().unwrap_or_else(hold_model);
+        tauri::async_runtime::spawn(report_job::run(self.app.clone(), self.session_id.clone(), hold));
         release_slot(&self.session_id);
     }
 }

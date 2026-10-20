@@ -1,4 +1,3 @@
-#![allow(dead_code)] // the report job that uses these lands in a later task
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

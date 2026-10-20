@@ -1,9 +1,12 @@
 //! Speaking Practice storage: setups, their materials and plans, sessions and turns.
 
+use std::collections::HashSet;
+
 use crate::practice::recurring::PastReport;
 use crate::practice::report::{pattern_key, Report};
-use crate::practice::MATERIAL_MAX_BYTES;
+use crate::practice::{MATERIAL_MAX_BYTES, RECURRING_SESSIONS};
 use chrono::Utc;
+use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
@@ -506,24 +509,53 @@ pub async fn recent_patterns(pool: &SqlitePool, limit: usize) -> Result<Vec<Stri
     Ok(keys)
 }
 
-/// Ready reports of sessions started before `before_started_at`, newest first. Unreadable ones are skipped and do not count.
-pub async fn load_recent(pool: &SqlitePool, before_started_at: &str, limit: usize) -> Result<Vec<PastReport>, String> {
-    let rows: Vec<(String, Option<String>, String, String)> = sqlx::query_as(
-        "SELECT id, setup_id, started_at, report_json FROM practice_sessions WHERE report_status = 'ready' AND report_json IS NOT NULL AND started_at < ? ORDER BY started_at DESC",
-    )
-    .bind(before_started_at)
-    .fetch_all(pool)
-    .await
-    .map_err(db_err)?;
-    Ok(rows
-        .into_iter()
-        .filter_map(|(session_id, setup_id, started_at, json)| {
-            // An unreadable report is skipped, so one bad row cannot hide the others.
-            let report = serde_json::from_str::<Report>(&json).ok()?;
-            Some(PastReport { session_id, setup_id, started_at, report })
-        })
-        .take(limit)
-        .collect())
+/// Ready reports of sessions started before `before_started_at`, newest first, at most `limit` valid ones.
+/// With `setup_id`, only that setup's sessions. An unreadable report is skipped and does not count.
+pub async fn load_recent(
+    pool: &SqlitePool,
+    before_started_at: &str,
+    limit: usize,
+    setup_id: Option<&str>,
+) -> Result<Vec<PastReport>, String> {
+    let mut sql = "SELECT id, setup_id, started_at, report_json FROM practice_sessions WHERE report_status = 'ready' AND report_json IS NOT NULL AND started_at < ?".to_string();
+    if setup_id.is_some() {
+        sql.push_str(" AND setup_id = ?");
+    }
+    sql.push_str(" ORDER BY started_at DESC");
+    let mut query = sqlx::query_as::<_, (String, Option<String>, String, String)>(&sql).bind(before_started_at);
+    if let Some(setup_id) = setup_id {
+        query = query.bind(setup_id);
+    }
+    // Streamed, so reading stops once `limit` valid reports are in hand
+    let mut rows = query.fetch(pool);
+    let mut out = Vec::new();
+    while out.len() < limit {
+        let Some((session_id, row_setup_id, started_at, json)) = rows.try_next().await.map_err(db_err)? else {
+            break;
+        };
+        if let Ok(report) = serde_json::from_str::<Report>(&json) {
+            out.push(PastReport { session_id, setup_id: row_setup_id, started_at, report });
+        }
+    }
+    Ok(out)
+}
+
+/// The earlier reports the recurring view reads, newest first, without duplicates: the newest
+/// `RECURRING_SESSIONS - 1` across all setups, plus the same setup's newest `RECURRING_SESSIONS - 1`,
+/// since the setup trend can reach past the first set.
+pub async fn load_recurring_window(
+    pool: &SqlitePool,
+    before_started_at: &str,
+    setup_id: Option<&str>,
+) -> Result<Vec<PastReport>, String> {
+    let mut recent = load_recent(pool, before_started_at, RECURRING_SESSIONS - 1, None).await?;
+    if let Some(setup_id) = setup_id {
+        recent.extend(load_recent(pool, before_started_at, RECURRING_SESSIONS - 1, Some(setup_id)).await?);
+    }
+    recent.sort_by(|a, b| b.started_at.cmp(&a.started_at));
+    let mut seen = HashSet::new();
+    recent.retain(|past| seen.insert(past.session_id.clone()));
+    Ok(recent)
 }
 
 pub async fn count_sessions(pool: &SqlitePool, setup_id: &str) -> Result<i64, String> {
@@ -902,8 +934,49 @@ mod tests {
         let ids = |got: Vec<PastReport>| got.into_iter().map(|p| p.session_id).collect::<Vec<_>>();
         let before = "2026-10-05T10:00:00Z";
         // The corrupt and the failed report are skipped without using up the limit
-        assert_eq!(ids(load_recent(&pool, before, 1).await.unwrap()), [sessions[1].clone()]);
-        assert_eq!(ids(load_recent(&pool, before, 5).await.unwrap()), [sessions[1].clone(), sessions[0].clone()]);
+        assert_eq!(ids(load_recent(&pool, before, 1, None).await.unwrap()), [sessions[1].clone()]);
+        assert_eq!(ids(load_recent(&pool, before, 5, None).await.unwrap()), [sessions[1].clone(), sessions[0].clone()]);
+        // The setup filter applies to every session in this test, so all of them are in the setup
+        assert_eq!(ids(load_recent(&pool, before, 5, Some(&setup.id)).await.unwrap()), [sessions[1].clone(), sessions[0].clone()]);
+        assert!(load_recent(&pool, before, 5, Some("missing")).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn recurring_window_reaches_an_older_same_setup_session() {
+        use crate::practice::recurring::{compute, PastReport};
+        use crate::practice::report::Fluency;
+        // One minute of speech per session, so the filler count is the per-minute rate
+        let report_with = |fillers: u32| Report {
+            version: 2,
+            fluency: Fluency { filler_total: fillers, speech_secs: 60.0, ..Default::default() },
+            items: vec![],
+            dropped_items: 0,
+            pronunciation: vec![],
+            pronunciation_note: None,
+        };
+        let pool = test_pool().await;
+        let mine = new_setup(&pool, "Mine").await;
+        let other = new_setup(&pool, "Other").await;
+        // My old session, then four other-setup sessions: the all-setup window alone would miss my old one
+        for (setup, day, fillers) in [(&mine, "01", 6u32), (&other, "02", 1), (&other, "03", 1), (&other, "04", 1), (&other, "05", 1)] {
+            let row = create_session(&pool, setup, "C:/x", None).await.unwrap();
+            sqlx::query("UPDATE practice_sessions SET started_at = ? WHERE id = ?")
+                .bind(format!("2026-10-{day}T10:00:00Z"))
+                .bind(&row.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            set_report(&pool, &row.id, "ready", Some(&serde_json::to_string(&report_with(fillers)).unwrap()), None).await.unwrap();
+        }
+        let current_at = "2026-10-06T10:00:00Z";
+        let current = PastReport {
+            session_id: "current".into(),
+            setup_id: Some(mine.id.clone()),
+            started_at: current_at.into(),
+            report: report_with(3),
+        };
+        let recent = load_recurring_window(&pool, current_at, Some(&mine.id)).await.unwrap();
+        assert_eq!(compute(&current, &recent).filler_trend, [6.0, 3.0].to_vec());
     }
 
     #[test]

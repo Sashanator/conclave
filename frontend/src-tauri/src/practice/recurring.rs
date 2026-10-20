@@ -170,6 +170,19 @@ mod tests {
     }
 
     #[test]
+    fn a_session_without_a_setup_is_never_the_same_setup() {
+        // A deleted setup leaves setup_id None: it matches nothing, so the trend is just the current point
+        let mut current = past("c", "s1", "2026-10-20T10:00", &["a b"], 6, 120.0);
+        current.setup_id = None;
+        let mut without_setup = past("r2", "s1", "2026-10-18T10:00", &["a b"], 8, 80.0);
+        without_setup.setup_id = None;
+        let recent = [past("r1", "s1", "2026-10-19T10:00", &["a b"], 4, 90.0), without_setup];
+        let got = compute(&current, &recent);
+        assert_eq!(got.patterns, [pattern("a b", 3, false)].to_vec());
+        assert_eq!(got.filler_trend, [3.0].to_vec());
+    }
+
+    #[test]
     fn v1_reports_count_only_for_fillers() {
         // A v1 report has no pattern keys, but its fillers still make a trend point
         let current = past("c", "s1", "2026-10-20T10:00", &["a b"], 4, 80.0);

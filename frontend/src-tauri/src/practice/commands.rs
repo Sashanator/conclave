@@ -750,9 +750,14 @@ pub async fn practice_get_session<R: Runtime>(
                 started_at: row.started_at.clone(),
                 report,
             };
-            // shortcut: loads every earlier ready report, because the setup trend can reach past the newest four; upgrade to a SQL filter if the history grows large.
-            let recent = db::load_recent(&pool, &row.started_at, usize::MAX).await?;
-            Some(recurring::compute(&current, &recent))
+            match db::load_recurring_window(&pool, &row.started_at, row.setup_id.as_deref()).await {
+                Ok(recent) => Some(recurring::compute(&current, &recent)),
+                Err(e) => {
+                    // The recurring card is optional, so a failed read leaves the rest of the session view intact.
+                    warn!("practice: no recurring view for the session: {e}");
+                    None
+                }
+            }
         }
         _ => None,
     };

@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import {
-  MATERIAL_MAX_BYTES, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow, VOICES,
+  MATERIAL_MAX_BYTES, type PracticeSettings, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow, VOICES,
 } from '../../src/lib/practice';
 
 const originals = {
@@ -63,6 +63,7 @@ const DETAIL: SessionDetail = {
   report: REPORT, report_error: null, audio_path: 'C:/Conclave/practice/s1/you.wav',
 };
 
+const MODEL_SETTINGS: PracticeSettings = { chat_model: 'claude-haiku-5-5', plan_model: 'claude-opus-5-5', plan_effort: 'high' };
 let status: PracticeStatus;
 let setups: SetupSummary[];
 let sessions: SessionSummary[];
@@ -88,6 +89,8 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_status') return structuredClone(status);
   if (command === 'practice_list_setups') return structuredClone(setups);
   if (command === 'practice_list_sessions') return structuredClone(sessions);
+  if (command === 'practice_get_settings') return structuredClone(MODEL_SETTINGS);
+  if (command === 'practice_save_settings') return args?.settings;
   if (command === 'practice_save_setup') return null;
   if (command === 'practice_delete_session') return null;
   if (command === 'practice_delete_setup') return null;
@@ -242,7 +245,7 @@ describe('Practice page', () => {
     expect(headings).toContain('Past sessions');
     const grid = renderer!.root.findAll((n) => n.type === 'div' && String(n.props.className).includes('lg:grid-cols-2'));
     expect(grid.length).toBe(1);
-    const cards = renderer!.root.findAll((n) => n.type === 'section' && String(n.props.className).includes('bg-card'));
+    const cards = grid[0].findAll((n) => n.type === 'section' && String(n.props.className).includes('bg-card'));
     expect(cards.map((c) => text(c.findAll((n) => n.type === 'h3')[0]))).toEqual(['Your setups', 'Past sessions']);
   });
 

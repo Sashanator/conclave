@@ -10,6 +10,7 @@ import { SessionList } from '@/components/Practice/SessionList';
 import { SetupEditor } from '@/components/Practice/SetupEditor';
 import { ReportView } from '@/components/Practice/ReportView';
 import { CallView } from '@/components/Practice/CallView';
+import { ModelsCard } from '@/components/Practice/ModelsCard';
 import {
   blockedReason, characterName, planText, type PracticePrepPayload, type PracticeStatus, type SessionDetail, type SessionSummary, type SetupSummary, type VoicesProgressPayload,
 } from '@/lib/practice';
@@ -221,6 +222,7 @@ export default function PracticePage() {
             onDelete={deleteSession}
           />
         </div>
+        <ModelsCard />
       </div>
 
       {overlay && (

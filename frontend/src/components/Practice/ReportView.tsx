@@ -7,7 +7,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
   characterName, formatClock, minutesLabel, NOTICE_TEXT, YOU_WAV_RATE,
-  type ItemKind, type ReportItem, type ReportStatusPayload, type SessionDetail, type TurnRow,
+  type ItemKind, type PronHint, type ReportItem, type ReportStatusPayload, type SessionDetail, type TurnRow,
 } from '@/lib/practice';
 
 const SECTIONS: { kind: ItemKind; title: string }[] = [
@@ -104,11 +104,12 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     void load();
   };
 
-  const play = (from: number, len: number) => {
+  // from and to are seconds into you.wav
+  const play = (from: number, to: number) => {
     const el = audioRef.current;
     if (!el) return;
-    stopAt.current = (from + len) / YOU_WAV_RATE;
-    el.currentTime = from / YOU_WAV_RATE;
+    stopAt.current = to;
+    el.currentTime = from;
     void el.play().catch((e) => toast.error('Could not play the recording', { description: String(e) }));
   };
 
@@ -124,13 +125,39 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const playButton = (d: SessionDetail, turnIdx: number) => {
     const turn: TurnRow | undefined = d.turns.find((t) => t.idx === turnIdx);
     if (!turn || !d.audio_path || turn.wav_offset === null || turn.wav_len === null) return null;
-    const from = turn.wav_offset;
-    const len = turn.wav_len;
+    const from = turn.wav_offset / YOU_WAV_RATE;
+    const to = (turn.wav_offset + turn.wav_len) / YOU_WAV_RATE;
     return (
-      <button type="button" className="rounded px-1.5 py-0.5 hover:bg-accent tabular-nums" onClick={() => play(from, len)}>
+      <button type="button" className="rounded px-1.5 py-0.5 hover:bg-accent tabular-nums" onClick={() => play(from, to)}>
         {`▶ ${formatClock(turn.at_secs)}`}
       </button>
     );
+  };
+
+  // ▶ you for a pronunciation hint: its span within the turn's clip
+  const hintPlayButton = (d: SessionDetail, hint: PronHint) => {
+    const turn = d.turns.find((t) => t.idx === hint.turn);
+    if (!turn || !d.audio_path || turn.wav_offset === null) return null;
+    const turnStart = turn.wav_offset / YOU_WAV_RATE;
+    return (
+      <button type="button" className="rounded px-1.5 py-0.5 hover:bg-accent" onClick={() => play(turnStart + hint.start_secs, turnStart + hint.end_secs)}>
+        ▶ you
+      </button>
+    );
+  };
+
+  // One speak at a time: a click while the call is pending is ignored
+  const speaking = useRef(false);
+  const speak = async (word: string) => {
+    if (speaking.current) return;
+    speaking.current = true;
+    try {
+      await invoke('practice_speak_word', { sessionId, word });
+    } catch (err) {
+      toast.error('Could not say the word', { description: String(err) });
+    } finally {
+      speaking.current = false;
+    }
   };
 
   if (!detail) {
@@ -153,6 +180,12 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const generate = (label: string) => (
     <Button size="sm" disabled={busy} onClick={retry}>{label}</Button>
   );
+  // Patterns from the same setup first; the order within each group is the one the server sent
+  const recurring = detail.recurring;
+  const patterns = [...(recurring?.patterns ?? [])].sort((a, b) => Number(b.same_setup) - Number(a.same_setup));
+  const trend = recurring?.filler_trend ?? [];
+  // Only v2 reports carry the card; the backend fills recurring for any ready report
+  const showRecurring = (report?.version ?? 0) >= 2 && (patterns.length > 0 || trend.length >= 2);
 
   return (
     <div className="h-full overflow-y-auto">
@@ -226,6 +259,40 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
                 {fillers.length ? fillers.map(([word, n]) => `${word} ${n}`).join(' · ') : 'No fillers counted'}
               </p>
             </section>
+
+            {report.version >= 2 && (
+              <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">
+                <h3 className="text-lg font-semibold text-foreground">Pronunciation hints (may be off)</h3>
+                {report.pronunciation.length ? report.pronunciation.map((hint, i) => (
+                  <div key={i} className="flex flex-wrap items-center gap-2">
+                    <span className="font-medium">{hint.word}</span>
+                    {hintPlayButton(detail, hint)}
+                    <button type="button" className="rounded px-1.5 py-0.5 hover:bg-accent" onClick={() => speak(hint.word)}>▶ reference</button>
+                  </div>
+                )) : (
+                  <p className="text-sm text-muted-foreground">{report.pronunciation_note ?? 'No pronunciation hints this time'}</p>
+                )}
+              </section>
+            )}
+
+            {showRecurring && (
+              <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">
+                <h3 className="text-lg font-semibold text-foreground">Keeps coming back</h3>
+                {patterns.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {patterns.map((p) => (
+                      <span key={p.key} className="rounded px-2 py-0.5 text-sm bg-muted text-foreground">{`${p.key} ×${p.sessions} sessions`}</span>
+                    ))}
+                  </div>
+                )}
+                {trend.length >= 2 && (
+                  <p className="text-sm text-muted-foreground">
+                    <span className="font-medium text-foreground">Fillers per minute</span>{' '}
+                    <span className="tabular-nums">{trend.map((v) => v.toFixed(1)).join(' → ')}</span>
+                  </p>
+                )}
+              </section>
+            )}
           </>
         ) : s.report_status === 'failed' ? (
           <div className="space-y-3">

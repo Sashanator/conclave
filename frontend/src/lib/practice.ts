@@ -81,6 +81,18 @@ export interface ReportItem {
   better: string;
   note: string;
   echoed: boolean;
+  /** Short key for a repeated mistake, e.g. "if + will"; null for v1 reports */
+  pattern: string | null;
+}
+
+/** A word the pronunciation check may have got wrong; the span is relative to the turn's audio */
+export interface PronHint {
+  turn: number;
+  word: string;
+  start_secs: number;
+  end_secs: number;
+  score: number;
+  phone: string;
 }
 
 export interface Report {
@@ -88,6 +100,14 @@ export interface Report {
   fluency: Fluency;
   items: ReportItem[];
   dropped_items: number;
+  pronunciation: PronHint[];
+  pronunciation_note: string | null;
+}
+
+export interface Recurring {
+  patterns: { key: string; sessions: number; same_setup: boolean }[];
+  /** Fillers per minute, oldest first */
+  filler_trend: number[];
 }
 
 export interface SessionDetail {
@@ -97,6 +117,7 @@ export interface SessionDetail {
   report: Report | null;
   report_error: string | null;
   audio_path: string | null;
+  recurring: Recurring | null;
 }
 
 export type Phase = 'Loading' | 'CharacterSpeaking' | 'Thinking' | 'UserTurn' | 'Listening' | 'Transcribing' | 'Ended';

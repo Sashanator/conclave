@@ -40,19 +40,21 @@ const SESSION: SessionSummary = {
   report_status: 'ready', summary: '4 grammar · 31 fillers', end_reason: 'user',
 };
 const RUNNING_DETAIL = {
-  summary: { ...SESSION, id: 'run-1', end_reason: null }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null,
+  summary: { ...SESSION, id: 'run-1', end_reason: null }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null, recurring: null,
 };
 const READY: PracticeStatus = { has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null };
 const REPORT: Report = {
   version: 1,
   fluency: { fillers: { um: 14, 'so basically': 9, like: 8 }, filler_total: 31, words: 1200, speech_secs: 640, wpm: 112.4, long_pauses: 6 },
   items: [
-    { kind: 'Grammar', turn: 3, quote: 'If I will have more data…', better: 'If I had more data…', note: 'Past simple after "if".', echoed: true },
-    { kind: 'Grammar', turn: 5, quote: 'The data depend', better: 'The data depends', note: 'Third person singular.', echoed: false },
-    { kind: 'Unnatural', turn: 7, quote: 'I made a research about it', better: 'I did some research on it', note: 'Native speakers "do" research.', echoed: false },
-    { kind: 'Clarity', turn: 9, quote: 'So basically the idea was that, well, the baseline', better: 'The baseline missed long-range links.', note: 'Shorter.', echoed: false },
+    { kind: 'Grammar', turn: 3, quote: 'If I will have more data…', better: 'If I had more data…', note: 'Past simple after "if".', echoed: true, pattern: null },
+    { kind: 'Grammar', turn: 5, quote: 'The data depend', better: 'The data depends', note: 'Third person singular.', echoed: false, pattern: null },
+    { kind: 'Unnatural', turn: 7, quote: 'I made a research about it', better: 'I did some research on it', note: 'Native speakers "do" research.', echoed: false, pattern: null },
+    { kind: 'Clarity', turn: 9, quote: 'So basically the idea was that, well, the baseline', better: 'The baseline missed long-range links.', note: 'Shorter.', echoed: false, pattern: null },
   ],
   dropped_items: 0,
+  pronunciation: [],
+  pronunciation_note: null,
 };
 const TURNS: TurnRow[] = [
   { session_id: 's1', idx: 0, speaker: 'character', live_text: 'Tell me about your thesis.', verbatim_text: null, at_secs: 0, wav_offset: null, wav_len: null },
@@ -60,7 +62,7 @@ const TURNS: TurnRow[] = [
 ];
 const DETAIL: SessionDetail = {
   summary: { ...SESSION, report_status: 'ready' }, character: 'Prof. Weber, strict examiner', turns: TURNS,
-  report: REPORT, report_error: null, audio_path: 'C:/Conclave/practice/s1/you.wav',
+  report: REPORT, report_error: null, audio_path: 'C:/Conclave/practice/s1/you.wav', recurring: null,
 };
 
 let status: PracticeStatus;
@@ -101,6 +103,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   // The report tests open s1; a call (session-1, or run-1 on resume) reads the running detail
   if (command === 'practice_get_session') return structuredClone(args?.id === 's1' ? detail : running);
   if (command === 'practice_retry_report') return retryImpl();
+  if (command === 'practice_speak_word') return null;
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
 const toast = { success: mock((_what: string) => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
@@ -787,5 +790,76 @@ describe('Practice report view', () => {
     const quotes = renderer!.root.findAll((n) => n.type === 'p' && text(n).startsWith('“')).map(text);
     expect(quotes).toContain('“If I will have more data…”');
     expect(quotes).toContain('“The data depend”');
+  });
+
+  test('pron_card_plays_word_span_and_reference', async () => {
+    const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
+    renderer?.unmount();
+    renderer = null;
+    await act(async () => {
+      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
+    });
+    await flush();
+    detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [{ turn: 3, word: 'will', start_secs: 1.5, end_secs: 1.9, score: -7.2, phone: 'IH' }] } };
+    await openReport();
+
+    // The turn starts at 160_000 samples (10 s) in you.wav; the hint is 1.5 s to 1.9 s into the turn
+    await clickButton('▶ you');
+    expect(audio.currentTime).toBe(11.5);
+    expect(audio.play).toHaveBeenCalledTimes(1);
+    const onTimeUpdate = renderer!.root.findAll((n) => n.type === 'audio')[0].props.onTimeUpdate;
+    audio.currentTime = 11.8;
+    await act(async () => onTimeUpdate());
+    expect(audio.pause).not.toHaveBeenCalled();
+    audio.currentTime = 11.95;
+    await act(async () => onTimeUpdate());
+    expect(audio.pause).toHaveBeenCalledTimes(1);
+
+    await clickButton('▶ reference');
+    expect(calls('practice_speak_word')[0][1]).toEqual({ sessionId: 's1', word: 'will' });
+    expect(hasDirectText('will')).toBe(true);
+  });
+
+  test('pron_card_shows_note_or_empty_text', async () => {
+    detail = { ...detail, report: { ...REPORT, version: 2, pronunciation_note: 'Pronunciation hints unavailable' } };
+    await openReport();
+    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toContain('Pronunciation hints (may be off)');
+    expect(hasDirectText('Pronunciation hints unavailable')).toBe(true);
+    expect(hasDirectText('No pronunciation hints this time')).toBe(false);
+
+    await clickButton('← Practice');
+    detail = { ...detail, report: { ...REPORT, version: 2 } };
+    await openReport();
+    expect(hasDirectText('No pronunciation hints this time')).toBe(true);
+  });
+
+  test('recurring_card_lists_patterns_and_trend', async () => {
+    detail = {
+      ...detail,
+      recurring: {
+        patterns: [{ key: 'make research', sessions: 3, same_setup: false }, { key: 'if + will', sessions: 4, same_setup: true }],
+        filler_trend: [3.1, 2.4, 1.8],
+      },
+    };
+    await openReport();
+    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toContain('Keeps coming back');
+    // Same-setup patterns come first
+    const chips = renderer!.root.findAll((n) => n.type === 'span' && text(n).includes(' sessions')).map(text);
+    expect(chips).toEqual(['if + will ×4 sessions', 'make research ×3 sessions']);
+    expect(hasDirectText('Fillers per minute')).toBe(true);
+    expect(hasDirectText('3.1 → 2.4 → 1.8')).toBe(true);
+
+    // One trend point is not a trend, and no patterns means nothing to show: the card is hidden
+    await clickButton('← Practice');
+    detail = { ...detail, recurring: { patterns: [], filler_trend: [3.1] } };
+    await openReport();
+    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).not.toContain('Keeps coming back');
+  });
+
+  test('v1_report_hides_new_cards', async () => {
+    await openReport();
+    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
+    expect(hasDirectText('Pronunciation hints (may be off)')).toBe(false);
+    expect(hasDirectText('Keeps coming back')).toBe(false);
   });
 });

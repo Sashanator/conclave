@@ -22,7 +22,7 @@ use crate::audio::vad::{ContinuousVadProcessor, SpeechSegment};
 use crate::whisper_engine::WhisperEngine;
 
 use super::audio::{Player, TurnMic, TurnRecorder, TurnResampler};
-use super::claude::{self, ChatMsg};
+use super::claude::{self, ChatMsg, ClaudeError};
 use super::commands::{release_slot, PracticeStatePayload, PracticeTurnPayload};
 use super::db::{self, SetupRow, TurnRow};
 use super::prompts::{character_system, Persona, SentenceSplitter, OPENING_USER, WRAP_UP_SYSTEM};
@@ -714,6 +714,11 @@ async fn chat_reply(
     })
     .await;
     watchdog.abort();
+    // Hitting the CHAT_MAX_TOKENS cap ends the reply normally: the text so far is spoken.
+    let result = match result {
+        Err(e) if is_token_cap(&e) => Ok(String::new()),
+        other => other,
+    };
     match result {
         Ok(_) => {
             if let Some(text) = splitter.finish() {
@@ -726,6 +731,11 @@ async fn chat_reply(
             let _ = tx.send(Event::ReplyFailed { reply });
         }
     }
+}
+
+/// True when Claude stopped at the token cap, which ends a chat reply normally rather than failing it.
+pub fn is_token_cap(e: &ClaudeError) -> bool {
+    matches!(e, ClaudeError::Stream(reason) if reason == "max_tokens")
 }
 
 /// Transcribes the segments of one turn in order. Their lengths add to `speech_secs`. A segment that fails
@@ -853,6 +863,13 @@ mod tests {
         for phase in [Loading, UserTurn, Listening, Transcribing, Ended] {
             assert_eq!(speaker_failure(phase, false, 3), None, "{phase:?}");
         }
+    }
+
+    #[test]
+    fn only_the_token_cap_ends_a_chat_reply_normally() {
+        assert!(is_token_cap(&ClaudeError::Stream("max_tokens".into())));
+        assert!(!is_token_cap(&ClaudeError::Stream("refusal".into())));
+        assert!(!is_token_cap(&ClaudeError::Http(500)));
     }
 
     #[test]

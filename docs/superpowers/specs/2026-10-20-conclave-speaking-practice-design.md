@@ -281,21 +281,70 @@ Fixed in code, no settings in phase 1 **(call; user asked about effort, see §5.
 - **Report after a meeting starts mid-session:** the word-for-word re-transcription waits until the meeting recording stops, so it never competes with the meeting's live Whisper **(call)**.
 - **GPU:** Whisper, TTS and any speaker-analysis job share the GPU. No new global lock. The latency target is checked on the user's PC with Dictate on.
 
-## 6. Phase 2 (later plan, same spec)
+## 6. Phase 2 (detailed 2026-10-21)
 
-- **Pronunciation hints:**
-  - A local phoneme-recognition model (ONNX, e.g. a wav2vec2 phoneme model) aligned against the expected words of the verbatim text. It flags words whose sounds differ, labelled "may be off".
-  - ▶ reference re-synthesises the word with the TTS voice.
-  - Accuracy is modest (roughly 0.7 agreement with human raters per phoneme in published results). The UI presents these as hints, never as grades.
-- **Keeps coming back:**
-  - Each report item gets a short pattern key (e.g. "if + will", "make research").
-  - The page counts keys across the last 5 sessions of the same setup, and of all setups, and shows the filler trend.
+The user chose to build phase 2 straight after phase 1 and test everything together (phase 1 is tagged `practice-phase1` as a fallback). The details below are **(call)** unless marked otherwise. They are based on the research notes in `.superpowers/sdd/2026-10-20-conclave-speaking-practice/phase2-pronunciation-research.md`, which include a Python spike on speechocean762.
 
-- **Model settings (user asked):** a small "Models" card on the Practice page.
-  - Pick the conversation model and the plan/report model from the user's Claude models.
-  - Pick the plan/report effort.
-  - Show a rough cost per session next to each choice.
-  - Phase 1 keeps the fixed choices from §5.6 as the defaults.
+### 6.1 Pronunciation hints (user: local, free)
+
+**Inputs and model:**
+- **Model:** `ron-jo/hubert-base-phoneme-en-onnx` at revision `bbc279477648b3b7de4ec1375707d041617dbd3e`, file `hubert_phoneme_int8.onnx` (121,951,866 bytes, SHA-256 `af7a194be47549c8cfe0055220e52498b270773ad3d77483e0e0c9dd101a0dbb`). It is an int8 export of `Peacockery/hubert-base-phoneme-en` (Apache-2.0) and outputs 39 CMUdict phones plus a CTC blank (id 40).
+- **Dictionary:** CMUdict (`cmusphinx/cmudict`, file `cmudict.dict`, BSD-2-style licence; pinned revision and SHA-256 in the plan). Words not in it are skipped.
+- **Download:** both files are fetched on first need with the existing pinned-download pattern into `app_data/models/practice/`. If the download fails, the report is still written without hints and the card says "Pronunciation hints unavailable".
+- **Runtime:** CPU only (about 1.3 s per minute of audio on 4 threads), so the GPU stays free for Whisper.
+
+**Algorithm, per learner turn**, using the word-for-word text, or the live text when that fell back:
+1. Cut the turn's audio into chunks of 20 s or less at VAD pauses (memory grows fast with chunk length).
+2. Run the model to get phone log-probabilities per frame.
+3. Build the expected phone sequence from the dictionary. For a word with several pronunciations, keep the one that aligns best.
+4. Run CTC forced alignment (Viterbi). This gives each phone's frames and each word's time span.
+5. Score each phone with GOP = mean over its frames of (log P(expected phone) − max log P(any phone)). A word's score is its worst phone.
+6. Flag a word when its score is below `PRON_THRESHOLD = -6.5`, skipping words of 2 phones or fewer. Keep at most `PRON_MAX_HINTS = 6` per session (the lowest scores).
+
+**What the user sees:**
+- **Accuracy (corrected from earlier text):** a simple threshold reaches about 0.4 correlation per phone, and roughly half the hints will be real mistakes. The UI says "may be off" and never shows a grade.
+- **Report card 5, "Pronunciation hints (may be off)":** for each hint, the word, ▶ you and ▶ reference.
+  - ▶ you plays that word's span from `you.wav`.
+  - ▶ reference synthesises the word with the session's voice through the existing Supertonic engine.
+
+**Not covered and known limits:**
+- Word stress is not detected.
+- Thresholds were tuned on Mandarin speakers and are a tuning item (§7).
+- Whisper mistakes can make neighbouring words be flagged wrongly.
+
+### 6.2 Keeps coming back
+
+**Pattern keys:**
+- Each grammar and unnatural item gets a short `pattern` key (e.g. "if + will", "make research").
+- So that the same mistake gets the same key in different sessions, the report prompt receives the user's recent pattern keys (up to 30 distinct, newest first) and is told to reuse an existing key whenever the mistake is the same.
+
+**Card at the bottom of the report, "Keeps coming back":**
+- **Patterns:** each key that appears in 2 or more of the last 5 ready sessions. Same-setup sessions are listed first, then the others, e.g. "if + will ×4 sessions · make research ×3".
+- **Filler trend:** fillers per minute of speech over the last 5 sessions of this setup, oldest to newest, e.g. "3.1 → 2.4 → 1.8".
+
+**Older reports:**
+- The report JSON goes to `version: 2`, adding `pattern` per item and `pronunciation` hints.
+- Version-1 reports still render: they simply have no patterns and no hints.
+
+### 6.3 Model settings (user)
+
+**The card:** a "Models" card on the Practice page, below the two lists.
+- **Conversation model:** Haiku 5.5 (default), Sonnet 5.5 or Opus 5.5.
+- **Plan and report model:** Opus 5.5 (default) or Sonnet 5.5.
+- **Plan and report effort:** medium, high (default) or xhigh.
+- **Cost:** each choice shows a rough cost per 30-minute session, computed from a fixed price table (USD per million input / output tokens: Haiku 0.10/0.50, Sonnet 2/10, Opus 4/20) and fixed token estimates.
+
+**How each model is asked to answer quickly in conversation** (each model accepts different settings):
+- **Haiku 5.5:** `thinking: {type: "disabled"}`, effort `low`, as in phase 1.
+- **Sonnet 5.5:** `thinking: {type: "between_tools"}` with effort `low`; Sonnet 5.5 rejects `disabled`.
+- **Opus 5.5:** no `thinking` field and effort `low`; thinking cannot be turned off on Opus 5.5. The card warns: "Slower replies".
+
+**Storage:** settings live in a `practice.json` tauri-store file (key `settings`), the same pattern as Dictate. A missing file means the phase 1 defaults.
+
+### 6.4 Phase 1 leftovers folded in
+
+- A Whisper panic during the report shows the friendly "The report stopped unexpectedly — Retry", not the panic text.
+- A panic after `finish()` must not overwrite the stored end reason.
 
 ## 7. No spike first; tune after the first real sessions (user)
 
@@ -322,4 +371,4 @@ The user chose to ship phase 1 and adjust afterwards, rather than run a pre-plan
 
 ## 9. Release
 
-Phase 1 ships as **v0.8.0** **(call)**. Phase 2 ships in a later minor release.
+Phases 1 and 2 ship together as **v0.8.0** (user, 2026-10-21: build the whole feature, then test).

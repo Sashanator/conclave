@@ -154,7 +154,7 @@ pub async fn supervise<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
     supervised(run(app, loaded), |e| async move {
         warn!("practice: the session stopped unexpectedly: {e}");
         let duration = started.elapsed().as_secs_f64();
-        if let Err(e) = db::end_session(&pool, &session_id, duration, EndReason::User.as_str()).await {
+        if let Err(e) = db::end_session_if_running(&pool, &session_id, duration, EndReason::User.as_str()).await {
             warn!("practice: could not close the session: {e}");
         }
         release_slot(&session_id);

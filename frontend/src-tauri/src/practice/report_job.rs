@@ -163,6 +163,16 @@ async fn wait_while_recording() {
     }
 }
 
+/// While a meeting recording runs, marks the report waiting, blocks until it stops, then marks it running again.
+/// Called before each heavy step (the model download and each turn), so a recording that starts takes precedence.
+async fn yield_to_recording<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, session_id: &str) {
+    if is_recording_now() {
+        store(app, pool, session_id, "waiting", None, None).await;
+        wait_while_recording().await;
+        store(app, pool, session_id, "running", None, None).await;
+    }
+}
+
 /// Everything after the claim: the word-for-word pass, the fluency numbers, then Claude's items.
 async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: String, hold: ModelHold) -> Result<Report, String> {
     let (session, turns) = db::get_session(&pool, &session_id)
@@ -197,7 +207,10 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
         .iter()
         .map(|h| (h.idx, h.speaker.as_str(), h.text.as_str()))
         .collect();
-    let recent = db::recent_patterns(&pool, RECENT_PATTERNS_MAX).await?;
+    let recent = db::recent_patterns(&pool, RECENT_PATTERNS_MAX).await.unwrap_or_else(|e| {
+        warn!("practice: could not read the recent pattern keys: {e}");
+        Vec::new()
+    });
     let (system, user) = report_prompts(&rows, &recent);
     let models = settings::current();
     let body = claude::report_body(&models.plan_model, &models.plan_effort, &system, &user, &schema());
@@ -238,11 +251,7 @@ async fn word_for_word<R: Runtime>(
             let (segments, t) = read_speech(wav.to_path_buf(), offset, len).await?;
             let mut spoken = Vec::with_capacity(segments.len());
             for (_, samples) in segments {
-                if is_recording_now() {
-                    store(app, pool, session_id, "waiting", None, None).await;
-                    wait_while_recording().await;
-                    store(app, pool, session_id, "running", None, None).await;
-                }
+                yield_to_recording(app, pool, session_id).await;
                 // Whisper inference is synchronous, so it runs on a blocking thread, not a Tokio worker.
                 let worker = engine.clone();
                 let text = tokio::task::spawn_blocking(move || {
@@ -285,8 +294,8 @@ async fn word_for_word<R: Runtime>(
 }
 
 /// The pronunciation pass over the kept learner turns, on a blocking thread. `Ok(vec![])` when no turn has audio.
-/// A model failure is an `Err`, which `with_pronunciation` turns into the note. Between turns a meeting recording
-/// that has started takes the engine first, as in the Whisper pass.
+/// A model download or load failure, or a pass where every turn failed, is an `Err`, which `with_pronunciation`
+/// turns into the note. A recording that starts first takes the job's place, as in the Whisper pass.
 async fn pronunciation<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
@@ -298,31 +307,56 @@ async fn pronunciation<R: Runtime>(
     if !has_learner_audio(turns) {
         return Ok(vec![]);
     }
+    yield_to_recording(app, pool, session_id).await;
     let dir = ensure_pron_models(|_, _| {}).await?;
     let (app, pool, session_id, wav) = (app.clone(), pool.clone(), session_id.to_string(), wav.to_path_buf());
     tokio::task::spawn_blocking(move || -> Result<Vec<PronHint>, String> {
         let mut engine = PronEngine::load(&dir)?;
-        let mut hints = Vec::new();
+        let mut per_turn = Vec::with_capacity(inputs.len());
         for input in inputs {
-            if is_recording_now() {
-                tauri::async_runtime::block_on(store(&app, &pool, &session_id, "waiting", None, None));
-                tauri::async_runtime::block_on(wait_while_recording());
-                tauri::async_runtime::block_on(store(&app, &pool, &session_id, "running", None, None));
-            }
-            let (segments, _) = split_turn(&wav, input.offset, input.len)?;
-            if segments.len() != input.segments.len() {
-                return Err("the speech segments changed between passes".to_string());
-            }
-            let turn_secs = input.len as f64 / f64::from(YOU_WAV_RATE);
-            for ((start, samples), words) in segments.iter().zip(&input.segments) {
-                let found = engine.segment_hints(samples, words)?;
-                hints.extend(shift_hints(input.idx, *start, found, turn_secs));
-            }
+            tauri::async_runtime::block_on(yield_to_recording(&app, &pool, &session_id));
+            per_turn.push((input.idx, turn_hints(&mut engine, &wav, &input)));
         }
-        Ok(hints)
+        merge_turns(per_turn)
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// The hints for one learner turn: each speech segment's words aligned to its audio, shifted into turn time.
+fn turn_hints(engine: &mut PronEngine, wav: &Path, input: &PronInput) -> Result<Vec<PronHint>, String> {
+    let (segments, _) = split_turn(wav, input.offset, input.len)?;
+    if segments.len() != input.segments.len() {
+        return Err("the speech segments changed between passes".to_string());
+    }
+    let turn_secs = input.len as f64 / f64::from(YOU_WAV_RATE);
+    let mut hints = Vec::new();
+    for ((start, samples), words) in segments.iter().zip(&input.segments) {
+        let found = engine.segment_hints(samples, words)?;
+        hints.extend(shift_hints(input.idx, *start, found, turn_secs));
+    }
+    Ok(hints)
+}
+
+/// Merges each turn's hints. A failed turn is logged (without its text) and skipped; the others are kept.
+/// Err only when every turn failed.
+pub fn merge_turns(per_turn: Vec<(i64, Result<Vec<PronHint>, String>)>) -> Result<Vec<PronHint>, String> {
+    let total = per_turn.len();
+    let mut hints = Vec::new();
+    let mut failed = 0;
+    for (idx, result) in per_turn {
+        match result {
+            Ok(found) => hints.extend(found),
+            Err(e) => {
+                warn!("practice: pronunciation skipped turn {idx}: {e}");
+                failed += 1;
+            }
+        }
+    }
+    if total > 0 && failed == total {
+        return Err("every learner turn failed the pronunciation pass".to_string());
+    }
+    Ok(hints)
 }
 
 /// Moves a segment's hints from segment time to turn time, clamped to the turn.
@@ -595,6 +629,22 @@ mod tests {
         assert_eq!(got[0].turn, 4);
         assert!((got[0].start_secs - 2.1).abs() < 1e-9, "{}", got[0].start_secs);
         assert!((got[0].end_secs - 2.3).abs() < 1e-9, "{}", got[0].end_secs);
+    }
+
+    #[test]
+    fn a_failed_turn_is_skipped_and_the_others_are_kept() {
+        let hint = |turn: i64| PronHint {
+            turn,
+            word: "think".into(),
+            start_secs: 0.0,
+            end_secs: 0.3,
+            score: -7.0,
+            phone: "TH".into(),
+        };
+        let kept = merge_turns(vec![(1, Ok(vec![hint(1)])), (2, Err("bad turn".into())), (3, Ok(vec![hint(3)]))]).unwrap();
+        assert_eq!(kept.iter().map(|h| h.turn).collect::<Vec<_>>(), [1, 3]);
+        assert!(merge_turns(vec![(1, Err("x".into())), (2, Err("y".into()))]).is_err(), "every turn failed");
+        assert!(merge_turns(vec![]).unwrap().is_empty());
     }
 
     #[test]

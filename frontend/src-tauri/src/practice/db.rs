@@ -1,6 +1,6 @@
 //! Speaking Practice storage: setups, their materials and plans, sessions and turns.
 
-use crate::practice::report::Report;
+use crate::practice::report::{pattern_key, Report};
 use crate::practice::MATERIAL_MAX_BYTES;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -493,7 +493,7 @@ pub async fn recent_patterns(pool: &SqlitePool, limit: usize) -> Result<Vec<Stri
     for (json,) in reports {
         // An unreadable report contributes no keys; the report view already flags it.
         let Ok(report) = serde_json::from_str::<Report>(&json) else { continue };
-        for key in report.items.into_iter().filter_map(|item| item.pattern) {
+        for key in report.items.into_iter().filter_map(|item| item.pattern.and_then(|p| pattern_key(&p))) {
             if keys.len() >= limit {
                 return Ok(keys);
             }
@@ -792,40 +792,54 @@ mod tests {
         assert!(!claim_report(&pool, "missing").await.unwrap());
     }
 
+    /// A stored report JSON whose grammar items carry these pattern keys, as written (not normalised).
+    fn report_json(patterns: &[&str]) -> String {
+        use crate::practice::report::{Fluency, ItemKind, Report, ReportItem};
+        let items = patterns
+            .iter()
+            .map(|p| ReportItem {
+                kind: ItemKind::Grammar,
+                turn: 1,
+                quote: "x".into(),
+                better: "y".into(),
+                note: String::new(),
+                echoed: false,
+                pattern: Some(p.to_string()),
+            })
+            .collect();
+        serde_json::to_string(&Report {
+            version: 2,
+            fluency: Fluency::default(),
+            items,
+            dropped_items: 0,
+            pronunciation: vec![],
+            pronunciation_note: None,
+        })
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn recent_patterns_skip_unreadable_reports_and_out_of_bounds_keys() {
+        let pool = test_pool().await;
+        let setup = new_setup(&pool, "Chat").await;
+        let garbled = create_session(&pool, &setup, "C:/a", None).await.unwrap();
+        set_report(&pool, &garbled.id, "ready", Some("{not json"), None).await.unwrap();
+        let mixed = create_session(&pool, &setup, "C:/b", None).await.unwrap();
+        set_report(&pool, &mixed.id, "ready", Some(&report_json(&["tense", "e f", "x y z w v u"])), None).await.unwrap();
+
+        assert_eq!(recent_patterns(&pool, 30).await.unwrap(), ["e f"]);
+    }
+
     #[tokio::test]
     async fn recent_patterns_are_distinct_newest_first() {
-        use crate::practice::report::{Fluency, ItemKind, Report, ReportItem};
-        let report_with = |patterns: &[&str]| {
-            let items = patterns
-                .iter()
-                .map(|p| ReportItem {
-                    kind: ItemKind::Grammar,
-                    turn: 1,
-                    quote: "x".into(),
-                    better: "y".into(),
-                    note: String::new(),
-                    echoed: false,
-                    pattern: Some(p.to_string()),
-                })
-                .collect();
-            serde_json::to_string(&Report {
-                version: 2,
-                fluency: Fluency::default(),
-                items,
-                dropped_items: 0,
-                pronunciation: vec![],
-                pronunciation_note: None,
-            })
-            .unwrap()
-        };
         let pool = test_pool().await;
         let setup = new_setup(&pool, "Chat").await;
         let older = create_session(&pool, &setup, "C:/a", None).await.unwrap();
-        set_report(&pool, &older.id, "ready", Some(&report_with(&["a b", "c d"])), None).await.unwrap();
+        set_report(&pool, &older.id, "ready", Some(&report_json(&["a b", "c d"])), None).await.unwrap();
         let newer = create_session(&pool, &setup, "C:/b", None).await.unwrap();
-        set_report(&pool, &newer.id, "ready", Some(&report_with(&["c d", "e f"])), None).await.unwrap();
+        set_report(&pool, &newer.id, "ready", Some(&report_json(&["c d", "e f"])), None).await.unwrap();
         let failed = create_session(&pool, &setup, "C:/c", None).await.unwrap();
-        set_report(&pool, &failed.id, "failed", Some(&report_with(&["x y"])), Some("x")).await.unwrap();
+        set_report(&pool, &failed.id, "failed", Some(&report_json(&["x y"])), Some("x")).await.unwrap();
 
         assert_eq!(recent_patterns(&pool, 30).await.unwrap(), ["c d", "e f", "a b"]);
         assert_eq!(recent_patterns(&pool, 2).await.unwrap(), ["c d", "e f"]);

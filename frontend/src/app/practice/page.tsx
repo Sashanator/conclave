@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { SetupList } from '@/components/Practice/SetupList';
 import { SessionList } from '@/components/Practice/SessionList';
 import { SetupEditor } from '@/components/Practice/SetupEditor';
+import { ReportView } from '@/components/Practice/ReportView';
 import { CallView } from '@/components/Practice/CallView';
 import {
   blockedReason, characterName, planText, type PracticePrepPayload, type PracticeStatus, type SessionDetail, type SessionSummary, type SetupSummary, type VoicesProgressPayload,
@@ -148,8 +149,7 @@ export default function PracticePage() {
       />
     );
   }
-  // Placeholder: the report view comes in a later task
-  if (view.kind === 'report') return <div className="p-8 text-muted-foreground">Report view</div>;
+  if (view.kind === 'report') return <ReportView sessionId={view.sessionId} onBack={backToList} />;
 
   const editSetup = view.kind === 'edit' && view.id ? setups.find((s) => s.id === view.id) : undefined;
   if (view.kind === 'edit' && (!view.id || editSetup)) {

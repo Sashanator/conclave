@@ -48,6 +48,8 @@ export interface SessionSummary {
   report_status: ReportStatus;
   /** e.g. "4 grammar · 31 fillers" */
   summary: string | null;
+  /** How the session ended; null while it runs */
+  end_reason: 'user' | 'time' | 'meeting' | 'interrupted' | null;
 }
 
 export interface TurnRow {
@@ -166,6 +168,9 @@ export function materialKind(fileName: string): MaterialKind | null {
 export function fitsLimit(existingBytes: number, addBytes: number): boolean {
   return existingBytes + addBytes <= MATERIAL_MAX_BYTES;
 }
+
+// Same as YOU_WAV_RATE in practice/mod.rs: the sample rate of each turn's offset in you.wav
+export const YOU_WAV_RATE = 16_000;
 
 export const NOTICE_TEXT: Record<Notice, string> = {
   DidNotCatch: "I didn't catch that — tap and try again",

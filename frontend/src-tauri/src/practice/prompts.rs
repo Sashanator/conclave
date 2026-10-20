@@ -16,7 +16,7 @@ const RULES: &str = r#"Rules:
 - Speak in a spoken style, usually 1 to 3 sentences.
 - No lists, no markdown, no headings, no stage directions.
 - Ask one question at a time.
-- Never say "please wait" or "let me think".
+- Never say "please wait", "let me think", "I'm thinking" or "one moment".
 - When the learner makes a clear mistake, occasionally repeat it back correctly inside a natural reply, without stopping to teach.
 - If a reply needs a moment, start with a short natural reaction, such as "Hmm, interesting choice…"."#;
 
@@ -62,9 +62,13 @@ Reply with JSON only, no other text, in this shape:
 - Report only real problems. Use an empty list when there are none."#;
 
 pub fn report_prompts(turns: &[(i64, &str, &str)]) -> (String, String) {
+    // Callers pass the stored speaker ("user" or "character") straight through; the prompt calls the learner "learner".
     let user = turns
         .iter()
-        .map(|(idx, speaker, text)| format!("T{idx} [{speaker}]: {text}"))
+        .map(|(idx, speaker, text)| {
+            let speaker = if *speaker == "user" { "learner" } else { *speaker };
+            format!("T{idx} [{speaker}]: {}", text.replace(['\r', '\n'], " "))
+        })
         .collect::<Vec<_>>()
         .join("\n");
     (REPORT_SYSTEM.to_string(), user)
@@ -212,6 +216,7 @@ mod tests {
         assert!(with_plan.contains("PLAN-MARKER: ask about the gap in 2023"));
         let lower = with_plan.to_lowercase();
         assert!(lower.contains("never say"));
+        assert!(with_plan.contains(r#"Never say "please wait", "let me think", "I'm thinking" or "one moment"."#));
         assert!(lower.contains("one question"));
 
         let without = character_system(
@@ -251,10 +256,12 @@ mod tests {
     fn report_prompt_numbers_turns_and_labels_speakers() {
         let (system, user) = report_prompts(&[
             (1, "character", "Tell me about yourself."),
-            (2, "learner", "Um, I am engineer."),
+            (2, "user", "Um,\nI am engineer."),
         ]);
-        assert!(user.contains("T1 [character]: Tell me about yourself."));
-        assert!(user.contains("T2 [learner]: Um, I am engineer."));
+        assert_eq!(
+            user,
+            "T1 [character]: Tell me about yourself.\nT2 [learner]: Um, I am engineer."
+        );
         assert!(system.contains("\"turn\""));
         assert!(system.contains("exact, contiguous"));
     }

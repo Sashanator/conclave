@@ -104,6 +104,8 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
 const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
 
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
+// When set, listen() for practice-prep waits on it, so a test can cancel while the listener registers
+let holdPrepListen: Promise<void> | null = null;
 // Order of listen() and invoke() calls, so a test can check one happened before the other
 const trace: string[] = [];
 mock.module('@tauri-apps/api/core', () => ({ invoke, convertFileSrc: (path: string) => `asset://${path}` }));
@@ -111,6 +113,7 @@ mock.module('@tauri-apps/api/event', () => ({
   ...originals.event,
   listen: async (event: string, handler: (e: { payload: unknown }) => void) => {
     trace.push(`listen:${event}`);
+    if (event === 'practice-prep' && holdPrepListen) await holdPrepListen;
     listeners.set(event, handler);
     return () => {
       if (listeners.get(event) === handler) listeners.delete(event);
@@ -259,6 +262,21 @@ describe('Practice page', () => {
   test('a session row shows the date, the minutes and the summary', () => {
     const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
     expect(lines.some((l) => l.includes('18 min') && l.includes('4 grammar · 31 fillers'))).toBe(true);
+  });
+
+  test('a cancel while the listener registers means nothing starts', async () => {
+    let release!: () => void;
+    holdPrepListen = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    await clickButton('▶ Start');
+    await clickButton('Cancel');
+    await act(async () => release());
+    await flush();
+    holdPrepListen = null;
+    expect(calls('practice_start').length).toBe(0);
+    expect(listeners.has('practice-prep')).toBe(false);
+    expect(renderer!.root.findAll((n) => n.props.role === 'dialog').length).toBe(0);
   });
 
   test('a session under 30 s lists as less than a minute', async () => {

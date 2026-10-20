@@ -81,6 +81,11 @@ export default function PracticePage() {
       stage.current = e.payload.stage;
       setOverlay((o) => (o?.kind === 'start' ? { ...o, stage: e.payload.stage, error: e.payload.error } : o));
     });
+    // Cancel may have landed while the listener registered; then nothing starts
+    if (attempt.current !== id) {
+      stop();
+      return;
+    }
     try {
       const sessionId = await invoke<string>('practice_start', { setupId: setup.id, skipPlan });
       if (attempt.current !== id) return;

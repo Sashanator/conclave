@@ -43,6 +43,7 @@ const RUNNING_DETAIL = {
   summary: { ...SESSION, id: 'run-1', end_reason: null }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null, recurring: null,
 };
 const READY: PracticeStatus = { has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null };
+const HINT = { turn: 3, word: 'will', start_secs: 1.5, end_secs: 1.9, score: -7.2, phone: 'IH' };
 const REPORT: Report = {
   version: 1,
   fluency: { fillers: { um: 14, 'so basically': 9, like: 8 }, filler_total: 31, words: 1200, speech_secs: 640, wpm: 112.4, long_pauses: 6 },
@@ -79,6 +80,8 @@ let pendingStarts: { resolve: (id: string) => void; reject: (err: Error) => void
 let retryImpl: () => Promise<unknown> = async () => null;
 // What practice_download_voices does; a test replaces it to hold the download open
 let downloadImpl: () => Promise<unknown> = async () => null;
+// What practice_speak_word does; a test replaces it to hold the call open
+let speakImpl: () => Promise<unknown> = async () => null;
 function holdStarts() {
   startImpl = () => new Promise<string>((resolve, reject) => {
     pendingStarts.push({ resolve, reject });
@@ -103,7 +106,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   // The report tests open s1; a call (session-1, or run-1 on resume) reads the running detail
   if (command === 'practice_get_session') return structuredClone(args?.id === 's1' ? detail : running);
   if (command === 'practice_retry_report') return retryImpl();
-  if (command === 'practice_speak_word') return null;
+  if (command === 'practice_speak_word') return speakImpl();
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
 const toast = { success: mock((_what: string) => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
@@ -228,6 +231,7 @@ beforeEach(async () => {
   startImpl = async () => 'session-1';
   retryImpl = async () => null;
   downloadImpl = async () => null;
+  speakImpl = async () => null;
   pendingStarts = [];
   invoke.mockClear();
   toast.error.mockClear();
@@ -833,9 +837,34 @@ describe('Practice report view', () => {
     expect(hasDirectText('No pronunciation hints this time')).toBe(true);
   });
 
+  test('pron_you_is_hidden_without_a_clip', async () => {
+    detail = { ...detail, audio_path: null, report: { ...REPORT, version: 2, pronunciation: [HINT] } };
+    await openReport();
+    expect(buttons('▶ you').length).toBe(0);
+    expect(buttons('▶ reference').length).toBe(1);
+  });
+
+  test('reference_ignores_clicks_while_a_speak_call_is_pending', async () => {
+    detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [HINT] } };
+    await openReport();
+    let release!: () => void;
+    speakImpl = () => new Promise((resolve) => {
+      release = () => resolve(null);
+    });
+    await clickButton('▶ reference');
+    await clickButton('▶ reference');
+    expect(calls('practice_speak_word').length).toBe(1);
+
+    await act(async () => release());
+    await flush();
+    await clickButton('▶ reference');
+    expect(calls('practice_speak_word').length).toBe(2);
+  });
+
   test('recurring_card_lists_patterns_and_trend', async () => {
     detail = {
       ...detail,
+      report: { ...REPORT, version: 2 },
       recurring: {
         patterns: [{ key: 'make research', sessions: 3, same_setup: false }, { key: 'if + will', sessions: 4, same_setup: true }],
         filler_trend: [3.1, 2.4, 1.8],
@@ -857,6 +886,8 @@ describe('Practice report view', () => {
   });
 
   test('v1_report_hides_new_cards', async () => {
+    // The backend fills recurring for any ready report, so a v1 report with earlier sessions has one
+    detail = { ...detail, recurring: { patterns: [], filler_trend: [3.1, 2.4] } };
     await openReport();
     expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
     expect(hasDirectText('Pronunciation hints (may be off)')).toBe(false);

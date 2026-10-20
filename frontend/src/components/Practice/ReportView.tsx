@@ -146,11 +146,17 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     );
   };
 
+  // One speak at a time: a click while the call is pending is ignored
+  const speaking = useRef(false);
   const speak = async (word: string) => {
+    if (speaking.current) return;
+    speaking.current = true;
     try {
       await invoke('practice_speak_word', { sessionId, word });
     } catch (err) {
       toast.error('Could not say the word', { description: String(err) });
+    } finally {
+      speaking.current = false;
     }
   };
 
@@ -178,7 +184,8 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const recurring = detail.recurring;
   const patterns = [...(recurring?.patterns ?? [])].sort((a, b) => Number(b.same_setup) - Number(a.same_setup));
   const trend = recurring?.filler_trend ?? [];
-  const showRecurring = patterns.length > 0 || trend.length >= 2;
+  // Only v2 reports carry the card; the backend fills recurring for any ready report
+  const showRecurring = (report?.version ?? 0) >= 2 && (patterns.length > 0 || trend.length >= 2);
 
   return (
     <div className="h-full overflow-y-auto">

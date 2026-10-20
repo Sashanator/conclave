@@ -1,6 +1,7 @@
 //! Speaking Practice commands: setups and materials, the session controls (start, cancel, tap, end),
 //! voice downloads, voice preview and startup recovery.
 
+use std::future::Future;
 use std::path::Path;
 use std::sync::{Mutex, MutexGuard, PoisonError};
 
@@ -382,6 +383,21 @@ pub async fn practice_preview_voice(voice: String) -> Result<(), String> {
     .map_err(|e| e.to_string())?
 }
 
+/// Runs a slow loading step in the background and returns as soon as the start is cancelled. The step
+/// still finishes on its own (a model load keeps its lifecycle lock until then), and the caller's undo runs after
+/// that lock is released.
+async fn cancellable<T: Send + 'static>(
+    token: &CancellationToken,
+    step: impl Future<Output = Result<T, String>> + Send + 'static,
+) -> Result<T, String> {
+    let handle = tauri::async_runtime::spawn(step);
+    tokio::select! {
+        biased;
+        _ = token.cancelled() => Err(CANCELLED.to_string()),
+        joined = handle => joined.map_err(|e| e.to_string())?,
+    }
+}
+
 fn check(token: &CancellationToken) -> Result<(), String> {
     if token.is_cancelled() {
         Err(CANCELLED.to_string())
@@ -456,12 +472,13 @@ async fn load_session<R: Runtime>(
     hold: ModelHold,
 ) -> Result<Loaded, String> {
     let key = claude::api_key(pool).await.map_err(|e| e.user_message().to_string())?;
-    let engine = {
+    let app_for_load = app.clone();
+    let engine = cancellable(token, async move {
         let _lifecycle = acquire_engine_lifecycle_lock().await;
-        get_or_init_whisper(app).await?
-    };
-    check(token)?;
-    let dir = models::ensure_voices(|_, _| {}).await?;
+        get_or_init_whisper(&app_for_load).await
+    })
+    .await?;
+    let dir = cancellable(token, models::ensure_voices(|_, _| {})).await?;
     check(token)?;
     let tts_dir = dir.clone();
     let voice_file = format!("{}.json", setup.voice);
@@ -567,13 +584,11 @@ pub async fn practice_start<R: Runtime>(
 
     let session_id = loaded.session_id.clone();
     let tx = loaded.tx.clone();
-    // The opening question starts the session; a cancel that landed during loading ends it at once.
-    let _ = tx.send(Event::Ready);
     {
+        // The check and the slot write share the lock, so a cancel either ends this session here or finds it Running.
         let mut s = slot();
-        if token.is_cancelled() {
-            let _ = tx.send(Event::EndRequested);
-        }
+        let first = if token.is_cancelled() { Event::EndRequested } else { Event::Ready };
+        let _ = tx.send(first);
         *s = Slot::Running { id: session_id.clone(), tx };
     }
     tauri::async_runtime::spawn(runner::run(app.clone(), loaded));

@@ -720,6 +720,8 @@ pub fn run() {
             .expect("Failed to initialize database");
             // Dictate that was on comes back only now: its model load needs the database.
             dictate::apply_after_db_ready(_app.handle());
+            // A practice session left running by a crash is closed as interrupted.
+            tauri::async_runtime::spawn(practice::commands::recover_at_startup(_app.handle().clone()));
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {
@@ -977,6 +979,21 @@ pub fn run() {
             speakers::commands::people_rename,
             speakers::commands::people_delete,
             speakers::commands::people_merge,
+            // Speaking Practice commands
+            practice::commands::practice_status,
+            practice::commands::practice_list_setups,
+            practice::commands::practice_save_setup,
+            practice::commands::practice_delete_setup,
+            practice::commands::practice_add_material,
+            practice::commands::practice_add_text,
+            practice::commands::practice_delete_material,
+            practice::commands::practice_new_questions,
+            practice::commands::practice_download_voices,
+            practice::commands::practice_preview_voice,
+            practice::commands::practice_start,
+            practice::commands::practice_cancel_start,
+            practice::commands::practice_tap,
+            practice::commands::practice_end,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

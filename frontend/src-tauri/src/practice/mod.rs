@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod audio;
+pub mod commands;
 pub mod db;
 pub mod claude;
 pub mod session;
@@ -12,6 +13,7 @@ pub mod models;
 pub mod files;
 pub mod report;
 pub mod prompts;
+pub mod runner;
 pub mod tts_text;
 pub mod tts;
 
@@ -46,7 +48,7 @@ pub fn holds_model() -> bool {
 }
 
 /// Keeps the model loaded while it is alive. Dropping it releases the hold.
-pub struct ModelHold;
+pub struct ModelHold(());
 
 impl Drop for ModelHold {
     fn drop(&mut self) {
@@ -56,5 +58,5 @@ impl Drop for ModelHold {
 
 pub fn hold_model() -> ModelHold {
     HOLDS.fetch_add(1, Ordering::SeqCst);
-    ModelHold
+    ModelHold(())
 }

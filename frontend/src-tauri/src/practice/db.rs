@@ -2,6 +2,7 @@
 
 use crate::practice::MATERIAL_MAX_BYTES;
 use chrono::Utc;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use uuid::Uuid;
@@ -20,7 +21,7 @@ pub struct SetupRow {
     pub updated_at: String,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct MaterialMeta {
     pub id: String,
     pub setup_id: String,
@@ -29,7 +30,8 @@ pub struct MaterialMeta {
     pub bytes: i64,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "lowercase")]
 pub enum MaterialKind {
     Pdf,
     Text,
@@ -41,7 +43,7 @@ pub struct Material {
     pub content: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SetupInput {
     pub id: Option<String>,
     pub name: String,
@@ -463,6 +465,14 @@ pub async fn set_verbatim(
         .await
         .map_err(db_err)?;
     Ok(())
+}
+
+pub async fn count_sessions(pool: &SqlitePool, setup_id: &str) -> Result<i64, String> {
+    sqlx::query_scalar("SELECT COUNT(*) FROM practice_sessions WHERE setup_id = ?")
+        .bind(setup_id)
+        .fetch_one(pool)
+        .await
+        .map_err(db_err)
 }
 
 pub async fn list_sessions(pool: &SqlitePool) -> Result<Vec<SessionRow>, String> {

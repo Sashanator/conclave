@@ -56,9 +56,9 @@ static UNLOAD_PENDING: AtomicBool = AtomicBool::new(false);
 /// A Whisper model change arrived while the engine was busy. It is loaded once the job ends.
 static RELOAD_PENDING: AtomicBool = AtomicBool::new(false);
 
-/// Dictate on means the Whisper model stays loaded. Both unload paths (meeting stop and batch jobs) check this.
+/// Dictate on, or a Practice session holding the model, keeps the Whisper model loaded. Both unload paths (meeting stop and batch jobs) check this.
 pub fn keeps_model_loaded() -> bool {
-    settings::current().enabled
+    settings::current().enabled || crate::practice::holds_model()
 }
 
 /// Unload only when Dictate does not need the model and no recording or batch job uses it.

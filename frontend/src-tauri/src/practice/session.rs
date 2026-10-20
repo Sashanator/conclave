@@ -62,6 +62,17 @@ pub enum EndReason {
     MeetingRecording,
 }
 
+impl EndReason {
+    /// The `practice_sessions.end_reason` value (R20).
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            EndReason::User => "user",
+            EndReason::TimeCap => "time",
+            EndReason::MeetingRecording => "meeting",
+        }
+    }
+}
+
 pub struct Core {
     phase: Phase,
     /// Last reply id handed out. Ids start at 1.

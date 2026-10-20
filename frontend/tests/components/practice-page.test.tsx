@@ -243,6 +243,37 @@ describe('Practice page', () => {
     expect(cards.map((c) => text(c.findAll((n) => n.type === 'h3')[0]))).toEqual(['Your setups', 'Past sessions']);
   });
 
+  test('start_is_re_read_on_focus_and_every_5_s_while_the_list_shows', async () => {
+    const realSetInterval = window.setInterval;
+    let tick: (() => void) | undefined;
+    let every: number | undefined;
+    window.setInterval = ((fn: () => void, ms?: number) => {
+      tick = fn;
+      every = ms;
+      return 1;
+    }) as typeof window.setInterval;
+    try {
+      status = { ...READY, blocked: 'Practice is unavailable while a meeting is recording, importing or re-transcribing' };
+      await mount();
+    } finally {
+      window.setInterval = realSetInterval;
+    }
+    expect(every).toBe(5000);
+    expect(buttons('▶ Start').every((b) => b.props.disabled)).toBe(true);
+
+    status = { ...READY };
+    await act(async () => tick!());
+    await flush();
+    expect(buttons('▶ Start').some((b) => !b.props.disabled)).toBe(true);
+
+    status = { ...READY, blocked: 'Practice is unavailable while a meeting is recording, importing or re-transcribing' };
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'));
+    });
+    await flush();
+    expect(buttons('▶ Start').every((b) => b.props.disabled)).toBe(true);
+  });
+
   test('start_is_disabled_with_the_blocked_reason', async () => {
     status = { ...READY, blocked: 'Practice is unavailable while a meeting is recording, importing or re-transcribing' };
     await mount();

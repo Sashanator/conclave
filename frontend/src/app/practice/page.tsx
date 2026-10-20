@@ -52,6 +52,25 @@ export default function PracticePage() {
     }
   }, []);
 
+  // A meeting or an import can end while the list shows, so the start gate is re-read on focus and every 5 s
+  const refreshStatus = useCallback(async () => {
+    try {
+      setStatus(await invoke<PracticeStatus>('practice_status'));
+    } catch {
+      // Keeps the last status; the next focus or tick tries again
+    }
+  }, []);
+  const onList = view.kind === 'list';
+  useEffect(() => {
+    if (!onList) return;
+    const timer = window.setInterval(refreshStatus, 5000);
+    window.addEventListener('focus', refreshStatus);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener('focus', refreshStatus);
+    };
+  }, [onList, refreshStatus]);
+
   // A session still running when the page opens goes back to its call view (R22)
   useEffect(() => {
     refresh().then(async (s) => {

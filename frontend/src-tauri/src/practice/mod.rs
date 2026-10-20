@@ -41,6 +41,7 @@ pub mod runner;
 pub mod settings;
 pub mod tts_text;
 pub mod tts;
+pub mod pron_align;
 
 pub const CHAT_MAX_TOKENS: u32 = 400;
 pub const LONG_MAX_TOKENS: u32 = 16_000;
@@ -61,6 +62,9 @@ pub const TTS_STEPS: u32 = 8;
 pub const TTS_SPEED: f32 = 1.05;
 pub const TTS_RATE: u32 = 44_100;
 pub const YOU_WAV_RATE: u32 = 16_000;
+
+/// Frames either side of a multi-pronunciation word that the variant pick re-aligns.
+pub const PRON_VARIANT_MARGIN_FRAMES: usize = 4;
 
 /// Counts the live holds on the Whisper model. A session and a report job can overlap.
 static HOLDS: AtomicUsize = AtomicUsize::new(0);

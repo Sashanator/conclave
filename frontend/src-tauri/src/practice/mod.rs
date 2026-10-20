@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod db;
+pub mod prompts;
 pub mod tts_text;
 
 pub const CHAT_MODEL: &str = "claude-haiku-5-5";

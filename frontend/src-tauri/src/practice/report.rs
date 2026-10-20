@@ -3,6 +3,8 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+use super::PRON_MAX_HINTS;
+
 #[derive(Serialize, Deserialize, Clone, PartialEq, Debug)]
 pub enum ItemKind {
     Grammar,
@@ -19,6 +21,36 @@ pub struct ReportItem {
     pub note: String,
     #[serde(default)]
     pub echoed: bool,
+    /// A short lowercase key for the kind of mistake, grammar and unnatural items only.
+    #[serde(default)]
+    pub pattern: Option<String>,
+}
+
+/// A word the local pronunciation check may have got wrong. Times are relative to the start of the turn's audio.
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct PronHint {
+    pub turn: i64,
+    pub word: String,
+    pub start_secs: f64,
+    pub end_secs: f64,
+    pub score: f32,
+    /// The phone with the worst score in the word, e.g. "TH".
+    pub phone: String,
+}
+
+/// Keeps the worst-scoring hint for each word (case-insensitive), lowest score first, at most `PRON_MAX_HINTS`.
+pub fn select_hints(all: Vec<PronHint>) -> Vec<PronHint> {
+    let mut best: BTreeMap<String, PronHint> = BTreeMap::new();
+    for hint in all {
+        let key = hint.word.to_lowercase();
+        if best.get(&key).is_none_or(|kept| hint.score < kept.score) {
+            best.insert(key, hint);
+        }
+    }
+    let mut out: Vec<PronHint> = best.into_values().collect();
+    out.sort_by(|a, b| a.score.total_cmp(&b.score));
+    out.truncate(PRON_MAX_HINTS);
+    out
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
@@ -33,10 +65,14 @@ pub struct Fluency {
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Report {
-    pub version: u32, // 1
+    pub version: u32, // 2; version 1 reports read back with empty pronunciation and no note
     pub fluency: Fluency,
     pub items: Vec<ReportItem>,
     pub dropped_items: u32,
+    #[serde(default)]
+    pub pronunciation: Vec<PronHint>,
+    #[serde(default)]
+    pub pronunciation_note: Option<String>,
 }
 
 pub const FILLERS: [&str; 11] = [
@@ -195,7 +231,7 @@ pub fn validate_items(
 }
 
 pub fn schema() -> Value {
-    let item = |grammar: bool| {
+    let item = |grammar: bool, keyed: bool| {
         let mut props = json!({
             "turn": {"type": "integer"},
             "quote": {"type": "string"},
@@ -207,6 +243,10 @@ pub fn schema() -> Value {
             props["echoed"] = json!({"type": "boolean"});
             required.push("echoed");
         }
+        if keyed {
+            props["pattern"] = json!({"type": "string"});
+            required.push("pattern");
+        }
         json!({"type": "object", "additionalProperties": false, "required": required, "properties": props})
     };
     json!({
@@ -214,9 +254,9 @@ pub fn schema() -> Value {
         "additionalProperties": false,
         "required": ["grammar", "unnatural", "clarity"],
         "properties": {
-            "grammar": {"type": "array", "items": item(true)},
-            "unnatural": {"type": "array", "items": item(false)},
-            "clarity": {"type": "array", "items": item(false)}
+            "grammar": {"type": "array", "items": item(true, true)},
+            "unnatural": {"type": "array", "items": item(false, true)},
+            "clarity": {"type": "array", "items": item(false, false)}
         }
     })
 }
@@ -229,6 +269,15 @@ struct RawItem {
     note: String,
     #[serde(default)]
     echoed: bool,
+    #[serde(default)]
+    pattern: Option<String>,
+}
+
+/// A pattern key: normalised, 2 to 5 words and at most 60 characters. Anything else is no key.
+pub fn pattern_key(raw: &str) -> Option<String> {
+    let key = normalise(raw);
+    let words = key.split_whitespace().count();
+    ((2..=5).contains(&words) && key.chars().count() <= 60).then_some(key)
 }
 
 pub fn items_from_json(v: &Value) -> Result<Vec<ReportItem>, String> {
@@ -244,6 +293,7 @@ pub fn items_from_json(v: &Value) -> Result<Vec<ReportItem>, String> {
             .ok_or_else(|| format!("report is missing the {key} array"))?;
         for item in arr {
             let raw = RawItem::deserialize(item).map_err(|e| format!("bad {key} item: {e}"))?;
+            let pattern = raw.pattern.and_then(|p| pattern_key(&p));
             out.push(ReportItem {
                 kind: kind.clone(),
                 turn: raw.turn,
@@ -251,6 +301,7 @@ pub fn items_from_json(v: &Value) -> Result<Vec<ReportItem>, String> {
                 better: raw.better,
                 note: raw.note,
                 echoed: key == "grammar" && raw.echoed,
+                pattern: pattern.filter(|_| key != "clarity"),
             });
         }
     }
@@ -312,6 +363,7 @@ mod tests {
             better: String::new(),
             note: String::new(),
             echoed: false,
+            pattern: None,
         };
         let items = vec![
             item(2, "good idea"),
@@ -363,6 +415,7 @@ mod tests {
             better: String::new(),
             note: String::new(),
             echoed: false,
+            pattern: None,
         };
         let items = vec![item("he walk"), item("He walked to work"), item("to work")];
         let (kept, dropped) = validate_items(items, &turns);
@@ -386,5 +439,78 @@ mod tests {
     fn normalise_trims_outer_apostrophes() {
         assert_eq!(normalise("'good idea'"), "good idea");
         assert_eq!(normalise("Don\u{2019}t stop"), "don't stop");
+    }
+
+    #[test]
+    fn v1_report_json_still_parses() {
+        let v1 = r#"{"version":1,"fluency":{"fillers":{},"filler_total":0,"words":0,"speech_secs":0.0,"wpm":0.0,"long_pauses":0},"items":[{"kind":"Grammar","turn":1,"quote":"I has","better":"I have","note":"agreement","echoed":true}],"dropped_items":0}"#;
+        let report: Report = serde_json::from_str(v1).unwrap();
+        assert_eq!(report.items.len(), 1);
+        assert_eq!(report.items[0].pattern, None);
+        assert!(report.pronunciation.is_empty());
+        assert_eq!(report.pronunciation_note, None);
+    }
+
+    #[test]
+    fn select_hints_dedupes_sorts_and_caps() {
+        let hint = |turn: i64, word: &str, score: f32| PronHint {
+            turn,
+            word: word.to_string(),
+            start_secs: 0.0,
+            end_secs: 0.5,
+            score,
+            phone: "TH".to_string(),
+        };
+        let all = vec![
+            hint(1, "Think", -8.0),
+            hint(2, "think", -9.5), // the same word: the lower score is kept
+            hint(3, "lunch", -7.0),
+            hint(4, "worked", -6.8),
+            hint(5, "sixth", -7.2),
+            hint(6, "seventh", -7.5),
+            hint(7, "eighth", -6.9),
+            hint(8, "ninth", -6.6),
+            hint(9, "tenth", -7.1),
+        ];
+        let words: Vec<String> = select_hints(all).into_iter().map(|h| h.word).collect();
+        assert_eq!(words, ["think", "seventh", "sixth", "tenth", "lunch", "eighth"]);
+    }
+
+    #[test]
+    fn pattern_keys_are_normalised_and_bounded() {
+        assert_eq!(pattern_key("Third-Person  S!").as_deref(), Some("third person s"));
+        assert_eq!(pattern_key("  make a decision ").as_deref(), Some("make a decision"));
+        assert_eq!(pattern_key("tense"), None, "one word");
+        assert_eq!(pattern_key("one two three four five six"), None, "six words");
+        assert_eq!(pattern_key("!!"), None, "empty after normalising");
+        let sixty = format!("{} {}", "a".repeat(29), "b".repeat(30));
+        assert_eq!(pattern_key(&sixty).map(|k| k.chars().count()), Some(60));
+        let too_long = format!("{} {}", "a".repeat(30), "b".repeat(30));
+        assert_eq!(pattern_key(&too_long), None, "61 characters");
+    }
+
+    #[test]
+    fn items_from_json_bounds_pattern_keys() {
+        let item = |pattern: &str| json!({"turn": 1, "quote": "I has", "better": "I have", "note": "n", "echoed": false, "pattern": pattern});
+        let v = json!({
+            "grammar": [item("  Subject-Verb Agreement "), item("!!"), item("agreement")],
+            "unnatural": [{"turn": 1, "quote": "I has", "better": "I have", "note": "n", "pattern": "one two three four five six"}],
+            "clarity": [{"turn": 1, "quote": "I has", "better": "I have", "note": "n", "pattern": "third person s"}]
+        });
+        let items = items_from_json(&v).unwrap();
+        let patterns: Vec<Option<&str>> = items.iter().map(|i| i.pattern.as_deref()).collect();
+        assert_eq!(patterns, [Some("subject verb agreement"), None, None, None, None]);
+    }
+
+    #[test]
+    fn schema_requires_pattern_on_grammar_and_unnatural() {
+        let s = schema();
+        for key in ["grammar", "unnatural"] {
+            let item = &s["properties"][key]["items"];
+            assert!(item["required"].as_array().unwrap().contains(&json!("pattern")), "{key}");
+            assert_eq!(item["properties"]["pattern"]["type"], json!("string"), "{key}");
+        }
+        let clarity = &s["properties"]["clarity"]["items"];
+        assert!(!clarity["properties"].as_object().unwrap().contains_key("pattern"));
     }
 }

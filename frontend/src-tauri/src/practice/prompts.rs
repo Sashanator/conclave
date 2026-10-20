@@ -51,16 +51,17 @@ Write the plan for the character playing the examiner. Do not write the learner'
 const REPORT_SYSTEM: &str = r#"You review a spoken English practice session. Each turn is labelled with its number and speaker. The learner's turns are verbatim transcripts, fillers and false starts included. Find mistakes in the learner's turns only. Never flag the character's turns.
 
 Reply with JSON only, no other text, in this shape:
-{"grammar":[{"turn":2,"quote":"...","better":"...","note":"...","echoed":true}],"unnatural":[{"turn":2,"quote":"...","better":"...","note":"..."}],"clarity":[{"turn":2,"quote":"...","better":"...","note":"..."}]}
+{"grammar":[{"turn":2,"quote":"...","better":"...","note":"...","echoed":true,"pattern":"..."}],"unnatural":[{"turn":2,"quote":"...","better":"...","note":"...","pattern":"..."}],"clarity":[{"turn":2,"quote":"...","better":"...","note":"..."}]}
 
 - turn: the number of the learner turn.
 - quote: an exact, contiguous part of that learner turn, copied character for character. Do not fix, reword or join pieces.
 - better: the improved version of the quote.
 - note: one short line.
 - echoed (grammar only): true if the character's next turn repeats the corrected form, otherwise false.
+- pattern (grammar and unnatural only): a lowercase key of 2 to 5 words for the kind of mistake, such as "third person s".
 - Report only real problems. Use an empty list when there are none."#;
 
-pub fn report_prompts(turns: &[(i64, &str, &str)]) -> (String, String) {
+pub fn report_prompts(turns: &[(i64, &str, &str)], recent_patterns: &[String]) -> (String, String) {
     // Callers pass the stored speaker ("user" or "character") straight through; the prompt calls the learner "learner".
     let user = turns
         .iter()
@@ -70,7 +71,14 @@ pub fn report_prompts(turns: &[(i64, &str, &str)]) -> (String, String) {
         })
         .collect::<Vec<_>>()
         .join("\n");
-    (REPORT_SYSTEM.to_string(), user)
+    let mut system = REPORT_SYSTEM.to_string();
+    if !recent_patterns.is_empty() {
+        system.push_str(&format!(
+            "\n\nKnown pattern keys from earlier sessions (reuse one when it is the same mistake): {}",
+            recent_patterns.join(", ")
+        ));
+    }
+    (system, user)
 }
 
 const ABBREVIATIONS: &[&str] = &[
@@ -253,15 +261,30 @@ mod tests {
 
     #[test]
     fn report_prompt_numbers_turns_and_labels_speakers() {
-        let (system, user) = report_prompts(&[
-            (1, "character", "Tell me about yourself."),
-            (2, "user", "Um,\nI am engineer."),
-        ]);
+        let (system, user) = report_prompts(
+            &[
+                (1, "character", "Tell me about yourself."),
+                (2, "user", "Um,\nI am engineer."),
+            ],
+            &[],
+        );
         assert_eq!(
             user,
             "T1 [character]: Tell me about yourself.\nT2 [learner]: Um, I am engineer."
         );
         assert!(system.contains("\"turn\""));
         assert!(system.contains("exact, contiguous"));
+    }
+
+    #[test]
+    fn report_prompt_lists_recent_patterns() {
+        let turns = [(2, "user", "I has a dog.")];
+        let recent = ["third person s".to_string(), "make a decision".to_string()];
+        let (system, _) = report_prompts(&turns, &recent);
+        assert!(system.contains(
+            "Known pattern keys from earlier sessions (reuse one when it is the same mistake): third person s, make a decision"
+        ));
+        let (system, _) = report_prompts(&turns, &[]);
+        assert!(!system.contains("Known pattern keys"));
     }
 }

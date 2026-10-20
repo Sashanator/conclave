@@ -25,13 +25,15 @@ use super::claude::{self, ClaudeError};
 use super::commands::NOT_WHISPER;
 use super::db::{self, TurnRow};
 use super::files::PRACTICE_FILES;
+use super::models::ensure_pron_models;
+use super::pron::{PronEngine, SegmentHint};
 use super::prompts::report_prompts;
 use super::report::{
-    count_fillers, items_from_json, long_pauses, looks_looped, schema, validate_items, word_count, wpm, Fluency,
-    ItemKind, Report, ReportItem,
+    count_fillers, items_from_json, long_pauses, looks_looped, schema, select_hints, validate_items, word_count, wpm,
+    Fluency, ItemKind, PronHint, Report, ReportItem,
 };
 use super::settings;
-use super::{ModelHold, LONG_PAUSE_SECS, YOU_WAV_RATE};
+use super::{ModelHold, LONG_PAUSE_SECS, RECENT_PATTERNS_MAX, YOU_WAV_RATE};
 
 /// Asks Whisper to write fillers and false starts down, so the transcript keeps them.
 pub const VERBATIM_PROMPT: &str = "Um, uh, so, like, I mean, I- I was, uh, thinking that, you know, we, we had it.";
@@ -42,6 +44,8 @@ const WAIT_POLL: Duration = Duration::from_secs(10);
 /// Held while a report is claimed and while a session is deleted, so the two cannot interleave.
 pub(super) static REPORT_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const SAVE_FAILED: &str = "Couldn't save the report — Retry";
+/// The report's note when the pronunciation pass fails. The report itself is kept.
+const PRON_UNAVAILABLE: &str = "Pronunciation hints unavailable";
 
 #[derive(Clone, Serialize)]
 pub struct ReportStatusPayload {
@@ -55,6 +59,14 @@ struct Heard {
     speaker: String,
     text: String,
     timing: Option<(f64, u32)>,
+}
+
+/// A learner turn whose verbatim text was kept: its audio span in you.wav and the words of each speech segment.
+struct PronInput {
+    idx: i64,
+    offset: i64,
+    len: i64,
+    segments: Vec<String>,
 }
 
 /// Runs the report for one session. The claim makes a second run for the same session a no-op.
@@ -151,6 +163,16 @@ async fn wait_while_recording() {
     }
 }
 
+/// While a meeting recording runs, marks the report waiting, blocks until it stops, then marks it running again.
+/// Called before each heavy step (the model download and each turn), so a recording that starts takes precedence.
+async fn yield_to_recording<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, session_id: &str) {
+    if is_recording_now() {
+        store(app, pool, session_id, "waiting", None, None).await;
+        wait_while_recording().await;
+        store(app, pool, session_id, "running", None, None).await;
+    }
+}
+
 /// Everything after the claim: the word-for-word pass, the fluency numbers, then Claude's items.
 async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: String, hold: ModelHold) -> Result<Report, String> {
     let (session, turns) = db::get_session(&pool, &session_id)
@@ -158,10 +180,10 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
         .ok_or("Session not found")?;
     let folder = session.folder_path.ok_or("Session folder is missing")?;
     let wav = Path::new(&folder).join(PRACTICE_FILES[0]);
-    let heard = word_for_word(&app, &pool, &session_id, &wav, &turns, hold).await;
-    // The model is released before Claude is called, so an idle engine can unload.
+    let pass = word_for_word(&app, &pool, &session_id, &wav, &turns, hold).await;
+    // The Whisper model is released before the pronunciation pass and Claude are called, so an idle engine can unload.
     dictate::unload_if_idle().await;
-    let heard = heard?;
+    let (heard, pron_inputs) = pass?;
 
     let learner: BTreeMap<i64, String> = heard
         .iter()
@@ -171,9 +193,13 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     let learner_texts: Vec<&str> = learner.values().map(String::as_str).collect();
     let timing: Vec<(f64, u32)> = heard.iter().filter_map(|h| h.timing).collect();
     let fluency = fluency(&learner_texts, &timing);
+    let pron = pronunciation(&app, &pool, &session_id, &wav, &turns, pron_inputs).await;
+    if let Err(e) = &pron {
+        warn!("practice: pronunciation hints skipped: {e}");
+    }
     // Nothing to grade: an empty report, with no key read and no Claude call (its prompt would be empty).
     if !has_learner_text(&learner_texts) {
-        return Ok(build_report(fluency, vec![], &learner));
+        return Ok(with_pronunciation(build_report(fluency, vec![], &learner), pron));
     }
 
     let key = claude::api_key(&pool).await.map_err(|e| report_copy(&e).to_string())?;
@@ -181,18 +207,23 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
         .iter()
         .map(|h| (h.idx, h.speaker.as_str(), h.text.as_str()))
         .collect();
-    let (system, user) = report_prompts(&rows);
+    let recent = db::recent_patterns(&pool, RECENT_PATTERNS_MAX).await.unwrap_or_else(|e| {
+        warn!("practice: could not read the recent pattern keys: {e}");
+        Vec::new()
+    });
+    let (system, user) = report_prompts(&rows, &recent);
     let models = settings::current();
     let body = claude::report_body(&models.plan_model, &models.plan_effort, &system, &user, &schema());
     let text = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), |_| {})
         .await
         .map_err(|e| report_copy(&e).to_string())?;
-    parse_report(&text, fluency, &learner)
+    parse_report(&text, fluency, &learner).map(|report| with_pronunciation(report, pron))
 }
 
 /// Re-transcribes each learner turn that has audio, word for word, and stores it. Other turns keep their live text.
 /// Whisper runs once per VAD segment, and before each segment a meeting recording that has started takes the
-/// engine first, so the job waits behind it.
+/// engine first, so the job waits behind it. Also returns the turns whose verbatim text was kept, for the
+/// pronunciation pass.
 async fn word_for_word<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
@@ -200,7 +231,7 @@ async fn word_for_word<R: Runtime>(
     wav: &Path,
     turns: &[TurnRow],
     _hold: ModelHold,
-) -> Result<Vec<Heard>, String> {
+) -> Result<(Vec<Heard>, Vec<PronInput>), String> {
     // Whisper is loaded only when a learner turn has audio to re-transcribe.
     let engine = if has_learner_audio(turns) {
         if !dictate::engine_is_whisper(app).await {
@@ -212,18 +243,15 @@ async fn word_for_word<R: Runtime>(
         None
     };
     let mut heard = Vec::with_capacity(turns.len());
+    let mut pron_inputs = Vec::new();
     for turn in turns {
         let mut text = turn.live_text.clone();
         let mut timing = None;
         if let (true, Some(offset), Some(len), Some(engine)) = (turn.speaker == "user", turn.wav_offset, turn.wav_len, engine.as_ref()) {
             let (segments, t) = read_speech(wav.to_path_buf(), offset, len).await?;
             let mut spoken = Vec::with_capacity(segments.len());
-            for samples in segments {
-                if is_recording_now() {
-                    store(app, pool, session_id, "waiting", None, None).await;
-                    wait_while_recording().await;
-                    store(app, pool, session_id, "running", None, None).await;
-                }
+            for (_, samples) in segments {
+                yield_to_recording(app, pool, session_id).await;
                 // Whisper inference is synchronous, so it runs on a blocking thread, not a Tokio worker.
                 let worker = engine.clone();
                 let text = tokio::task::spawn_blocking(move || {
@@ -238,7 +266,17 @@ async fn word_for_word<R: Runtime>(
                 .map_err(|e| e.to_string())?;
                 spoken.push(text);
             }
-            text = choose_verbatim(&spoken, &text);
+            // A turn whose words are blank or looped keeps its live text, and gets no pronunciation pass.
+            let verbatim = joined_verbatim(&spoken);
+            if verbatim.is_some() {
+                pron_inputs.push(PronInput {
+                    idx: turn.idx,
+                    offset,
+                    len,
+                    segments: spoken,
+                });
+            }
+            text = verbatim.unwrap_or(text);
             // A turn with no words at all keeps no verbatim text; the live text stays the only copy.
             if !text.is_empty() {
                 db::set_verbatim(pool, session_id, turn.idx, &text).await?;
@@ -252,7 +290,102 @@ async fn word_for_word<R: Runtime>(
             timing,
         });
     }
-    Ok(heard)
+    Ok((heard, pron_inputs))
+}
+
+/// The pronunciation pass over the kept learner turns, on a blocking thread. `Ok(vec![])` when no turn has audio.
+/// A model download or load failure, or a pass where every turn failed, is an `Err`, which `with_pronunciation`
+/// turns into the note. A recording that starts first takes the job's place, as in the Whisper pass.
+async fn pronunciation<R: Runtime>(
+    app: &AppHandle<R>,
+    pool: &SqlitePool,
+    session_id: &str,
+    wav: &Path,
+    turns: &[TurnRow],
+    inputs: Vec<PronInput>,
+) -> Result<Vec<PronHint>, String> {
+    if !has_learner_audio(turns) {
+        return Ok(vec![]);
+    }
+    yield_to_recording(app, pool, session_id).await;
+    let dir = ensure_pron_models(|_, _| {}).await?;
+    let (app, pool, session_id, wav) = (app.clone(), pool.clone(), session_id.to_string(), wav.to_path_buf());
+    tokio::task::spawn_blocking(move || -> Result<Vec<PronHint>, String> {
+        let mut engine = PronEngine::load(&dir)?;
+        let mut per_turn = Vec::with_capacity(inputs.len());
+        for input in inputs {
+            tauri::async_runtime::block_on(yield_to_recording(&app, &pool, &session_id));
+            per_turn.push((input.idx, turn_hints(&mut engine, &wav, &input)));
+        }
+        merge_turns(per_turn)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The hints for one learner turn: each speech segment's words aligned to its audio, shifted into turn time.
+fn turn_hints(engine: &mut PronEngine, wav: &Path, input: &PronInput) -> Result<Vec<PronHint>, String> {
+    let (segments, _) = split_turn(wav, input.offset, input.len)?;
+    if segments.len() != input.segments.len() {
+        return Err("the speech segments changed between passes".to_string());
+    }
+    let turn_secs = input.len as f64 / f64::from(YOU_WAV_RATE);
+    let mut hints = Vec::new();
+    for ((start, samples), words) in segments.iter().zip(&input.segments) {
+        let found = engine.segment_hints(samples, words)?;
+        hints.extend(shift_hints(input.idx, *start, found, turn_secs));
+    }
+    Ok(hints)
+}
+
+/// Merges each turn's hints. A failed turn is logged (without its text) and skipped; the others are kept.
+/// Err only when every turn failed.
+pub fn merge_turns(per_turn: Vec<(i64, Result<Vec<PronHint>, String>)>) -> Result<Vec<PronHint>, String> {
+    let total = per_turn.len();
+    let mut hints = Vec::new();
+    let mut failed = 0;
+    for (idx, result) in per_turn {
+        match result {
+            Ok(found) => hints.extend(found),
+            Err(e) => {
+                warn!("practice: pronunciation skipped turn {idx}: {e}");
+                failed += 1;
+            }
+        }
+    }
+    if total > 0 && failed == total {
+        return Err("every learner turn failed the pronunciation pass".to_string());
+    }
+    Ok(hints)
+}
+
+/// Moves a segment's hints from segment time to turn time, clamped to the turn.
+pub fn shift_hints(turn: i64, segment_start: f64, hints: Vec<SegmentHint>, turn_secs: f64) -> Vec<PronHint> {
+    hints
+        .into_iter()
+        .map(|h| PronHint {
+            turn,
+            word: h.word,
+            start_secs: (segment_start + h.start_secs).clamp(0.0, turn_secs),
+            end_secs: (segment_start + h.end_secs).clamp(0.0, turn_secs),
+            score: h.score,
+            phone: h.phone,
+        })
+        .collect()
+}
+
+/// Adds the pronunciation pass to the report. A failed pass keeps the report and sets the note instead.
+pub fn with_pronunciation(report: Report, pron: Result<Vec<PronHint>, String>) -> Report {
+    match pron {
+        Ok(hints) => Report {
+            pronunciation: select_hints(hints),
+            ..report
+        },
+        Err(_) => Report {
+            pronunciation_note: Some(PRON_UNAVAILABLE.to_string()),
+            ..report
+        },
+    }
 }
 
 /// Whether any learner turn has audio to re-transcribe.
@@ -265,32 +398,32 @@ pub fn has_learner_text(texts: &[&str]) -> bool {
     texts.iter().any(|t| !t.trim().is_empty())
 }
 
-/// The stored verbatim text: the segments' words joined with spaces, or the live text when they are blank or looped.
-pub fn choose_verbatim(spoken: &[String], live: &str) -> String {
+/// The verbatim text: the segments' words joined with spaces. None when they are blank or looped.
+pub fn joined_verbatim(spoken: &[String]) -> Option<String> {
     let joined = spoken.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
-    if joined.is_empty() || looks_looped(&joined) {
-        live.to_string()
-    } else {
-        joined
-    }
+    (!joined.is_empty() && !looks_looped(&joined)).then_some(joined)
 }
 
-/// Reads one turn from you.wav and splits it into its VAD speech segments, on a blocking thread.
-/// Returns the segments' samples and the turn's (speech seconds, long pauses).
-async fn read_speech(wav: PathBuf, offset: i64, len: i64) -> Result<(Vec<Vec<f32>>, (f64, u32)), String> {
-    tokio::task::spawn_blocking(move || -> Result<(Vec<Vec<f32>>, (f64, u32)), String> {
-        let samples = read_span(&wav, offset, len)?;
-        let segments = get_speech_chunks(&samples, VERBATIM_REDEMPTION_MS).map_err(|e| e.to_string())?;
-        let speech_secs = segments.iter().map(|s| s.samples.len()).sum::<usize>() as f64 / f64::from(YOU_WAV_RATE);
-        let spans: Vec<(f64, f64)> = segments
-            .iter()
-            .map(|s| (s.start_timestamp_ms / 1000.0, s.end_timestamp_ms / 1000.0))
-            .collect();
-        let timing = (speech_secs, long_pauses(&spans, LONG_PAUSE_SECS));
-        Ok((segments.into_iter().map(|s| s.samples).collect(), timing))
-    })
-    .await
-    .map_err(|e| e.to_string())?
+/// Splits one turn of you.wav into its VAD speech segments. Each segment comes with its start in the turn, in seconds
+/// and its samples. Also returns the turn's (speech seconds, long pauses).
+fn split_turn(wav: &Path, offset: i64, len: i64) -> Result<(Vec<(f64, Vec<f32>)>, (f64, u32)), String> {
+    let samples = read_span(wav, offset, len)?;
+    let segments = get_speech_chunks(&samples, VERBATIM_REDEMPTION_MS).map_err(|e| e.to_string())?;
+    let speech_secs = segments.iter().map(|s| s.samples.len()).sum::<usize>() as f64 / f64::from(YOU_WAV_RATE);
+    let spans: Vec<(f64, f64)> = segments
+        .iter()
+        .map(|s| (s.start_timestamp_ms / 1000.0, s.end_timestamp_ms / 1000.0))
+        .collect();
+    let timing = (speech_secs, long_pauses(&spans, LONG_PAUSE_SECS));
+    let starts = segments.into_iter().map(|s| (s.start_timestamp_ms / 1000.0, s.samples)).collect();
+    Ok((starts, timing))
+}
+
+/// `split_turn` on a blocking thread.
+async fn read_speech(wav: PathBuf, offset: i64, len: i64) -> Result<(Vec<(f64, Vec<f32>)>, (f64, u32)), String> {
+    tokio::task::spawn_blocking(move || split_turn(&wav, offset, len))
+        .await
+        .map_err(|e| e.to_string())?
 }
 
 /// Copy for a Claude failure in the report (R30). Busy, network and stream errors all read as "couldn't reach".
@@ -334,10 +467,12 @@ pub fn parse_report(text: &str, fluency: Fluency, learner: &BTreeMap<i64, String
 pub fn build_report(fluency: Fluency, items: Vec<ReportItem>, learner_turns: &BTreeMap<i64, String>) -> Report {
     let (items, dropped_items) = validate_items(items, learner_turns);
     Report {
-        version: 1,
+        version: 2,
         fluency,
         items,
         dropped_items,
+        pronunciation: vec![],
+        pronunciation_note: None,
     }
 }
 
@@ -360,6 +495,7 @@ mod tests {
             better: "better".to_string(),
             note: String::new(),
             echoed: false,
+            pattern: None,
         }
     }
 
@@ -373,7 +509,7 @@ mod tests {
             item(ItemKind::Clarity, 2, "I has"),
         ];
         let report = build_report(Fluency::default(), items, &turns);
-        assert_eq!(report.version, 1);
+        assert_eq!(report.version, 2);
         assert_eq!(report.items.len(), 1);
         assert_eq!(report.items[0].quote, "I has");
         assert_eq!(report.dropped_items, 2);
@@ -387,21 +523,25 @@ mod tests {
         };
         let grammar: Vec<ReportItem> = (0..4).map(|t| item(ItemKind::Grammar, t, "x")).collect();
         let report = Report {
-            version: 1,
+            version: 2,
             fluency: fluency.clone(),
             items: grammar,
             dropped_items: 0,
+            pronunciation: vec![],
+            pronunciation_note: None,
         };
         assert_eq!(summary_line(&report), "4 grammar · 31 fillers");
 
         let quiet = Report {
-            version: 1,
+            version: 2,
             fluency: Fluency {
                 filler_total: 3,
                 ..fluency
             },
             items: vec![item(ItemKind::Unnatural, 1, "x")],
             dropped_items: 0,
+            pronunciation: vec![],
+            pronunciation_note: None,
         };
         assert_eq!(summary_line(&quiet), "0 grammar · 3 fillers");
     }
@@ -423,7 +563,7 @@ mod tests {
         assert_eq!(status, "ready");
         assert!(error.is_none());
         let stored: Report = serde_json::from_str(&json.unwrap()).unwrap();
-        assert_eq!(stored.version, 1);
+        assert_eq!(stored.version, 2);
     }
 
     #[test]
@@ -460,19 +600,74 @@ mod tests {
     }
 
     #[test]
-    fn verbatim_falls_back_to_live_when_blank_or_looped() {
-        assert_eq!(choose_verbatim(&["  I think so.  ".into()], "live"), "I think so.");
-        assert_eq!(choose_verbatim(&[], "live words"), "live words");
-        assert_eq!(choose_verbatim(&["".into(), " \n ".into()], "live words"), "live words");
-        assert_eq!(choose_verbatim(&["the the the the the the".into()], "live words"), "live words");
-        assert_eq!(choose_verbatim(&[], ""), "");
+    fn verbatim_is_none_when_blank_or_looped() {
+        assert_eq!(joined_verbatim(&["  I think so.  ".into()]).as_deref(), Some("I think so."));
+        assert_eq!(joined_verbatim(&[]), None);
+        assert_eq!(joined_verbatim(&["".into(), " \n ".into()]), None);
+        assert_eq!(joined_verbatim(&["the the the the the the".into()]), None);
     }
 
     #[test]
     fn verbatim_joins_segments_with_spaces_and_checks_the_joined_text_for_loops() {
-        assert_eq!(choose_verbatim(&["I think".into(), "  so.".into(), "".into()], "live"), "I think so.");
+        assert_eq!(joined_verbatim(&["I think".into(), "  so.".into(), "".into()]).as_deref(), Some("I think so."));
         // Each segment alone is fine; the repeats only show once they are joined.
-        assert_eq!(choose_verbatim(&["the the the".into(), "the the the".into()], "live"), "live");
+        assert_eq!(joined_verbatim(&["the the the".into(), "the the the".into()]), None);
+    }
+
+    #[test]
+    fn hints_are_shifted_into_the_turn_and_clamped() {
+        let hint = SegmentHint {
+            word: "think".into(),
+            start_secs: 0.1,
+            end_secs: 0.5,
+            score: -7.0,
+            phone: "TH".into(),
+        };
+        // The segment starts 2 s into a 2.3 s turn: its end is clamped to the turn.
+        let got = shift_hints(4, 2.0, vec![hint], 2.3);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].turn, 4);
+        assert!((got[0].start_secs - 2.1).abs() < 1e-9, "{}", got[0].start_secs);
+        assert!((got[0].end_secs - 2.3).abs() < 1e-9, "{}", got[0].end_secs);
+    }
+
+    #[test]
+    fn a_failed_turn_is_skipped_and_the_others_are_kept() {
+        let hint = |turn: i64| PronHint {
+            turn,
+            word: "think".into(),
+            start_secs: 0.0,
+            end_secs: 0.3,
+            score: -7.0,
+            phone: "TH".into(),
+        };
+        let kept = merge_turns(vec![(1, Ok(vec![hint(1)])), (2, Err("bad turn".into())), (3, Ok(vec![hint(3)]))]).unwrap();
+        assert_eq!(kept.iter().map(|h| h.turn).collect::<Vec<_>>(), [1, 3]);
+        assert!(merge_turns(vec![(1, Err("x".into())), (2, Err("y".into()))]).is_err(), "every turn failed");
+        assert!(merge_turns(vec![]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pron_failure_keeps_the_report() {
+        let turns = BTreeMap::from([(1, "I has a dog.".to_string())]);
+        let report = build_report(Fluency::default(), vec![item(ItemKind::Grammar, 1, "I has")], &turns);
+        let failed = with_pronunciation(report.clone(), Err("models missing".into()));
+        assert_eq!(failed.items.len(), 1);
+        assert_eq!(failed.pronunciation_note.as_deref(), Some("Pronunciation hints unavailable"));
+        assert!(failed.pronunciation.is_empty());
+
+        let hint = PronHint {
+            turn: 1,
+            word: "has".into(),
+            start_secs: 0.0,
+            end_secs: 0.4,
+            score: -7.5,
+            phone: "HH".into(),
+        };
+        let ok = with_pronunciation(report, Ok(vec![hint]));
+        assert_eq!(ok.items.len(), 1);
+        assert_eq!(ok.pronunciation.len(), 1);
+        assert_eq!(ok.pronunciation_note, None);
     }
 
     #[test]

@@ -273,6 +273,13 @@ struct RawItem {
     pattern: Option<String>,
 }
 
+/// A pattern key: normalised, 2 to 5 words and at most 60 characters. Anything else is no key.
+pub fn pattern_key(raw: &str) -> Option<String> {
+    let key = normalise(raw);
+    let words = key.split_whitespace().count();
+    ((2..=5).contains(&words) && key.chars().count() <= 60).then_some(key)
+}
+
 pub fn items_from_json(v: &Value) -> Result<Vec<ReportItem>, String> {
     let mut out = Vec::new();
     for (key, kind) in [
@@ -286,7 +293,7 @@ pub fn items_from_json(v: &Value) -> Result<Vec<ReportItem>, String> {
             .ok_or_else(|| format!("report is missing the {key} array"))?;
         for item in arr {
             let raw = RawItem::deserialize(item).map_err(|e| format!("bad {key} item: {e}"))?;
-            let pattern = raw.pattern.map(|p| normalise(&p)).filter(|p| !p.is_empty());
+            let pattern = raw.pattern.and_then(|p| pattern_key(&p));
             out.push(ReportItem {
                 kind: kind.clone(),
                 turn: raw.turn,
@@ -467,6 +474,32 @@ mod tests {
         ];
         let words: Vec<String> = select_hints(all).into_iter().map(|h| h.word).collect();
         assert_eq!(words, ["think", "seventh", "sixth", "tenth", "lunch", "eighth"]);
+    }
+
+    #[test]
+    fn pattern_keys_are_normalised_and_bounded() {
+        assert_eq!(pattern_key("Third-Person  S!").as_deref(), Some("third person s"));
+        assert_eq!(pattern_key("  make a decision ").as_deref(), Some("make a decision"));
+        assert_eq!(pattern_key("tense"), None, "one word");
+        assert_eq!(pattern_key("one two three four five six"), None, "six words");
+        assert_eq!(pattern_key("!!"), None, "empty after normalising");
+        let sixty = format!("{} {}", "a".repeat(29), "b".repeat(30));
+        assert_eq!(pattern_key(&sixty).map(|k| k.chars().count()), Some(60));
+        let too_long = format!("{} {}", "a".repeat(30), "b".repeat(30));
+        assert_eq!(pattern_key(&too_long), None, "61 characters");
+    }
+
+    #[test]
+    fn items_from_json_bounds_pattern_keys() {
+        let item = |pattern: &str| json!({"turn": 1, "quote": "I has", "better": "I have", "note": "n", "echoed": false, "pattern": pattern});
+        let v = json!({
+            "grammar": [item("  Subject-Verb Agreement "), item("!!"), item("agreement")],
+            "unnatural": [{"turn": 1, "quote": "I has", "better": "I have", "note": "n", "pattern": "one two three four five six"}],
+            "clarity": [{"turn": 1, "quote": "I has", "better": "I have", "note": "n", "pattern": "third person s"}]
+        });
+        let items = items_from_json(&v).unwrap();
+        let patterns: Vec<Option<&str>> = items.iter().map(|i| i.pattern.as_deref()).collect();
+        assert_eq!(patterns, [Some("subject verb agreement"), None, None, None, None]);
     }
 
     #[test]

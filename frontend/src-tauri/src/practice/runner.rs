@@ -234,6 +234,8 @@ struct Runner<R: Runtime> {
     session_id: String,
     character: String,
     system: String,
+    /// Read once at session start, so every reply of the session uses the same model.
+    chat_model: String,
     key: String,
     client: reqwest::Client,
     pool: SqlitePool,
@@ -303,6 +305,7 @@ impl<R: Runtime> Runner<R> {
             session_id: l.session_id,
             character: l.setup.character.clone(),
             system,
+            chat_model: settings::current().chat_model,
             key: l.key,
             client: claude::http_client(),
             pool: l.pool,
@@ -530,7 +533,7 @@ impl<R: Runtime> Runner<R> {
         } else {
             self.system.clone()
         };
-        let body = claude::chat_body(&settings::current().chat_model, &system, &self.history);
+        let body = claude::chat_body(&self.chat_model, &system, &self.history);
         tauri::async_runtime::spawn(chat_reply(
             self.client.clone(),
             self.key.clone(),

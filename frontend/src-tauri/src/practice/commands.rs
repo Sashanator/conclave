@@ -847,7 +847,7 @@ mod tests {
 
     #[test]
     fn readable_saved_report_is_kept() {
-        let stored = serde_json::to_string(&Report { version: 1, fluency: Fluency::default(), items: vec![], dropped_items: 0 }).unwrap();
+        let stored = serde_json::to_string(&Report { version: 1, fluency: Fluency::default(), items: vec![], dropped_items: 0, pronunciation: vec![], pronunciation_note: None }).unwrap();
         let mut row = session_row(Some(&stored));
         let (report, unreadable) = read_stored_report(&mut row);
         assert!(report.is_some());

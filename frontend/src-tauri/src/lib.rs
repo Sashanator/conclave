@@ -636,7 +636,7 @@ pub fn run() {
                     speakers::models::set_models_dir(data.join("models").join("speakers"));
                     practice::models::set_dir(data.join("models").join("practice"));
                 }
-                Err(e) => log::error!("speakers: no app data folder, the feature stays off: {e}"),
+                Err(e) => log::error!("no app data folder: speaker ID and Practice stay off: {e}"),
             }
             tauri::async_runtime::spawn_blocking(|| {
                 let _ = speakers::models::models_ready();

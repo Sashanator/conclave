@@ -990,6 +990,7 @@ pub fn run() {
             practice::commands::practice_new_questions,
             practice::commands::practice_download_voices,
             practice::commands::practice_preview_voice,
+            practice::commands::practice_speak_word,
             practice::commands::practice_start,
             practice::commands::practice_cancel_start,
             practice::commands::practice_tap,

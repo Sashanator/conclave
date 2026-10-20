@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button';
 import { SetupList } from '@/components/Practice/SetupList';
 import { SessionList } from '@/components/Practice/SessionList';
 import { SetupEditor } from '@/components/Practice/SetupEditor';
+import { CallView } from '@/components/Practice/CallView';
 import {
   blockedReason, characterName, planText, type PracticePrepPayload, type PracticeStatus, type SessionSummary, type SetupSummary, type VoicesProgressPayload,
 } from '@/lib/practice';
@@ -15,7 +16,7 @@ import {
 type View =
   | { kind: 'list' }
   | { kind: 'edit'; id?: string }
-  | { kind: 'call'; sessionId: string }
+  | { kind: 'call'; sessionId: string; setupName: string; character: string }
   | { kind: 'report'; sessionId: string };
 
 type Overlay =
@@ -69,7 +70,7 @@ export default function PracticePage() {
     try {
       const sessionId = await invoke<string>('practice_start', { setupId: setup.id, skipPlan });
       setOverlay(null);
-      setView({ kind: 'call', sessionId });
+      setView({ kind: 'call', sessionId, setupName: setup.name, character: setup.character });
     } catch (err) {
       // A failed plan keeps the overlay open with Retry and Start without questions
       if (cancelled.current || stage.current === 'failed') return;
@@ -116,8 +117,17 @@ export default function PracticePage() {
     refresh();
   };
 
-  // Placeholders: the call and report views come in later tasks
-  if (view.kind === 'call') return <div className="p-8 text-muted-foreground">Call view</div>;
+  if (view.kind === 'call') {
+    return (
+      <CallView
+        sessionId={view.sessionId}
+        setupName={view.setupName}
+        character={view.character}
+        onEnded={() => setView({ kind: 'report', sessionId: view.sessionId })}
+      />
+    );
+  }
+  // Placeholder: the report view comes in a later task
   if (view.kind === 'report') return <div className="p-8 text-muted-foreground">Report view</div>;
 
   const editSetup = view.kind === 'edit' && view.id ? setups.find((s) => s.id === view.id) : undefined;

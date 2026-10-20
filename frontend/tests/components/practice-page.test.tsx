@@ -130,6 +130,36 @@ async function setField(label: string, value: string) {
   });
 }
 
+function tapButtons(): ReactTestInstance[] {
+  return renderer!.root.findAll((n) => n.type === 'button' && text(n).startsWith('● Tap to talk'));
+}
+
+// Starts a session from the list view; the call view is then on screen
+async function startCall() {
+  await clickButton('▶ Start');
+  await flush();
+}
+
+async function emit(event: string, payload: unknown) {
+  await act(async () => {
+    listeners.get(event)?.({ payload });
+  });
+}
+
+function state(phase: string, extra: Record<string, unknown> = {}) {
+  return { session_id: 'session-1', phase, character: 'Prof. Weber, strict examiner', elapsed_secs: 0, caption: null, notice: null, ...extra };
+}
+
+function hasText(value: string): boolean {
+  return renderer!.root.findAll((n) => n.type === 'p' || n.type === 'div' || n.type === 'span').some((n) => text(n) === value);
+}
+
+function key(init: KeyboardEventInit, target: EventTarget = window) {
+  const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true, ...init });
+  target.dispatchEvent(event);
+  return event;
+}
+
 function calls(command: string) {
   return invoke.mock.calls.filter(([c]) => c === command);
 }
@@ -237,7 +267,7 @@ describe('Practice page', () => {
     await flush();
     expect(calls('practice_download_voices').length).toBe(1);
     expect(calls('practice_start')[0][1]).toEqual({ setupId: 'seed-thesis', skipPlan: false });
-    expect(renderer!.root.findAll((n) => n.type === 'div' && text(n) === 'Call view').length).toBe(1);
+    expect(tapButtons().length).toBe(1);
   });
 
   test('a plan failure offers Retry and Start without questions', async () => {
@@ -251,5 +281,74 @@ describe('Practice page', () => {
     await clickButton('Start without questions');
     await flush();
     expect(calls('practice_start').at(-1)![1]).toEqual({ setupId: 'seed-thesis', skipPlan: true });
+  });
+
+  test('space_taps_once_per_press', async () => {
+    await startCall();
+    invoke.mockClear();
+
+    const press = key({});
+    expect(calls('practice_tap').length).toBe(1);
+    expect(press.defaultPrevented).toBe(true);
+
+    key({ repeat: true });
+    expect(calls('practice_tap').length).toBe(1);
+
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    key({}, textarea);
+    textarea.remove();
+    expect(calls('practice_tap').length).toBe(1);
+  });
+
+  test('phase_and_notice_copy_render', async () => {
+    await startCall();
+    await emit('practice-state', state('CharacterSpeaking', { caption: 'Hmm. And how did you rule out overfitting?' }));
+    expect(hasText('Prof. Weber is speaking…')).toBe(true);
+    expect(hasText('Hmm. And how did you rule out overfitting?')).toBe(true);
+
+    await emit('practice-state', state('UserTurn', { notice: 'DidNotCatch' }));
+    expect(hasText('Your turn — tap to talk')).toBe(true);
+    expect(hasText("I didn't catch that — tap and try again")).toBe(true);
+
+    await emit('practice-state', state('Listening'));
+    expect(hasText("I didn't catch that — tap and try again")).toBe(false);
+    expect(hasText('Listening… tap when done')).toBe(true);
+  });
+
+  test('ten_minutes_left_notice_shows', async () => {
+    await startCall();
+    await emit('practice-state', state('UserTurn', { elapsed_secs: 3000, notice: 'TenMinutesLeft' }));
+    expect(hasText('10 minutes left')).toBe(true);
+
+    await emit('practice-state', state('UserTurn', { elapsed_secs: 3001 }));
+    expect(hasText('10 minutes left')).toBe(true);
+
+    await emit('practice-state', state('Thinking', { elapsed_secs: 3002 }));
+    expect(hasText('10 minutes left')).toBe(false);
+  });
+
+  test('ended_switches_to_report', async () => {
+    await startCall();
+    await emit('practice-state', state('Ended'));
+    expect(tapButtons().length).toBe(0);
+    expect(renderer!.root.findAll((n) => n.type === 'div' && text(n) === 'Report view').length).toBe(1);
+  });
+
+  test('transcript_lists_this_sessions_turns_when_expanded', async () => {
+    await startCall();
+    await emit('practice-turn', { session_id: 'session-1', idx: 0, speaker: 'character', text: 'Good morning.' });
+    await emit('practice-turn', { session_id: 'other', idx: 1, speaker: 'user', text: 'Not mine.' });
+    expect(hasText('Good morning.')).toBe(false);
+
+    await clickButton('Show full transcript ▾');
+    expect(hasText('Good morning.')).toBe(true);
+    expect(hasText('Not mine.')).toBe(false);
+  });
+
+  test('end_session_calls_practice_end', async () => {
+    await startCall();
+    await clickButton('End session → report');
+    expect(calls('practice_end').length).toBe(1);
   });
 });

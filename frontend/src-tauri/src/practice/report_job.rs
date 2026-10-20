@@ -170,6 +170,10 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     let learner_texts: Vec<&str> = learner.values().map(String::as_str).collect();
     let timing: Vec<(f64, u32)> = heard.iter().filter_map(|h| h.timing).collect();
     let fluency = fluency(&learner_texts, &timing);
+    // Nothing to grade: an empty report, with no key read and no Claude call (its prompt would be empty).
+    if !has_learner_text(&learner_texts) {
+        return Ok(build_report(fluency, vec![], &learner));
+    }
 
     let key = claude::api_key(&pool).await.map_err(|e| report_copy(&e).to_string())?;
     let rows: Vec<(i64, &str, &str)> = heard
@@ -195,18 +199,21 @@ async fn word_for_word<R: Runtime>(
     turns: &[TurnRow],
     _hold: ModelHold,
 ) -> Result<Vec<Heard>, String> {
-    if !dictate::engine_is_whisper(app).await {
-        return Err(NOT_WHISPER.to_string());
-    }
-    let engine = {
+    // Whisper is loaded only when a learner turn has audio to re-transcribe.
+    let engine = if has_learner_audio(turns) {
+        if !dictate::engine_is_whisper(app).await {
+            return Err(NOT_WHISPER.to_string());
+        }
         let _lifecycle = acquire_engine_lifecycle_lock().await;
-        get_or_init_whisper(app).await?
+        Some(get_or_init_whisper(app).await?)
+    } else {
+        None
     };
     let mut heard = Vec::with_capacity(turns.len());
     for turn in turns {
         let mut text = turn.live_text.clone();
         let mut timing = None;
-        if let (true, Some(offset), Some(len)) = (turn.speaker == "user", turn.wav_offset, turn.wav_len) {
+        if let (true, Some(offset), Some(len), Some(engine)) = (turn.speaker == "user", turn.wav_offset, turn.wav_len, engine.as_ref()) {
             let (segments, t) = read_speech(wav.to_path_buf(), offset, len).await?;
             let mut spoken = Vec::with_capacity(segments.len());
             for samples in segments {
@@ -237,6 +244,16 @@ async fn word_for_word<R: Runtime>(
         });
     }
     Ok(heard)
+}
+
+/// Whether any learner turn has audio to re-transcribe.
+pub fn has_learner_audio(turns: &[TurnRow]) -> bool {
+    turns.iter().any(|t| t.speaker == "user" && t.wav_offset.is_some() && t.wav_len.is_some())
+}
+
+/// Whether the learner said any words, live or verbatim.
+pub fn has_learner_text(texts: &[&str]) -> bool {
+    texts.iter().any(|t| !t.trim().is_empty())
 }
 
 /// The stored verbatim text: the segments' words joined with spaces, or the live text when they are blank or looped.
@@ -412,6 +429,25 @@ mod tests {
         assert_eq!(f.speech_secs, 15.0);
         assert_eq!(f.long_pauses, 3);
         assert_eq!(f.wpm, 40.0);
+    }
+
+    #[test]
+    fn learner_audio_and_text_decide_whisper_and_claude() {
+        let turn = |speaker: &str, wav: Option<(i64, i64)>| TurnRow {
+            session_id: "s".into(),
+            idx: 0,
+            speaker: speaker.into(),
+            live_text: String::new(),
+            verbatim_text: None,
+            at_secs: 0.0,
+            wav_offset: wav.map(|w| w.0),
+            wav_len: wav.map(|w| w.1),
+        };
+        assert!(!has_learner_audio(&[turn("character", Some((0, 16))), turn("user", None)]));
+        assert!(has_learner_audio(&[turn("character", None), turn("user", Some((0, 16)))]));
+        assert!(!has_learner_text(&[]));
+        assert!(!has_learner_text(&["", "  \n "]));
+        assert!(has_learner_text(&["", "Hi"]));
     }
 
     #[test]

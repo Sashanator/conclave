@@ -30,6 +30,7 @@ use super::report::{
     count_fillers, items_from_json, long_pauses, looks_looped, schema, validate_items, word_count, wpm, Fluency,
     ItemKind, Report, ReportItem,
 };
+use super::settings;
 use super::{ModelHold, LONG_PAUSE_SECS, YOU_WAV_RATE};
 
 /// Asks Whisper to write fillers and false starts down, so the transcript keeps them.
@@ -181,7 +182,8 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
         .map(|h| (h.idx, h.speaker.as_str(), h.text.as_str()))
         .collect();
     let (system, user) = report_prompts(&rows);
-    let body = claude::report_body(&system, &user, &schema());
+    let models = settings::current();
+    let body = claude::report_body(&models.plan_model, &models.plan_effort, &system, &user, &schema());
     let text = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), |_| {})
         .await
         .map_err(|e| report_copy(&e).to_string())?;

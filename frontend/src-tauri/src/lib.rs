@@ -643,6 +643,7 @@ pub fn run() {
             });
             speakers::settings::load_at_startup(_app.handle());
             dictate::settings::load_at_startup(_app.handle());
+            practice::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
@@ -998,6 +999,8 @@ pub fn run() {
             practice::commands::practice_get_session,
             practice::commands::practice_retry_report,
             practice::commands::practice_delete_session,
+            practice::settings::practice_get_settings,
+            practice::settings::practice_save_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

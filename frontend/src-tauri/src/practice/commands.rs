@@ -34,6 +34,7 @@ use super::prompts::plan_prompts;
 use super::report::Report;
 use super::report_job::{self, summary_line, REPORT_GATE};
 use super::runner::{self, Loaded};
+use super::settings;
 use super::session::{Event, Notice, Phase};
 use super::tts::{load_voice, Supertonic, Voice};
 use super::{hold_model, ModelHold, TTS_RATE, TTS_SPEED, TTS_STEPS};
@@ -460,7 +461,8 @@ async fn plan_text(
 ) -> Result<String, ClaudeError> {
     let key = claude::api_key(pool).await?;
     let (system, user) = plan_prompts(&setup.character, &setup.situation);
-    let body = claude::plan_body(&system, &user, materials);
+    let models = settings::current();
+    let body = claude::plan_body(&models.plan_model, &models.plan_effort, &system, &user, materials);
     claude::stream(&claude::http_client(), &key, &body, token, |_| {}).await
 }
 

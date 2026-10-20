@@ -38,13 +38,16 @@ pub fn create_session_folder(base: &Path, name: &str) -> Result<PathBuf, String>
     }
 }
 
-/// Recycles a session folder that holds only `you.wav`. Missing folder is `Ok`.
+/// Recycles a session folder that is named `Practice …` and holds only `you.wav`. Missing folder is `Ok`.
 pub fn delete_session_folder(folder_path: &str, base: &Path, remove: Remover) -> Result<(), String> {
     if !Path::new(folder_path).exists() {
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, base)
         .ok_or_else(|| format!("Session folder kept: it is outside the recordings folder; nothing was deleted ({folder_path})"))?;
+    if !folder.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("Practice ")) {
+        return Err(format!("Session folder kept: its name is not a Practice folder; nothing was deleted ({})", folder.display()));
+    }
     let only_practice_files = fs::read_dir(&folder).is_ok_and(|mut rd| {
         rd.all(|e| e.is_ok_and(|e| PRACTICE_FILES.contains(&e.file_name().to_string_lossy().as_ref()) && e.file_type().is_ok_and(|t| t.is_file())))
     });
@@ -140,6 +143,18 @@ mod tests {
         assert!(err.contains("contains other files; nothing was deleted"), "{err}");
         assert!(bin.calls().is_empty());
         assert!(m.join("you.wav").exists() && m.join("notes.txt").exists());
+    }
+
+    #[test]
+    fn a_folder_not_named_practice_is_refused_even_when_empty() {
+        let b = base();
+        let m = b.path().join("Notes");
+        fs::create_dir(&m).unwrap();
+        let bin = FakeBin::new();
+        let err = delete_session_folder(m.to_str().unwrap(), b.path(), &|p| bin.remove(p)).unwrap_err();
+        assert!(err.contains("nothing was deleted"), "{err}");
+        assert!(bin.calls().is_empty());
+        assert!(m.is_dir());
     }
 
     #[test]

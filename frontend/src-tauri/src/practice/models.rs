@@ -2,7 +2,7 @@
 
 use crate::speakers::models::{download_client, download_one, ModelFile};
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{LazyLock, OnceLock};
 
 /// Flat names in one folder, so `download_one` can write each file as `dir.join(name)`.
 pub const FILES: [ModelFile; 16] = [
@@ -150,10 +150,15 @@ pub async fn ensure_voices(progress: impl FnMut(u64, u64)) -> Result<PathBuf, St
     Ok(folder)
 }
 
+/// Held for a whole pronunciation download: two report jobs must never write the same `.part` file.
+static PRON_DOWNLOAD_LOCK: LazyLock<tokio::sync::Mutex<()>> =
+    LazyLock::new(|| tokio::sync::Mutex::new(()));
+
 /// Downloads every missing or unverified file in `PRON_FILES`, then returns the folder.
 /// `progress(downloaded, total)` counts bytes across both files.
 pub async fn ensure_pron_models(progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
     let folder = dir().ok_or("the practice models folder is not set")?;
+    let _guard = PRON_DOWNLOAD_LOCK.lock().await;
     download_all(&PRON_FILES, &folder, progress).await?;
     Ok(folder)
 }
@@ -269,6 +274,28 @@ mod tests {
             !present_in(dir.path(), &PRON_FILES),
             "one file one byte short"
         );
+    }
+
+    #[tokio::test]
+    async fn pron_download_waits_for_the_lock() {
+        // A second caller must not start its download while the first holds the lock.
+        let folder = tempfile::tempdir().unwrap();
+        set_dir(folder.path().to_path_buf());
+        let held = PRON_DOWNLOAD_LOCK.lock().await;
+        // The first progress call comes before any network read, so it marks the download starting.
+        let started = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = started.clone();
+        let waiter = tokio::spawn(ensure_pron_models(move |_, _| {
+            flag.store(true, std::sync::atomic::Ordering::SeqCst)
+        }));
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+        assert!(
+            !started.load(std::sync::atomic::Ordering::SeqCst),
+            "the second caller started its download while the lock was held"
+        );
+        waiter.abort(); // Still blocked on the lock, so no network call is made.
+        assert!(waiter.await.unwrap_err().is_cancelled());
+        drop(held);
     }
 
     #[tokio::test]

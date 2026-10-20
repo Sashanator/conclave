@@ -2,6 +2,7 @@
 //! work. It feeds events to the pure state machine in `session.rs` and carries out the effects it returns.
 
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
@@ -18,6 +19,7 @@ use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::audio::recording_commands::is_recording_now;
+use crate::dictate;
 use crate::audio::vad::{ContinuousVadProcessor, SpeechSegment};
 use crate::whisper_engine::WhisperEngine;
 
@@ -141,6 +143,34 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
         }
     }
     r.finish().await;
+}
+
+/// Runs a session. If it panics, the session still ends: the row is closed, the slot is freed and the model
+/// is released. Its hold is dropped while the panic unwinds.
+pub async fn supervise<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
+    let (session_id, pool, started) = (loaded.session_id.clone(), loaded.pool.clone(), Instant::now());
+    supervised(run(app, loaded), |e| async move {
+        warn!("practice: the session stopped unexpectedly: {e}");
+        let duration = started.elapsed().as_secs_f64();
+        if let Err(e) = db::end_session(&pool, &session_id, duration, EndReason::User.as_str()).await {
+            warn!("practice: could not close the session: {e}");
+        }
+        release_slot(&session_id);
+        dictate::unload_if_idle().await;
+    })
+    .await;
+}
+
+/// Awaits `task` on its own task. If that task panics or is aborted, `on_stop` runs with the error text.
+pub async fn supervised<F, C, Fut>(task: F, on_stop: C)
+where
+    F: Future<Output = ()> + Send + 'static,
+    C: FnOnce(String) -> Fut,
+    Fut: Future<Output = ()>,
+{
+    if let Err(e) = tauri::async_runtime::spawn(task).await {
+        on_stop(e.to_string()).await;
+    }
 }
 
 /// Resolves when the capture finishes. Without a capture it never resolves.
@@ -863,6 +893,28 @@ mod tests {
         for phase in [Loading, UserTurn, Listening, Transcribing, Ended] {
             assert_eq!(speaker_failure(phase, false, 3), None, "{phase:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_session_still_runs_its_stop_handler() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let flag = stopped.clone();
+        supervised(async { panic!("boom") }, move |_| async move {
+            flag.store(true, Ordering::SeqCst);
+        })
+        .await;
+        assert!(stopped.load(Ordering::SeqCst));
+    }
+
+    #[tokio::test]
+    async fn a_session_that_ends_normally_skips_the_stop_handler() {
+        let stopped = Arc::new(AtomicBool::new(false));
+        let flag = stopped.clone();
+        supervised(async {}, move |_| async move {
+            flag.store(true, Ordering::SeqCst);
+        })
+        .await;
+        assert!(!stopped.load(Ordering::SeqCst));
     }
 
     #[test]

@@ -594,7 +594,7 @@ pub async fn practice_start<R: Runtime>(
         let _ = tx.send(first);
         *s = Slot::Running { id: session_id.clone(), tx };
     }
-    tauri::async_runtime::spawn(runner::run(app.clone(), loaded));
+    tauri::async_runtime::spawn(runner::supervise(app.clone(), loaded));
     info!("practice: session started");
     Ok(session_id)
 }

@@ -1,4 +1,23 @@
 //! Speaking Practice: role-play voice practice with a Claude character, local TTS and a weak-spots report.
+//!
+//! Removal checklist (checked against the tree on 2026-10-20):
+//! 1. Delete `frontend/src-tauri/src/practice/`, `frontend/src/app/practice/`, `frontend/src/components/Practice/`,
+//!    `frontend/src/lib/practice.ts`, `frontend/tests/components/practice-page.test.tsx`,
+//!    `frontend/tests/lib/practice.test.ts` and `frontend/src-tauri/tests/fixtures/practice/`.
+//!    Keep `frontend/src-tauri/migrations/20261020000000_practice.sql`: an applied migration must stay in the source.
+//! 2. `frontend/src-tauri/src/lib.rs`: the `mod practice;` line; the `practice::models::set_dir` line in setup, and the
+//!    "speaker ID and Practice stay off" log text next to it; the `practice::commands::recover_at_startup` spawn with its
+//!    comment; the 14 `practice::commands::practice_*` entries in `generate_handler!`.
+//! 3. `frontend/src-tauri/src/dictate/mod.rs`, `keeps_model_loaded`: drop the `|| crate::practice::holds_model()` clause.
+//! 4. `frontend/src-tauri/src/speakers/runtime.rs`, `open`: back to private (optional; `practice/tts.rs` is its only other user).
+//! 5. `frontend/src/components/Sidebar/index.tsx`: the two Practice entries (desktop and mobile).
+//! 6. `frontend/src-tauri/Cargo.toml`: remove `base64` and `unicode-normalization` (used only by practice); move `hound`
+//!    back to `[dev-dependencies]` (test code in `audio/decoder.rs` and `speakers/` still uses it).
+//! 7. A new migration: `DROP TABLE practice_turns; DROP TABLE practice_sessions; DROP TABLE practice_materials;
+//!    DROP TABLE practice_setups;` (never edit the old one).
+//! 8. `docs/network-calls.md`: the two Practice rows (huggingface.co, api.anthropic.com); `AGENTS.md`: the Practice Layout row.
+//! 9. Data left behind: session folders in `conclave-recordings`, and the voices in `models/practice` under app data.
+//!    Both stay on disk for the user to delete.
 // Later tasks consume these items; until then they are unused.
 #![allow(dead_code)]
 

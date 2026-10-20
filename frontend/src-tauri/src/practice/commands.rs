@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 use crate::audio::common::acquire_engine_lifecycle_lock;
 use crate::audio::devices::parse_audio_device;
 use crate::audio::import::is_import_in_progress;
+use crate::audio::meeting_folder::{recycle, Remover};
 use crate::audio::recording_commands::is_recording_now;
 use crate::audio::recording_preferences::{get_default_recordings_folder, load_recording_preferences};
 use crate::audio::retranscription::is_retranscription_in_progress;
@@ -27,11 +28,11 @@ use crate::state::AppState;
 use super::audio::{Player, TurnMic, TurnRecorder};
 use super::claude::{self, ClaudeError};
 use super::db::{self, Material, MaterialKind, MaterialMeta, SessionRow, SetupInput, SetupRow, TurnRow};
-use super::files::{allow_audio, create_session_folder, folder_name, PRACTICE_FILES};
+use super::files::{allow_audio, create_session_folder, delete_session_folder, folder_name, PRACTICE_FILES};
 use super::models;
 use super::prompts::plan_prompts;
 use super::report::Report;
-use super::report_job::{self, summary_line};
+use super::report_job::{self, summary_line, REPORT_GATE};
 use super::runner::{self, Loaded};
 use super::session::{Event, Notice, Phase};
 use super::tts::{load_voice, Supertonic, Voice};
@@ -42,6 +43,7 @@ pub(super) const NOT_WHISPER: &str = "Practice needs Whisper as the transcriptio
 const BUSY: &str = "Practice is unavailable while a meeting is recording, importing or re-transcribing";
 const RUNNING: &str = "A practice session is already running";
 const NOT_RETRYABLE: &str = "This report cannot be retried now";
+const DELETE_BUSY: &str = "This session or its report is still running — delete it once it finishes";
 const UNREADABLE_REPORT: &str = "The saved report could not be read — Retry";
 const CANCELLED: &str = "Cancelled";
 const PREVIEW_TEXT: &str = "Hello, I'm looking forward to our conversation.";
@@ -739,6 +741,34 @@ pub async fn practice_retry_report<R: Runtime>(
     Ok(())
 }
 
+/// Sends a past session to the Recycle Bin, then removes its rows. Refused while it runs or its report does.
+#[tauri::command]
+pub async fn practice_delete_session(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    delete_session_inner(&pool_of(&state), &id, &get_default_recordings_folder(), &recycle).await
+}
+
+/// The folder goes first: if it cannot be recycled, the rows stay so the session can be found and retried.
+async fn delete_session_inner(pool: &SqlitePool, id: &str, base: &Path, remove: Remover<'_>) -> Result<(), String> {
+    // Held from the check to the last row delete, so no report claim can land in between.
+    let _gate = REPORT_GATE.lock().await;
+    if running_id().as_deref() == Some(id) {
+        return Err(DELETE_BUSY.to_string());
+    }
+    // Already gone, e.g. a second click: nothing left to delete.
+    let Some((row, _)) = db::get_session(pool, id).await? else {
+        return Ok(());
+    };
+    // Row 'running' covers the start window before the slot says so. Report 'waiting' is claimed but
+    // not started; report 'running' is in progress.
+    if row.status == "running" || matches!(row.report_status.as_str(), "waiting" | "running") {
+        return Err(DELETE_BUSY.to_string());
+    }
+    if let Some(folder) = row.folder_path.as_deref() {
+        delete_session_folder(folder, base, remove)?;
+    }
+    db::delete_session_rows(pool, id).await
+}
+
 /// Run at startup: a session left running by a crash is closed as interrupted.
 pub async fn recover_at_startup<R: Runtime>(app: AppHandle<R>) {
     let pool = pool_of(&app.state::<AppState>());
@@ -753,6 +783,7 @@ pub async fn recover_at_startup<R: Runtime>(app: AppHandle<R>) {
 mod tests {
     use super::*;
     use crate::practice::db::{Material, MaterialMeta, SetupRow};
+    use std::path::PathBuf;
     use crate::practice::report::Fluency;
 
     fn session_row(report_json: Option<&str>) -> SessionRow {
@@ -884,5 +915,176 @@ mod tests {
         assert_eq!(decode_uri_component("plain+name").unwrap(), "plain+name");
         assert!(decode_uri_component("bad%zz").is_err());
         assert!(decode_uri_component("cut%2").is_err());
+    }
+
+    async fn session_pool() -> SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    /// An ended session whose folder holds only `you.wav`, directly inside `base`.
+    async fn finished_session(pool: &SqlitePool, base: &Path, name: &str) -> (String, PathBuf) {
+        let input = db::SetupInput {
+            id: None,
+            name: "Chat".into(),
+            character: "Mike".into(),
+            situation: "Car".into(),
+            voice: "M3".into(),
+        };
+        let setup = db::save_setup(pool, input).await.unwrap();
+        let folder = base.join(name);
+        std::fs::create_dir_all(&folder).unwrap();
+        std::fs::write(folder.join("you.wav"), b"wav").unwrap();
+        let row = db::create_session(pool, &setup, &folder.to_string_lossy(), None).await.unwrap();
+        sqlx::query("UPDATE practice_sessions SET status = 'ended' WHERE id = ?")
+            .bind(&row.id)
+            .execute(pool)
+            .await
+            .unwrap();
+        (row.id, folder)
+    }
+
+    #[tokio::test]
+    async fn folder_error_keeps_the_rows() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let (id, folder) = finished_session(&pool, base.path(), "Practice 1").await;
+        let refuse = |_: &[PathBuf]| -> Result<(), String> { Err("Recycle Bin unavailable".to_string()) };
+        assert!(delete_session_inner(&pool, &id, base.path(), &refuse).await.is_err());
+        assert!(db::get_session(&pool, &id).await.unwrap().is_some(), "rows must survive a failed recycle");
+        assert!(folder.join("you.wav").exists());
+    }
+
+    #[tokio::test]
+    async fn success_recycles_the_folder_and_removes_the_rows() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let (id, folder) = finished_session(&pool, base.path(), "Practice 1").await;
+        let calls = std::sync::atomic::AtomicUsize::new(0);
+        let bin = |paths: &[PathBuf]| -> Result<(), String> {
+            calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::fs::remove_dir_all(&paths[0]).map_err(|e| e.to_string())
+        };
+        delete_session_inner(&pool, &id, base.path(), &bin).await.unwrap();
+        assert_eq!(calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(!folder.exists());
+        assert!(db::get_session(&pool, &id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn a_report_in_flight_is_refused_and_nothing_is_touched() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let never = |_: &[PathBuf]| -> Result<(), String> { panic!("the Recycle Bin must not be called") };
+        for (status, name) in [("waiting", "Practice 1"), ("running", "Practice 2")] {
+            let (id, folder) = finished_session(&pool, base.path(), name).await;
+            db::set_report(&pool, &id, status, None, None).await.unwrap();
+            assert_eq!(delete_session_inner(&pool, &id, base.path(), &never).await, Err(DELETE_BUSY.to_string()), "{status}");
+            assert!(db::get_session(&pool, &id).await.unwrap().is_some());
+            assert!(folder.join("you.wav").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn a_session_already_gone_is_ok_so_a_double_click_is_quiet() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let never = |_: &[PathBuf]| -> Result<(), String> { panic!("the Recycle Bin must not be called") };
+        assert_eq!(delete_session_inner(&pool, "no-such-session", base.path(), &never).await, Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_session_still_running_is_refused_and_nothing_is_touched() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let (id, folder) = finished_session(&pool, base.path(), "Practice 1").await;
+        sqlx::query("UPDATE practice_sessions SET status = 'running' WHERE id = ?")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let never = |_: &[PathBuf]| -> Result<(), String> { panic!("the Recycle Bin must not be called") };
+        assert_eq!(delete_session_inner(&pool, &id, base.path(), &never).await, Err(DELETE_BUSY.to_string()));
+        assert!(db::get_session(&pool, &id).await.unwrap().is_some());
+        assert!(folder.join("you.wav").exists());
+    }
+
+    /// The delete holds the gate while its recycle is in progress; a claim started meanwhile must wait for it.
+    /// The recycle blocks in `block_in_place`, so the runtime can still run the claim and pool tasks.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_claim_waits_for_a_delete_in_progress() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let (id, folder) = finished_session(&pool, base.path(), "Practice 1").await;
+        let (started_tx, started_rx) = std::sync::mpsc::channel::<()>();
+        let (proceed_tx, proceed_rx) = std::sync::mpsc::channel::<()>();
+        let proceed_rx = std::sync::Mutex::new(proceed_rx);
+        let delete = {
+            let (pool, id, base) = (pool.clone(), id.clone(), base.path().to_path_buf());
+            tokio::spawn(async move {
+                let bin = |paths: &[PathBuf]| -> Result<(), String> {
+                    let _ = started_tx.send(());
+                    tokio::task::block_in_place(|| proceed_rx.lock().unwrap().recv_timeout(std::time::Duration::from_secs(10)))
+                        .map_err(|e| e.to_string())?;
+                    std::fs::remove_dir_all(&paths[0]).map_err(|e| e.to_string())
+                };
+                delete_session_inner(&pool, &id, &base, &bin).await
+            })
+        };
+        tokio::task::spawn_blocking(move || started_rx.recv_timeout(std::time::Duration::from_secs(10)).unwrap())
+            .await
+            .unwrap();
+        let claim = {
+            let (pool, id) = (pool.clone(), id.clone());
+            tokio::spawn(async move { report_job::claim_for_report(&pool, &id).await })
+        };
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        let claim_waited = !claim.is_finished();
+        // Release the delete before asserting, so a failed assertion cannot leave it blocked.
+        proceed_tx.send(()).unwrap();
+        assert_eq!(delete.await.unwrap(), Ok(()));
+        assert!(claim_waited, "the claim must wait for the delete");
+        assert_eq!(claim.await.unwrap(), Ok(false), "the row is gone, so no report can be claimed");
+        assert!(!folder.exists());
+        assert!(db::get_session(&pool, &id).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn the_running_session_is_refused_and_nothing_is_touched() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let (id, folder) = finished_session(&pool, base.path(), "Practice 1").await;
+        let (tx, _rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+        *slot() = Slot::Running { id: id.clone(), tx };
+        let never = |_: &[PathBuf]| -> Result<(), String> { panic!("the Recycle Bin must not be called") };
+        let result = delete_session_inner(&pool, &id, base.path(), &never).await;
+        *slot() = Slot::Idle;
+        assert_eq!(result, Err(DELETE_BUSY.to_string()));
+        assert!(db::get_session(&pool, &id).await.unwrap().is_some());
+        assert!(folder.join("you.wav").exists());
+    }
+
+    #[tokio::test]
+    async fn a_session_without_a_folder_or_with_a_missing_one_loses_only_its_rows() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let (none, _) = finished_session(&pool, base.path(), "Practice 1").await;
+        sqlx::query("UPDATE practice_sessions SET folder_path = NULL WHERE id = ?")
+            .bind(&none)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let (gone, folder) = finished_session(&pool, base.path(), "Practice 2").await;
+        std::fs::remove_dir_all(&folder).unwrap();
+        let never = |_: &[PathBuf]| -> Result<(), String> { panic!("the Recycle Bin must not be called") };
+        delete_session_inner(&pool, &none, base.path(), &never).await.unwrap();
+        delete_session_inner(&pool, &gone, base.path(), &never).await.unwrap();
+        assert!(db::get_session(&pool, &none).await.unwrap().is_none());
+        assert!(db::get_session(&pool, &gone).await.unwrap().is_none());
     }
 }

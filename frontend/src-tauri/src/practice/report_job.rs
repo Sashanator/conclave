@@ -40,6 +40,8 @@ pub const VERBATIM_PROMPT: &str = "Um, uh, so, like, I mean, I- I was, uh, think
 const VERBATIM_REDEMPTION_MS: u32 = 300;
 /// How often a waiting job checks whether a meeting recording has stopped.
 const WAIT_POLL: Duration = Duration::from_secs(10);
+/// Held while a report is claimed and while a session is deleted, so the two cannot interleave.
+pub(super) static REPORT_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const SAVE_FAILED: &str = "Couldn't save the report — Retry";
 
 #[derive(Clone, Serialize)]
@@ -60,7 +62,7 @@ struct Heard {
 /// `hold` keeps Whisper loaded across the hand-off from the session; the job releases it when done.
 pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String, hold: ModelHold) {
     let pool = app.state::<AppState>().db_manager.pool().clone();
-    match db::claim_report(&pool, &session_id).await {
+    match claim_for_report(&pool, &session_id).await {
         Ok(true) => {}
         other => {
             if let Err(e) = other {
@@ -86,6 +88,12 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String, hold: ModelH
     dictate::unload_if_idle().await;
     let (status, json, error) = finish(result);
     save_final(&app, &pool, &session_id, status, json, error).await;
+}
+
+/// Claims the session's report under the gate that a delete also takes.
+pub async fn claim_for_report(pool: &SqlitePool, session_id: &str) -> Result<bool, String> {
+    let _gate = REPORT_GATE.lock().await;
+    db::claim_report(pool, session_id).await
 }
 
 /// Maps the job's result to the stored status, report JSON and error. Pure, so the tests can check it.

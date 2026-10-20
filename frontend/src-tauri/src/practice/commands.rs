@@ -31,6 +31,7 @@ use super::db::{self, Material, MaterialKind, MaterialMeta, SessionRow, SetupInp
 use super::files::{allow_audio, create_session_folder, delete_session_folder, folder_name, PRACTICE_FILES};
 use super::models;
 use super::prompts::plan_prompts;
+use super::recurring::{self, PastReport, Recurring};
 use super::report::Report;
 use super::report_job::{self, summary_line, REPORT_GATE};
 use super::runner::{self, Loaded};
@@ -671,6 +672,8 @@ pub struct SessionDetail {
     pub report: Option<Report>,
     pub report_error: Option<String>,
     pub audio_path: Option<String>,
+    /// Only for a ready report.
+    pub recurring: Option<Recurring>,
 }
 
 fn summary_of(row: &SessionRow) -> SessionSummary {
@@ -739,6 +742,25 @@ pub async fn practice_get_session<R: Runtime>(
         }),
         None => None,
     };
+    let recurring = match report.clone() {
+        Some(report) if row.report_status == "ready" => {
+            let current = PastReport {
+                session_id: row.id.clone(),
+                setup_id: row.setup_id.clone(),
+                started_at: row.started_at.clone(),
+                report,
+            };
+            match db::load_recurring_window(&pool, &row.started_at, row.setup_id.as_deref()).await {
+                Ok(recent) => Some(recurring::compute(&current, &recent)),
+                Err(e) => {
+                    // The recurring card is optional, so a failed read leaves the rest of the session view intact.
+                    warn!("practice: no recurring view for the session: {e}");
+                    None
+                }
+            }
+        }
+        _ => None,
+    };
     Ok(SessionDetail {
         summary: summary_of(&row),
         character: row.character.clone(),
@@ -746,6 +768,7 @@ pub async fn practice_get_session<R: Runtime>(
         report,
         report_error: row.report_error.clone(),
         audio_path,
+        recurring,
     })
 }
 

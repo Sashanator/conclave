@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import {
-  MATERIAL_MAX_BYTES, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow,
+  MATERIAL_MAX_BYTES, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow, VOICES,
 } from '../../src/lib/practice';
 
 const originals = {
@@ -75,6 +75,8 @@ let startImpl: () => Promise<unknown> = async () => 'session-1';
 let pendingStarts: { resolve: (id: string) => void; reject: (err: Error) => void }[] = [];
 // What practice_retry_report does; a test replaces it to hold the call open
 let retryImpl: () => Promise<unknown> = async () => null;
+// What practice_download_voices does; a test replaces it to hold the download open
+let downloadImpl: () => Promise<unknown> = async () => null;
 function holdStarts() {
   startImpl = () => new Promise<string>((resolve, reject) => {
     pendingStarts.push({ resolve, reject });
@@ -91,7 +93,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_delete_setup') return null;
   if (command === 'practice_add_material') return null;
   if (command === 'practice_add_text') return null;
-  if (command === 'practice_download_voices') return null;
+  if (command === 'practice_download_voices') return downloadImpl();
   if (command === 'practice_preview_voice') return null;
   if (command === 'practice_new_questions') return null;
   if (command === 'practice_cancel_start') return null;
@@ -222,6 +224,7 @@ beforeEach(async () => {
   running = structuredClone(RUNNING_DETAIL) as SessionDetail;
   startImpl = async () => 'session-1';
   retryImpl = async () => null;
+  downloadImpl = async () => null;
   pendingStarts = [];
   invoke.mockClear();
   toast.error.mockClear();
@@ -366,6 +369,36 @@ describe('Practice page', () => {
     await clickButton('Delete');
     await flush();
     expect(calls('practice_delete_session')[0][1]).toEqual({ id: 's1' });
+  });
+
+  test('preview_before_the_first_session_downloads_the_voices_first', async () => {
+    status = { ...READY, voices_ready: false };
+    await mount();
+    let release!: () => void;
+    downloadImpl = () => new Promise((resolve) => {
+      release = () => resolve(null);
+    });
+    await clickButton('+ New setup');
+    await clickButton('▶ Preview');
+    await act(async () => {
+      listeners.get('practice-voices-progress')?.({ payload: { percent: 40 } });
+    });
+    expect(hasDirectText('Downloading voices… 40%')).toBe(true);
+    expect(calls('practice_preview_voice').length).toBe(0);
+
+    await act(async () => release());
+    await flush();
+    expect(calls('practice_download_voices').length).toBe(1);
+    expect(calls('practice_preview_voice')[0][1]).toEqual({ voice: VOICES[0].id });
+    expect(hasDirectText('Downloading voices… 40%')).toBe(false);
+  });
+
+  test('preview_with_voices_ready_does_not_download', async () => {
+    await mount();
+    await clickButton('+ New setup');
+    await clickButton('▶ Preview');
+    expect(calls('practice_download_voices').length).toBe(0);
+    expect(calls('practice_preview_voice').length).toBe(1);
   });
 
   test('start_downloads_missing_voices_then_starts_the_session', async () => {

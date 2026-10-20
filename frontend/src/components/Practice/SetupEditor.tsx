@@ -18,10 +18,12 @@ function Labeled({ label, children }: { label: string; children: ReactNode }) {
 }
 
 // The editor for one setup, or a new one (setup null). Material needs a saved setup, so it waits for the first save.
-export function SetupEditor({ setup, onDone, onChanged }: {
+export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadVoices }: {
   setup: SetupSummary | null;
   onDone: () => void;
   onChanged: () => Promise<unknown>;
+  voicesReady: boolean;
+  onDownloadVoices: (progress: (percent: number) => void) => Promise<void>;
 }) {
   const [name, setName] = useState(setup?.name ?? '');
   const [character, setCharacter] = useState(setup?.character ?? '');
@@ -32,6 +34,8 @@ export function SetupEditor({ setup, onDone, onChanged }: {
   const [pasting, setPasting] = useState(false);
   const [pasteName, setPasteName] = useState('');
   const [pasteText, setPasteText] = useState('');
+  // Set while the voices download runs for a preview made before the first session
+  const [voicePercent, setVoicePercent] = useState<number | null>(null);
 
   const materials = setup?.materials ?? [];
   const usedBytes = materials.reduce((sum, m) => sum + m.bytes, 0);
@@ -139,6 +143,17 @@ export function SetupEditor({ setup, onDone, onChanged }: {
   };
 
   const preview = async () => {
+    if (!voicesReady) {
+      setVoicePercent(0);
+      try {
+        await onDownloadVoices(setVoicePercent);
+      } catch (err) {
+        toast.error('Could not download the voices', { description: String(err) });
+        return;
+      } finally {
+        setVoicePercent(null);
+      }
+    }
     try {
       await invoke('practice_preview_voice', { voice });
     } catch (err) {
@@ -219,7 +234,8 @@ export function SetupEditor({ setup, onDone, onChanged }: {
                 ))}
               </SelectContent>
             </Select>
-            <Button variant="outline" size="sm" onClick={preview}>▶ Preview</Button>
+            <Button variant="outline" size="sm" disabled={voicePercent !== null} onClick={preview}>▶ Preview</Button>
+            {voicePercent !== null && <span className="text-sm text-muted-foreground">{`Downloading voices… ${voicePercent}%`}</span>}
           </div>
         </Labeled>
       </div>

@@ -127,21 +127,26 @@ export default function PracticePage() {
     }
   };
 
+  // Downloads the voices, reporting progress, and marks them ready. Rejects when the download fails.
+  const downloadVoices = async (progress: (percent: number) => void) => {
+    const stop = await listen<VoicesProgressPayload>('practice-voices-progress', (e) => progress(e.payload.percent));
+    try {
+      await invoke('practice_download_voices');
+      setStatus((s) => (s ? { ...s, voices_ready: true } : s));
+    } finally {
+      stop();
+    }
+  };
+
   const start = async (setup: SetupSummary) => {
     if (status && !status.voices_ready) {
       setOverlay({ kind: 'voices', percent: 0 });
-      const stop = await listen<VoicesProgressPayload>('practice-voices-progress', (e) => {
-        setOverlay({ kind: 'voices', percent: e.payload.percent });
-      });
       try {
-        await invoke('practice_download_voices');
-        setStatus((s) => (s ? { ...s, voices_ready: true } : s));
+        await downloadVoices((percent) => setOverlay({ kind: 'voices', percent }));
       } catch (err) {
         setOverlay(null);
         toast.error('Could not download the voices', { description: String(err) });
         return;
-      } finally {
-        stop();
       }
     }
     await launch(setup, false);
@@ -180,7 +185,14 @@ export default function PracticePage() {
     return (
       <div className="h-full overflow-y-auto">
         <div className="max-w-3xl mx-auto p-8">
-          <SetupEditor key={view.id ?? 'new'} setup={editSetup ?? null} onDone={backToList} onChanged={refresh} />
+          <SetupEditor
+            key={view.id ?? 'new'}
+            setup={editSetup ?? null}
+            onDone={backToList}
+            onChanged={refresh}
+            voicesReady={status?.voices_ready ?? false}
+            onDownloadVoices={downloadVoices}
+          />
         </div>
       </div>
     );

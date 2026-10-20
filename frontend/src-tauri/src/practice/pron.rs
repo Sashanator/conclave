@@ -7,11 +7,11 @@ use std::path::Path;
 use ort::session::Session;
 use ort::value::Tensor;
 
-use super::pron_align::{log_softmax, score_words, VOCAB};
+use super::pron_align::{log_softmax, score_words, VOCAB, WILDCARD};
 use super::pron_dict::{words, PronDict, PHONES};
 use super::{
-    PRON_FRAME_SECS, PRON_MAX_CHUNK_SECS, PRON_MIN_PHONES, PRON_PAD_SECS, PRON_THRESHOLD,
-    YOU_WAV_RATE,
+    PRON_FRAME_SECS, PRON_MAX_CHUNK_SECS, PRON_MIN_CHUNK_SECS, PRON_MIN_PHONES, PRON_PAD_SECS,
+    PRON_THRESHOLD, YOU_WAV_RATE,
 };
 use crate::speakers::runtime::{open, Backend};
 
@@ -20,6 +20,7 @@ const DICT_FILE: &str = "cmudict.dict";
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct SegmentHint {
+    /// As written in the transcript.
     pub word: String,
     /// Relative to the start of the segment.
     pub start_secs: f64,
@@ -27,6 +28,13 @@ pub struct SegmentHint {
     pub score: f32,
     /// The phone with the worst GOP in the word, e.g. "TH".
     pub phone: String,
+}
+
+/// One aligned word before the hint filter. An `oov` word only holds its place in the alignment.
+struct Scored {
+    hint: SegmentHint,
+    phones: usize,
+    oov: bool,
 }
 
 pub struct PronEngine {
@@ -50,41 +58,63 @@ impl PronEngine {
         })
     }
 
-    /// Hints for the words of one segment. Words are scored in runs between out-of-vocabulary words.
-    /// Each run is aligned against the whole segment, so the audio of the other runs is left to the blank state.
+    /// Hints for one segment. Every word is aligned in order, and out-of-vocabulary words are wildcards:
+    /// they hold their place in the alignment but are never hinted.
     pub fn segment_hints(
         &mut self,
         samples16k: &[f32],
         text: &str,
     ) -> Result<Vec<SegmentHint>, String> {
+        Ok(self
+            .scored_words(samples16k, text)?
+            .into_iter()
+            .filter(|s| !s.oov && s.hint.score < PRON_THRESHOLD && s.phones >= PRON_MIN_PHONES)
+            .map(|s| s.hint)
+            .collect())
+    }
+
+    /// Every word of the segment with its span and GOP, before the hint filter. Empty when the segment is
+    /// skipped, has fewer than two dictionary words, or is too short for its phones.
+    fn scored_words(&mut self, samples16k: &[f32], text: &str) -> Result<Vec<Scored>, String> {
         let secs = samples16k.len() as f64 / f64::from(YOU_WAV_RATE);
         if skip_segment(samples16k.len(), text) {
             log::info!("pronunciation: no hints for a {secs:.1} s segment");
             return Ok(vec![]);
         }
-        let (logp, frames) = self.posteriors(samples16k)?;
         let tokens = words(text);
-        let mut hints = Vec::new();
-        for run in runs(&tokens, &self.dict) {
-            let variants: Vec<Vec<Vec<u8>>> = run.iter().map(|(_, v)| v.to_vec()).collect();
-            // None when the segment is too short for the run's phones: that run gets no hints.
-            let Some(scores) = score_words(&logp, frames, &variants) else {
-                continue;
-            };
-            for s in scores {
-                if s.score < PRON_THRESHOLD && s.phones >= PRON_MIN_PHONES {
-                    let (start_secs, end_secs) = hint_times(s.start, s.end, secs);
-                    hints.push(SegmentHint {
-                        word: tokens[run[s.index].0].clone(),
+        if tokens
+            .iter()
+            .filter(|w| self.dict.variants(w).is_some())
+            .count()
+            < 2
+        {
+            return Ok(vec![]);
+        }
+        let (logp, frames) = self.posteriors(samples16k)?;
+        let Some(scores) = score_words(&logp, frames, &word_variants(&tokens, &self.dict)) else {
+            return Ok(vec![]);
+        };
+        Ok(scores
+            .into_iter()
+            .map(|s| {
+                let (start_secs, end_secs) = hint_times(s.start, s.end, secs);
+                Scored {
+                    oov: s.worst_phone == WILDCARD,
+                    phones: s.phones,
+                    hint: SegmentHint {
+                        word: tokens[s.index].clone(),
                         start_secs,
                         end_secs,
                         score: s.score,
-                        phone: PHONES[s.worst_phone as usize].to_string(),
-                    });
+                        phone: PHONES
+                            .get(s.worst_phone as usize)
+                            .copied()
+                            .unwrap_or("")
+                            .to_string(),
+                    },
                 }
-            }
-        }
-        Ok(hints)
+            })
+            .collect())
     }
 
     /// Phone log-probabilities, row-major `[frames, VOCAB]`, and the frame count.
@@ -109,11 +139,21 @@ impl PronEngine {
     }
 }
 
-/// Segments that are empty, too long for one model call, or have no text to align get no hints.
+/// Segments outside the model's useful length range, or with no text to align, get no hints.
 fn skip_segment(samples: usize, text: &str) -> bool {
-    samples == 0
-        || samples as f64 / f64::from(YOU_WAV_RATE) > PRON_MAX_CHUNK_SECS
-        || text.trim().is_empty()
+    let secs = samples as f64 / f64::from(YOU_WAV_RATE);
+    !(PRON_MIN_CHUNK_SECS..=PRON_MAX_CHUNK_SECS).contains(&secs) || text.trim().is_empty()
+}
+
+/// One entry per word: its CMUdict variants, or a single wildcard phone when it is out of vocabulary.
+fn word_variants(words: &[String], dict: &PronDict) -> Vec<Vec<Vec<u8>>> {
+    words
+        .iter()
+        .map(|w| match dict.variants(w) {
+            Some(v) => v.to_vec(),
+            None => vec![vec![WILDCARD]],
+        })
+        .collect()
 }
 
 /// Zero mean and unit variance over the clip. The epsilon matches the model's feature extractor.
@@ -130,22 +170,6 @@ fn normalise(samples: &[f32]) -> Vec<f32> {
         .iter()
         .map(|&x| ((f64::from(x) - mean) / scale) as f32)
         .collect()
-}
-
-/// Runs of consecutive in-dictionary words, as (word index, variants). An out-of-vocabulary word ends a run,
-/// and runs shorter than two words are dropped.
-fn runs<'a>(words: &[String], dict: &'a PronDict) -> Vec<Vec<(usize, &'a [Vec<u8>])>> {
-    let mut out = Vec::new();
-    let mut cur = Vec::new();
-    for (i, w) in words.iter().enumerate() {
-        match dict.variants(w) {
-            Some(v) => cur.push((i, v)),
-            None => out.push(std::mem::take(&mut cur)),
-        }
-    }
-    out.push(cur);
-    out.retain(|r| r.len() >= 2);
-    out
 }
 
 /// Frames `start..=end` as seconds, padded by `PRON_PAD_SECS` and clamped to `[0, segment_secs]`.
@@ -165,28 +189,19 @@ mod tests {
     const DICT: &str = "ALPHA  AH L F AH
 BETA  B EY T AH
 GAMMA  G AE M AH
-ONE  W AH N
 ";
 
-    fn run_indices(runs: &[Vec<(usize, &[Vec<u8>])>]) -> Vec<Vec<usize>> {
-        runs.iter()
-            .map(|r| r.iter().map(|(i, _)| *i).collect())
-            .collect()
-    }
-
     #[test]
-    fn oov_runs_are_split_and_short_runs_dropped() {
+    fn oov_words_become_wildcards() {
         let dict = PronDict::parse(DICT);
-        // "2026" is out of vocabulary and ends a run. The single words "gamma" and "alpha" are dropped.
-        let tokens = words("alpha beta 2026 gamma zzz alpha");
-        let got = runs(&tokens, &dict);
-        assert_eq!(run_indices(&got), vec![vec![0, 1]]);
-        assert_eq!(got[0][1].1, dict.variants("beta").unwrap());
-
-        let tokens = words("gamma one zzz alpha beta");
+        let got = word_variants(&words("Alpha 2026 beta"), &dict);
         assert_eq!(
-            run_indices(&runs(&tokens, &dict)),
-            vec![vec![0, 1], vec![3, 4]]
+            got,
+            vec![
+                dict.variants("alpha").unwrap().to_vec(),
+                vec![vec![WILDCARD]],
+                dict.variants("BETA").unwrap().to_vec(),
+            ]
         );
     }
 
@@ -196,8 +211,15 @@ ONE  W AH N
         assert!(skip_segment(20 * rate + 1, "good morning"));
         assert!(!skip_segment(20 * rate, "good morning"));
         assert!(skip_segment(2 * rate, "   "));
-        assert!(skip_segment(0, "good morning"));
         assert!(!skip_segment(2 * rate, "good morning"));
+    }
+
+    #[test]
+    fn short_segment_is_skipped() {
+        let rate = YOU_WAV_RATE as usize;
+        assert!(skip_segment(0, "good morning"));
+        assert!(skip_segment(rate * 3 / 10 - 1, "good morning"));
+        assert!(!skip_segment(rate * 3 / 10, "good morning"));
     }
 
     #[test]
@@ -217,6 +239,16 @@ ONE  W AH N
         std::path::PathBuf::from(std::env::var("PRACTICE_PRON_DIR").expect("set PRACTICE_PRON_DIR"))
     }
 
+    fn synthesize(text: &str) -> Vec<f32> {
+        let models = std::path::PathBuf::from(
+            std::env::var("PRACTICE_MODELS_DIR").expect("set PRACTICE_MODELS_DIR"),
+        );
+        let mut tts = Supertonic::load(&models, false).unwrap();
+        let voice = load_voice(&models.join("M1.json")).unwrap();
+        let audio = tts.synthesize(text, &voice, TTS_STEPS, TTS_SPEED).unwrap();
+        resample_audio(&audio, TTS_RATE, YOU_WAV_RATE)
+    }
+
     /// Needs ONNX Runtime and `PRACTICE_PRON_DIR` (hubert_phoneme_int8.onnx and cmudict.dict).
     #[test]
     #[ignore]
@@ -232,16 +264,27 @@ ONE  W AH N
     #[ignore]
     fn native_tts_sentence_has_no_hints() {
         const SENTENCE: &str = "Good morning, please have a seat.";
-        let models = std::path::PathBuf::from(
-            std::env::var("PRACTICE_MODELS_DIR").expect("set PRACTICE_MODELS_DIR"),
-        );
-        let mut tts = Supertonic::load(&models, false).unwrap();
-        let voice = load_voice(&models.join("M1.json")).unwrap();
-        let audio = tts
-            .synthesize(SENTENCE, &voice, TTS_STEPS, TTS_SPEED)
-            .unwrap();
-        let samples = resample_audio(&audio, TTS_RATE, YOU_WAV_RATE);
+        let samples = synthesize(SENTENCE);
         let mut engine = PronEngine::load(&pron_dir()).unwrap();
+        let hints = engine.segment_hints(&samples, SENTENCE).unwrap();
+        assert!(hints.is_empty(), "{hints:?}");
+    }
+
+    /// The name is out of vocabulary, so it is a wildcard. Every word keeps a short span and no word is hinted.
+    /// Needs ONNX Runtime, `PRACTICE_PRON_DIR` and `PRACTICE_MODELS_DIR`.
+    #[test]
+    #[ignore]
+    fn oov_sentence_has_no_hints_and_short_spans() {
+        const SENTENCE: &str = "We met the client in Weberstrasse on Monday and agreed to finish before Friday afternoon.";
+        let samples = synthesize(SENTENCE);
+        let mut engine = PronEngine::load(&pron_dir()).unwrap();
+        let scored = engine.scored_words(&samples, SENTENCE).unwrap();
+        assert_eq!(scored.len(), 15, "every word is aligned");
+        assert_eq!(scored.iter().filter(|s| s.oov).count(), 1);
+        for s in &scored {
+            let len = s.hint.end_secs - s.hint.start_secs;
+            assert!(len <= 1.0, "{} spans {len:.2} s", s.hint.word);
+        }
         let hints = engine.segment_hints(&samples, SENTENCE).unwrap();
         assert!(hints.is_empty(), "{hints:?}");
     }

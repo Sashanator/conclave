@@ -70,10 +70,14 @@ pub const PRON_VARIANT_MARGIN_FRAMES: usize = 4;
 pub const PRON_THRESHOLD: f32 = -6.5;
 /// Words of this many phones or fewer get no hint (`the` was the top false flag).
 pub const PRON_MIN_PHONES: usize = 3;
+/// Segments shorter than this get no hints (the model errors on very short input).
+pub const PRON_MIN_CHUNK_SECS: f64 = 0.3;
 /// Longer segments get no hints: one model call on a longer chunk needs gigabytes (self-attention is O(T²)).
 pub const PRON_MAX_CHUNK_SECS: f64 = 20.0;
 /// One model output frame is 20 ms.
 pub const PRON_FRAME_SECS: f64 = 0.02;
+/// GOP-like penalty for an out-of-vocabulary word's wildcard state (below the best non-[UNK] column).
+pub const PRON_WILDCARD_PENALTY: f32 = 1.5;
 /// Hint spans are padded by this much on each side, so the ▶ you clip starts and ends in silence.
 pub const PRON_PAD_SECS: f64 = 0.08;
 

@@ -22,8 +22,6 @@
 //! 8. `docs/network-calls.md`: the two Practice rows (huggingface.co, api.anthropic.com); `AGENTS.md`: the Practice Layout row.
 //! 9. Data left behind: session folders in `conclave-recordings`, and the voices in `models/practice` under app data.
 //!    Both stay on disk for the user to delete.
-// Later tasks consume these items; until then they are unused.
-#![allow(dead_code)]
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 

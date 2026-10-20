@@ -234,6 +234,7 @@ impl PlayQueue {
     }
 
     /// Drops everything queued. The next fill writes silence.
+    #[cfg(test)]
     pub fn clear(&mut self) {
         self.items.clear();
         self.position = 0;
@@ -248,6 +249,7 @@ impl PlayQueue {
         finished
     }
 
+    #[cfg(test)]
     pub fn is_empty(&self) -> bool {
         self.items.is_empty()
     }

@@ -4,9 +4,6 @@ use crate::speakers::models::{download_client, download_one, ModelFile};
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-/// Supertone/supertonic-3 at this commit. A new revision needs new hashes.
-pub const REVISION: &str = "724fb5abbf5502583fb520898d45929e62f02c0b";
-
 /// Flat names in one folder, so `download_one` can write each file as `dir.join(name)`.
 pub const FILES: [ModelFile; 16] = [
     ModelFile {
@@ -149,6 +146,9 @@ pub async fn ensure_voices(mut progress: impl FnMut(u64, u64)) -> Result<PathBuf
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Supertone/supertonic-3 at the commit the URLs above pin. A new revision needs new hashes.
+    const REVISION: &str = "724fb5abbf5502583fb520898d45929e62f02c0b";
 
     #[test]
     fn urls_are_pinned_to_the_revision() {

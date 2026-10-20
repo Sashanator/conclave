@@ -1,4 +1,3 @@
-#![allow(dead_code)]
 
 pub struct Persona<'a> {
     pub character: &'a str,

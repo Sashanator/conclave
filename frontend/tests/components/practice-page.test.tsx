@@ -1,7 +1,9 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { MATERIAL_MAX_BYTES, type PracticeStatus, type SessionSummary, type SetupSummary } from '../../src/lib/practice';
+import {
+  MATERIAL_MAX_BYTES, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow,
+} from '../../src/lib/practice';
 
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
@@ -35,20 +37,42 @@ const INTERVIEW: SetupSummary = {
 };
 const SESSION: SessionSummary = {
   id: 's1', setup_name: 'Thesis defence', started_at: '2026-10-19T10:00:00Z', duration_secs: 1080,
-  report_status: 'ready', summary: '4 grammar · 31 fillers',
+  report_status: 'ready', summary: '4 grammar · 31 fillers', end_reason: 'user',
 };
 const RUNNING_DETAIL = {
   summary: { ...SESSION, id: 'run-1' }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null,
 };
 const READY: PracticeStatus = { has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null };
+const REPORT: Report = {
+  version: 1,
+  fluency: { fillers: { um: 14, 'so basically': 9, like: 8 }, filler_total: 31, words: 1200, speech_secs: 640, wpm: 112.4, long_pauses: 6 },
+  items: [
+    { kind: 'Grammar', turn: 3, quote: 'If I will have more data…', better: 'If I had more data…', note: 'Past simple after "if".', echoed: true },
+    { kind: 'Grammar', turn: 5, quote: 'The data depend', better: 'The data depends', note: 'Third person singular.', echoed: false },
+    { kind: 'Unnatural', turn: 7, quote: 'I made a research about it', better: 'I did some research on it', note: 'Native speakers "do" research.', echoed: false },
+    { kind: 'Clarity', turn: 9, quote: 'So basically the idea was that, well, the baseline', better: 'The baseline missed long-range links.', note: 'Shorter.', echoed: false },
+  ],
+  dropped_items: 0,
+};
+const TURNS: TurnRow[] = [
+  { session_id: 's1', idx: 0, speaker: 'character', live_text: 'Tell me about your thesis.', verbatim_text: null, at_secs: 0, wav_offset: null, wav_len: null },
+  { session_id: 's1', idx: 3, speaker: 'user', live_text: 'If I will have more data', verbatim_text: 'Um, if I will have more data', at_secs: 372, wav_offset: 160_000, wav_len: 32_000 },
+];
+const DETAIL: SessionDetail = {
+  summary: { ...SESSION, report_status: 'ready' }, character: 'Prof. Weber, strict examiner', turns: TURNS,
+  report: REPORT, report_error: null, audio_path: 'C:/Conclave/practice/s1/you.wav',
+};
 
 let status: PracticeStatus;
 let setups: SetupSummary[];
 let sessions: SessionSummary[];
+let detail: SessionDetail;
 // What practice_start does in the next call; tests replace it
 let startImpl: () => Promise<unknown> = async () => 'session-1';
 // Starts left pending by holdStarts(), settled by the test in any order
 let pendingStarts: { resolve: (id: string) => void; reject: (err: Error) => void }[] = [];
+// What practice_retry_report does; a test replaces it to hold the call open
+let retryImpl: () => Promise<unknown> = async () => null;
 function holdStarts() {
   startImpl = () => new Promise<string>((resolve, reject) => {
     pendingStarts.push({ resolve, reject });
@@ -59,7 +83,6 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_status') return structuredClone(status);
   if (command === 'practice_list_setups') return structuredClone(setups);
   if (command === 'practice_list_sessions') return structuredClone(sessions);
-  if (command === 'practice_get_session') return structuredClone(RUNNING_DETAIL);
   if (command === 'practice_save_setup') return null;
   if (command === 'practice_delete_session') return null;
   if (command === 'practice_delete_setup') return null;
@@ -70,12 +93,15 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_new_questions') return null;
   if (command === 'practice_cancel_start') return null;
   if (command === 'practice_start') return startImpl();
+  // The resume test opens run-1 (a running session); the report tests open s1
+  if (command === 'practice_get_session') return structuredClone(args?.id === 'run-1' ? RUNNING_DETAIL : detail);
+  if (command === 'practice_retry_report') return retryImpl();
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
 const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
 
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
-mock.module('@tauri-apps/api/core', () => ({ invoke }));
+mock.module('@tauri-apps/api/core', () => ({ invoke, convertFileSrc: (path: string) => `asset://${path}` }));
 mock.module('@tauri-apps/api/event', () => ({
   ...originals.event,
   listen: async (event: string, handler: (e: { payload: unknown }) => void) => {
@@ -169,11 +195,23 @@ function calls(command: string) {
   return invoke.mock.calls.filter(([c]) => c === command);
 }
 
+// True when a node has this text as a direct child, so a row is not matched through its parents
+function hasDirectText(value: string): boolean {
+  return renderer!.root.findAll((n) => n.children.some((c) => c === value)).length > 0;
+}
+
+async function openReport() {
+  await clickButton('Open report');
+  await flush();
+}
+
 beforeEach(async () => {
   status = { ...READY };
   setups = structuredClone([THESIS, INTERVIEW]);
   sessions = structuredClone([SESSION]);
+  detail = structuredClone(DETAIL);
   startImpl = async () => 'session-1';
+  retryImpl = async () => null;
   pendingStarts = [];
   invoke.mockClear();
   toast.error.mockClear();
@@ -384,8 +422,9 @@ describe('Practice page', () => {
   test('ended_switches_to_report', async () => {
     await startCall();
     await emit('practice-state', state('Ended'));
+    await flush();
     expect(tapButtons().length).toBe(0);
-    expect(renderer!.root.findAll((n) => n.type === 'div' && text(n) === 'Report view').length).toBe(1);
+    expect(renderer!.root.findAll((n) => n.type === 'h1' && text(n).startsWith('Thesis defence · ')).length).toBe(1);
   });
 
   test('transcript_lists_this_sessions_turns_when_expanded', async () => {
@@ -448,5 +487,147 @@ describe('Practice page', () => {
     await flush();
     expect(tapButtons().length).toBe(0);
     expect(buttons('Cancel').length).toBe(0);
+  });
+});
+
+describe('Practice report view', () => {
+  test('stats_strip_and_cards_render_counts', async () => {
+    await openReport();
+    expect(hasDirectText('31')).toBe(true);
+    expect(hasDirectText('112')).toBe(true);
+    expect(hasDirectText('6')).toBe(true);
+    expect(hasDirectText('fillers')).toBe(true);
+    expect(hasDirectText('words/min')).toBe(true);
+    expect(hasDirectText('long pauses')).toBe(true);
+
+    const headings = renderer!.root.findAll((n) => n.type === 'h3').map(text);
+    expect(headings).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
+    expect(hasDirectText('um 14 · so basically 9 · like 8')).toBe(true);
+  });
+
+  test('grammar_quote_strikes_only_the_changed_words', async () => {
+    await openReport();
+    const struck = renderer!.root.findAll((n) => String(n.props.className).includes('line-through'));
+    expect(struck.map(text)).toEqual(['will have', 'depend']);
+    const better = renderer!.root.findAll((n) => String(n.props.className).includes('text-emerald-500'));
+    expect(better.map(text)).toContain('If I had more data…');
+  });
+
+  test('echoed_badge_only_when_echoed', async () => {
+    await openReport();
+    const badges = renderer!.root.findAll((n) => n.children.some((c) => c === 'Prof. Weber echoed this'));
+    expect(badges.length).toBe(1);
+  });
+
+  test('play_button_seeks_to_turn_offset', async () => {
+    const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
+    renderer?.unmount();
+    renderer = null;
+    await act(async () => {
+      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
+    });
+    await flush();
+    await openReport();
+
+    expect(renderer!.root.findAll((n) => n.type === 'audio')[0].props.src).toBe('asset://C:/Conclave/practice/s1/you.wav');
+    await clickButton('▶ 06:12');
+    expect(audio.currentTime).toBe(10);
+    expect(audio.play).toHaveBeenCalledTimes(1);
+
+    // The clip is 2 s long (32000 samples at 16 kHz): it pauses once the position passes 12 s
+    const onTimeUpdate = renderer!.root.findAll((n) => n.type === 'audio')[0].props.onTimeUpdate;
+    audio.currentTime = 11.5;
+    await act(async () => onTimeUpdate());
+    expect(audio.pause).not.toHaveBeenCalled();
+    audio.currentTime = 12.1;
+    await act(async () => onTimeUpdate());
+    expect(audio.pause).toHaveBeenCalledTimes(1);
+  });
+
+  test('failed_report_offers_retry', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: 'Claude did not answer' };
+    await openReport();
+    expect(hasDirectText('Claude did not answer')).toBe(true);
+    expect(buttons('Retry').length).toBe(1);
+
+    await clickButton('Retry');
+    await flush();
+    expect(calls('practice_retry_report')[0][1]).toEqual({ sessionId: 's1' });
+  });
+
+  test('meeting_end_reason_shows_the_banner', async () => {
+    detail = { ...detail, summary: { ...detail.summary, end_reason: 'meeting' } };
+    await openReport();
+    expect(hasDirectText('A meeting recording started, so the session ended')).toBe(true);
+  });
+
+  test('transcript_prefers_verbatim_text', async () => {
+    await openReport();
+    await clickButton('Transcript');
+    expect(hasDirectText('Um, if I will have more data')).toBe(true);
+    expect(hasDirectText('If I will have more data')).toBe(false);
+    expect(hasDirectText('Tell me about your thesis.')).toBe(true);
+  });
+
+  test('pending_report_offers_generate', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'pending' }, report: null };
+    await openReport();
+    expect(hasDirectText('Report not generated yet')).toBe(true);
+    await clickButton('Generate report');
+    await flush();
+    expect(calls('practice_retry_report')[0][1]).toEqual({ sessionId: 's1' });
+  });
+
+  test('ready_without_a_report_offers_generate', async () => {
+    detail = { ...detail, report: null };
+    await openReport();
+    const line = renderer!.root.findAll((n) => n.type === 'p' && text(n) === 'The report is missing — Generate report');
+    expect(line.length).toBe(1);
+    expect(buttons('Generate report').length).toBe(1);
+  });
+
+  test('failed_without_an_error_says_so', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: null };
+    await openReport();
+    expect(hasDirectText('The report could not be written')).toBe(true);
+  });
+
+  test('retry_is_disabled_while_the_call_is_in_flight', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: 'Claude did not answer' };
+    await openReport();
+    let release!: () => void;
+    retryImpl = () => new Promise((resolve) => {
+      release = () => resolve(null);
+    });
+    await clickButton('Retry');
+    expect(buttons('Retry')[0].props.disabled).toBe(true);
+    // A second click before the first call returns must not invoke again
+    await clickButton('Retry');
+    expect(calls('practice_retry_report').length).toBe(1);
+
+    await act(async () => release());
+    await flush();
+    expect(buttons('Retry')[0].props.disabled).toBe(false);
+  });
+
+  test('empty_filler_breakdown_says_so', async () => {
+    detail = { ...detail, report: { ...REPORT, fluency: { ...REPORT.fluency, fillers: {}, filler_total: 0 } } };
+    await openReport();
+    expect(hasDirectText('No fillers counted')).toBe(true);
+  });
+
+  test('short_session_shows_less_than_a_minute', async () => {
+    detail = { ...detail, summary: { ...detail.summary, duration_secs: 20 } };
+    await openReport();
+    const heading = renderer!.root.findAll((n) => n.type === 'h1').map(text);
+    expect(heading.length).toBe(1);
+    expect(heading[0].endsWith('· <1 min')).toBe(true);
+  });
+
+  test('struck_quote_has_no_stray_spaces', async () => {
+    await openReport();
+    const quotes = renderer!.root.findAll((n) => n.type === 'p' && text(n).startsWith('“')).map(text);
+    expect(quotes).toContain('“If I will have more data…”');
+    expect(quotes).toContain('“The data depend”');
   });
 });

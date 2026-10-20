@@ -23,7 +23,8 @@ use crate::state::AppState;
 use crate::whisper_engine::WhisperEngine;
 
 use super::audio::read_span;
-use super::claude;
+use super::claude::{self, ClaudeError};
+use super::commands::NOT_WHISPER;
 use super::db::{self, TurnRow};
 use super::files::PRACTICE_FILES;
 use super::prompts::report_prompts;
@@ -31,7 +32,7 @@ use super::report::{
     count_fillers, items_from_json, long_pauses, looks_looped, schema, validate_items, word_count, wpm, Fluency,
     ItemKind, Report, ReportItem,
 };
-use super::{hold_model, LONG_PAUSE_SECS, YOU_WAV_RATE};
+use super::{ModelHold, LONG_PAUSE_SECS, YOU_WAV_RATE};
 
 /// Asks Whisper to write fillers and false starts down, so the transcript keeps them.
 pub const VERBATIM_PROMPT: &str = "Um, uh, so, like, I mean, I- I was, uh, thinking that, you know, we, we had it.";
@@ -39,6 +40,7 @@ pub const VERBATIM_PROMPT: &str = "Um, uh, so, like, I mean, I- I was, uh, think
 const VERBATIM_REDEMPTION_MS: u32 = 300;
 /// How often a waiting job checks whether a meeting recording has stopped.
 const WAIT_POLL: Duration = Duration::from_secs(10);
+const SAVE_FAILED: &str = "Couldn't save the report — Retry";
 
 #[derive(Clone, Serialize)]
 pub struct ReportStatusPayload {
@@ -55,23 +57,32 @@ struct Heard {
 }
 
 /// Runs the report for one session. The claim makes a second run for the same session a no-op.
-pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String) {
+/// `hold` keeps Whisper loaded across the hand-off from the session; the job releases it when done.
+pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String, hold: ModelHold) {
     let pool = app.state::<AppState>().db_manager.pool().clone();
     match db::claim_report(&pool, &session_id).await {
         Ok(true) => {}
-        Ok(false) => return,
-        Err(e) => {
-            warn!("practice: could not start the report: {e}");
+        other => {
+            if let Err(e) = other {
+                warn!("practice: could not start the report: {e}");
+            }
+            drop(hold);
+            dictate::unload_if_idle().await;
             return;
         }
     }
     publish(&app, &session_id, "waiting");
-    while is_recording_now() {
-        tokio::time::sleep(WAIT_POLL).await;
-    }
+    wait_while_recording().await;
     store(&app, &pool, &session_id, "running", None, None).await;
-    let (status, json, error) = finish(analyse(&app, &pool, &session_id).await);
-    store(&app, &pool, &session_id, status, json.as_deref(), error.as_deref()).await;
+    // The analysis runs as its own task, so a panic in it still ends in 'failed'.
+    let job = tauri::async_runtime::spawn(analyse(app.clone(), pool.clone(), session_id.clone(), hold));
+    let result = match job.await {
+        Ok(result) => result,
+        Err(e) => Err(format!("The report stopped unexpectedly: {e}")),
+    };
+    dictate::unload_if_idle().await;
+    let (status, json, error) = finish(result);
+    save_final(&app, &pool, &session_id, status, json, error).await;
 }
 
 /// Maps the job's result to the stored status, report JSON and error. Pure, so the tests can check it.
@@ -82,15 +93,31 @@ pub fn finish(result: Result<Report, String>) -> (&'static str, Option<String>, 
     }
 }
 
-/// Stores a status and tells the UI. A failed write is logged; the UI keeps the last status it saw.
-async fn store<R: Runtime>(
+/// Stores the final status, and tells the UI only once it is saved. A failed write is retried once as 'failed'.
+async fn save_final<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
     session_id: &str,
     status: &'static str,
-    json: Option<&str>,
-    error: Option<&str>,
+    json: Option<String>,
+    error: Option<String>,
 ) {
+    if db::set_report(pool, session_id, status, json.as_deref(), error.as_deref())
+        .await
+        .is_ok()
+    {
+        publish(app, session_id, status);
+        return;
+    }
+    warn!("practice: could not save the report");
+    match db::set_report(pool, session_id, "failed", None, Some(SAVE_FAILED)).await {
+        Ok(()) => publish(app, session_id, "failed"),
+        Err(e) => warn!("practice: could not mark the report failed: {e}"),
+    }
+}
+
+/// Stores a transitional status and tells the UI. A failed write is logged; the UI keeps the last status it saw.
+async fn store<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, session_id: &str, status: &'static str, json: Option<&str>, error: Option<&str>) {
     if let Err(e) = db::set_report(pool, session_id, status, json, error).await {
         warn!("practice: could not store the report status: {e}");
     }
@@ -107,14 +134,21 @@ fn publish<R: Runtime>(app: &AppHandle<R>, session_id: &str, status: &'static st
     );
 }
 
+/// Blocks while a meeting recording runs. The caller publishes the status around the wait.
+async fn wait_while_recording() {
+    while is_recording_now() {
+        tokio::time::sleep(WAIT_POLL).await;
+    }
+}
+
 /// Everything after the claim: the word-for-word pass, the fluency numbers, then Claude's items.
-async fn analyse<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, session_id: &str) -> Result<Report, String> {
-    let (session, turns) = db::get_session(pool, session_id)
+async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: String, hold: ModelHold) -> Result<Report, String> {
+    let (session, turns) = db::get_session(&pool, &session_id)
         .await?
         .ok_or("Session not found")?;
     let folder = session.folder_path.ok_or("Session folder is missing")?;
     let wav = Path::new(&folder).join(PRACTICE_FILES[0]);
-    let heard = word_for_word(app, pool, session_id, &wav, &turns).await;
+    let heard = word_for_word(&app, &pool, &session_id, &wav, &turns, hold).await;
     // The model is released before Claude is called, so an idle engine can unload.
     dictate::unload_if_idle().await;
     let heard = heard?;
@@ -128,7 +162,7 @@ async fn analyse<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, session_id: 
     let timing: Vec<(f64, u32)> = heard.iter().filter_map(|h| h.timing).collect();
     let fluency = fluency(&learner_texts, &timing);
 
-    let key = claude::api_key(pool).await.map_err(|e| e.user_message().to_string())?;
+    let key = claude::api_key(&pool).await.map_err(|e| report_copy(&e).to_string())?;
     let rows: Vec<(i64, &str, &str)> = heard
         .iter()
         .map(|h| (h.idx, h.speaker.as_str(), h.text.as_str()))
@@ -137,19 +171,23 @@ async fn analyse<R: Runtime>(app: &AppHandle<R>, pool: &SqlitePool, session_id: 
     let body = claude::report_body(&system, &user, &schema());
     let text = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), |_| {})
         .await
-        .map_err(|e| e.user_message().to_string())?;
+        .map_err(|e| report_copy(&e).to_string())?;
     parse_report(&text, fluency, &learner)
 }
 
 /// Re-transcribes each learner turn that has audio, word for word, and stores it. Other turns keep their live text.
+/// Before each turn, a meeting recording that has started takes the engine first, so the job waits behind it.
 async fn word_for_word<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
     session_id: &str,
     wav: &Path,
     turns: &[TurnRow],
+    _hold: ModelHold,
 ) -> Result<Vec<Heard>, String> {
-    let _hold = hold_model();
+    if !dictate::engine_is_whisper(app).await {
+        return Err(NOT_WHISPER.to_string());
+    }
     let engine = {
         let _lifecycle = acquire_engine_lifecycle_lock().await;
         get_or_init_whisper(app).await?
@@ -159,11 +197,17 @@ async fn word_for_word<R: Runtime>(
         let mut text = turn.live_text.clone();
         let mut timing = None;
         if let (true, Some(offset), Some(len)) = (turn.speaker == "user", turn.wav_offset, turn.wav_len) {
-            let (spoken, t) = transcribe_span(engine.clone(), wav.to_path_buf(), offset, len).await?;
-            if !looks_looped(&spoken) {
-                text = spoken;
+            if is_recording_now() {
+                store(app, pool, session_id, "waiting", None, None).await;
+                wait_while_recording().await;
+                store(app, pool, session_id, "running", None, None).await;
             }
-            db::set_verbatim(pool, session_id, turn.idx, &text).await?;
+            let (spoken, t) = transcribe_span(engine.clone(), wav.to_path_buf(), offset, len).await?;
+            text = choose_verbatim(&spoken, &text);
+            // A turn with no words at all keeps no verbatim text; the live text stays the only copy.
+            if !text.is_empty() {
+                db::set_verbatim(pool, session_id, turn.idx, &text).await?;
+            }
             timing = Some(t);
         }
         heard.push(Heard {
@@ -176,7 +220,17 @@ async fn word_for_word<R: Runtime>(
     Ok(heard)
 }
 
-/// Reads one turn from you.wav, finds its speech and transcribes it, on a blocking thread.
+/// The stored verbatim text: Whisper's words, or the live text when Whisper's are blank or looped.
+pub fn choose_verbatim(spoken: &str, live: &str) -> String {
+    let spoken = spoken.trim();
+    if spoken.is_empty() || looks_looped(spoken) {
+        live.to_string()
+    } else {
+        spoken.to_string()
+    }
+}
+
+/// Reads one turn from you.wav, finds its speech and transcribes it raw, on a blocking thread.
 async fn transcribe_span(
     engine: Arc<WhisperEngine>,
     wav: PathBuf,
@@ -192,10 +246,9 @@ async fn transcribe_span(
             .map(|s| (s.start_timestamp_ms / 1000.0, s.end_timestamp_ms / 1000.0))
             .collect();
         let timing = (speech_secs, long_pauses(&spans, LONG_PAUSE_SECS));
-        let (text, ..) = tauri::async_runtime::block_on(engine.transcribe_audio_with_confidence(
+        let text = tauri::async_runtime::block_on(engine.transcribe_audio_raw(
             samples,
             Some("en".to_string()),
-            None,
             Some(VERBATIM_PROMPT),
         ))
         .map_err(|e| e.to_string())?;
@@ -203,6 +256,15 @@ async fn transcribe_span(
     })
     .await
     .map_err(|e| e.to_string())?
+}
+
+/// Copy for a Claude failure in the report (R30). Busy, network and stream errors all read as "couldn't reach".
+pub fn report_copy(e: &ClaudeError) -> &'static str {
+    match e {
+        ClaudeError::Busy => "Claude was busy — try again",
+        ClaudeError::NoKey | ClaudeError::Rejected | ClaudeError::Settings => e.user_message(),
+        _ => "Couldn't reach Claude — try again",
+    }
 }
 
 /// Fluency over the learner's texts. `timing` holds (speech seconds, long pauses) for each turn with audio.
@@ -341,5 +403,24 @@ mod tests {
         assert_eq!(f.speech_secs, 15.0);
         assert_eq!(f.long_pauses, 3);
         assert_eq!(f.wpm, 40.0);
+    }
+
+    #[test]
+    fn verbatim_falls_back_to_live_when_blank_or_looped() {
+        assert_eq!(choose_verbatim("  I think so.  ", "live"), "I think so.");
+        assert_eq!(choose_verbatim("", "live words"), "live words");
+        assert_eq!(choose_verbatim(" \n ", "live words"), "live words");
+        assert_eq!(choose_verbatim("the the the the the the", "live words"), "live words");
+        assert_eq!(choose_verbatim("", ""), "");
+    }
+
+    #[test]
+    fn claude_failures_map_to_report_copy() {
+        assert_eq!(report_copy(&ClaudeError::Busy), "Claude was busy — try again");
+        assert_eq!(report_copy(&ClaudeError::Http(500)), "Couldn't reach Claude — try again");
+        assert_eq!(report_copy(&ClaudeError::Stream("max_tokens".into())), "Couldn't reach Claude — try again");
+        assert_eq!(report_copy(&ClaudeError::Cancelled), "Couldn't reach Claude — try again");
+        assert_eq!(report_copy(&ClaudeError::Rejected), ClaudeError::Rejected.user_message());
+        assert_eq!(report_copy(&ClaudeError::NoKey), ClaudeError::NoKey.user_message());
     }
 }

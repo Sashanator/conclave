@@ -38,10 +38,11 @@ use super::tts::{load_voice, Supertonic, Voice};
 use super::{hold_model, ModelHold, TTS_RATE, TTS_SPEED, TTS_STEPS};
 
 const NO_KEY: &str = "Add your Claude API key in Settings to use Practice";
-const NOT_WHISPER: &str = "Practice needs Whisper as the transcription engine (Settings → Transcription)";
+pub(super) const NOT_WHISPER: &str = "Practice needs Whisper as the transcription engine (Settings → Transcription)";
 const BUSY: &str = "Practice is unavailable while a meeting is recording, importing or re-transcribing";
 const RUNNING: &str = "A practice session is already running";
 const NOT_RETRYABLE: &str = "This report cannot be retried now";
+const UNREADABLE_REPORT: &str = "The saved report could not be read — Generate report";
 const CANCELLED: &str = "Cancelled";
 const PREVIEW_TEXT: &str = "Hello, I'm looking forward to our conversation.";
 
@@ -665,6 +666,21 @@ pub async fn practice_list_sessions(state: State<'_, AppState>) -> Result<Vec<Se
     Ok(rows.iter().map(summary_of).collect())
 }
 
+/// The stored report, or the copy for one that cannot be read. An unreadable report never fails the detail view.
+fn stored_report(json: Option<&str>, error: Option<String>) -> (Option<Report>, Option<String>) {
+    match json {
+        None => (None, error),
+        Some(json) => match serde_json::from_str::<Report>(json) {
+            Ok(report) => (Some(report), error),
+            // The parse error can quote report content, so it is not logged.
+            Err(_) => {
+                warn!("practice: a saved report could not be read");
+                (None, Some(UNREADABLE_REPORT.to_string()))
+            }
+        },
+    }
+}
+
 #[tauri::command]
 pub async fn practice_get_session<R: Runtime>(
     app: AppHandle<R>,
@@ -674,11 +690,7 @@ pub async fn practice_get_session<R: Runtime>(
     let (row, turns) = db::get_session(&pool_of(&state), &id)
         .await?
         .ok_or("Session not found")?;
-    let report = row
-        .report_json
-        .as_deref()
-        .map(|json| serde_json::from_str::<Report>(json).map_err(|e| e.to_string()))
-        .transpose()?;
+    let (report, report_error) = stored_report(row.report_json.as_deref(), row.report_error.clone());
     let audio_path = match row.folder_path.as_deref() {
         // A missing or unreadable recording leaves the report usable without audio.
         Some(folder) => allow_audio(&app, folder).unwrap_or_else(|e| {
@@ -692,7 +704,7 @@ pub async fn practice_get_session<R: Runtime>(
         character: row.character.clone(),
         turns,
         report,
-        report_error: row.report_error.clone(),
+        report_error,
         audio_path,
     })
 }
@@ -707,13 +719,13 @@ pub async fn practice_retry_report<R: Runtime>(
     let (row, _) = db::get_session(&pool_of(&state), &session_id)
         .await?
         .ok_or("Session not found")?;
-    if running_id().as_deref() == Some(session_id.as_str()) {
+    if running_id().as_deref() == Some(session_id.as_str()) || row.status == "running" {
         return Err(RUNNING.to_string());
     }
     if !matches!(row.report_status.as_str(), "failed" | "pending") {
         return Err(NOT_RETRYABLE.to_string());
     }
-    tauri::async_runtime::spawn(report_job::run(app, session_id));
+    tauri::async_runtime::spawn(report_job::run(app, session_id, hold_model()));
     Ok(())
 }
 
@@ -731,6 +743,23 @@ pub async fn recover_at_startup<R: Runtime>(app: AppHandle<R>) {
 mod tests {
     use super::*;
     use crate::practice::db::{Material, MaterialMeta, SetupRow};
+    use crate::practice::report::Fluency;
+
+    #[test]
+    fn unreadable_saved_report_is_not_fatal() {
+        let (report, error) = stored_report(Some("{not json"), None);
+        assert!(report.is_none());
+        assert_eq!(error.as_deref(), Some("The saved report could not be read — Generate report"));
+
+        let stored = serde_json::to_string(&Report { version: 1, fluency: Fluency::default(), items: vec![], dropped_items: 0 }).unwrap();
+        let (report, error) = stored_report(Some(&stored), None);
+        assert!(report.is_some());
+        assert!(error.is_none());
+
+        let (report, error) = stored_report(None, Some("x".into()));
+        assert!(report.is_none());
+        assert_eq!(error.as_deref(), Some("x"));
+    }
 
     fn ok_status() -> PracticeStatus {
         PracticeStatus {

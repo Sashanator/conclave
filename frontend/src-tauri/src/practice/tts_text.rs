@@ -1,7 +1,5 @@
 //! Supertonic 3 text front-end: a port of the reference SDK's `UnicodeProcessor`
 //! (supertonic 1.3.1, `core.py`) text preprocessing and unicode indexing.
-// The TTS engine that consumes this module lands in a later task.
-#![allow(dead_code)]
 
 use regex::Regex;
 use unicode_normalization::UnicodeNormalization;

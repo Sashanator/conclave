@@ -1,7 +1,16 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  MATERIAL_MAX_BYTES, NOTICE_TEXT, VOICES, blockedReason, characterName, fitsLimit, formatClock, materialKind, phaseText, planText, type PracticeStatus,
+  MATERIAL_MAX_BYTES, NOTICE_TEXT, VOICES, blockedReason, characterName, fitsLimit, formatClock, materialKind, minutesLabel, phaseText, planText, type PracticeStatus,
 } from '../../src/lib/practice';
+
+describe('minutesLabel', () => {
+  test('under 30 s is less than a minute, else whole minutes', () => {
+    expect(minutesLabel(0)).toBe('<1 min');
+    expect(minutesLabel(29)).toBe('<1 min');
+    expect(minutesLabel(30)).toBe('1 min');
+    expect(minutesLabel(1080)).toBe('18 min');
+  });
+});
 
 describe('formatClock', () => {
   test('minutes and seconds, two digits each, minutes not capped at an hour', () => {

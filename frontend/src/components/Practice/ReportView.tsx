@@ -6,7 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
-  characterName, formatClock, NOTICE_TEXT, YOU_WAV_RATE,
+  characterName, formatClock, minutesLabel, NOTICE_TEXT, YOU_WAV_RATE,
   type ItemKind, type ReportItem, type ReportStatusPayload, type SessionDetail, type TurnRow,
 } from '@/lib/practice';
 
@@ -69,17 +69,16 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   }, [sessionId]);
 
   useEffect(() => {
-    void load();
-  }, [load]);
-
-  useEffect(() => {
     let gone = false;
     let stop: (() => void) | null = null;
+    // The listener is up before the first load, so a report change that lands meanwhile is not missed
     void listen<ReportStatusPayload>('practice-report', (e) => {
       if (e.payload.session_id === sessionId) void load();
     }).then((off) => {
       if (gone) off();
       else stop = off;
+    }).finally(() => {
+      if (!gone) void load();
     });
     return () => {
       gone = true;
@@ -148,8 +147,7 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const s = detail.summary;
   const name = characterName(detail.character);
   const day = new Date(s.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  // Under 30 s would round to "0 min"
-  const length = s.duration_secs < 30 ? '<1 min' : `${Math.round(s.duration_secs / 60)} min`;
+  const length = minutesLabel(s.duration_secs);
   const report = detail.report;
   const fillers = Object.entries(report?.fluency.fillers ?? {}).filter(([, n]) => n > 0).sort(([, a], [, b]) => b - a);
   const generate = (label: string) => (
@@ -238,10 +236,14 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
           <p className="text-muted-foreground">Writing your report…</p>
         ) : s.report_status === 'pending' ? (
           // an interrupted session stays pending: nothing has written a report yet
-          <div className="space-y-3">
-            <p className="text-muted-foreground">Report not generated yet</p>
-            {generate('Generate report')}
-          </div>
+          s.end_reason === null ? (
+            <p className="text-muted-foreground">Finishing the session…</p>
+          ) : (
+            <div className="space-y-3">
+              <p className="text-muted-foreground">Report not generated yet</p>
+              {generate('Generate report')}
+            </div>
+          )
         ) : s.report_status === 'waiting' ? (
           <p className="text-muted-foreground">Waiting for the meeting recording to finish…</p>
         ) : (

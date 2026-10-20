@@ -80,6 +80,7 @@ function holdStarts() {
 }
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
+  trace.push(`invoke:${command}`);
   if (command === 'practice_status') return structuredClone(status);
   if (command === 'practice_list_setups') return structuredClone(setups);
   if (command === 'practice_list_sessions') return structuredClone(sessions);
@@ -101,10 +102,13 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
 const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
 
 const listeners = new Map<string, (e: { payload: unknown }) => void>();
+// Order of listen() and invoke() calls, so a test can check one happened before the other
+const trace: string[] = [];
 mock.module('@tauri-apps/api/core', () => ({ invoke, convertFileSrc: (path: string) => `asset://${path}` }));
 mock.module('@tauri-apps/api/event', () => ({
   ...originals.event,
   listen: async (event: string, handler: (e: { payload: unknown }) => void) => {
+    trace.push(`listen:${event}`);
     listeners.set(event, handler);
     return () => {
       if (listeners.get(event) === handler) listeners.delete(event);
@@ -252,6 +256,14 @@ describe('Practice page', () => {
   test('a session row shows the date, the minutes and the summary', () => {
     const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
     expect(lines.some((l) => l.includes('18 min') && l.includes('4 grammar · 31 fillers'))).toBe(true);
+  });
+
+  test('a session under 30 s lists as less than a minute', async () => {
+    sessions = [{ ...SESSION, duration_secs: 20 }];
+    await mount();
+    const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
+    expect(lines.some((l) => l.includes('<1 min'))).toBe(true);
+    expect(lines.some((l) => l.includes('0 min'))).toBe(false);
   });
 
   test('editor_validates_name_and_saves', async () => {
@@ -622,6 +634,31 @@ describe('Practice report view', () => {
     const heading = renderer!.root.findAll((n) => n.type === 'h1').map(text);
     expect(heading.length).toBe(1);
     expect(heading[0].endsWith('· <1 min')).toBe(true);
+  });
+
+  test('a session still finishing says so, without a Generate button', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'pending', end_reason: null }, report: null };
+    await openReport();
+    expect(hasDirectText('Finishing the session…')).toBe(true);
+    expect(buttons('Generate report').length).toBe(0);
+  });
+
+  test('the report that lands while the session finishes replaces the wait with Generate', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'pending', end_reason: null }, report: null };
+    await openReport();
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'pending', end_reason: 'user' }, report: null };
+    await emit('practice-report', { session_id: 's1', status: 'pending' });
+    await flush();
+    expect(hasDirectText('Finishing the session…')).toBe(false);
+    expect(buttons('Generate report').length).toBe(1);
+  });
+
+  test('the report listener is registered before the session is loaded', async () => {
+    trace.length = 0;
+    await openReport();
+    const listened = trace.indexOf('listen:practice-report');
+    expect(listened).toBeGreaterThanOrEqual(0);
+    expect(listened).toBeLessThan(trace.indexOf('invoke:practice_get_session'));
   });
 
   test('struck_quote_has_no_stray_spaces', async () => {

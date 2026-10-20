@@ -118,9 +118,19 @@ impl Indexer {
 
 /// Maps the text (steps 1-5), then drops chars the model cannot speak.
 /// Mapping runs first so that `@`, dashes and curly quotes survive as their
-/// supported replacements. Logs only the number of dropped chars.
+/// supported replacements. Whitespace becomes ' ' first, so line breaks are not
+/// glued together when the indexer marks them -1. Logs only the number of dropped chars.
 pub fn supported_only(text: &str, idx: &Indexer) -> String {
-    let mapped = map_chars(text);
+    let mapped: String = map_chars(text)
+        .chars()
+        .map(|c| {
+            if c.is_whitespace() || ('\x1c'..='\x1f').contains(&c) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
     let kept: String = mapped.chars().filter(|&c| idx.id(c).is_some()).collect();
     let dropped = mapped.chars().count() - kept.chars().count();
     if dropped > 0 {
@@ -170,6 +180,25 @@ mod tests {
     }
 
     #[test]
+    fn supported_only_turns_line_breaks_into_spaces() {
+        // Real indexer: '\n', '\t', '\r' and friends are -1; only ' ' is supported.
+        let mut v = vec![0i64; 128];
+        for c in ['\n', '\t', '\r', '\x0b', '\x0c', '\x1c'] {
+            v[c as usize] = -1;
+        }
+        let idx = Indexer(v);
+        assert_eq!(supported_only("a\nb\tc", &idx), "a b c");
+        assert_eq!(
+            preprocess(&supported_only("Hello\r\nworld", &idx), "en"),
+            "<en>Hello world.</en>"
+        );
+        assert_eq!(
+            preprocess(&supported_only("a\nb\tc", &idx), "en"),
+            "<en>a b c.</en>"
+        );
+    }
+
+    #[test]
     fn from_json_rejects_empty_and_non_list() {
         assert!(Indexer::from_json(b"[]").is_err());
         assert!(Indexer::from_json(b"{}").is_err());
@@ -185,6 +214,7 @@ mod tests {
         let dir = std::env::var("PRACTICE_MODELS_DIR").expect("set PRACTICE_MODELS_DIR");
         let bytes = std::fs::read(std::path::Path::new(&dir).join("unicode_indexer.json")).unwrap();
         let idx = Indexer::from_json(&bytes).unwrap();
+        assert_eq!(supported_only("Hello\nworld\tok", &idx), "Hello world ok");
         for case in fixture() {
             let pre = case["pre"].as_str().unwrap();
             let expected: Vec<i64> = case["ids"]

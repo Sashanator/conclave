@@ -104,6 +104,22 @@ pub const FILES: [ModelFile; 16] = [
     },
 ];
 
+/// Pronunciation hints: HuBERT phoneme model and CMU dictionary. Same folder as the voices.
+pub const PRON_FILES: [ModelFile; 2] = [
+    ModelFile {
+        name: "hubert_phoneme_int8.onnx",
+        url: "https://huggingface.co/ron-jo/hubert-base-phoneme-en-onnx/resolve/bbc279477648b3b7de4ec1375707d041617dbd3e/hubert_phoneme_int8.onnx",
+        bytes: 121951866,
+        sha256: "af7a194be47549c8cfe0055220e52498b270773ad3d77483e0e0c9dd101a0dbb",
+    },
+    ModelFile {
+        name: "cmudict.dict",
+        url: "https://raw.githubusercontent.com/cmusphinx/cmudict/74790861f652b15e4ac49015a90074ad62a27690/cmudict.dict",
+        bytes: 3618488,
+        sha256: "81917843c7f44ce2b094ac63873c2c7a4cf802040792c455ba3ca406891c3d22",
+    },
+];
+
 static DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// Set once at startup. The first call wins.
@@ -117,30 +133,51 @@ pub fn dir() -> Option<PathBuf> {
 
 /// Cheap check for each Practice start: a metadata read per file. The hash is checked by `download_one`.
 pub fn voices_present() -> bool {
-    dir().is_some_and(|dir| present_in(&dir))
+    dir().is_some_and(|dir| present_in(&dir, &FILES))
 }
 
-fn present_in(dir: &Path) -> bool {
-    FILES
+pub fn pron_present() -> bool {
+    dir().is_some_and(|dir| present_in(&dir, &PRON_FILES))
+}
+
+fn present_in(dir: &Path, files: &[ModelFile]) -> bool {
+    files
         .iter()
         .all(|m| std::fs::metadata(dir.join(m.name)).is_ok_and(|meta| meta.len() == m.bytes))
 }
 
 /// Downloads every missing or unverified file in `FILES`, then returns the folder.
 /// `progress(downloaded, total)` counts bytes across all 16 files.
-pub async fn ensure_voices(mut progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
+pub async fn ensure_voices(progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
     let folder = dir().ok_or("the practice models folder is not set")?;
+    download_all(&FILES, &folder, progress).await?;
+    Ok(folder)
+}
+
+/// Downloads every missing or unverified file in `PRON_FILES`, then returns the folder.
+/// `progress(downloaded, total)` counts bytes across both files.
+pub async fn ensure_pron_models(progress: impl FnMut(u64, u64)) -> Result<PathBuf, String> {
+    let folder = dir().ok_or("the practice models folder is not set")?;
+    download_all(&PRON_FILES, &folder, progress).await?;
+    Ok(folder)
+}
+
+async fn download_all(
+    files: &[ModelFile],
+    folder: &Path,
+    mut progress: impl FnMut(u64, u64),
+) -> Result<(), String> {
     let client = download_client();
-    let total: u64 = FILES.iter().map(|m| m.bytes).sum();
+    let total: u64 = files.iter().map(|m| m.bytes).sum();
     let mut base = 0;
-    for model in &FILES {
-        download_one(&client, model, &folder, |done, _| {
+    for model in files {
+        download_one(&client, model, folder, |done, _| {
             progress(base + done, total)
         })
         .await?;
         base += model.bytes;
     }
-    Ok(folder)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -180,7 +217,7 @@ mod tests {
     #[test]
     fn voices_present_checks_sizes() {
         let dir = tempfile::tempdir().unwrap();
-        assert!(!present_in(dir.path()), "empty folder");
+        assert!(!present_in(dir.path(), &FILES), "empty folder");
         for m in &FILES {
             // Sparse files: the size is what matters here, and no bytes are written.
             std::fs::File::create(dir.path().join(m.name))
@@ -188,12 +225,65 @@ mod tests {
                 .set_len(m.bytes)
                 .unwrap();
         }
-        assert!(present_in(dir.path()), "every file at its pinned size");
+        assert!(
+            present_in(dir.path(), &FILES),
+            "every file at its pinned size"
+        );
         std::fs::File::create(dir.path().join(FILES[0].name))
             .unwrap()
             .set_len(FILES[0].bytes - 1)
             .unwrap();
-        assert!(!present_in(dir.path()), "one file one byte short");
+        assert!(!present_in(dir.path(), &FILES), "one file one byte short");
+    }
+
+    #[test]
+    fn pron_urls_are_pinned() {
+        assert_eq!(
+            PRON_FILES[0].url,
+            "https://huggingface.co/ron-jo/hubert-base-phoneme-en-onnx/resolve/bbc279477648b3b7de4ec1375707d041617dbd3e/hubert_phoneme_int8.onnx"
+        );
+        assert_eq!(
+            PRON_FILES[1].url,
+            "https://raw.githubusercontent.com/cmusphinx/cmudict/74790861f652b15e4ac49015a90074ad62a27690/cmudict.dict"
+        );
+        for m in &PRON_FILES {
+            assert!(m.url.starts_with("https://"), "{} must be https", m.name);
+        }
+    }
+
+    #[test]
+    fn pron_present_checks_sizes() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!present_in(dir.path(), &PRON_FILES), "empty folder");
+        for m in &PRON_FILES {
+            std::fs::File::create(dir.path().join(m.name))
+                .unwrap()
+                .set_len(m.bytes)
+                .unwrap();
+        }
+        assert!(
+            present_in(dir.path(), &PRON_FILES),
+            "every file at its pinned size"
+        );
+        std::fs::File::create(dir.path().join(PRON_FILES[1].name))
+            .unwrap()
+            .set_len(PRON_FILES[1].bytes - 1)
+            .unwrap();
+        assert!(
+            !present_in(dir.path(), &PRON_FILES),
+            "one file one byte short"
+        );
+    }
+
+    #[tokio::test]
+    #[ignore] // Live: downloads about 125 MB from huggingface.co and raw.githubusercontent.com. Run with PRACTICE_MODELS_DIR set.
+    async fn live_download_pron() {
+        let folder = std::env::var("PRACTICE_MODELS_DIR").expect("set PRACTICE_MODELS_DIR");
+        set_dir(PathBuf::from(folder));
+        ensure_pron_models(|_, _| {})
+            .await
+            .expect("download the pronunciation files");
+        assert!(pron_present());
     }
 
     #[tokio::test]

@@ -45,7 +45,7 @@ const REPORT: Report = {
   fluency: { fillers: { um: 14, 'so basically': 9, like: 8 }, filler_total: 31, words: 1200, speech_secs: 640, wpm: 112.4, long_pauses: 6 },
   items: [
     { kind: 'Grammar', turn: 3, quote: 'If I will have more data…', better: 'If I had more data…', note: 'Past simple after "if".', echoed: true },
-    { kind: 'Grammar', turn: 5, quote: 'It depend on the data', better: 'It depends on the data', note: 'Third person singular.', echoed: false },
+    { kind: 'Grammar', turn: 5, quote: 'The data depend', better: 'The data depends', note: 'Third person singular.', echoed: false },
     { kind: 'Unnatural', turn: 7, quote: 'I made a research about it', better: 'I did some research on it', note: 'Native speakers "do" research.', echoed: false },
     { kind: 'Clarity', turn: 9, quote: 'So basically the idea was that, well, the baseline', better: 'The baseline missed long-range links.', note: 'Shorter.', echoed: false },
   ],
@@ -68,6 +68,8 @@ let detail: SessionDetail;
 let startImpl: () => Promise<unknown> = async () => 'session-1';
 // Starts left pending by holdStarts(), settled by the test in any order
 let pendingStarts: { resolve: (id: string) => void; reject: (err: Error) => void }[] = [];
+// What practice_retry_report does; a test replaces it to hold the call open
+let retryImpl: () => Promise<unknown> = async () => null;
 function holdStarts() {
   startImpl = () => new Promise<string>((resolve, reject) => {
     pendingStarts.push({ resolve, reject });
@@ -89,7 +91,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_cancel_start') return null;
   if (command === 'practice_start') return startImpl();
   if (command === 'practice_get_session') return structuredClone(detail);
-  if (command === 'practice_retry_report') return null;
+  if (command === 'practice_retry_report') return retryImpl();
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
 const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
@@ -175,6 +177,7 @@ beforeEach(async () => {
   sessions = structuredClone([SESSION]);
   detail = structuredClone(DETAIL);
   startImpl = async () => 'session-1';
+  retryImpl = async () => null;
   pendingStarts = [];
   invoke.mockClear();
   toast.error.mockClear();
@@ -417,5 +420,66 @@ describe('Practice report view', () => {
     expect(hasText('If I will have more data')).toBe(false);
     expect(hasText('Tell me about your thesis.')).toBe(true);
   });
-});
 
+  test('pending_report_offers_generate', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'pending' }, report: null };
+    await openReport();
+    expect(hasText('Report not generated yet')).toBe(true);
+    await clickButton('Generate report');
+    await flush();
+    expect(calls('practice_retry_report')[0][1]).toEqual({ sessionId: 's1' });
+  });
+
+  test('ready_without_a_report_offers_generate', async () => {
+    detail = { ...detail, report: null };
+    await openReport();
+    const line = renderer!.root.findAll((n) => n.type === 'p' && text(n) === 'The report is missing — Generate report');
+    expect(line.length).toBe(1);
+    expect(buttons('Generate report').length).toBe(1);
+  });
+
+  test('failed_without_an_error_says_so', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: null };
+    await openReport();
+    expect(hasText('The report could not be written')).toBe(true);
+  });
+
+  test('retry_is_disabled_while_the_call_is_in_flight', async () => {
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: 'Claude did not answer' };
+    await openReport();
+    let release!: () => void;
+    retryImpl = () => new Promise((resolve) => {
+      release = () => resolve(null);
+    });
+    await clickButton('Retry');
+    expect(buttons('Retry')[0].props.disabled).toBe(true);
+    // A second click before the first call returns must not invoke again
+    await clickButton('Retry');
+    expect(calls('practice_retry_report').length).toBe(1);
+
+    await act(async () => release());
+    await flush();
+    expect(buttons('Retry')[0].props.disabled).toBe(false);
+  });
+
+  test('empty_filler_breakdown_says_so', async () => {
+    detail = { ...detail, report: { ...REPORT, fluency: { ...REPORT.fluency, fillers: {}, filler_total: 0 } } };
+    await openReport();
+    expect(hasText('No fillers counted')).toBe(true);
+  });
+
+  test('short_session_shows_less_than_a_minute', async () => {
+    detail = { ...detail, summary: { ...detail.summary, duration_secs: 20 } };
+    await openReport();
+    const heading = renderer!.root.findAll((n) => n.type === 'h1').map(text);
+    expect(heading.length).toBe(1);
+    expect(heading[0].endsWith('· <1 min')).toBe(true);
+  });
+
+  test('struck_quote_has_no_stray_spaces', async () => {
+    await openReport();
+    const quotes = renderer!.root.findAll((n) => n.type === 'p' && text(n).startsWith('“')).map(text);
+    expect(quotes).toContain('“If I will have more data…”');
+    expect(quotes).toContain('“The data depend”');
+  });
+});

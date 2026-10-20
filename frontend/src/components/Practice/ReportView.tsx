@@ -36,7 +36,10 @@ function Quote({ item }: { item: ReportItem }) {
   const { head, changed, tail } = changedParts(item.quote, item.better);
   return (
     <>
-      {head} {changed && <span className="line-through text-destructive">{changed}</span>} {tail}
+      {head && `${head} `}
+      {changed && <span className="line-through text-destructive">{changed}</span>}
+      {changed && tail && ' '}
+      {tail}
     </>
   );
 }
@@ -84,11 +87,20 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     };
   }, [sessionId, load]);
 
+  // Retry and Generate report share one call; the ref drops a second click before the disabled state renders
+  const [busy, setBusy] = useState(false);
+  const inFlight = useRef(false);
   const retry = async () => {
+    if (inFlight.current) return;
+    inFlight.current = true;
+    setBusy(true);
     try {
       await invoke('practice_retry_report', { sessionId });
     } catch (err) {
       toast.error('Could not retry the report', { description: String(err) });
+    } finally {
+      inFlight.current = false;
+      setBusy(false);
     }
     void load();
   };
@@ -136,7 +148,13 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const s = detail.summary;
   const name = characterName(detail.character);
   const day = new Date(s.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  // Under 30 s would round to "0 min"
+  const length = s.duration_secs < 30 ? '<1 min' : `${Math.round(s.duration_secs / 60)} min`;
   const report = detail.report;
+  const fillers = Object.entries(report?.fluency.fillers ?? {}).filter(([, n]) => n > 0).sort(([, a], [, b]) => b - a);
+  const generate = (label: string) => (
+    <Button size="sm" disabled={busy} onClick={retry}>{label}</Button>
+  );
 
   return (
     <div className="h-full overflow-y-auto">
@@ -145,7 +163,7 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
         <audio ref={audioRef} src={detail.audio_path ? convertFileSrc(detail.audio_path) : undefined} preload="auto" onTimeUpdate={pauseAtClipEnd} />
 
         <div className="space-y-2">
-          <h1 className="text-3xl font-bold">{`${s.setup_name} · ${day} · ${Math.round(s.duration_secs / 60)} min`}</h1>
+          <h1 className="text-3xl font-bold">{`${s.setup_name} · ${day} · ${length}`}</h1>
           {s.end_reason === 'meeting' && <p className="text-sm text-muted-foreground">{NOTICE_TEXT.MeetingStarted}</p>}
           {s.end_reason === 'interrupted' && <p className="text-sm text-muted-foreground">This session was interrupted (Conclave closed)</p>}
         </div>
@@ -207,24 +225,30 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
             <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-2">
               <h3 className="text-lg font-semibold text-foreground">Fillers and fluency</h3>
               <p className="text-sm text-muted-foreground">
-                {Object.entries(report.fluency.fillers)
-                  .filter(([, n]) => n > 0)
-                  .sort(([, a], [, b]) => b - a)
-                  .map(([word, n]) => `${word} ${n}`)
-                  .join(' · ')}
+                {fillers.length ? fillers.map(([word, n]) => `${word} ${n}`).join(' · ') : 'No fillers counted'}
               </p>
             </section>
           </>
         ) : s.report_status === 'failed' ? (
           <div className="space-y-3">
-            <p className="text-sm text-destructive">{detail.report_error}</p>
-            <Button size="sm" onClick={retry}>Retry</Button>
+            <p className="text-sm text-destructive">{detail.report_error || 'The report could not be written'}</p>
+            {generate('Retry')}
           </div>
         ) : s.report_status === 'running' ? (
           <p className="text-muted-foreground">Writing your report…</p>
-        ) : s.report_status === 'ready' ? null : (
-          // pending has no state of its own yet, so it reads as waiting
+        ) : s.report_status === 'pending' ? (
+          // an interrupted session stays pending: nothing has written a report yet
+          <div className="space-y-3">
+            <p className="text-muted-foreground">Report not generated yet</p>
+            {generate('Generate report')}
+          </div>
+        ) : s.report_status === 'waiting' ? (
           <p className="text-muted-foreground">Waiting for the meeting recording to finish…</p>
+        ) : (
+          <p className="flex flex-wrap items-center gap-2 text-muted-foreground">
+            {'The report is missing — '}
+            {generate('Generate report')}
+          </p>
         )}
       </div>
     </div>

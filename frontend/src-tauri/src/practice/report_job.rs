@@ -222,12 +222,19 @@ async fn word_for_word<R: Runtime>(
                     wait_while_recording().await;
                     store(app, pool, session_id, "running", None, None).await;
                 }
-                spoken.push(
-                    engine
-                        .transcribe_audio_raw(samples, Some("en".to_string()), Some(VERBATIM_PROMPT))
-                        .await
-                        .map_err(|e| e.to_string())?,
-                );
+                // Whisper inference is synchronous, so it runs on a blocking thread, not a Tokio worker.
+                let worker = engine.clone();
+                let text = tokio::task::spawn_blocking(move || {
+                    tauri::async_runtime::block_on(worker.transcribe_audio_raw(
+                        samples,
+                        Some("en".to_string()),
+                        Some(VERBATIM_PROMPT),
+                    ))
+                })
+                .await
+                .map_err(|e| e.to_string())?
+                .map_err(|e| e.to_string())?;
+                spoken.push(text);
             }
             text = choose_verbatim(&spoken, &text);
             // A turn with no words at all keeps no verbatim text; the live text stays the only copy.

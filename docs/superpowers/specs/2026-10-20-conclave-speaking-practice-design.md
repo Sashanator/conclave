@@ -4,6 +4,8 @@ Date: 2026-10-20. Status: draft for review. Branch `practice`.
 
 Marking: **(user)** means the user decided it in brainstorming. **(call)** means the designer decided it and the user can overrule it. Unmarked items follow from these or from Conclave's existing rules.
 
+The user approved this design on 2026-10-20, then chose Supertonic 3 for TTS and decided to skip the pre-plan spike (§5.2, §7).
+
 ## 1. Intent
 
 The user speaks English as a second language and wants to practise spoken English for **job interviews** and the **defence of their master's thesis**, plus casual conversation **(user)**. Today they use ChatGPT voice mode, and it fails them in three ways **(user)**:
@@ -83,7 +85,7 @@ Success looks like this: the user picks Practice over ChatGPT voice mode for int
   The plan must list every touch point so that removal is a short checklist.
 - **No telemetry.** New outbound hosts:
   - `api.anthropic.com`, already allowed.
-  - The TTS model host, pinned URL plus SHA-256 like `speakers/models.rs`.
+  - `huggingface.co` for the Supertonic files (already an allowed model host for the speaker models), with a pinned revision and SHA-256 like `speakers/models.rs`.
 
   Both go into `docs/network-calls.md`. The no-phone-home deny-list must stay clean.
 - **Installer stays under about 100 MB.** Models download on first use.
@@ -109,7 +111,7 @@ Success looks like this: the user picks Practice over ChatGPT voice mode for int
   - **Character:** free text, e.g. "Prof. Weber, strict examiner".
   - **The situation:** free text, the user's own words.
   - **Material** (optional): add PDF, `.txt` or `.md` files, or paste text; each shows as a chip with ✕.
-  - **Voice:** a dropdown of the TTS model's English voices, with ▶ preview.
+  - **Voice:** a dropdown of the 10 Supertonic voices, with ▶ preview. Each setup has its own voice **(user)**.
 
   Buttons: Save, Cancel, Delete setup. The mockup's Language field is dropped in phase 1: English is fixed **(call)**.
 - **Material limits:** total material per setup up to 20 MB and within Claude's PDF limit of 600 pages **(call)**. The editor refuses larger files with a clear message.
@@ -191,17 +193,23 @@ tap ─▶ mic capture ─▶ tap ─▶ resample 16 kHz ─▶ Whisper (en)
 - **Speaking:** the stream is split into sentences. Each finished sentence goes to TTS at once, and playback starts after the first sentence. Barge-in cancels the HTTP stream, the TTS queue and playback.
 - **Playback:** a Rust-side output stream on the default output device. The playback component is the builder's choice. There is no existing speech playback (only a silent Bluetooth wake stream, `audio/recording_manager.rs:63`).
 
-### 5.2 TTS (local)
+### 5.2 TTS (local): Supertonic 3 (user)
 
-- **Default:** Kokoro-82M as an ONNX model through the bundled ONNX Runtime. DirectML first with CPU fallback, using the same pattern as `speakers/runtime.rs:91-136`.
-  - English voices only.
-  - The model and voices download on first use from a pinned host with SHA-256 checks, using the `speakers/models.rs` downloader pattern, into `app_data/models/practice/`.
-- **Phase-0 spike (§7):** Kokoro needs text-to-phoneme conversion, and its usual helper, espeak-ng, is a GPL C library that is awkward to bundle on Windows. The spike picks one of:
-  - Kokoro with a Windows-friendly converter (a dictionary plus a fallback, or bundled espeak-ng; GPL is acceptable for this personal app);
-  - another local TTS that needs no espeak.
-
-  The result is recorded in this spec before the plan is written.
-- **Requirements:** first audio of a sentence within about 300 ms on the user's GPU; at least 4 distinct English voices (male/female, US/UK); no cloud.
+- **Engine:** Supertonic 3 (Supertone, Hugging Face `Supertone/supertonic-3`), run through the bundled ONNX Runtime **(user chose it after listening to samples, 2026-10-20)**.
+  - It is a four-graph pipeline: duration predictor → text encoder → vector estimator (run N times, default 8 steps) → vocoder. Output is 44.1 kHz.
+  - Its text front-end needs no phonemizer: NFKD normalisation plus a `unicode_indexer.json` lookup. So there is no espeak-ng, and technical words such as "hyperparameter" or "PyTorch" need no dictionary.
+  - It also speaks German, ready for later.
+  - Licence: BigScience OpenRAIL-M (use-based restrictions; fine for this personal app).
+- **Why not Kokoro:** tested 2026-10-20. Without espeak-ng, Kokoro's misaki front-end cannot pronounce "hyperparameter", "tokenizer", "backpropagation", "PyTorch" or "Kubernetes". Bundling espeak-ng means a GPL C library.
+- **Why not VoiceStudio or OmniVoice:** a separate Python/Electron app, and a PyTorch model with no ONNX build.
+- **Runtime:** use the same session pattern as `speakers/runtime.rs:91-136`, DirectML first with CPU fallback.
+  - Port the Python SDK's pipeline (package `supertonic` 1.3.1) to Rust: text normalisation and indexing, chunking, the four graphs, voice-style loading.
+  - Unit tests compare the Rust port with outputs from the reference SDK.
+- **Models:** the files download on first use from a pinned Hugging Face revision with SHA-256 checks, using the `speakers/models.rs` downloader pattern, into `app_data/models/practice/`. About 400 MB fp32; a smaller int8 export is the builder's call if quality holds.
+- **Voices:** the 10 built-in voice styles (M1–M5, F1–F5), each one a voice choice.
+  - **Each setup has its own voice (user).** The setup editor's Voice dropdown lists them with friendly labels and ▶ preview.
+  - The three seeded setups use three different voices.
+- **Measured:** on the container's slow CPU, the first short sentence took about 0.8 s and the realtime factor was 0.26 (`.superpowers/practice-spike/`). On the user's PC, with DirectML or a faster CPU, the target is first audio of a sentence within about 300 ms. Measuring this is part of the first Windows check (§7).
 
 ### 5.3 Preparation (material attached)
 
@@ -222,8 +230,8 @@ tap ─▶ mic capture ─▶ tap ─▶ resample 16 kHz ─▶ Whisper (en)
 1. **Word-for-word re-transcription.**
    - Each user turn is re-transcribed from `you.wav` with English forced and a disfluency prompt (e.g. "Um, uh, so, like, I mean…") so fillers and false starts stay.
    - This text is stored as the turn's *verbatim* text and is what the report and transcript use. The live text is kept only for the conversation itself.
-   - The exact settings are tuned in the phase-0 spike.
-   - **Known risk:** prompts like this can make Whisper hallucinate or loop. The spike measures it. A suspected loop (repeated n-grams) falls back to the live text for that turn.
+   - The exact settings are tuned after the first real sessions (§7).
+   - **Known risk:** prompts like this can make Whisper hallucinate or loop. A suspected loop (repeated n-grams) falls back to the live text for that turn.
 2. **Fluency metrics,** computed in Rust:
    - **Fillers:** counts per filler from a fixed list (um, uh, er, like, you know, so basically, I mean, kind of, sort of). Exact rules (e.g. "like" only as a filler) are the builder's.
    - **Words per minute:** words divided by speech time in the user's turns.
@@ -289,15 +297,13 @@ Fixed in code, no settings in phase 1 **(call; user asked about effort, see §5.
   - Show a rough cost per session next to each choice.
   - Phase 1 keeps the fixed choices from §5.6 as the defaults.
 
-## 7. Phase 0: spike before the plan (throwaway)
+## 7. No spike first; tune after the first real sessions (user)
 
-1. **TTS on Windows:** settle §5.2 (converter choice, first-audio latency, voices, VRAM).
-2. **Haiku 5.5 in role:** measure time to first token from the user's PC, and check role-keeping and light recasts on a scripted 10-turn thesis defence. If it fails, try Sonnet 5.5 with thinking off (`between_tools`).
-3. **Word-for-word transcription:**
-   - The user reads 10 prepared sentences with deliberate mistakes and fillers.
-   - Compare plain Whisper with the disfluency-prompt settings: how many mistakes and fillers survive, and any hallucination.
+The user chose to ship phase 1 and adjust afterwards, rather than run a pre-plan spike. The spike scripts stay in `.superpowers/practice-spike/` (untracked) for later use. Things to check during the user's first sessions on Windows, each a cheap, local change:
 
-The spike results update this spec (§5.2, §5.4, §5.6) before planning. Items 2 and 3 need the user's PC, Claude key and voice. The spike delivers small scripts, and the user runs them (about 30 minutes).
+1. **Speed:** time from the tap to the first spoken word, measured and logged per turn (Whisper, the first token, the first sentence, TTS). If the conversation model is too slow or drops its role, the fallback is Sonnet 5.5 with thinking off (`between_tools`).
+2. **Word-for-word transcription:** whether the disfluency prompt keeps fillers and mistakes without hallucinating. Tune the prompt and settings in §5.4. The recording script (`practice_spike.py record`) and the whisper.cpp comparison script are ready if needed.
+3. **Voice speed:** TTS latency on DirectML vs CPU, and whether 8 diffusion steps can drop to 5 to save time.
 
 ## 8. Left to the builder
 

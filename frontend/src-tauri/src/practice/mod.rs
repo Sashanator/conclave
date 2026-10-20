@@ -3,12 +3,14 @@
 //! Removal checklist (checked against the tree on 2026-10-20):
 //! 1. Delete `frontend/src-tauri/src/practice/`, `frontend/src/app/practice/`, `frontend/src/components/Practice/`,
 //!    `frontend/src/lib/practice.ts`, `frontend/tests/components/practice-page.test.tsx`,
-//!    `frontend/tests/lib/practice.test.ts` and `frontend/src-tauri/tests/fixtures/practice/`.
+//!    `frontend/tests/components/practice-models-card.test.tsx`, `frontend/tests/lib/practice.test.ts` and
+//!    `frontend/src-tauri/tests/fixtures/practice/`. The `pron*.rs` files and
+//!    `settings.rs` live inside the folder, so they need no step of their own.
 //!    Keep `frontend/src-tauri/migrations/20261020000000_practice.sql`: an applied migration must stay in the source.
 //! 2. `frontend/src-tauri/src/lib.rs`: the `mod practice;` line; the `practice::models::set_dir` line in setup, and the
 //!    "speaker ID and Practice stay off" log text next to it; the `practice::commands::recover_at_startup` spawn with its
-//!    comment; the `practice::settings::load_at_startup` line; the 18 `practice::commands::practice_*` and the 2
-//!    `practice::settings::practice_*` entries in `generate_handler!`.
+//!    comment; the `practice::settings::load_at_startup` line; the 19 `practice::commands::practice_*` and the 2
+//!    `practice::settings::practice_*` entries (21 handlers) in `generate_handler!`.
 //! 3. `frontend/src-tauri/src/dictate/mod.rs`, `keeps_model_loaded`: drop the `|| crate::practice::holds_model()` clause and
 //!    the Practice part of its doc comment.
 //! 3a. `frontend/src-tauri/src/whisper_engine/whisper_engine.rs`: remove `transcribe_audio_raw` and fold `transcribe_inner`
@@ -20,9 +22,11 @@
 //!    `Cargo.lock`.
 //! 7. A new migration: `DROP TABLE practice_turns; DROP TABLE practice_sessions; DROP TABLE practice_materials;
 //!    DROP TABLE practice_setups;` (never edit the old one).
-//! 8. `docs/network-calls.md`: the two Practice rows (huggingface.co, api.anthropic.com); `AGENTS.md`: the Practice Layout row.
-//! 9. Data left behind: session folders in `conclave-recordings`, and the voices in `models/practice` under app data.
-//!    Both stay on disk for the user to delete.
+//! 8. `docs/network-calls.md`: the Practice rows: Supertonic (huggingface.co), the two pronunciation rows
+//!    (huggingface.co `hubert_phoneme_int8.onnx`, raw.githubusercontent.com `cmudict.dict`) and the `practice/claude.rs`
+//!    row (api.anthropic.com); `AGENTS.md`: the Practice Layout row.
+//! 9. Data left behind, for the user to delete: session folders in `conclave-recordings`, the voices and pronunciation
+//!    files in `models/practice` under app data, and `practice.json` (the tauri-store settings file).
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -77,7 +81,7 @@ pub const PRON_MIN_CHUNK_SECS: f64 = 0.3;
 pub const PRON_MAX_CHUNK_SECS: f64 = 20.0;
 /// One model output frame is 20 ms.
 pub const PRON_FRAME_SECS: f64 = 0.02;
-/// GOP-like penalty for an out-of-vocabulary word's wildcard state (below the best non-[UNK] column).
+/// GOP-like penalty for an out-of-vocabulary word's wildcard state (below the best column among ids 0..=BLANK, [UNK] included).
 pub const PRON_WILDCARD_PENALTY: f32 = 1.5;
 /// Hint spans are padded by this much on each side, so the ▶ you clip starts and ends in silence.
 pub const PRON_PAD_SECS: f64 = 0.08;

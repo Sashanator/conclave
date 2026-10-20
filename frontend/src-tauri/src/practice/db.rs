@@ -438,6 +438,23 @@ pub async fn end_session(
     Ok(())
 }
 
+/// Like `end_session`, but only for a row still 'running'. A finished row keeps its end reason and duration.
+pub async fn end_session_if_running(
+    pool: &SqlitePool,
+    id: &str,
+    duration_secs: f64,
+    reason: &str,
+) -> Result<(), String> {
+    sqlx::query("UPDATE practice_sessions SET status = 'ended', duration_secs = ?, end_reason = ? WHERE id = ? AND status = 'running'")
+        .bind(duration_secs)
+        .bind(reason)
+        .bind(id)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+    Ok(())
+}
+
 pub async fn set_report(
     pool: &SqlitePool,
     id: &str,
@@ -796,6 +813,22 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(turns, 0);
+    }
+
+    #[tokio::test]
+    async fn end_session_if_running_keeps_a_finished_row() {
+        let pool = test_pool().await;
+        let setup = new_setup(&pool, "Chat").await;
+        let finished = create_session(&pool, &setup, "C:/a", None).await.unwrap();
+        end_session(&pool, &finished.id, 60.0, "stopped").await.unwrap();
+        end_session_if_running(&pool, &finished.id, 5.0, "user").await.unwrap();
+        let running = create_session(&pool, &setup, "C:/b", None).await.unwrap();
+        end_session_if_running(&pool, &running.id, 7.0, "user").await.unwrap();
+
+        let (done, _) = get_session(&pool, &finished.id).await.unwrap().unwrap();
+        assert_eq!((done.duration_secs, done.end_reason.as_deref()), (60.0, Some("stopped")));
+        let (closed, _) = get_session(&pool, &running.id).await.unwrap().unwrap();
+        assert_eq!((closed.status.as_str(), closed.duration_secs, closed.end_reason.as_deref()), ("ended", 7.0, Some("user")));
     }
 
     #[tokio::test]

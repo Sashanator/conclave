@@ -139,15 +139,14 @@ pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Optio
     {
         return None;
     }
-    let mut chosen: Vec<Vec<u8>> = words.iter().map(|v| v[0].clone()).collect();
-    let first = align(logp, frames, &chosen)?;
+    let initial: Vec<Vec<u8>> = words.iter().map(|v| v[0].clone()).collect();
+    let first = align(logp, frames, &initial)?;
+    let mut chosen = initial.clone();
+    let mut total: usize = initial.iter().map(|p| p.len()).sum();
     for (i, variants) in words.iter().enumerate().filter(|(_, v)| v.len() > 1) {
         let (start, end) = (first[i][0].0, first[i].last()?.1);
-        // The window must fit the longest variant, or a shorter wrong variant wins uncompared.
-        let need = 2 * variants.iter().map(|v| v.len()).max().unwrap_or(0) + 1;
-        if need > frames {
-            continue;
-        }
+        // The window must fit the longest variant (or the whole segment), or a shorter wrong variant wins uncompared.
+        let need = (2 * variants.iter().map(|v| v.len()).max().unwrap_or(0) + 1).min(frames);
         let (mut lo, mut hi) = (
             start.saturating_sub(PRON_VARIANT_MARGIN_FRAMES),
             (end + PRON_VARIANT_MARGIN_FRAMES).min(frames - 1),
@@ -160,8 +159,13 @@ pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Optio
             }
         }
         let window = &logp[lo * VOCAB..(hi + 1) * VOCAB];
+        let others = total - chosen[i].len();
         let mut best: Option<(f32, usize)> = None;
         for (vi, v) in variants.iter().enumerate() {
+            // The whole utterance must still align with this variant in place.
+            if 2 * (others + v.len()) + 1 > frames {
+                continue;
+            }
             if let Some(a) = viterbi(window, hi + 1 - lo, v) {
                 if best.map_or(true, |(b, _)| a.score > b) {
                     best = Some((a.score, vi));
@@ -169,10 +173,15 @@ pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Optio
             }
         }
         if let Some((_, vi)) = best {
+            total = others + variants[vi].len();
             chosen[i] = variants[vi].clone();
         }
     }
-    let spans = align(logp, frames, &chosen)?;
+    // The fit check above should make this unreachable; if it ever fails, keep the variant-0 alignment.
+    let (chosen, spans) = match align(logp, frames, &chosen) {
+        Some(spans) => (chosen, spans),
+        None => (initial, first),
+    };
     Some(
         chosen
             .iter()
@@ -289,6 +298,33 @@ mod tests {
         let s = score_words(&peaks(&labels), labels.len(), &words).unwrap();
         assert!(s[0].score.abs() < 1e-5, "score {}", s[0].score);
         assert_eq!((s[0].start, s[0].end), (1, 8));
+    }
+
+    #[test]
+    fn an_overlong_alternative_does_not_block_a_shorter_correct_variant() {
+        // The 10-phone alternative cannot fit 9 frames; it must not stop [1, 2] from being compared.
+        let words = vec![vec![
+            vec![5u8, 6],
+            vec![1, 2],
+            (1..=10).collect::<Vec<u8>>(),
+        ]];
+        let labels = [BLANK, 1, 1, 2, 2, BLANK, BLANK, BLANK, BLANK];
+        let s = score_words(&peaks(&labels), labels.len(), &words).unwrap();
+        assert!(s[0].score.abs() < 1e-5, "score {}", s[0].score);
+        assert_eq!((s[0].start, s[0].end), (1, 4));
+    }
+
+    #[test]
+    fn a_variant_that_breaks_the_whole_utterance_alignment_is_not_chosen() {
+        // Swapping in [1, 2, 3] would need 9 frames for 4 phones, but there are 7. Keep [1] for word 0.
+        let words = vec![vec![vec![1u8], vec![1, 2, 3]], vec![vec![4u8]]];
+        let labels = [BLANK, 1, 2, 3, BLANK, 4, BLANK];
+        let s = score_words(&peaks(&labels), labels.len(), &words).unwrap();
+        assert_eq!(s.len(), 2);
+        assert!(s[0].score.abs() < 1e-5, "score {}", s[0].score);
+        assert_eq!((s[0].start, s[0].end), (1, 1));
+        assert!(s[1].score.abs() < 1e-5, "score {}", s[1].score);
+        assert_eq!((s[1].start, s[1].end), (5, 5));
     }
 
     #[test]

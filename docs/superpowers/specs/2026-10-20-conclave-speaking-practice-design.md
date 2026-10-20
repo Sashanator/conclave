@@ -131,7 +131,9 @@ Success looks like this: the user picks Practice over ChatGPT voice mode for int
    - A safety cap of 5 minutes per turn ends it automatically, with a note **(call)**.
 5. **Interrupting the character:** tapping while it speaks stops playback at once and cancels the rest of that reply. The user's turn starts. The transcript keeps only the sentences actually played.
 6. **No reply:** if the recognised text is empty or under 0.5 s of speech, the screen says "I didn't catch that", stays on the user's turn, and makes no LLM call.
-7. **Ending:** the session ends when the user clicks End, at a 60-minute cap **(call)**, or when a meeting recording starts (§5.7). Then the report pipeline runs (§5.4) and the report opens when ready, with progress shown.
+7. **Ending:** the session ends when the user clicks End, at a 60-minute cap **(call; user agreed 60 min is enough)**, or when a meeting recording starts (§5.7).
+   - **Ending soon (user):** at 50:00 the call view shows a calm notice, "10 minutes left". At 55:00 the character gets an instruction to start wrapping up the scene naturally, so the cap rarely cuts a sentence off **(call)**.
+   - The session timer is always visible in the header. Then the report pipeline runs (§5.4) and the report opens when ready, with progress shown.
 
 ### 4.3 Report (user approved the content; the layout is fixed per user feedback)
 
@@ -280,6 +282,12 @@ Fixed in code, no settings in phase 1 **(call; user asked about effort, see §5.
 - **Keeps coming back:**
   - Each report item gets a short pattern key (e.g. "if + will", "make research").
   - The page counts keys across the last 5 sessions of the same setup, and of all setups, and shows the filler trend.
+
+- **Model settings (user asked):** a small "Models" card on the Practice page.
+  - Pick the conversation model and the plan/report model from the user's Claude models.
+  - Pick the plan/report effort.
+  - Show a rough cost per session next to each choice.
+  - Phase 1 keeps the fixed choices from §5.6 as the defaults.
 
 ## 7. Phase 0: spike before the plan (throwaway)
 

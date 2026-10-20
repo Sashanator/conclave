@@ -17,12 +17,11 @@ use tokio::sync::Notify;
 use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
-use crate::audio::audio_processing::resample_audio;
 use crate::audio::recording_commands::is_recording_now;
 use crate::audio::vad::{ContinuousVadProcessor, SpeechSegment};
 use crate::whisper_engine::WhisperEngine;
 
-use super::audio::{Player, TurnMic, TurnRecorder};
+use super::audio::{Player, TurnMic, TurnRecorder, TurnResampler};
 use super::claude::{self, ChatMsg};
 use super::commands::{release_slot, PracticeStatePayload, PracticeTurnPayload};
 use super::db::{self, SetupRow, TurnRow};
@@ -367,7 +366,7 @@ impl<R: Runtime> Runner<R> {
         self.mic.set_recording(true);
         self.capture = Some(tokio::task::spawn_blocking(move || {
             let turn = capture_turn(&rx, rate, &stop, &engine);
-            (rx, Ok(turn))
+            (rx, turn)
         }));
         let tx = self.tx.clone();
         self.turn_timer = Some(tokio::spawn(async move {
@@ -759,7 +758,8 @@ fn transcribe_segments(
 
 /// Runs on a blocking thread for one turn: resamples to 16 kHz, keeps the whole turn, and transcribes
 /// each speech segment as the VAD closes it. A VAD or Whisper error loses only its segment, never the audio.
-fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &WhisperEngine) -> CapturedTurn {
+fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &WhisperEngine) -> Result<CapturedTurn, String> {
+    let mut resampler = TurnResampler::new(rate)?;
     let mut vad = match ContinuousVadProcessor::new(YOU_WAV_RATE, LIVE_VAD_REDEMPTION_MS as u32) {
         Ok(vad) => Some(vad),
         Err(e) => {
@@ -773,24 +773,25 @@ fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &
         speech_secs: 0.0,
     };
     let mut texts: Vec<String> = Vec::new();
+    let mut feed = |samples: &[f32]| {
+        turn.turn.extend_from_slice(samples);
+        if let Some(vad) = vad.as_mut() {
+            match vad.process_audio(samples) {
+                Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
+                Err(e) => warn!("practice: VAD failed on one chunk, it is skipped: {e}"),
+            }
+        }
+    };
     loop {
         match rx.recv_timeout(CAPTURE_POLL) {
-            Ok(chunk) => {
-                let a16 = resample_audio(&chunk, rate, YOU_WAV_RATE);
-                turn.turn.extend_from_slice(&a16);
-                if let Some(vad) = vad.as_mut() {
-                    match vad.process_audio(&a16) {
-                        Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
-                        Err(e) => warn!("practice: VAD failed on one chunk, it is skipped: {e}"),
-                    }
-                }
-            }
+            Ok(chunk) => feed(&resampler.push(&chunk)?),
             // The stop flag is read only once the queue is empty, so the tail of the turn is kept.
             Err(RecvTimeoutError::Timeout) if stop.load(Ordering::SeqCst) => break,
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
+    feed(&resampler.finish()?);
     if let Some(vad) = vad.as_mut() {
         match vad.flush() {
             Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
@@ -798,7 +799,7 @@ fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &
         }
     }
     turn.text = texts.join(" ");
-    turn
+    Ok(turn)
 }
 
 #[cfg(test)]

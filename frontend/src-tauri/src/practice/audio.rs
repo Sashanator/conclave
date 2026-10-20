@@ -11,6 +11,7 @@ use std::thread::JoinHandle;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::FromSample;
 use log::warn;
+use rubato::{Resampler, SincFixedIn, SincInterpolationParameters, SincInterpolationType, WindowFunction};
 
 use super::{TTS_RATE, YOU_WAV_RATE};
 use crate::audio::audio_processing::resample_audio;
@@ -372,9 +373,115 @@ fn build_output<T: cpal::SizedSample + FromSample<f32> + 'static>(
         .map_err(|e| format!("Could not open the speaker: {e}"))
 }
 
+/// Input frames per resampler call. The resampler takes exactly this many, so the turn's chunks are buffered to it.
+const TURN_RESAMPLE_CHUNK: usize = 512;
+
+/// Converts one turn's microphone chunks to 16 kHz with one resampler for the whole turn, so the filter keeps
+/// its state across the ~10 ms callbacks. A device already at 16 kHz passes through.
+pub struct TurnResampler {
+    resampler: Option<SincFixedIn<f32>>,
+    ratio: f64,
+    /// Input held back until a whole chunk has arrived.
+    input: Vec<f32>,
+    /// Input frames pushed so far.
+    fed: usize,
+    /// Output frames returned so far.
+    emitted: usize,
+}
+
+impl TurnResampler {
+    pub fn new(from_rate: u32) -> Result<Self, String> {
+        let ratio = YOU_WAV_RATE as f64 / from_rate as f64;
+        // The filter of resample_audio for a downsampling ratio of 0.5 or less (44.1 and 48 kHz devices).
+        let resampler = if from_rate == YOU_WAV_RATE {
+            None
+        } else {
+            let params = SincInterpolationParameters {
+                sinc_len: 512,
+                f_cutoff: 0.95,
+                interpolation: SincInterpolationType::Cubic,
+                oversampling_factor: 512,
+                window: WindowFunction::BlackmanHarris2,
+            };
+            let resampler = SincFixedIn::<f32>::new(ratio, 2.0, params, TURN_RESAMPLE_CHUNK, 1)
+                .map_err(|e| format!("resampler: {e}"))?;
+            Some(resampler)
+        };
+        Ok(Self { resampler, ratio, input: Vec::new(), fed: 0, emitted: 0 })
+    }
+
+    /// Returns the 16 kHz samples that are ready. Input is held back until a whole chunk has arrived.
+    pub fn push(&mut self, chunk: &[f32]) -> Result<Vec<f32>, String> {
+        let Some(resampler) = self.resampler.as_mut() else {
+            return Ok(chunk.to_vec());
+        };
+        self.fed += chunk.len();
+        self.input.extend_from_slice(chunk);
+        let mut out = Vec::new();
+        while self.input.len() >= TURN_RESAMPLE_CHUNK {
+            let waves_in = vec![self.input.drain(..TURN_RESAMPLE_CHUNK).collect::<Vec<f32>>()];
+            let waves_out = resampler.process(&waves_in, None).map_err(|e| format!("resampler: {e}"))?;
+            out.extend(waves_out.into_iter().flatten());
+        }
+        self.emitted += out.len();
+        Ok(out)
+    }
+
+    /// Ends the turn. The held-back tail and the filter's delay are flushed, so the output covers the whole turn.
+    pub fn finish(&mut self) -> Result<Vec<f32>, String> {
+        let Some(resampler) = self.resampler.as_mut() else {
+            return Ok(Vec::new());
+        };
+        let tail = vec![std::mem::take(&mut self.input)];
+        let mut out: Vec<f32> = resampler
+            .process_partial(Some(tail.as_slice()), None)
+            .map_err(|e| format!("resampler: {e}"))?
+            .into_iter()
+            .flatten()
+            .collect();
+        // The output lags the input by output_delay frames, so the flush runs until that lag has drained.
+        let target = (self.fed as f64 * self.ratio).round() as usize + resampler.output_delay();
+        while self.emitted + out.len() < target {
+            let more = resampler
+                .process_partial(None::<&[Vec<f32>]>, None)
+                .map_err(|e| format!("resampler: {e}"))?;
+            out.extend(more.into_iter().flatten());
+        }
+        out.truncate(target.saturating_sub(self.emitted));
+        self.emitted += out.len();
+        Ok(out)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn turn_resampler_keeps_every_sample_across_chunks() {
+        // 1 s of a 440 Hz tone at 48 kHz, fed in the ~10 ms callbacks the microphone sends.
+        let tone: Vec<f32> = (0..48_000)
+            .map(|i| 0.5 * (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48_000.0).sin())
+            .collect();
+        let mut resampler = TurnResampler::new(48_000).unwrap();
+        let mut out = Vec::new();
+        for chunk in tone.chunks(480) {
+            out.extend(resampler.push(chunk).unwrap());
+        }
+        out.extend(resampler.finish().unwrap());
+
+        assert!((out.len() as f64 - 16_000.0).abs() <= 160.0, "got {} samples, want about 16000", out.len());
+        let rms = |s: &[f32]| (s.iter().map(|x| x * x).sum::<f32>() / s.len() as f32).sqrt();
+        let (got, want) = (rms(&out), rms(&tone));
+        assert!((got - want).abs() / want < 0.02, "rms {got} vs input {want}: samples lost");
+    }
+
+    #[test]
+    fn turn_resampler_passes_16k_through() {
+        let mut resampler = TurnResampler::new(YOU_WAV_RATE).unwrap();
+        assert_eq!(resampler.push(&[0.1, 0.2, 0.3]).unwrap(), vec![0.1, 0.2, 0.3]);
+        assert!(resampler.finish().unwrap().is_empty());
+    }
 
     fn tmp_wav() -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().unwrap();

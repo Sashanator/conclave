@@ -3563,6 +3563,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "trash",
+ "unicode-normalization",
  "url",
  "uuid",
  "whatlang",

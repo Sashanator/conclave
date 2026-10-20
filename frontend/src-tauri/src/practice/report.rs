@@ -1,5 +1,5 @@
 #![allow(dead_code)] // the report job that uses these lands in a later task
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -133,6 +133,7 @@ pub fn long_pauses(segments: &[(f64, f64)], min_gap: f64) -> u32 {
         .count() as u32
 }
 
+/// Whisper-style loops: one word six times in a row, or a 3-word sequence four times back to back.
 pub fn looks_looped(text: &str) -> bool {
     let words: Vec<String> = tokens(text).into_iter().map(|(t, _)| t).collect();
     let mut run = 0;
@@ -144,11 +145,13 @@ pub fn looks_looped(text: &str) -> bool {
         }
         prev = Some(w);
     }
-    let mut seen: HashMap<&[String], u32> = HashMap::new();
-    words.windows(3).any(|t| {
-        let c = seen.entry(t).or_insert(0);
-        *c += 1;
-        *c >= 4
+    // Consecutive only: a long answer may reuse a phrase in separate places.
+    (0..words.len().saturating_sub(2)).any(|i| {
+        let seq = &words[i..i + 3];
+        let repeats = (1..)
+            .take_while(|k| words.get(i + 3 * k..i + 3 * k + 3) == Some(seq))
+            .count();
+        repeats + 1 >= 4
     })
 }
 
@@ -171,7 +174,7 @@ pub fn normalise(s: &str) -> String {
         .join(" ")
 }
 
-/// Drops any item whose quote is not a substring of the learner's own words in that turn.
+/// Drops any item whose quote is not a run of whole words in the learner's own turn.
 pub fn validate_items(
     items: Vec<ReportItem>,
     learner_turns: &BTreeMap<i64, String>,
@@ -181,7 +184,7 @@ pub fn validate_items(
     for item in items {
         let grounded = learner_turns.get(&item.turn).is_some_and(|turn| {
             let quote = normalise(&item.quote);
-            !quote.is_empty() && normalise(turn).contains(&quote)
+            !quote.is_empty() && format!(" {} ", normalise(turn)).contains(&format!(" {} ", quote))
         });
         if grounded {
             kept.push(item);
@@ -287,6 +290,8 @@ mod tests {
         assert_eq!(wpm(10, 0.5), 0.0);
         assert_eq!(long_pauses(&[(0.0, 2.0), (3.5, 5.0), (5.2, 6.0)], 1.0), 1);
         assert_eq!(long_pauses(&[(0.0, 2.0)], 1.0), 0);
+        // a gap exactly equal to min_gap counts
+        assert_eq!(long_pauses(&[(0.0, 1.0), (2.0, 3.0)], 1.0), 1);
     }
 
     #[test]
@@ -346,5 +351,41 @@ mod tests {
         assert!(g["required"].as_array().unwrap().contains(&json!("echoed")));
         let u = &s["properties"]["unnatural"]["items"];
         assert!(!u["properties"].as_object().unwrap().contains_key("echoed"));
+    }
+
+    #[test]
+    fn quote_must_match_whole_words() {
+        let mut turns = BTreeMap::new();
+        turns.insert(1, "He walked to work.".to_string());
+        let item = |quote: &str| ReportItem {
+            kind: ItemKind::Clarity,
+            turn: 1,
+            quote: quote.to_string(),
+            better: String::new(),
+            note: String::new(),
+            echoed: false,
+        };
+        let items = vec![item("he walk"), item("He walked to work"), item("to work")];
+        let (kept, dropped) = validate_items(items, &turns);
+        assert_eq!(dropped, 1);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0].quote, "He walked to work");
+    }
+
+    #[test]
+    fn looped_only_when_consecutive() {
+        assert!(looks_looped(
+            "and then we and then we and then we and then we"
+        ));
+        assert!(!looks_looped("and then we and then we and then we"));
+        assert!(!looks_looped(
+            "It was a lot of work, then a lot of stress, later a lot of time, and in the end a lot of fun."
+        ));
+    }
+
+    #[test]
+    fn normalise_trims_outer_apostrophes() {
+        assert_eq!(normalise("'good idea'"), "good idea");
+        assert_eq!(normalise("Don\u{2019}t stop"), "don't stop");
     }
 }

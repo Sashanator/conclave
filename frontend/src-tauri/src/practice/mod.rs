@@ -7,12 +7,16 @@
 //!    Keep `frontend/src-tauri/migrations/20261020000000_practice.sql`: an applied migration must stay in the source.
 //! 2. `frontend/src-tauri/src/lib.rs`: the `mod practice;` line; the `practice::models::set_dir` line in setup, and the
 //!    "speaker ID and Practice stay off" log text next to it; the `practice::commands::recover_at_startup` spawn with its
-//!    comment; the 14 `practice::commands::practice_*` entries in `generate_handler!`.
-//! 3. `frontend/src-tauri/src/dictate/mod.rs`, `keeps_model_loaded`: drop the `|| crate::practice::holds_model()` clause.
+//!    comment; the 18 `practice::commands::practice_*` entries in `generate_handler!`.
+//! 3. `frontend/src-tauri/src/dictate/mod.rs`, `keeps_model_loaded`: drop the `|| crate::practice::holds_model()` clause and
+//!    the Practice part of its doc comment.
+//! 3a. `frontend/src-tauri/src/whisper_engine/whisper_engine.rs`: remove `transcribe_audio_raw` and fold `transcribe_inner`
+//!    back into `transcribe_audio_with_confidence` (the raw path exists only for the report pass).
 //! 4. `frontend/src-tauri/src/speakers/runtime.rs`, `open`: back to private (optional; `practice/tts.rs` is its only other user).
 //! 5. `frontend/src/components/Sidebar/index.tsx`: the two Practice entries (desktop and mobile).
 //! 6. `frontend/src-tauri/Cargo.toml`: remove `base64` and `unicode-normalization` (used only by practice); move `hound`
-//!    back to `[dev-dependencies]` (test code in `audio/decoder.rs` and `speakers/` still uses it).
+//!    back to `[dev-dependencies]` (test code in `audio/decoder.rs` and `speakers/` still uses it); then let cargo refresh
+//!    `Cargo.lock`.
 //! 7. A new migration: `DROP TABLE practice_turns; DROP TABLE practice_sessions; DROP TABLE practice_materials;
 //!    DROP TABLE practice_setups;` (never edit the old one).
 //! 8. `docs/network-calls.md`: the two Practice rows (huggingface.co, api.anthropic.com); `AGENTS.md`: the Practice Layout row.

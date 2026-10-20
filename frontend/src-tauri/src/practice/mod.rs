@@ -76,7 +76,7 @@ pub const PRON_MIN_CHUNK_SECS: f64 = 0.3;
 pub const PRON_MAX_CHUNK_SECS: f64 = 20.0;
 /// One model output frame is 20 ms.
 pub const PRON_FRAME_SECS: f64 = 0.02;
-/// GOP-like penalty for an out-of-vocabulary word's wildcard state (below the best non-[UNK] column).
+/// GOP-like penalty for an out-of-vocabulary word's wildcard state (below the best column among ids 0..=BLANK, [UNK] included).
 pub const PRON_WILDCARD_PENALTY: f32 = 1.5;
 /// Hint spans are padded by this much on each side, so the ▶ you clip starts and ends in silence.
 pub const PRON_PAD_SECS: f64 = 0.08;

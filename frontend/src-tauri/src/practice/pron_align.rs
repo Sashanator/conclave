@@ -40,7 +40,7 @@ pub fn log_softmax(logits: &[f32], frames: usize) -> Vec<f32> {
     out
 }
 
-/// Log-probability of `phone` in one frame. A wildcard takes the best non-[UNK] column less the penalty.
+/// Log-probability of `phone` in one frame. A wildcard takes the best column among ids 0..=BLANK ([UNK] included) less the penalty.
 fn emit_score(row: &[f32], phone: u8) -> f32 {
     if phone == WILDCARD {
         row[..=BLANK]

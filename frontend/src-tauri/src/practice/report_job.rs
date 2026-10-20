@@ -39,6 +39,8 @@ pub const VERBATIM_PROMPT: &str = "Um, uh, so, like, I mean, I- I was, uh, think
 const VERBATIM_REDEMPTION_MS: u32 = 300;
 /// How often a waiting job checks whether a meeting recording has stopped.
 const WAIT_POLL: Duration = Duration::from_secs(10);
+/// Held while a report is claimed and while a session is deleted, so the two cannot interleave.
+pub(super) static REPORT_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 #[derive(Clone, Serialize)]
 pub struct ReportStatusPayload {
@@ -57,7 +59,7 @@ struct Heard {
 /// Runs the report for one session. The claim makes a second run for the same session a no-op.
 pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String) {
     let pool = app.state::<AppState>().db_manager.pool().clone();
-    match db::claim_report(&pool, &session_id).await {
+    match claim_for_report(&pool, &session_id).await {
         Ok(true) => {}
         Ok(false) => return,
         Err(e) => {
@@ -72,6 +74,12 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String) {
     store(&app, &pool, &session_id, "running", None, None).await;
     let (status, json, error) = finish(analyse(&app, &pool, &session_id).await);
     store(&app, &pool, &session_id, status, json.as_deref(), error.as_deref()).await;
+}
+
+/// Claims the session's report under the gate that a delete also takes.
+pub async fn claim_for_report(pool: &SqlitePool, session_id: &str) -> Result<bool, String> {
+    let _gate = REPORT_GATE.lock().await;
+    db::claim_report(pool, session_id).await
 }
 
 /// Maps the job's result to the stored status, report JSON and error. Pure, so the tests can check it.

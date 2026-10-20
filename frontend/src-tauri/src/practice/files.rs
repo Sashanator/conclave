@@ -1,7 +1,6 @@
 //! Session folders for Practice audio. A session folder sits directly inside the recordings
 //! folder and holds only Practice's own `you.wav`. Delete goes through `guarded_meeting_folder`
 //! and the Recycle Bin remover, and refuses any folder with anything else in it.
-#![allow(dead_code)] // Nothing calls these yet; the Practice commands wire them up in a later task.
 use crate::audio::audio_processing::sanitize_filename;
 use crate::audio::meeting_folder::{ensure_still_guarded, guarded_meeting_folder, Remover};
 use crate::audio::recording_preferences::get_default_recordings_folder;

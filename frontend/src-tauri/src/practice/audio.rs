@@ -274,6 +274,7 @@ impl PlayQueue {
 /// The default speaker. `stop_all` takes effect on the next callback.
 pub struct Player {
     queue: Arc<Mutex<PlayQueue>>,
+    alive: Arc<AtomicBool>,
     rate: u32,
     _stream: StreamThread,
 }
@@ -282,12 +283,18 @@ impl Player {
     /// Returns the player and the receiver of finished ids.
     pub fn open() -> Result<(Player, Receiver<u64>), String> {
         let queue = Arc::new(Mutex::new(PlayQueue::default()));
+        let alive = Arc::new(AtomicBool::new(true));
         let (finished_tx, finished_rx) = mpsc::channel();
         let (rate, stream) = start_stream("practice-play", {
-            let queue = queue.clone();
-            move || open_output(queue, finished_tx)
+            let (queue, alive) = (queue.clone(), alive.clone());
+            move || open_output(queue, finished_tx, alive)
         })?;
-        Ok((Player { queue, rate, _stream: stream }, finished_rx))
+        Ok((Player { queue, alive, rate, _stream: stream }, finished_rx))
+    }
+
+    /// False once the output stream reports an error. Reopening is the caller's job.
+    pub fn is_alive(&self) -> bool {
+        self.alive.load(Ordering::SeqCst)
     }
 
     /// Queues speech at 44.1 kHz; it is resampled to the device rate here, off the audio thread.
@@ -297,11 +304,17 @@ impl Player {
     }
 
     pub fn stop_all(&self) {
-        lock(&self.queue).clear();
+        // The queued buffers are freed after the lock is released.
+        let dropped = std::mem::take(&mut *lock(&self.queue));
+        drop(dropped);
     }
 }
 
-fn open_output(queue: Arc<Mutex<PlayQueue>>, finished: Sender<u64>) -> Result<(cpal::Stream, u32), String> {
+fn open_output(
+    queue: Arc<Mutex<PlayQueue>>,
+    finished: Sender<u64>,
+    alive: Arc<AtomicBool>,
+) -> Result<(cpal::Stream, u32), String> {
     let device = cpal::default_host()
         .default_output_device()
         .ok_or_else(|| "No speaker found".to_string())?;
@@ -312,9 +325,9 @@ fn open_output(queue: Arc<Mutex<PlayQueue>>, finished: Sender<u64>) -> Result<(c
     let channels = config.channels() as usize;
     let stream_config = config.config();
     let stream = match config.sample_format() {
-        cpal::SampleFormat::F32 => build_output::<f32>(&device, &stream_config, channels, queue, finished),
-        cpal::SampleFormat::I16 => build_output::<i16>(&device, &stream_config, channels, queue, finished),
-        cpal::SampleFormat::U16 => build_output::<u16>(&device, &stream_config, channels, queue, finished),
+        cpal::SampleFormat::F32 => build_output::<f32>(&device, &stream_config, channels, queue, finished, alive),
+        cpal::SampleFormat::I16 => build_output::<i16>(&device, &stream_config, channels, queue, finished, alive),
+        cpal::SampleFormat::U16 => build_output::<u16>(&device, &stream_config, channels, queue, finished, alive),
         other => Err(format!("Unsupported speaker sample format: {other:?}")),
     }?;
     stream.play().map_err(|e| format!("Speaker stream did not start: {e}"))?;
@@ -327,6 +340,7 @@ fn build_output<T: cpal::SizedSample + FromSample<f32> + 'static>(
     channels: usize,
     queue: Arc<Mutex<PlayQueue>>,
     finished: Sender<u64>,
+    alive: Arc<AtomicBool>,
 ) -> Result<cpal::Stream, String> {
     let mut scratch: Vec<f32> = Vec::new();
     device
@@ -334,7 +348,14 @@ fn build_output<T: cpal::SizedSample + FromSample<f32> + 'static>(
             config,
             move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                 scratch.resize(data.len(), 0.0);
-                let done = lock(&queue).fill(&mut scratch, channels);
+                // Never wait on the audio thread: a busy queue means one buffer of silence.
+                let done = match queue.try_lock() {
+                    Ok(mut q) => q.fill(&mut scratch, channels),
+                    Err(_) => {
+                        scratch.fill(0.0);
+                        Vec::new()
+                    }
+                };
                 for (o, s) in data.iter_mut().zip(&scratch) {
                     *o = T::from_sample(*s);
                 }
@@ -342,7 +363,10 @@ fn build_output<T: cpal::SizedSample + FromSample<f32> + 'static>(
                     let _ = finished.send(id);
                 }
             },
-            move |e: cpal::StreamError| warn!("Practice speaker stream error: {e}"),
+            move |e: cpal::StreamError| {
+                warn!("Practice speaker stream error: {e}");
+                alive.store(false, Ordering::SeqCst);
+            },
             None,
         )
         .map_err(|e| format!("Could not open the speaker: {e}"))

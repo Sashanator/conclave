@@ -1,5 +1,6 @@
 //! Speaking Practice storage: setups, their materials and plans, sessions and turns.
 
+use crate::practice::recurring::PastReport;
 use crate::practice::report::Report;
 use crate::practice::MATERIAL_MAX_BYTES;
 use chrono::Utc;
@@ -505,6 +506,26 @@ pub async fn recent_patterns(pool: &SqlitePool, limit: usize) -> Result<Vec<Stri
     Ok(keys)
 }
 
+/// Ready reports of sessions started before `before_started_at`, newest first. Unreadable ones are skipped and do not count.
+pub async fn load_recent(pool: &SqlitePool, before_started_at: &str, limit: usize) -> Result<Vec<PastReport>, String> {
+    let rows: Vec<(String, Option<String>, String, String)> = sqlx::query_as(
+        "SELECT id, setup_id, started_at, report_json FROM practice_sessions WHERE report_status = 'ready' AND report_json IS NOT NULL AND started_at < ? ORDER BY started_at DESC",
+    )
+    .bind(before_started_at)
+    .fetch_all(pool)
+    .await
+    .map_err(db_err)?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(session_id, setup_id, started_at, json)| {
+            // An unreadable report is skipped, so one bad row cannot hide the others.
+            let report = serde_json::from_str::<Report>(&json).ok()?;
+            Some(PastReport { session_id, setup_id, started_at, report })
+        })
+        .take(limit)
+        .collect())
+}
+
 pub async fn count_sessions(pool: &SqlitePool, setup_id: &str) -> Result<i64, String> {
     sqlx::query_scalar("SELECT COUNT(*) FROM practice_sessions WHERE setup_id = ?")
         .bind(setup_id)
@@ -829,6 +850,46 @@ mod tests {
 
         assert_eq!(recent_patterns(&pool, 30).await.unwrap(), ["c d", "e f", "a b"]);
         assert_eq!(recent_patterns(&pool, 2).await.unwrap(), ["c d", "e f"]);
+    }
+
+    #[tokio::test]
+    async fn load_recent_is_ready_older_and_skips_corrupt() {
+        use crate::practice::report::Fluency;
+        let report_json = serde_json::to_string(&Report {
+            version: 2,
+            fluency: Fluency::default(),
+            items: vec![],
+            dropped_items: 0,
+            pronunciation: vec![],
+            pronunciation_note: None,
+        })
+        .unwrap();
+        let pool = test_pool().await;
+        let setup = new_setup(&pool, "Chat").await;
+        // Fixed start times so the order does not depend on the clock
+        let mut sessions = Vec::new();
+        for (day, status, json) in [
+            ("01", "ready", Some(report_json.as_str())),
+            ("02", "ready", Some(report_json.as_str())),
+            ("03", "ready", Some("{not json")),
+            ("04", "failed", Some(report_json.as_str())),
+            ("05", "ready", Some(report_json.as_str())),
+        ] {
+            let row = create_session(&pool, &setup, "C:/x", None).await.unwrap();
+            sqlx::query("UPDATE practice_sessions SET started_at = ? WHERE id = ?")
+                .bind(format!("2026-10-{day}T10:00:00Z"))
+                .bind(&row.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            set_report(&pool, &row.id, status, json, None).await.unwrap();
+            sessions.push(row.id);
+        }
+        let ids = |got: Vec<PastReport>| got.into_iter().map(|p| p.session_id).collect::<Vec<_>>();
+        let before = "2026-10-05T10:00:00Z";
+        // The corrupt and the failed report are skipped without using up the limit
+        assert_eq!(ids(load_recent(&pool, before, 1).await.unwrap()), [sessions[1].clone()]);
+        assert_eq!(ids(load_recent(&pool, before, 5).await.unwrap()), [sessions[1].clone(), sessions[0].clone()]);
     }
 
     #[test]

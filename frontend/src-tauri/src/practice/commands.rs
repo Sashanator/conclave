@@ -31,6 +31,7 @@ use super::db::{self, Material, MaterialKind, MaterialMeta, SessionRow, SetupInp
 use super::files::{allow_audio, create_session_folder, delete_session_folder, folder_name, PRACTICE_FILES};
 use super::models;
 use super::prompts::plan_prompts;
+use super::recurring::{self, PastReport, Recurring};
 use super::report::Report;
 use super::report_job::{self, summary_line, REPORT_GATE};
 use super::runner::{self, Loaded};
@@ -671,6 +672,8 @@ pub struct SessionDetail {
     pub report: Option<Report>,
     pub report_error: Option<String>,
     pub audio_path: Option<String>,
+    /// Only for a ready report.
+    pub recurring: Option<Recurring>,
 }
 
 fn summary_of(row: &SessionRow) -> SessionSummary {
@@ -739,6 +742,20 @@ pub async fn practice_get_session<R: Runtime>(
         }),
         None => None,
     };
+    let recurring = match report.clone() {
+        Some(report) if row.report_status == "ready" => {
+            let current = PastReport {
+                session_id: row.id.clone(),
+                setup_id: row.setup_id.clone(),
+                started_at: row.started_at.clone(),
+                report,
+            };
+            // shortcut: loads every earlier ready report, because the setup trend can reach past the newest four; upgrade to a SQL filter if the history grows large.
+            let recent = db::load_recent(&pool, &row.started_at, usize::MAX).await?;
+            Some(recurring::compute(&current, &recent))
+        }
+        _ => None,
+    };
     Ok(SessionDetail {
         summary: summary_of(&row),
         character: row.character.clone(),
@@ -746,6 +763,7 @@ pub async fn practice_get_session<R: Runtime>(
         report,
         report_error: row.report_error.clone(),
         audio_path,
+        recurring,
     })
 }
 

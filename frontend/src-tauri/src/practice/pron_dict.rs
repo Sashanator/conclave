@@ -1,7 +1,5 @@
 //! CMUdict parser and word tokeniser for the local pronunciation hints.
 //! Phone ids follow the order of the HuBERT phoneme model's output head (ids 0..=38).
-// shortcut: unused until the pronunciation pass calls it (later task), drop this allow then.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 
@@ -41,20 +39,18 @@ impl PronDict {
         PronDict { map }
     }
 
+    /// Looks a word up case-insensitively, with a curly apostrophe read as `'`.
     pub fn variants(&self, word: &str) -> Option<&[Vec<u8>]> {
-        self.map.get(&word.to_lowercase()).map(Vec::as_slice)
+        let key = word.to_lowercase().replace('\u{2019}', "'");
+        self.map.get(&key).map(Vec::as_slice)
     }
 }
 
-/// Splits a transcript into lowercase words for dictionary lookup. Surrounding punctuation is dropped,
-/// and internal apostrophes (including a curly one) are kept as ASCII `'`.
+/// Splits a transcript into words, as written: surrounding punctuation is dropped, but case and apostrophes
+/// are kept. `PronDict::variants` does the lookup normalisation.
 pub fn words(text: &str) -> Vec<String> {
     text.split(|c: char| c.is_whitespace() || matches!(c, '-' | '\u{2013}' | '\u{2014}'))
-        .map(|t| {
-            t.trim_matches(|c: char| !c.is_alphanumeric())
-                .replace('\u{2019}', "'")
-                .to_lowercase()
-        })
+        .map(|t| t.trim_matches(|c: char| !c.is_alphanumeric()).to_string())
         .filter(|w| !w.is_empty())
         .collect()
 }
@@ -100,13 +96,17 @@ BOGUS  XX IY1 D
     fn words_keep_contractions_and_strip_punctuation() {
         assert_eq!(
             words("Don't, I'm (sure) \u{2014} 2026!"),
-            vec!["don't", "i'm", "sure", "2026"]
+            vec!["Don't", "I'm", "sure", "2026"]
         );
         assert_eq!(
             words("well-known \u{2019}tis"),
             vec!["well", "known", "tis"]
         );
-        assert_eq!(words("don\u{2019}t"), vec!["don't"]);
+        assert_eq!(words("Don\u{2019}t"), vec!["Don\u{2019}t"]);
+        // Lookup ignores case and reads a curly apostrophe as ASCII.
+        let dict = PronDict::parse(SAMPLE);
+        assert_eq!(dict.variants("Don\u{2019}t"), dict.variants("don't"));
+        assert!(dict.variants("Don\u{2019}t").is_some());
     }
 
     #[test]

@@ -1,11 +1,12 @@
 //! CTC forced alignment (Viterbi) and goodness-of-pronunciation word scores over HuBERT phoneme log-probabilities.
 //! Pure: no I/O, no model. Frames are 20 ms; `logp` is row-major `[frames, VOCAB]`.
-#![allow(dead_code)] // remove in Task 4, once the runner calls score_words
 
-use super::PRON_VARIANT_MARGIN_FRAMES;
+use super::{PRON_VARIANT_MARGIN_FRAMES, PRON_WILDCARD_PENALTY};
 
 pub const BLANK: usize = 40;
 pub const VOCAB: usize = 43;
+/// Phone id of an out-of-vocabulary word: one state that matches any frame, at a penalty. It is never scored.
+pub const WILDCARD: u8 = 255;
 
 /// Expected phones are ids 0..=38; 39 is [UNK] and is excluded from GOP's max.
 const PHONES: usize = 39;
@@ -23,6 +24,8 @@ pub struct WordScore {
     pub index: usize,
     pub start: usize,
     pub end: usize,
+    /// Phones in the chosen variant, which is only known inside `score_words`.
+    pub phones: usize,
     pub score: f32,
     pub worst_phone: u8,
 }
@@ -37,6 +40,19 @@ pub fn log_softmax(logits: &[f32], frames: usize) -> Vec<f32> {
     out
 }
 
+/// Log-probability of `phone` in one frame. A wildcard takes the best non-[UNK] column less the penalty.
+fn emit_score(row: &[f32], phone: u8) -> f32 {
+    if phone == WILDCARD {
+        row[..=BLANK]
+            .iter()
+            .cloned()
+            .fold(f32::NEG_INFINITY, f32::max)
+            - PRON_WILDCARD_PENALTY
+    } else {
+        row[phone as usize]
+    }
+}
+
 /// Path state `s`: even = blank, odd `2k+1` = expected phone `k`.
 pub fn viterbi(logp: &[f32], frames: usize, phones: &[u8]) -> Option<Aligned> {
     let n = phones.len();
@@ -44,18 +60,18 @@ pub fn viterbi(logp: &[f32], frames: usize, phones: &[u8]) -> Option<Aligned> {
         return None;
     }
     let states = 2 * n + 1;
-    let emit = |s: usize| {
+    let state_phone = |s: usize| {
         if s % 2 == 0 {
-            BLANK
+            BLANK as u8
         } else {
-            phones[s / 2] as usize
+            phones[s / 2]
         }
     };
     // back[t * states + s]: 0 = stayed, 1 = came from s-1, 2 = came from s-2.
     let mut back = vec![0u8; frames * states];
     let mut prev = vec![f32::NEG_INFINITY; states];
     prev[0] = logp[BLANK];
-    prev[1] = logp[emit(1)];
+    prev[1] = emit_score(&logp[..VOCAB], phones[0]);
     for t in 1..frames {
         let row = &logp[t * VOCAB..(t + 1) * VOCAB];
         let mut cur = vec![f32::NEG_INFINITY; states];
@@ -68,7 +84,7 @@ pub fn viterbi(logp: &[f32], frames: usize, phones: &[u8]) -> Option<Aligned> {
             if s >= 3 && s % 2 == 1 && phones[s / 2] != phones[s / 2 - 1] && prev[s - 2] > best {
                 (best, from) = (prev[s - 2], 2);
             }
-            cur[s] = best + row[emit(s)];
+            cur[s] = best + emit_score(row, state_phone(s));
             back[t * states + s] = from;
         }
         prev = cur;
@@ -113,8 +129,11 @@ fn align(logp: &[f32], frames: usize, words: &[Vec<u8>]) -> Option<Vec<Vec<(usiz
     )
 }
 
-/// Mean over frames `start..=end` of `logp[p] - max over the expected phones`.
+/// Mean over frames `start..=end` of `logp[p] - max over the expected phones`. A wildcard has no GOP and scores 0.
 fn gop(logp: &[f32], start: usize, end: usize, phone: u8) -> f32 {
+    if phone == WILDCARD {
+        return 0.0;
+    }
     let p = phone as usize;
     let sum: f32 = (start..=end)
         .map(|t| {
@@ -131,7 +150,7 @@ fn gop(logp: &[f32], start: usize, end: usize, phone: u8) -> f32 {
 
 /// `words[i]` lists word i's pronunciation variants, each a phone-id sequence.
 pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Option<Vec<WordScore>> {
-    let bad_phone = |p: &u8| *p as usize >= PHONES;
+    let bad_phone = |p: &u8| *p != WILDCARD && *p as usize >= PHONES;
     if words.is_empty()
         || words
             .iter()
@@ -205,6 +224,7 @@ pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Optio
                     index,
                     start: phone_spans[0].0,
                     end: phone_spans[phone_spans.len() - 1].1,
+                    phones: phones.len(),
                     // A NaN or infinite GOP (bad model output) reports 0.0, so the word is never flagged.
                     score: if gops.iter().all(|g| g.is_finite()) {
                         min
@@ -337,6 +357,27 @@ mod tests {
         }
         let s = score_words(&logp, 3, &words).unwrap();
         assert_eq!(s[0].score, 0.0);
+    }
+
+    #[test]
+    fn wildcard_keeps_neighbours_tight_and_unscored() {
+        // Word A is phones 1,2; an out-of-vocabulary word sits in frames 7..=10; word B is phone 3.
+        let labels = [
+            BLANK, 1, 1, BLANK, 2, 2, BLANK, 30, 30, 30, 30, BLANK, 3, 3, BLANK,
+        ];
+        let words = vec![vec![vec![1u8, 2]], vec![vec![WILDCARD]], vec![vec![3u8]]];
+        let s = score_words(&peaks(&labels), labels.len(), &words).unwrap();
+        assert_eq!((s[0].start, s[0].end), (1, 5));
+        assert!(s[0].score.abs() < 1e-5, "score {}", s[0].score);
+        assert_eq!((s[2].start, s[2].end), (12, 13));
+        assert!(s[2].score.abs() < 1e-5, "score {}", s[2].score);
+        assert_eq!(s[1].worst_phone, WILDCARD);
+        assert_eq!(s[1].score, 0.0);
+        assert!(
+            s[1].start >= 6 && s[1].end <= 11,
+            "wildcard span {:?}",
+            (s[1].start, s[1].end)
+        );
     }
 
     #[test]

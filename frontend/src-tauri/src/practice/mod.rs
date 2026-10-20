@@ -41,6 +41,7 @@ pub mod runner;
 pub mod settings;
 pub mod tts_text;
 pub mod tts;
+pub mod pron;
 pub mod pron_align;
 
 pub const CHAT_MAX_TOKENS: u32 = 400;
@@ -65,6 +66,20 @@ pub const YOU_WAV_RATE: u32 = 16_000;
 
 /// Frames either side of a multi-pronunciation word that the variant pick re-aligns.
 pub const PRON_VARIANT_MARGIN_FRAMES: usize = 4;
+/// A word is hinted when its GOP score (log-probability, 0 is the model's own best phone) is below this.
+pub const PRON_THRESHOLD: f32 = -6.5;
+/// Words of this many phones or fewer get no hint (`the` was the top false flag).
+pub const PRON_MIN_PHONES: usize = 3;
+/// Segments shorter than this get no hints (the model errors on very short input).
+pub const PRON_MIN_CHUNK_SECS: f64 = 0.3;
+/// Longer segments get no hints: one model call on a longer chunk needs gigabytes (self-attention is O(T²)).
+pub const PRON_MAX_CHUNK_SECS: f64 = 20.0;
+/// One model output frame is 20 ms.
+pub const PRON_FRAME_SECS: f64 = 0.02;
+/// GOP-like penalty for an out-of-vocabulary word's wildcard state (below the best non-[UNK] column).
+pub const PRON_WILDCARD_PENALTY: f32 = 1.5;
+/// Hint spans are padded by this much on each side, so the ▶ you clip starts and ends in silence.
+pub const PRON_PAD_SECS: f64 = 0.08;
 
 /// Counts the live holds on the Whisper model. A session and a report job can overlap.
 static HOLDS: AtomicUsize = AtomicUsize::new(0);

@@ -3,7 +3,8 @@
 //! Removal checklist (checked against the tree on 2026-10-20):
 //! 1. Delete `frontend/src-tauri/src/practice/`, `frontend/src/app/practice/`, `frontend/src/components/Practice/`,
 //!    `frontend/src/lib/practice.ts`, `frontend/tests/components/practice-page.test.tsx`,
-//!    `frontend/tests/lib/practice.test.ts` and `frontend/src-tauri/tests/fixtures/practice/`. The `pron*.rs` files and
+//!    `frontend/tests/components/practice-models-card.test.tsx`, `frontend/tests/lib/practice.test.ts` and
+//!    `frontend/src-tauri/tests/fixtures/practice/`. The `pron*.rs` files and
 //!    `settings.rs` live inside the folder, so they need no step of their own.
 //!    Keep `frontend/src-tauri/migrations/20261020000000_practice.sql`: an applied migration must stay in the source.
 //! 2. `frontend/src-tauri/src/lib.rs`: the `mod practice;` line; the `practice::models::set_dir` line in setup, and the

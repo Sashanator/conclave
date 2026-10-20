@@ -14,7 +14,7 @@ use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter, Runtime};
 use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 use tokio::sync::Notify;
-use tokio::task::JoinHandle;
+use tokio::task::{JoinError, JoinHandle};
 use tokio_util::sync::CancellationToken;
 
 use crate::audio::audio_processing::resample_audio;
@@ -36,6 +36,9 @@ use super::{ModelHold, LIVE_VAD_REDEMPTION_MS, MAX_TURN_SECS, TTS_SPEED, TTS_STE
 const FIRST_BYTE_SECS: u64 = 20;
 /// How often a capture checks for its stop flag while the microphone is quiet.
 const CAPTURE_POLL: Duration = Duration::from_millis(50);
+
+/// A capture running on a blocking thread. It hands the microphone receiver back with its result.
+type CaptureJob = JoinHandle<(Receiver<Vec<f32>>, Result<CapturedTurn, String>)>;
 
 /// Everything a session holds once it has loaded. Built by `commands::practice_start`.
 pub struct Loaded {
@@ -123,20 +126,53 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
                     None => break,
                 },
                 _ = ticker.tick() => {
-                    r.queue.push_back(Event::Tick { elapsed_secs: r.elapsed() });
-                    if is_recording_now() {
-                        r.queue.push_back(Event::RecordingStarted);
-                    }
+                    r.on_tick();
+                    continue;
+                }
+                // A turn's transcript arrives here, so the UI stays live while Whisper finishes.
+                joined = pending_capture(&mut r.capture) => {
+                    r.capture_joined(joined);
                     continue;
                 }
             },
         };
         r.dispatch(ev).await;
-        if r.core.phase() == Phase::Ended && r.queue.is_empty() {
+        if r.core.phase() == Phase::Ended && r.queue.is_empty() && r.capture.is_none() {
             break;
         }
     }
     r.finish().await;
+}
+
+/// Resolves when the capture finishes. Without a capture it never resolves.
+async fn pending_capture(capture: &mut Option<CaptureJob>) -> Result<(Receiver<Vec<f32>>, Result<CapturedTurn, String>), JoinError> {
+    match capture {
+        Some(job) => job.await,
+        None => std::future::pending().await,
+    }
+}
+
+/// The event that ends a reply whose speaker died while the reply was still being spoken or written.
+pub fn speaker_failure(phase: Phase, speaker_alive: bool, reply: u64) -> Option<Event> {
+    let speaking = matches!(phase, Phase::CharacterSpeaking | Phase::Thinking);
+    (speaking && !speaker_alive).then_some(Event::ReplyFailed { reply })
+}
+
+/// Clears the speech gate only if `reply` still owns it. Returns whether it did.
+pub fn clear_gate_if_current(gate: &mut u64, reply: u64) -> bool {
+    if *gate == reply {
+        *gate = 0;
+        true
+    } else {
+        false
+    }
+}
+
+/// Ends a reply whose speech failed. A late failure of an old reply must not silence the current one.
+fn fail_reply(gate: &Mutex<u64>, tx: &UnboundedSender<Event>, reply: u64) {
+    if clear_gate_if_current(&mut lock(gate), reply) {
+        let _ = tx.send(Event::ReplyFailed { reply });
+    }
 }
 
 struct Runner<R: Runtime> {
@@ -159,17 +195,20 @@ struct Runner<R: Runtime> {
     mic_rx: Option<Receiver<Vec<f32>>>,
     mic_rate: u32,
     mic_pref: Option<String>,
-    capture: Option<JoinHandle<(Receiver<Vec<f32>>, Result<CapturedTurn, String>)>>,
+    capture: Option<CaptureJob>,
     capture_stop: Arc<AtomicBool>,
     turn_timer: Option<JoinHandle<()>>,
     last_turn: TurnAudio,
     recorder: Option<TurnRecorder>,
-    player: Arc<Player>,
+    /// Shared with the speech worker, which is handed a fresh player when the old one dies.
+    speaker: Arc<Mutex<Arc<Player>>>,
     gate: Arc<Mutex<u64>>,
     speak_tx: UnboundedSender<SpeakJob>,
     captions_pending: HashMap<u64, String>,
     caption: Option<String>,
     reply_cancel: Option<CancellationToken>,
+    /// The reply the state machine last asked for.
+    reply_no: u64,
     reply_started: f64,
     reply_first_sentence: Option<Instant>,
     reply_first_token: Arc<OnceLock<Instant>>,
@@ -191,7 +230,7 @@ impl<R: Runtime> Runner<R> {
             },
             l.seed,
         );
-        let player = Arc::new(l.player);
+        let speaker = Arc::new(Mutex::new(Arc::new(l.player)));
         let gate = Arc::new(Mutex::new(0));
         let (speak_tx, speak_rx) = unbounded_channel();
         tauri::async_runtime::spawn(speak_worker(
@@ -199,7 +238,7 @@ impl<R: Runtime> Runner<R> {
             Arc::new(Mutex::new(l.tts)),
             Arc::new(l.voice),
             l.tts_dir,
-            player.clone(),
+            speaker.clone(),
             gate.clone(),
             l.tx.clone(),
         ));
@@ -229,12 +268,13 @@ impl<R: Runtime> Runner<R> {
             turn_timer: None,
             last_turn: TurnAudio::default(),
             recorder: Some(l.recorder),
-            player,
+            speaker,
             gate,
             speak_tx,
             captions_pending: HashMap::new(),
             caption: None,
             reply_cancel: None,
+            reply_no: 0,
             reply_started: 0.0,
             reply_first_sentence: None,
             reply_first_token: Arc::new(OnceLock::new()),
@@ -290,7 +330,7 @@ impl<R: Runtime> Runner<R> {
         match effect {
             Effect::Phase(_) | Effect::Notice(_) => {}
             Effect::StartCapture => self.start_capture(),
-            Effect::StopCaptureAndTranscribe => self.stop_capture().await,
+            Effect::StopCaptureAndTranscribe => self.stop_capture(),
             Effect::AskCharacter { reply, wrap_up } => self.ask(reply, wrap_up),
             Effect::Speak { reply, seq, text } => self.speak(reply, seq, text),
             Effect::StopSpeaking => self.stop_speaking(),
@@ -304,7 +344,8 @@ impl<R: Runtime> Runner<R> {
     }
 
     fn start_capture(&mut self) {
-        if !self.mic.is_alive() {
+        // A microphone whose capture task was lost (no receiver handed back) is reopened too.
+        if !self.mic.is_alive() || self.mic_rx.is_none() {
             match TurnMic::open(self.mic_pref.clone()) {
                 Ok((mic, rx, rate)) => {
                     self.mic = mic;
@@ -325,8 +366,8 @@ impl<R: Runtime> Runner<R> {
         let (stop, engine, rate) = (self.capture_stop.clone(), self.engine.clone(), self.mic_rate);
         self.mic.set_recording(true);
         self.capture = Some(tokio::task::spawn_blocking(move || {
-            let result = capture_turn(&rx, rate, &stop, &engine);
-            (rx, result)
+            let turn = capture_turn(&rx, rate, &stop, &engine);
+            (rx, Ok(turn))
         }));
         let tx = self.tx.clone();
         self.turn_timer = Some(tokio::spawn(async move {
@@ -335,25 +376,34 @@ impl<R: Runtime> Runner<R> {
         }));
     }
 
-    /// Always answers with `TurnTranscribed`, even on a capture or Whisper error (empty text, no speech),
-    /// or the session would stay in Transcribing.
-    async fn stop_capture(&mut self) {
+    /// Stops the capture. The transcript comes back through `capture_joined`, so the UI keeps updating
+    /// while Whisper finishes the last segment.
+    fn stop_capture(&mut self) {
         self.mic.set_recording(false);
         if let Some(timer) = self.turn_timer.take() {
             timer.abort();
         }
         self.capture_stop.store(true, Ordering::SeqCst);
         self.tap = Some(Instant::now());
-        let captured = match self.capture.take() {
-            Some(job) => match job.await {
-                Ok((rx, result)) => {
-                    self.mic_rx = Some(rx);
-                    result
-                }
-                Err(e) => Err(format!("capture task failed: {e}")),
-            },
-            None => Err("no capture was running".to_string()),
-        };
+        if self.capture.is_none() {
+            self.settle_turn(Err("no capture was running".to_string()));
+        }
+    }
+
+    fn capture_joined(&mut self, joined: Result<(Receiver<Vec<f32>>, Result<CapturedTurn, String>), JoinError>) {
+        self.capture = None;
+        match joined {
+            Ok((rx, captured)) => {
+                self.mic_rx = Some(rx);
+                self.settle_turn(captured);
+            }
+            // The receiver went down with the task, so the next turn reopens the microphone.
+            Err(e) => self.settle_turn(Err(format!("capture task failed: {e}"))),
+        }
+    }
+
+    /// Saves the turn's audio and queues its transcript. Every turn ends here, so Transcribing always ends.
+    fn settle_turn(&mut self, captured: Result<CapturedTurn, String>) {
         let (text, speech_secs) = match captured {
             Ok(turn) => {
                 let span = match self.recorder.as_mut().map(|r| r.append(&turn.turn)) {
@@ -377,7 +427,40 @@ impl<R: Runtime> Runner<R> {
         self.queue.push_back(Event::TurnTranscribed { text, speech_secs });
     }
 
+    fn on_tick(&mut self) {
+        self.queue.push_back(Event::Tick { elapsed_secs: self.elapsed() });
+        if is_recording_now() {
+            self.queue.push_back(Event::RecordingStarted);
+        }
+        if let Some(ev) = speaker_failure(self.core.phase(), self.speaker_alive(), self.reply_no) {
+            self.queue.push_back(ev);
+        }
+    }
+
+    fn speaker_alive(&self) -> bool {
+        lock(&self.speaker).is_alive()
+    }
+
+    /// Opens a fresh speaker when the old one died. Called before each reply; a failed open leaves the
+    /// dead one, and the reply then fails on its first sentence.
+    fn ensure_speaker(&mut self) {
+        if self.speaker_alive() {
+            return;
+        }
+        match Player::open() {
+            Ok((player, finished)) => {
+                info!("practice: speaker reopened");
+                *lock(&self.speaker) = Arc::new(player);
+                let fin_tx = self.tx.clone();
+                std::thread::spawn(move || forward_finished(finished, fin_tx));
+            }
+            Err(e) => warn!("practice: speaker reopen failed: {e}"),
+        }
+    }
+
     fn ask(&mut self, reply: u64, wrap_up: bool) {
+        self.reply_no = reply;
+        self.ensure_speaker();
         if self.history.is_empty() {
             push_history(&mut self.history, "user", OPENING_USER, false);
         }
@@ -420,7 +503,7 @@ impl<R: Runtime> Runner<R> {
 
     fn stop_speaking(&mut self) {
         *lock(&self.gate) = 0;
-        self.player.stop_all();
+        lock(&self.speaker).stop_all();
         self.captions_pending.clear();
         self.cancel_reply();
     }
@@ -483,6 +566,14 @@ impl<R: Runtime> Runner<R> {
 
     async fn finish(mut self) {
         self.mic.set_recording(false);
+        // A capture still running when the session ends is settled and saved before the file closes.
+        if let Some(job) = self.capture.take() {
+            let joined = job.await;
+            self.capture_joined(joined);
+        }
+        while let Some(ev) = self.queue.pop_front() {
+            self.dispatch(ev).await;
+        }
         self.stop_speaking();
         let reason = self.end_reason.unwrap_or(EndReason::User).as_str();
         let duration = self.elapsed_f64();
@@ -510,13 +601,14 @@ async fn speak_worker(
     tts: Arc<Mutex<Supertonic>>,
     voice: Arc<Voice>,
     dir: PathBuf,
-    player: Arc<Player>,
+    speaker: Arc<Mutex<Arc<Player>>>,
     gate: Arc<Mutex<u64>>,
     tx: UnboundedSender<Event>,
 ) {
     let mut fell_back = false;
     while let Some(job) = jobs.recv().await {
         let SpeakJob { reply, seq, text, first_audio } = job;
+        let player = lock(&speaker).clone();
         // Only the reply that is still current may speak.
         if *lock(&gate) != reply {
             continue;
@@ -527,16 +619,14 @@ async fn speak_worker(
         }
         if !player.is_alive() {
             warn!("practice: speaker stream is down");
-            *lock(&gate) = 0;
-            let _ = tx.send(Event::ReplyFailed { reply });
+            fail_reply(&gate, &tx, reply);
             continue;
         }
         let wav = match synthesize(&tts, &dir, &voice, text, &mut fell_back).await {
             Ok(wav) => wav,
             Err(e) => {
                 warn!("practice: speech failed: {e}");
-                *lock(&gate) = 0;
-                let _ = tx.send(Event::ReplyFailed { reply });
+                fail_reply(&gate, &tx, reply);
                 continue;
             }
         };
@@ -640,40 +730,44 @@ async fn chat_reply(
     }
 }
 
-/// Transcribes the segments of one turn in order. Their lengths add to `speech_secs`.
+/// Transcribes the segments of one turn in order. Their lengths add to `speech_secs`. A segment that fails
+/// is logged and skipped, so the rest of the turn still counts.
 fn transcribe_segments(
     engine: &WhisperEngine,
     segments: Vec<SpeechSegment>,
     texts: &mut Vec<String>,
     speech_secs: &mut f32,
-) -> Result<(), String> {
+) {
     for segment in segments {
         *speech_secs += segment.samples.len() as f32 / YOU_WAV_RATE as f32;
-        let (text, _, _, _) = tauri::async_runtime::block_on(engine.transcribe_audio_with_confidence(
+        let result = tauri::async_runtime::block_on(engine.transcribe_audio_with_confidence(
             segment.samples,
             Some("en".to_string()),
             None,
             None,
-        ))
-        .map_err(|e| e.to_string())?;
-        let text = text.trim();
-        if !text.is_empty() {
-            texts.push(text.to_string());
+        ));
+        match result {
+            Ok((text, _, _, _)) => {
+                let text = text.trim();
+                if !text.is_empty() {
+                    texts.push(text.to_string());
+                }
+            }
+            Err(e) => warn!("practice: a speech segment was not transcribed: {e}"),
         }
     }
-    Ok(())
 }
 
 /// Runs on a blocking thread for one turn: resamples to 16 kHz, keeps the whole turn, and transcribes
-/// each speech segment as the VAD closes it.
-fn capture_turn(
-    rx: &Receiver<Vec<f32>>,
-    rate: u32,
-    stop: &AtomicBool,
-    engine: &WhisperEngine,
-) -> Result<CapturedTurn, String> {
-    let mut vad = ContinuousVadProcessor::new(YOU_WAV_RATE, LIVE_VAD_REDEMPTION_MS as u32)
-        .map_err(|e| e.to_string())?;
+/// each speech segment as the VAD closes it. A VAD or Whisper error loses only its segment, never the audio.
+fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &WhisperEngine) -> CapturedTurn {
+    let mut vad = match ContinuousVadProcessor::new(YOU_WAV_RATE, LIVE_VAD_REDEMPTION_MS as u32) {
+        Ok(vad) => Some(vad),
+        Err(e) => {
+            warn!("practice: VAD unavailable, this turn is not transcribed: {e}");
+            None
+        }
+    };
     let mut turn = CapturedTurn {
         turn: Vec::new(),
         text: String::new(),
@@ -685,8 +779,12 @@ fn capture_turn(
             Ok(chunk) => {
                 let a16 = resample_audio(&chunk, rate, YOU_WAV_RATE);
                 turn.turn.extend_from_slice(&a16);
-                let segments = vad.process_audio(&a16).map_err(|e| e.to_string())?;
-                transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs)?;
+                if let Some(vad) = vad.as_mut() {
+                    match vad.process_audio(&a16) {
+                        Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
+                        Err(e) => warn!("practice: VAD failed on one chunk, it is skipped: {e}"),
+                    }
+                }
             }
             // The stop flag is read only once the queue is empty, so the tail of the turn is kept.
             Err(RecvTimeoutError::Timeout) if stop.load(Ordering::SeqCst) => break,
@@ -694,10 +792,14 @@ fn capture_turn(
             Err(RecvTimeoutError::Disconnected) => break,
         }
     }
-    let segments = vad.flush().map_err(|e| e.to_string())?;
-    transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs)?;
+    if let Some(vad) = vad.as_mut() {
+        match vad.flush() {
+            Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
+            Err(e) => warn!("practice: VAD flush failed, the last segment is lost: {e}"),
+        }
+    }
     turn.text = texts.join(" ");
-    Ok(turn)
+    turn
 }
 
 #[cfg(test)]
@@ -729,6 +831,27 @@ mod tests {
     fn sentence_ids_round_trip() {
         for (reply, seq) in [(1u64, 0u32), (7, 3), (u32::MAX as u64, u32::MAX)] {
             assert_eq!(split_sentence_id(sentence_id(reply, seq)), (reply, seq));
+        }
+    }
+
+    #[test]
+    fn gate_is_cleared_only_by_the_reply_that_owns_it() {
+        let mut gate = 2;
+        assert!(!clear_gate_if_current(&mut gate, 1), "a stale failure leaves the current reply's gate");
+        assert_eq!(gate, 2);
+        assert!(clear_gate_if_current(&mut gate, 2));
+        assert_eq!(gate, 0);
+    }
+
+    #[test]
+    fn dead_speaker_fails_only_a_reply_in_progress() {
+        use Phase::*;
+        for phase in [CharacterSpeaking, Thinking] {
+            assert_eq!(speaker_failure(phase, false, 3), Some(Event::ReplyFailed { reply: 3 }));
+            assert_eq!(speaker_failure(phase, true, 3), None);
+        }
+        for phase in [Loading, UserTurn, Listening, Transcribing, Ended] {
+            assert_eq!(speaker_failure(phase, false, 3), None, "{phase:?}");
         }
     }
 

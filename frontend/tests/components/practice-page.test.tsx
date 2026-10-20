@@ -42,8 +42,15 @@ const READY: PracticeStatus = { has_claude_key: true, engine_is_whisper: true, v
 let status: PracticeStatus;
 let setups: SetupSummary[];
 let sessions: SessionSummary[];
-// What practice_start does: a plan failure emits the prep event and rejects
-let startFailsWithPlan = false;
+// What practice_start does in the next call; tests replace it
+let startImpl: () => Promise<unknown> = async () => 'session-1';
+// Starts left pending by holdStarts(), settled by the test in any order
+let pendingStarts: { resolve: (id: string) => void; reject: (err: Error) => void }[] = [];
+function holdStarts() {
+  startImpl = () => new Promise<string>((resolve, reject) => {
+    pendingStarts.push({ resolve, reject });
+  });
+}
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'practice_status') return structuredClone(status);
@@ -58,13 +65,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_preview_voice') return null;
   if (command === 'practice_new_questions') return null;
   if (command === 'practice_cancel_start') return null;
-  if (command === 'practice_start') {
-    if (startFailsWithPlan) {
-      listeners.get('practice-prep')?.({ payload: { stage: 'failed', error: 'Claude did not answer' } });
-      throw new Error('Claude did not answer');
-    }
-    return 'session-1';
-  }
+  if (command === 'practice_start') return startImpl();
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
 const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
@@ -138,7 +139,8 @@ beforeEach(async () => {
   status = { ...READY };
   setups = structuredClone([THESIS, INTERVIEW]);
   sessions = structuredClone([SESSION]);
-  startFailsWithPlan = false;
+  startImpl = async () => 'session-1';
+  pendingStarts = [];
   invoke.mockClear();
   toast.error.mockClear();
   confirm.mockClear();
@@ -241,15 +243,63 @@ describe('Practice page', () => {
   });
 
   test('a plan failure offers Retry and Start without questions', async () => {
-    startFailsWithPlan = true;
+    startImpl = async () => {
+      listeners.get('practice-prep')?.({ payload: { stage: 'failed', error: 'Claude did not answer' } });
+      throw new Error('Claude did not answer');
+    };
     await clickButton('▶ Start');
     await flush();
     expect(buttons('Retry').length).toBe(1);
     expect(buttons('Start without questions').length).toBe(1);
 
-    startFailsWithPlan = false;
+    startImpl = async () => 'session-1';
     await clickButton('Start without questions');
     await flush();
     expect(calls('practice_start').at(-1)![1]).toEqual({ setupId: 'seed-thesis', skipPlan: true });
+  });
+
+  test('a plan rejection without a prep event still offers Retry and Start without questions', async () => {
+    startImpl = async () => {
+      throw new Error('Claude did not answer');
+    };
+    await clickButton('▶ Start');
+    await flush();
+    expect(buttons('Retry').length).toBe(1);
+    expect(buttons('Start without questions').length).toBe(1);
+    expect(renderer!.root.findAll((n) => n.type === 'p' && text(n).includes('Claude did not answer')).length).toBe(1);
+    expect(toast.error).not.toHaveBeenCalled();
+  });
+
+  test('a rejection from an attempt cancelled before a new Start leaves the new overlay alone', async () => {
+    holdStarts();
+    await clickButton('▶ Start');
+    await flush();
+    await clickButton('Cancel');
+    await clickButton('▶ Start');
+    await flush();
+    expect(pendingStarts.length).toBe(2);
+
+    await act(async () => {
+      pendingStarts[0].reject(new Error('Claude did not answer'));
+    });
+    await flush();
+    expect(toast.error).not.toHaveBeenCalled();
+    expect(buttons('Retry').length).toBe(0);
+    expect(buttons('Cancel').length).toBe(1);
+  });
+
+  test('a start that resolves after Cancel does not open the call view', async () => {
+    holdStarts();
+    await clickButton('▶ Start');
+    await flush();
+    await clickButton('Cancel');
+    await flush();
+
+    await act(async () => {
+      pendingStarts[0].resolve('session-1');
+    });
+    await flush();
+    expect(renderer!.root.findAll((n) => n.type === 'div' && text(n) === 'Call view').length).toBe(0);
+    expect(buttons('Cancel').length).toBe(0);
   });
 });

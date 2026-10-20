@@ -30,8 +30,8 @@ export default function PracticePage() {
   const [overlay, setOverlay] = useState<Overlay | null>(null);
   // The prep stage the backend last reported, read when start rejects
   const stage = useRef<PracticePrepPayload['stage'] | null>(null);
-  // Set by Cancel, so the start that rejects afterwards closes quietly
-  const cancelled = useRef(false);
+  // Each launch takes a number. Cancel or a newer launch moves it on, so a stale start's result is ignored.
+  const attempt = useRef(0);
 
   const refresh = useCallback(async () => {
     try {
@@ -59,22 +59,31 @@ export default function PracticePage() {
 
   // The plan step runs inside practice_start; the overlay follows its prep events until it resolves
   const launch = async (setup: SetupSummary, skipPlan: boolean) => {
-    cancelled.current = false;
-    stage.current = null;
-    setOverlay({ kind: 'start', setup, stage: !skipPlan && setup.materials.length > 0 ? 'plan' : 'loading', error: null });
+    const id = ++attempt.current;
+    stage.current = !skipPlan && setup.materials.length > 0 ? 'plan' : 'loading';
+    setOverlay({ kind: 'start', setup, stage: stage.current, error: null });
     const stop = await listen<PracticePrepPayload>('practice-prep', (e) => {
+      if (attempt.current !== id) return;
       stage.current = e.payload.stage;
       setOverlay((o) => (o?.kind === 'start' ? { ...o, stage: e.payload.stage, error: e.payload.error } : o));
     });
     try {
       const sessionId = await invoke<string>('practice_start', { setupId: setup.id, skipPlan });
+      if (attempt.current !== id) return;
       setOverlay(null);
       setView({ kind: 'call', sessionId });
     } catch (err) {
-      // A failed plan keeps the overlay open with Retry and Start without questions
-      if (cancelled.current || stage.current === 'failed') return;
-      setOverlay(null);
-      toast.error('Could not start the session', { description: String(err) });
+      if (attempt.current !== id) return;
+      // Read through a cast: TypeScript keeps the narrowing from the assignment above across the await
+      const current = stage.current as PracticePrepPayload['stage'] | null;
+      if (current === 'plan') {
+        // The plan failed. Its prep event may arrive after this rejection, so the overlay is set here too
+        stage.current = 'failed';
+        setOverlay({ kind: 'start', setup, stage: 'failed', error: String(err) });
+      } else if (current !== 'failed') {
+        setOverlay(null);
+        toast.error('Could not start the session', { description: String(err) });
+      }
     } finally {
       stop();
     }
@@ -101,7 +110,7 @@ export default function PracticePage() {
   };
 
   const cancelStart = () => {
-    cancelled.current = true;
+    attempt.current++;
     setOverlay(null);
     invoke('practice_cancel_start').catch(() => {});
   };

@@ -179,7 +179,7 @@ Seeds (`seeded = 1`, `datetime('now')`):
   - `recover_interrupted_ends_running_sessions_and_fails_running_reports` (returns 2 for one running session plus one `waiting` report; a `ready` report is untouched)
   - `model_holds_overlap` (two holds, drop one → `holds_model()` still true; drop both → false)
 - [ ] **Step 2:** `cargo test -p meetily --lib practice::db` → FAIL (module missing).
-- [ ] **Step 3:** Implement the migration, `mod.rs` constants and `session_active`, and `db.rs`. Use `sqlx::query`/`query_as` like `database/repositories/*`, and `chrono::Utc::now().to_rfc3339()` for times.
+- [ ] **Step 3:** Implement the migration, `mod.rs` constants and the model hold, and `db.rs`. Use `sqlx::query`/`query_as` like `database/repositories/*`, and `chrono::Utc::now().to_rfc3339()` for times.
 - [ ] **Step 4:** Run → PASS.
 - [ ] **Step 5:** Commit `feat(practice): tables, seed setups and data layer`.
 

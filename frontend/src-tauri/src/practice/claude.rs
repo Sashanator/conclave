@@ -10,10 +10,13 @@ use std::time::Duration;
 use tokio_util::sync::CancellationToken;
 
 const MESSAGES_URL: &str = "https://api.anthropic.com/v1/messages";
+/// Longest silence between body chunks before the stream counts as stalled. Anthropic sends `ping` events well inside this.
+pub const STREAM_IDLE_SECS: u64 = 60;
 
 #[derive(Debug, PartialEq)]
 pub enum SseEvent {
     Text(String),
+    StopReason(String),
     Stop,
     Error { kind: String, message: String },
     Ignore,
@@ -47,6 +50,10 @@ fn parse_event(data: &str) -> SseEvent {
         Some("content_block_delta") if v["delta"]["type"] == "text_delta" => {
             SseEvent::Text(v["delta"]["text"].as_str().unwrap_or_default().to_string())
         }
+        Some("message_delta") => match v["delta"]["stop_reason"].as_str() {
+            Some(reason) => SseEvent::StopReason(reason.to_string()),
+            None => SseEvent::Ignore,
+        },
         Some("message_stop") => SseEvent::Stop,
         Some("error") => SseEvent::Error {
             kind: v["error"]["type"].as_str().unwrap_or("unknown").to_string(),
@@ -125,6 +132,8 @@ pub fn report_body(system: &str, user: &str, schema: &Value) -> Value {
 pub enum ClaudeError {
     Cancelled,
     NoKey,
+    /// The settings row could not be read; the key may well exist.
+    Settings,
     Rejected,
     Busy,
     Http(u16),
@@ -136,6 +145,9 @@ impl ClaudeError {
     pub fn user_message(&self) -> &'static str {
         match self {
             ClaudeError::NoKey => "Add your Claude API key in Settings to use Practice",
+            ClaudeError::Rejected => "Claude rejected your API key — check it in Settings",
+            ClaudeError::Busy => "Claude is busy right now — tap to talk and try again",
+            ClaudeError::Settings => "Couldn't read your settings — try again",
             _ => "Couldn't reach Claude — tap to talk and try again",
         }
     }
@@ -146,10 +158,23 @@ pub async fn stream(
     key: &str,
     body: &Value,
     cancel: &CancellationToken,
+    on_text: impl FnMut(&str),
+) -> Result<String, ClaudeError> {
+    let idle = Duration::from_secs(STREAM_IDLE_SECS);
+    stream_with_idle(client, MESSAGES_URL, key, body, cancel, idle, on_text).await
+}
+
+async fn stream_with_idle(
+    client: &reqwest::Client,
+    url: &str,
+    key: &str,
+    body: &Value,
+    cancel: &CancellationToken,
+    idle: Duration,
     mut on_text: impl FnMut(&str),
 ) -> Result<String, ClaudeError> {
     let request = client
-        .post(MESSAGES_URL)
+        .post(url)
         .header("x-api-key", key)
         .header("anthropic-version", "2023-06-01")
         .json(body)
@@ -160,25 +185,24 @@ pub async fn stream(
         r = request => r.map_err(|e| ClaudeError::Network(e.to_string()))?,
     };
     let status = resp.status().as_u16();
-    if !(200..300).contains(&status) {
+    if let Some(err) = map_status(status) {
         // Only the status is logged: the body may echo request content.
         log::warn!("practice: Claude returned HTTP {status}");
-        return Err(match status {
-            401 | 403 => ClaudeError::Rejected,
-            429 | 529 => ClaudeError::Busy,
-            code => ClaudeError::Http(code),
-        });
+        return Err(err);
     }
 
     let mut parser = SseParser::default();
     let mut pending = Vec::new();
     let mut text = String::new();
+    let mut stop_reason: Option<String> = None;
     let mut chunks = resp.bytes_stream();
     loop {
         let next = tokio::select! {
             biased;
             _ = cancel.cancelled() => return Err(ClaudeError::Cancelled),
-            next = chunks.next() => next,
+            r = tokio::time::timeout(idle, chunks.next()) => {
+                r.map_err(|_| ClaudeError::Network("stalled".into()))?
+            }
         };
         // At the end of the body, a final unterminated line is flushed by feeding a newline.
         let (events, ended) = match next {
@@ -194,9 +218,18 @@ pub async fn stream(
                     on_text(&t);
                     text.push_str(&t);
                 }
+                SseEvent::StopReason(reason) => stop_reason = Some(reason),
                 SseEvent::Stop => {
-                    log::debug!("practice: Claude reply of {} chars", text.len());
-                    return Ok(text);
+                    return match stop_reason.as_deref() {
+                        // A cut-off or refused reply must not pass as a finished answer.
+                        Some(r @ ("max_tokens" | "refusal")) => {
+                            Err(ClaudeError::Stream(r.to_string()))
+                        }
+                        _ => {
+                            log::debug!("practice: Claude reply of {} chars", text.len());
+                            Ok(text)
+                        }
+                    };
                 }
                 SseEvent::Error { kind, .. } => return Err(map_error_kind(&kind)),
                 SseEvent::Ignore => {}
@@ -213,9 +246,8 @@ pub async fn api_key(pool: &sqlx::SqlitePool) -> Result<String, ClaudeError> {
         Ok(Some(key)) if !key.trim().is_empty() => Ok(key.trim().to_string()),
         Ok(_) => Err(ClaudeError::NoKey),
         Err(e) => {
-            // A failed read is reported as a missing key; the DB error is logged, never shown.
-            log::warn!("practice: could not read the Claude key: {e}");
-            Err(ClaudeError::NoKey)
+            log::warn!("practice: could not read settings: {e}");
+            Err(ClaudeError::Settings)
         }
     }
 }
@@ -224,7 +256,17 @@ pub fn http_client() -> reqwest::Client {
     reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(30))
         .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+        .expect("practice http client")
+}
+
+/// Maps a non-2xx status to its error; `None` for success.
+fn map_status(status: u16) -> Option<ClaudeError> {
+    match status {
+        200..=299 => None,
+        401 | 403 => Some(ClaudeError::Rejected),
+        429 | 529 => Some(ClaudeError::Busy),
+        code => Some(ClaudeError::Http(code)),
+    }
 }
 
 fn map_error_kind(kind: &str) -> ClaudeError {
@@ -250,6 +292,8 @@ fn feed(parser: &mut SseParser, pending: &mut Vec<u8>, bytes: &[u8]) -> Vec<SseE
 mod tests {
     use super::*;
     use crate::practice::db::MaterialMeta;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
 
     const SAMPLE_KEY: &str = "sk-ant-api03-SAMPLEKEY-0123456789";
 
@@ -307,12 +351,24 @@ mod tests {
             "event: content_block_delta\ndata: {\"type\":\"content_block_delta\",\"index\":1,\"delta\":{\"type\":\"input_json_delta\",\"partial_json\":\"{}\"}}\n\n",
             "event: content_block_stop\ndata: {\"type\":\"content_block_stop\",\"index\":0}\n\n",
             "event: ping\ndata: {\"type\":\"ping\"}\n\n",
-            "event: message_delta\ndata: {\"type\":\"message_delta\",\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n",
         );
         let mut p = SseParser::default();
         let events = p.push(s);
-        assert_eq!(events.len(), 8);
+        assert_eq!(events.len(), 7);
         assert!(events.iter().all(|e| *e == SseEvent::Ignore));
+    }
+
+    #[test]
+    fn parser_reads_stop_reason_from_message_delta() {
+        for reason in ["max_tokens", "refusal", "end_turn"] {
+            let s = format!(
+                "event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{reason}\",\"stop_sequence\":null}}}}\n\n"
+            );
+            assert_eq!(
+                SseParser::default().push(&s),
+                vec![SseEvent::StopReason(reason.into())]
+            );
+        }
     }
 
     #[test]
@@ -340,6 +396,17 @@ mod tests {
             map_error_kind("api_error"),
             ClaudeError::Stream(_)
         ));
+    }
+
+    #[test]
+    fn map_status_maps_each_failure_class() {
+        assert_eq!(map_status(200), None);
+        assert_eq!(map_status(299), None);
+        assert_eq!(map_status(401), Some(ClaudeError::Rejected));
+        assert_eq!(map_status(403), Some(ClaudeError::Rejected));
+        assert_eq!(map_status(429), Some(ClaudeError::Busy));
+        assert_eq!(map_status(529), Some(ClaudeError::Busy));
+        assert_eq!(map_status(500), Some(ClaudeError::Http(500)));
     }
 
     #[test]
@@ -453,6 +520,7 @@ mod tests {
         let errors = [
             ClaudeError::Cancelled,
             ClaudeError::NoKey,
+            ClaudeError::Settings,
             ClaudeError::Rejected,
             ClaudeError::Busy,
             ClaudeError::Http(500),
@@ -467,6 +535,148 @@ mod tests {
             ClaudeError::NoKey.user_message(),
             "Add your Claude API key in Settings to use Practice"
         );
+        assert_eq!(
+            ClaudeError::Rejected.user_message(),
+            "Claude rejected your API key — check it in Settings"
+        );
+        assert_eq!(
+            ClaudeError::Busy.user_message(),
+            "Claude is busy right now — tap to talk and try again"
+        );
+        assert_eq!(
+            ClaudeError::Settings.user_message(),
+            "Couldn't read your settings — try again"
+        );
+        for e in [
+            ClaudeError::Cancelled,
+            ClaudeError::Http(500),
+            ClaudeError::Network("x".into()),
+            ClaudeError::Stream("x".into()),
+        ] {
+            assert_eq!(
+                e.user_message(),
+                "Couldn't reach Claude — tap to talk and try again"
+            );
+        }
+    }
+
+    /// Serves one SSE-or-plain reply to one request, then holds the connection for `hold` before closing.
+    async fn serve_once(reply: String, hold: Duration) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/v1/messages", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            read_request(&mut sock).await;
+            sock.write_all(reply.as_bytes()).await.unwrap();
+            tokio::time::sleep(hold).await;
+            let _ = sock.shutdown().await;
+        });
+        url
+    }
+
+    /// Reads headers and the Content-Length body, so the reply is not cut by a connection reset.
+    async fn read_request(sock: &mut TcpStream) {
+        let mut buf = Vec::new();
+        let mut chunk = [0u8; 4096];
+        loop {
+            let n = sock.read(&mut chunk).await.unwrap();
+            assert!(n > 0, "client closed before sending a request");
+            buf.extend_from_slice(&chunk[..n]);
+            let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") else {
+                continue;
+            };
+            let head = String::from_utf8_lossy(&buf[..end]).to_ascii_lowercase();
+            let len: usize = head
+                .lines()
+                .find_map(|l| l.strip_prefix("content-length:"))
+                .map_or(0, |v| v.trim().parse().unwrap());
+            while buf.len() < end + 4 + len {
+                let n = sock.read(&mut chunk).await.unwrap();
+                assert!(n > 0, "client closed mid-request");
+                buf.extend_from_slice(&chunk[..n]);
+            }
+            return;
+        }
+    }
+
+    fn sse(body: &str) -> String {
+        format!(
+            "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream\r\nconnection: close\r\n\r\n{body}"
+        )
+    }
+
+    async fn run(url: &str, idle: Duration) -> Result<String, ClaudeError> {
+        // no_proxy: an environment proxy must not capture the loopback server.
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let body = chat_body("s", &[]);
+        stream_with_idle(
+            &client,
+            url,
+            SAMPLE_KEY,
+            &body,
+            &CancellationToken::new(),
+            idle,
+            |_| {},
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn stream_errors_when_body_ends_without_message_stop() {
+        let url = serve_once(sse(&delta("Hi")), Duration::ZERO).await;
+        let r = run(&url, Duration::from_secs(5)).await;
+        assert!(matches!(r, Err(ClaudeError::Stream(_))), "{r:?}");
+    }
+
+    #[tokio::test]
+    async fn stream_reports_stall_when_body_goes_silent() {
+        let url = serve_once(sse(&delta("Hi")), Duration::from_secs(3)).await;
+        let r = run(&url, Duration::from_millis(200)).await;
+        assert_eq!(r, Err(ClaudeError::Network("stalled".into())));
+    }
+
+    #[tokio::test]
+    async fn stream_maps_mid_stream_overload_to_busy() {
+        let body = format!(
+            "{}event: error\ndata: {{\"type\":\"error\",\"error\":{{\"type\":\"overloaded_error\",\"message\":\"Overloaded\"}}}}\n\n",
+            delta("Hi")
+        );
+        let url = serve_once(sse(&body), Duration::ZERO).await;
+        assert_eq!(
+            run(&url, Duration::from_secs(5)).await,
+            Err(ClaudeError::Busy)
+        );
+    }
+
+    #[tokio::test]
+    async fn stream_returns_text_on_end_turn_and_errors_on_truncation() {
+        let cases = [
+            ("end_turn", Ok("Hi".to_string())),
+            ("max_tokens", Err(ClaudeError::Stream("max_tokens".into()))),
+        ];
+        for (reason, expected) in cases {
+            let body = format!(
+                "{}event: message_delta\ndata: {{\"type\":\"message_delta\",\"delta\":{{\"stop_reason\":\"{reason}\"}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+                delta("Hi")
+            );
+            let url = serve_once(sse(&body), Duration::ZERO).await;
+            assert_eq!(
+                run(&url, Duration::from_secs(5)).await,
+                expected,
+                "{reason}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn stream_maps_rate_limit_status_to_busy() {
+        let reply =
+            "HTTP/1.1 429 Too Many Requests\r\ncontent-length: 0\r\nconnection: close\r\n\r\n";
+        let url = serve_once(reply.into(), Duration::ZERO).await;
+        assert_eq!(
+            run(&url, Duration::from_secs(5)).await,
+            Err(ClaudeError::Busy)
+        );
     }
 
     #[tokio::test]
@@ -478,14 +688,19 @@ mod tests {
         assert_eq!(r, Err(ClaudeError::Cancelled));
     }
 
-    #[tokio::test]
-    async fn api_key_reads_trimmed_claude_key_and_reports_missing() {
+    async fn test_pool() -> sqlx::SqlitePool {
         let pool = sqlx::sqlite::SqlitePoolOptions::new()
             .max_connections(1)
             .connect("sqlite::memory:")
             .await
             .unwrap();
         sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+        pool
+    }
+
+    #[tokio::test]
+    async fn api_key_reads_trimmed_claude_key_and_reports_missing() {
+        let pool = test_pool().await;
         assert_eq!(api_key(&pool).await, Err(ClaudeError::NoKey));
 
         sqlx::query("INSERT INTO settings (id, provider, model, whisperModel, anthropicApiKey) VALUES ('1', 'claude', 'm', 'w', '  sk-ant-x \n')")
@@ -499,5 +714,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(api_key(&pool).await, Err(ClaudeError::NoKey));
+    }
+
+    #[tokio::test]
+    async fn api_key_reports_settings_error_not_missing_key_when_db_fails() {
+        let pool = test_pool().await;
+        pool.close().await;
+        assert_eq!(api_key(&pool).await, Err(ClaudeError::Settings));
     }
 }

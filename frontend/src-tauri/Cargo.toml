@@ -74,8 +74,8 @@ uuid = { version = "1.0", features = ["v4", "serde"] }
 # Cross-platform audio capture
 cpal = "0.15.3"
 
-# Wav encoding - now using manual WAV creation instead of hound
-# hound = "3.5"
+# Wav read/write (Speaking Practice turn recorder)
+hound = "3.5"
 
 # Cli ! shouldn't be required if using as lib
 clap = { version = "4.3", features = ["derive"] }
@@ -208,7 +208,6 @@ futures-channel = "0.3.31"
 
 [dev-dependencies]
 tempfile = "3.3.0"
-hound = "3.5"
 infer = "0.15"
 criterion = { version = "0.5.1", features = ["async_tokio"] }
 memory-stats = "1.0"

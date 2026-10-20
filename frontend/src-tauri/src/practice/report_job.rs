@@ -265,7 +265,7 @@ async fn word_for_word<R: Runtime>(
                     ))
                 })
                 .await;
-                let text = segment_text(heard)?;
+                let text = blocking_result(heard)?;
                 spoken.push(text);
             }
             // A turn whose words are blank or looped keeps its live text, and gets no pronunciation pass.
@@ -423,17 +423,15 @@ fn split_turn(wav: &Path, offset: i64, len: i64) -> Result<(Vec<(f64, Vec<f32>)>
 
 /// `split_turn` on a blocking thread.
 async fn read_speech(wav: PathBuf, offset: i64, len: i64) -> Result<(Vec<(f64, Vec<f32>)>, (f64, u32)), String> {
-    tokio::task::spawn_blocking(move || split_turn(&wav, offset, len))
-        .await
-        .map_err(|e| e.to_string())?
+    blocking_result(tokio::task::spawn_blocking(move || split_turn(&wav, offset, len)).await)
 }
 
-/// A Whisper segment's text. A panic or cancel in its blocking task reads as `STOPPED`, not as the panic text.
-fn segment_text<E: std::fmt::Display>(joined: Result<Result<String, E>, JoinError>) -> Result<String, String> {
+/// The result of a report step on a blocking thread. A panic or cancel reads as `STOPPED`, not as the panic text.
+fn blocking_result<T, E: std::fmt::Display>(joined: Result<Result<T, E>, JoinError>) -> Result<T, String> {
     match joined {
-        Ok(text) => text.map_err(|e| e.to_string()),
+        Ok(result) => result.map_err(|e| e.to_string()),
         Err(e) => {
-            warn!("practice: a report segment stopped: {e}");
+            warn!("practice: a blocking report step stopped: {e}");
             Err(STOPPED.to_string())
         }
     }
@@ -696,8 +694,8 @@ mod tests {
     #[tokio::test]
     async fn segment_panic_maps_to_friendly_copy() {
         let panicked = tokio::task::spawn_blocking(|| -> Result<String, String> { panic!("whisper internal") }).await;
-        assert_eq!(segment_text(panicked).unwrap_err(), "The report stopped unexpectedly — Retry");
+        assert_eq!(blocking_result(panicked).unwrap_err(), "The report stopped unexpectedly — Retry");
         let heard = tokio::task::spawn_blocking(|| -> Result<String, String> { Ok("I think".into()) }).await;
-        assert_eq!(segment_text(heard).unwrap(), "I think");
+        assert_eq!(blocking_result(heard).unwrap(), "I think");
     }
 }

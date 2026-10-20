@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod db;
+pub mod models;
 pub mod files;
 pub mod report;
 pub mod prompts;

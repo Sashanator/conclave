@@ -5,6 +5,7 @@
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 pub mod db;
+pub mod report;
 pub mod prompts;
 pub mod tts_text;
 

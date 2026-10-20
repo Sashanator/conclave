@@ -22,6 +22,8 @@ pub struct WordScore {
     pub index: usize,
     pub start: usize,
     pub end: usize,
+    /// Phones in the chosen variant, which is only known inside `score_words`.
+    pub phones: usize,
     pub score: f32,
     pub worst_phone: u8,
 }
@@ -155,6 +157,7 @@ pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Optio
                     index,
                     start: phone_spans[0].0,
                     end: phone_spans[phone_spans.len() - 1].1,
+                    phones: phones.len(),
                     score: worst.0,
                     worst_phone: worst.1,
                 }

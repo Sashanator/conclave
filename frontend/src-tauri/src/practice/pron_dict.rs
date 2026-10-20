@@ -1,7 +1,5 @@
 //! CMUdict parser and word tokeniser for the local pronunciation hints.
 //! Phone ids follow the order of the HuBERT phoneme model's output head (ids 0..=38).
-// shortcut: unused until the pronunciation pass calls it (later task), drop this allow then.
-#![allow(dead_code)]
 
 use std::collections::HashMap;
 

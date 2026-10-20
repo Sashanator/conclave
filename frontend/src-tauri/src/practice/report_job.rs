@@ -11,6 +11,7 @@ use serde::Serialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Emitter, Manager, Runtime};
+use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 
 use crate::audio::common::acquire_engine_lifecycle_lock;
@@ -44,6 +45,8 @@ const WAIT_POLL: Duration = Duration::from_secs(10);
 /// Held while a report is claimed and while a session is deleted, so the two cannot interleave.
 pub(super) static REPORT_GATE: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 const SAVE_FAILED: &str = "Couldn't save the report — Retry";
+/// Shown when a report task or a Whisper segment panics or is cancelled. The panic text stays in the log.
+const STOPPED: &str = "The report stopped unexpectedly — Retry";
 /// The report's note when the pronunciation pass fails. The report itself is kept.
 const PRON_UNAVAILABLE: &str = "Pronunciation hints unavailable";
 
@@ -93,7 +96,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String, hold: ModelH
         Ok(result) => result,
         Err(e) => {
             warn!("practice: the report task stopped: {e}");
-            Err("The report stopped unexpectedly — Retry".to_string())
+            Err(STOPPED.to_string())
         }
     };
     dictate::unload_if_idle().await;
@@ -254,16 +257,15 @@ async fn word_for_word<R: Runtime>(
                 yield_to_recording(app, pool, session_id).await;
                 // Whisper inference is synchronous, so it runs on a blocking thread, not a Tokio worker.
                 let worker = engine.clone();
-                let text = tokio::task::spawn_blocking(move || {
+                let heard = tokio::task::spawn_blocking(move || {
                     tauri::async_runtime::block_on(worker.transcribe_audio_raw(
                         samples,
                         Some("en".to_string()),
                         Some(VERBATIM_PROMPT),
                     ))
                 })
-                .await
-                .map_err(|e| e.to_string())?
-                .map_err(|e| e.to_string())?;
+                .await;
+                let text = segment_text(heard)?;
                 spoken.push(text);
             }
             // A turn whose words are blank or looped keeps its live text, and gets no pronunciation pass.
@@ -424,6 +426,17 @@ async fn read_speech(wav: PathBuf, offset: i64, len: i64) -> Result<(Vec<(f64, V
     tokio::task::spawn_blocking(move || split_turn(&wav, offset, len))
         .await
         .map_err(|e| e.to_string())?
+}
+
+/// A Whisper segment's text. A panic or cancel in its blocking task reads as `STOPPED`, not as the panic text.
+fn segment_text<E: std::fmt::Display>(joined: Result<Result<String, E>, JoinError>) -> Result<String, String> {
+    match joined {
+        Ok(text) => text.map_err(|e| e.to_string()),
+        Err(e) => {
+            warn!("practice: a report segment stopped: {e}");
+            Err(STOPPED.to_string())
+        }
+    }
 }
 
 /// Copy for a Claude failure in the report (R30). Busy, network and stream errors all read as "couldn't reach".
@@ -678,5 +691,13 @@ mod tests {
         assert_eq!(report_copy(&ClaudeError::Cancelled), "Couldn't reach Claude — try again");
         assert_eq!(report_copy(&ClaudeError::Rejected), ClaudeError::Rejected.user_message());
         assert_eq!(report_copy(&ClaudeError::NoKey), ClaudeError::NoKey.user_message());
+    }
+
+    #[tokio::test]
+    async fn segment_panic_maps_to_friendly_copy() {
+        let panicked = tokio::task::spawn_blocking(|| -> Result<String, String> { panic!("whisper internal") }).await;
+        assert_eq!(segment_text(panicked).unwrap_err(), "The report stopped unexpectedly — Retry");
+        let heard = tokio::task::spawn_blocking(|| -> Result<String, String> { Ok("I think".into()) }).await;
+        assert_eq!(segment_text(heard).unwrap(), "I think");
     }
 }

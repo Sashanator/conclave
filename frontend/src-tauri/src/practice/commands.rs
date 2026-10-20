@@ -25,10 +25,12 @@ use crate::state::AppState;
 
 use super::audio::{Player, TurnMic, TurnRecorder};
 use super::claude::{self, ClaudeError};
-use super::db::{self, Material, MaterialKind, MaterialMeta, SetupInput, SetupRow};
-use super::files::{create_session_folder, folder_name, PRACTICE_FILES};
+use super::db::{self, Material, MaterialKind, MaterialMeta, SessionRow, SetupInput, SetupRow, TurnRow};
+use super::files::{allow_audio, create_session_folder, folder_name, PRACTICE_FILES};
 use super::models;
 use super::prompts::plan_prompts;
+use super::report::Report;
+use super::report_job::{self, summary_line};
 use super::runner::{self, Loaded};
 use super::session::{Event, Notice, Phase};
 use super::tts::{load_voice, Supertonic, Voice};
@@ -38,6 +40,7 @@ const NO_KEY: &str = "Add your Claude API key in Settings to use Practice";
 const NOT_WHISPER: &str = "Practice needs Whisper as the transcription engine (Settings → Transcription)";
 const BUSY: &str = "Practice is unavailable while a meeting is recording, importing or re-transcribing";
 const RUNNING: &str = "A practice session is already running";
+const NOT_RETRYABLE: &str = "This report cannot be retried now";
 const CANCELLED: &str = "Cancelled";
 const PREVIEW_TEXT: &str = "Hello, I'm looking forward to our conversation.";
 
@@ -599,6 +602,104 @@ pub fn practice_tap() -> Result<(), String> {
 #[tauri::command]
 pub fn practice_end() -> Result<(), String> {
     send_event(Event::EndRequested)
+}
+
+#[derive(Serialize)]
+pub struct SessionSummary {
+    pub id: String,
+    pub setup_name: String,
+    pub started_at: String,
+    pub duration_secs: f64,
+    pub report_status: String,
+    /// e.g. "4 grammar · 31 fillers"; set once the report is ready.
+    pub summary: Option<String>,
+    /// `None` while the session runs.
+    pub end_reason: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct SessionDetail {
+    pub summary: SessionSummary,
+    pub character: String,
+    pub turns: Vec<TurnRow>,
+    pub report: Option<Report>,
+    pub report_error: Option<String>,
+    pub audio_path: Option<String>,
+}
+
+fn summary_of(row: &SessionRow) -> SessionSummary {
+    let summary = row
+        .report_json
+        .as_deref()
+        .and_then(|json| serde_json::from_str::<Report>(json).ok())
+        .map(|report| summary_line(&report));
+    SessionSummary {
+        id: row.id.clone(),
+        setup_name: row.setup_name.clone(),
+        started_at: row.started_at.clone(),
+        duration_secs: row.duration_secs,
+        report_status: row.report_status.clone(),
+        summary,
+        end_reason: row.end_reason.clone(),
+    }
+}
+
+#[tauri::command]
+pub async fn practice_list_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSummary>, String> {
+    let rows = db::list_sessions(&pool_of(&state)).await?;
+    Ok(rows.iter().map(summary_of).collect())
+}
+
+#[tauri::command]
+pub async fn practice_get_session<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<SessionDetail, String> {
+    let (row, turns) = db::get_session(&pool_of(&state), &id)
+        .await?
+        .ok_or("Session not found")?;
+    let report = row
+        .report_json
+        .as_deref()
+        .map(|json| serde_json::from_str::<Report>(json).map_err(|e| e.to_string()))
+        .transpose()?;
+    let audio_path = match row.folder_path.as_deref() {
+        // A missing or unreadable recording leaves the report usable without audio.
+        Some(folder) => allow_audio(&app, folder).unwrap_or_else(|e| {
+            warn!("practice: no audio for the session: {e}");
+            None
+        }),
+        None => None,
+    };
+    Ok(SessionDetail {
+        summary: summary_of(&row),
+        character: row.character.clone(),
+        turns,
+        report,
+        report_error: row.report_error.clone(),
+        audio_path,
+    })
+}
+
+/// Runs the report again for a session whose report failed or was interrupted. Refused while it runs.
+#[tauri::command]
+pub async fn practice_retry_report<R: Runtime>(
+    app: AppHandle<R>,
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    let (row, _) = db::get_session(&pool_of(&state), &session_id)
+        .await?
+        .ok_or("Session not found")?;
+    if running_id().as_deref() == Some(session_id.as_str()) {
+        return Err(RUNNING.to_string());
+    }
+    if !matches!(row.report_status.as_str(), "failed" | "pending") {
+        return Err(NOT_RETRYABLE.to_string());
+    }
+    tauri::async_runtime::spawn(report_job::run(app, session_id));
+    Ok(())
 }
 
 /// Run at startup: a session left running by a crash is closed as interrupted.

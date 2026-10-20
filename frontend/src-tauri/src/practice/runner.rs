@@ -28,6 +28,7 @@ use super::claude::{self, ChatMsg};
 use super::commands::{release_slot, PracticeStatePayload, PracticeTurnPayload};
 use super::db::{self, SetupRow, TurnRow};
 use super::prompts::{character_system, Persona, SentenceSplitter, OPENING_USER, WRAP_UP_SYSTEM};
+use super::report_job;
 use super::session::{Core, EndReason, Effect, Event, Notice, Phase};
 use super::tts::{Supertonic, Voice};
 use super::{ModelHold, LIVE_VAD_REDEMPTION_MS, MAX_TURN_SECS, TTS_SPEED, TTS_STEPS, YOU_WAV_RATE};
@@ -499,7 +500,7 @@ impl<R: Runtime> Runner<R> {
         // The hold goes before the unload check, so an unused model is freed.
         self.hold.take();
         dictate::unload_if_idle().await;
-        // The report job starts here (Task 12).
+        tauri::async_runtime::spawn(report_job::run(self.app.clone(), self.session_id.clone()));
         release_slot(&self.session_id);
     }
 }

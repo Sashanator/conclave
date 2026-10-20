@@ -70,7 +70,7 @@ pub struct SessionRow {
     pub report_error: Option<String>,
 }
 
-#[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
+#[derive(Debug, Clone, PartialEq, Serialize, sqlx::FromRow)]
 pub struct TurnRow {
     pub session_id: String,
     pub idx: i64,
@@ -451,6 +451,19 @@ pub async fn set_report(
     Ok(())
 }
 
+/// Moves a pending or failed report to 'waiting'. False when another job holds it, it is ready, or the session is gone.
+pub async fn claim_report(pool: &SqlitePool, id: &str) -> Result<bool, String> {
+    let claimed = sqlx::query(
+        "UPDATE practice_sessions SET report_status = 'waiting', report_json = NULL, report_error = NULL WHERE id = ? AND report_status IN ('pending', 'failed')",
+    )
+    .bind(id)
+    .execute(pool)
+    .await
+    .map_err(db_err)?
+    .rows_affected();
+    Ok(claimed == 1)
+}
+
 pub async fn set_verbatim(
     pool: &SqlitePool,
     session_id: &str,
@@ -738,6 +751,20 @@ mod tests {
         let (done, _) = get_session(&pool, &ready.id).await.unwrap().unwrap();
         assert_eq!(done.report_status, "ready");
         assert_eq!(done.report_json.as_deref(), Some("{}"));
+    }
+
+    #[tokio::test]
+    async fn claim_report_takes_only_pending_or_failed() {
+        let pool = test_pool().await;
+        let setup = new_setup(&pool, "Chat").await;
+        let session = create_session(&pool, &setup, "C:/a", None).await.unwrap();
+        assert!(claim_report(&pool, &session.id).await.unwrap());
+        assert!(!claim_report(&pool, &session.id).await.unwrap());
+        set_report(&pool, &session.id, "failed", None, Some("x")).await.unwrap();
+        assert!(claim_report(&pool, &session.id).await.unwrap());
+        set_report(&pool, &session.id, "ready", Some("{}"), None).await.unwrap();
+        assert!(!claim_report(&pool, &session.id).await.unwrap());
+        assert!(!claim_report(&pool, "missing").await.unwrap());
     }
 
     #[test]

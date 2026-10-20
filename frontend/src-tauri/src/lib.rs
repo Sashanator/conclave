@@ -994,6 +994,9 @@ pub fn run() {
             practice::commands::practice_cancel_start,
             practice::commands::practice_tap,
             practice::commands::practice_end,
+            practice::commands::practice_list_sessions,
+            practice::commands::practice_get_session,
+            practice::commands::practice_retry_report,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

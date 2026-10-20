@@ -1,5 +1,6 @@
 //! CTC forced alignment (Viterbi) and goodness-of-pronunciation word scores over HuBERT phoneme log-probabilities.
 //! Pure: no I/O, no model. Frames are 20 ms; `logp` is row-major `[frames, VOCAB]`.
+#![allow(dead_code)] // remove in Task 4, once the runner calls score_words
 
 use super::PRON_VARIANT_MARGIN_FRAMES;
 
@@ -43,7 +44,13 @@ pub fn viterbi(logp: &[f32], frames: usize, phones: &[u8]) -> Option<Aligned> {
         return None;
     }
     let states = 2 * n + 1;
-    let emit = |s: usize| if s % 2 == 0 { BLANK } else { phones[s / 2] as usize };
+    let emit = |s: usize| {
+        if s % 2 == 0 {
+            BLANK
+        } else {
+            phones[s / 2] as usize
+        }
+    };
     // back[t * states + s]: 0 = stayed, 1 = came from s-1, 2 = came from s-2.
     let mut back = vec![0u8; frames * states];
     let mut prev = vec![f32::NEG_INFINITY; states];
@@ -66,7 +73,11 @@ pub fn viterbi(logp: &[f32], frames: usize, phones: &[u8]) -> Option<Aligned> {
         }
         prev = cur;
     }
-    let last = if prev[states - 2] > prev[states - 1] { states - 2 } else { states - 1 };
+    let last = if prev[states - 2] > prev[states - 1] {
+        states - 2
+    } else {
+        states - 1
+    };
     let score = prev[last];
     let mut path = vec![0usize; frames];
     let mut s = last;
@@ -94,7 +105,12 @@ fn align(logp: &[f32], frames: usize, words: &[Vec<u8>]) -> Option<Vec<Vec<(usiz
     let phones: Vec<u8> = words.concat();
     let a = viterbi(logp, frames, &phones)?;
     let mut spans = a.phone_spans.into_iter();
-    Some(words.iter().map(|w| spans.by_ref().take(w.len()).collect()).collect())
+    Some(
+        words
+            .iter()
+            .map(|w| spans.by_ref().take(w.len()).collect())
+            .collect(),
+    )
 }
 
 /// Mean over frames `start..=end` of `logp[p] - max over the expected phones`.
@@ -103,7 +119,10 @@ fn gop(logp: &[f32], start: usize, end: usize, phone: u8) -> f32 {
     let sum: f32 = (start..=end)
         .map(|t| {
             let row = &logp[t * VOCAB..(t + 1) * VOCAB];
-            let best = row[..PHONES].iter().cloned().fold(f32::NEG_INFINITY, f32::max);
+            let best = row[..PHONES]
+                .iter()
+                .cloned()
+                .fold(f32::NEG_INFINITY, f32::max);
             row[p] - best
         })
         .sum();
@@ -114,7 +133,9 @@ fn gop(logp: &[f32], start: usize, end: usize, phone: u8) -> f32 {
 pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Option<Vec<WordScore>> {
     let bad_phone = |p: &u8| *p as usize >= PHONES;
     if words.is_empty()
-        || words.iter().any(|v| v.is_empty() || v.iter().any(|p| p.is_empty() || p.iter().any(bad_phone)))
+        || words
+            .iter()
+            .any(|v| v.is_empty() || v.iter().any(|p| p.is_empty() || p.iter().any(bad_phone)))
     {
         return None;
     }
@@ -122,12 +143,26 @@ pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Optio
     let first = align(logp, frames, &chosen)?;
     for (i, variants) in words.iter().enumerate().filter(|(_, v)| v.len() > 1) {
         let (start, end) = (first[i][0].0, first[i].last()?.1);
-        let lo = start.saturating_sub(PRON_VARIANT_MARGIN_FRAMES);
-        let hi = (end + PRON_VARIANT_MARGIN_FRAMES).min(frames - 1);
+        // The window must fit the longest variant, or a shorter wrong variant wins uncompared.
+        let need = 2 * variants.iter().map(|v| v.len()).max().unwrap_or(0) + 1;
+        if need > frames {
+            continue;
+        }
+        let (mut lo, mut hi) = (
+            start.saturating_sub(PRON_VARIANT_MARGIN_FRAMES),
+            (end + PRON_VARIANT_MARGIN_FRAMES).min(frames - 1),
+        );
+        while hi + 1 - lo < need {
+            if lo > 0 {
+                lo -= 1;
+            } else {
+                hi += 1;
+            }
+        }
         let window = &logp[lo * VOCAB..(hi + 1) * VOCAB];
         let mut best: Option<(f32, usize)> = None;
         for (vi, v) in variants.iter().enumerate() {
-            if let Some(a) = viterbi(window, hi - lo + 1, v) {
+            if let Some(a) = viterbi(window, hi + 1 - lo, v) {
                 if best.map_or(true, |(b, _)| a.score > b) {
                     best = Some((a.score, vi));
                 }
@@ -144,19 +179,30 @@ pub fn score_words(logp: &[f32], frames: usize, words: &[Vec<Vec<u8>>]) -> Optio
             .zip(&spans)
             .enumerate()
             .map(|(index, (phones, phone_spans))| {
-                let mut worst = (f32::INFINITY, 0u8);
-                for (&p, &(s, e)) in phones.iter().zip(phone_spans) {
-                    let g = gop(logp, s, e, p);
-                    if g < worst.0 {
-                        worst = (g, p);
-                    }
-                }
+                let gops: Vec<f32> = phones
+                    .iter()
+                    .zip(phone_spans)
+                    .map(|(&p, &(s, e))| gop(logp, s, e, p))
+                    .collect();
+                let (k, min) =
+                    gops.iter()
+                        .copied()
+                        .enumerate()
+                        .fold(
+                            (0, f32::INFINITY),
+                            |acc, (k, g)| if g < acc.1 { (k, g) } else { acc },
+                        );
                 WordScore {
                     index,
                     start: phone_spans[0].0,
                     end: phone_spans[phone_spans.len() - 1].1,
-                    score: worst.0,
-                    worst_phone: worst.1,
+                    // A NaN or infinite GOP (bad model output) reports 0.0, so the word is never flagged.
+                    score: if gops.iter().all(|g| g.is_finite()) {
+                        min
+                    } else {
+                        0.0
+                    },
+                    worst_phone: phones[k],
                 }
             })
             .collect(),
@@ -230,6 +276,31 @@ mod tests {
         let labels = [BLANK, 1, 1, BLANK, 3, 3, BLANK];
         let s = score_words(&peaks(&labels), labels.len(), &words).unwrap();
         assert!(s[0].score.abs() < 1e-5, "score {}", s[0].score);
+    }
+
+    #[test]
+    fn a_short_window_does_not_let_a_wrong_variant_win() {
+        // Variant 0 needs 17 frames, and the segment is exactly 17 frames long, one frame per phone.
+        // The 3-phone wrong variant fits the usual ±4 window and would win uncompared, so the window must grow.
+        let words = vec![vec![(1..=8).collect::<Vec<u8>>(), vec![1, 2, 30]]];
+        let mut labels = vec![BLANK];
+        labels.extend(1..=8usize);
+        labels.extend(vec![BLANK; 8]);
+        let s = score_words(&peaks(&labels), labels.len(), &words).unwrap();
+        assert!(s[0].score.abs() < 1e-5, "score {}", s[0].score);
+        assert_eq!((s[0].start, s[0].end), (1, 8));
+    }
+
+    #[test]
+    fn a_non_finite_gop_reports_zero_so_the_word_is_not_flagged() {
+        // The only phone's column is NaN in every frame, so its GOP is NaN wherever it is aligned.
+        let words = vec![vec![vec![1u8]]];
+        let mut logp = peaks(&[BLANK, BLANK, BLANK]);
+        for t in 0..3 {
+            logp[t * VOCAB + 1] = f32::NAN;
+        }
+        let s = score_words(&logp, 3, &words).unwrap();
+        assert_eq!(s[0].score, 0.0);
     }
 
     #[test]

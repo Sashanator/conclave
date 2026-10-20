@@ -4,7 +4,6 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
 use std::time::Duration;
 
 use log::warn;
@@ -20,7 +19,6 @@ use crate::audio::transcription::engine::get_or_init_whisper;
 use crate::audio::vad::get_speech_chunks;
 use crate::dictate;
 use crate::state::AppState;
-use crate::whisper_engine::WhisperEngine;
 
 use super::audio::read_span;
 use super::claude::{self, ClaudeError};
@@ -187,7 +185,8 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
 }
 
 /// Re-transcribes each learner turn that has audio, word for word, and stores it. Other turns keep their live text.
-/// Before each turn, a meeting recording that has started takes the engine first, so the job waits behind it.
+/// Whisper runs once per VAD segment, and before each segment a meeting recording that has started takes the
+/// engine first, so the job waits behind it.
 async fn word_for_word<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
@@ -208,12 +207,21 @@ async fn word_for_word<R: Runtime>(
         let mut text = turn.live_text.clone();
         let mut timing = None;
         if let (true, Some(offset), Some(len)) = (turn.speaker == "user", turn.wav_offset, turn.wav_len) {
-            if is_recording_now() {
-                store(app, pool, session_id, "waiting", None, None).await;
-                wait_while_recording().await;
-                store(app, pool, session_id, "running", None, None).await;
+            let (segments, t) = read_speech(wav.to_path_buf(), offset, len).await?;
+            let mut spoken = Vec::with_capacity(segments.len());
+            for samples in segments {
+                if is_recording_now() {
+                    store(app, pool, session_id, "waiting", None, None).await;
+                    wait_while_recording().await;
+                    store(app, pool, session_id, "running", None, None).await;
+                }
+                spoken.push(
+                    engine
+                        .transcribe_audio_raw(samples, Some("en".to_string()), Some(VERBATIM_PROMPT))
+                        .await
+                        .map_err(|e| e.to_string())?,
+                );
             }
-            let (spoken, t) = transcribe_span(engine.clone(), wav.to_path_buf(), offset, len).await?;
             text = choose_verbatim(&spoken, &text);
             // A turn with no words at all keeps no verbatim text; the live text stays the only copy.
             if !text.is_empty() {
@@ -231,24 +239,20 @@ async fn word_for_word<R: Runtime>(
     Ok(heard)
 }
 
-/// The stored verbatim text: Whisper's words, or the live text when Whisper's are blank or looped.
-pub fn choose_verbatim(spoken: &str, live: &str) -> String {
-    let spoken = spoken.trim();
-    if spoken.is_empty() || looks_looped(spoken) {
+/// The stored verbatim text: the segments' words joined with spaces, or the live text when they are blank or looped.
+pub fn choose_verbatim(spoken: &[String], live: &str) -> String {
+    let joined = spoken.iter().map(|s| s.trim()).filter(|s| !s.is_empty()).collect::<Vec<_>>().join(" ");
+    if joined.is_empty() || looks_looped(&joined) {
         live.to_string()
     } else {
-        spoken.to_string()
+        joined
     }
 }
 
-/// Reads one turn from you.wav, finds its speech and transcribes it raw, on a blocking thread.
-async fn transcribe_span(
-    engine: Arc<WhisperEngine>,
-    wav: PathBuf,
-    offset: i64,
-    len: i64,
-) -> Result<(String, (f64, u32)), String> {
-    tokio::task::spawn_blocking(move || -> Result<(String, (f64, u32)), String> {
+/// Reads one turn from you.wav and splits it into its VAD speech segments, on a blocking thread.
+/// Returns the segments' samples and the turn's (speech seconds, long pauses).
+async fn read_speech(wav: PathBuf, offset: i64, len: i64) -> Result<(Vec<Vec<f32>>, (f64, u32)), String> {
+    tokio::task::spawn_blocking(move || -> Result<(Vec<Vec<f32>>, (f64, u32)), String> {
         let samples = read_span(&wav, offset, len)?;
         let segments = get_speech_chunks(&samples, VERBATIM_REDEMPTION_MS).map_err(|e| e.to_string())?;
         let speech_secs = segments.iter().map(|s| s.samples.len()).sum::<usize>() as f64 / f64::from(YOU_WAV_RATE);
@@ -257,13 +261,7 @@ async fn transcribe_span(
             .map(|s| (s.start_timestamp_ms / 1000.0, s.end_timestamp_ms / 1000.0))
             .collect();
         let timing = (speech_secs, long_pauses(&spans, LONG_PAUSE_SECS));
-        let text = tauri::async_runtime::block_on(engine.transcribe_audio_raw(
-            samples,
-            Some("en".to_string()),
-            Some(VERBATIM_PROMPT),
-        ))
-        .map_err(|e| e.to_string())?;
-        Ok((text, timing))
+        Ok((segments.into_iter().map(|s| s.samples).collect(), timing))
     })
     .await
     .map_err(|e| e.to_string())?
@@ -418,11 +416,18 @@ mod tests {
 
     #[test]
     fn verbatim_falls_back_to_live_when_blank_or_looped() {
-        assert_eq!(choose_verbatim("  I think so.  ", "live"), "I think so.");
-        assert_eq!(choose_verbatim("", "live words"), "live words");
-        assert_eq!(choose_verbatim(" \n ", "live words"), "live words");
-        assert_eq!(choose_verbatim("the the the the the the", "live words"), "live words");
-        assert_eq!(choose_verbatim("", ""), "");
+        assert_eq!(choose_verbatim(&["  I think so.  ".into()], "live"), "I think so.");
+        assert_eq!(choose_verbatim(&[], "live words"), "live words");
+        assert_eq!(choose_verbatim(&["".into(), " \n ".into()], "live words"), "live words");
+        assert_eq!(choose_verbatim(&["the the the the the the".into()], "live words"), "live words");
+        assert_eq!(choose_verbatim(&[], ""), "");
+    }
+
+    #[test]
+    fn verbatim_joins_segments_with_spaces_and_checks_the_joined_text_for_loops() {
+        assert_eq!(choose_verbatim(&["I think".into(), "  so.".into(), "".into()], "live"), "I think so.");
+        // Each segment alone is fine; the repeats only show once they are joined.
+        assert_eq!(choose_verbatim(&["the the the".into(), "the the the".into()], "live"), "live");
     }
 
     #[test]

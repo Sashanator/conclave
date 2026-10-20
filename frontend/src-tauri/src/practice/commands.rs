@@ -506,7 +506,7 @@ async fn load_session<R: Runtime>(
     let recorder = match TurnRecorder::create(&folder.join(PRACTICE_FILES[0])) {
         Ok(recorder) => recorder,
         Err(e) => {
-            discard_folder(&folder);
+            discard_folder(&folder, &get_default_recordings_folder(), &recycle);
             return Err(e);
         }
     };
@@ -514,7 +514,7 @@ async fn load_session<R: Runtime>(
         Ok(session) => session,
         Err(e) => {
             drop(recorder);
-            discard_folder(&folder);
+            discard_folder(&folder, &get_default_recordings_folder(), &recycle);
             return Err(e);
         }
     };
@@ -543,11 +543,11 @@ async fn load_session<R: Runtime>(
     })
 }
 
-/// Removes a session folder this start created, with the header-only `you.wav` in it. Anything else stays.
-fn discard_folder(folder: &Path) {
-    let _ = std::fs::remove_file(folder.join(PRACTICE_FILES[0]));
-    if let Err(e) = std::fs::remove_dir(folder) {
-        warn!("practice: could not remove the empty session folder: {e}");
+/// Recycles a session folder this start created. Only Practice's own folder holding just `you.wav` moves to the
+/// Recycle Bin; anything else is refused and left where it is (R33).
+fn discard_folder(folder: &Path, base: &Path, remove: Remover) {
+    if let Err(e) = delete_session_folder(&folder.to_string_lossy(), base, remove) {
+        warn!("practice: could not discard the session folder: {e}");
     }
 }
 
@@ -785,6 +785,7 @@ mod tests {
     use crate::practice::db::{Material, MaterialMeta, SetupRow};
     use std::path::PathBuf;
     use crate::practice::report::Fluency;
+    use std::sync::Mutex;
 
     fn session_row(report_json: Option<&str>) -> SessionRow {
         SessionRow {
@@ -958,6 +959,37 @@ mod tests {
         assert!(delete_session_inner(&pool, &id, base.path(), &refuse).await.is_err());
         assert!(db::get_session(&pool, &id).await.unwrap().is_some(), "rows must survive a failed recycle");
         assert!(folder.join("you.wav").exists());
+    }
+
+    #[test]
+    fn a_failed_start_recycles_only_its_own_folder() {
+        let base = tempfile::tempdir().unwrap();
+        let recycled = Mutex::new(Vec::<PathBuf>::new());
+        let remove = |p: &[PathBuf]| {
+            recycled.lock().unwrap().extend(p.iter().cloned());
+            Ok(())
+        };
+
+        let own = base.path().join("Practice 1");
+        std::fs::create_dir(&own).unwrap();
+        std::fs::write(own.join(PRACTICE_FILES[0]), b"header").unwrap();
+        discard_folder(&own, base.path(), &remove);
+        assert_eq!(*recycled.lock().unwrap(), vec![dunce::canonicalize(&own).unwrap()]);
+        recycled.lock().unwrap().clear();
+
+        // A folder with anything else in it is refused, and nothing is removed
+        let mixed = base.path().join("Practice 2");
+        std::fs::create_dir(&mixed).unwrap();
+        std::fs::write(mixed.join("notes.txt"), b"keep").unwrap();
+        discard_folder(&mixed, base.path(), &remove);
+        assert!(recycled.lock().unwrap().is_empty());
+        assert!(mixed.join("notes.txt").exists());
+
+        // A folder outside the recordings folder is refused too
+        let outside = tempfile::tempdir().unwrap();
+        discard_folder(outside.path(), base.path(), &remove);
+        assert!(recycled.lock().unwrap().is_empty());
+        assert!(outside.path().exists());
     }
 
     #[tokio::test]

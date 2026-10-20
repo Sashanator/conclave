@@ -78,7 +78,10 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String, hold: ModelH
     let job = tauri::async_runtime::spawn(analyse(app.clone(), pool.clone(), session_id.clone(), hold));
     let result = match job.await {
         Ok(result) => result,
-        Err(e) => Err(format!("The report stopped unexpectedly: {e}")),
+        Err(e) => {
+            warn!("practice: the report task stopped: {e}");
+            Err("The report stopped unexpectedly — Retry".to_string())
+        }
     };
     dictate::unload_if_idle().await;
     let (status, json, error) = finish(result);

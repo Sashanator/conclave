@@ -42,7 +42,7 @@ pub(super) const NOT_WHISPER: &str = "Practice needs Whisper as the transcriptio
 const BUSY: &str = "Practice is unavailable while a meeting is recording, importing or re-transcribing";
 const RUNNING: &str = "A practice session is already running";
 const NOT_RETRYABLE: &str = "This report cannot be retried now";
-const UNREADABLE_REPORT: &str = "The saved report could not be read — Generate report";
+const UNREADABLE_REPORT: &str = "The saved report could not be read — Retry";
 const CANCELLED: &str = "Cancelled";
 const PREVIEW_TEXT: &str = "Hello, I'm looking forward to our conversation.";
 
@@ -666,18 +666,23 @@ pub async fn practice_list_sessions(state: State<'_, AppState>) -> Result<Vec<Se
     Ok(rows.iter().map(summary_of).collect())
 }
 
-/// The stored report, or the copy for one that cannot be read. An unreadable report never fails the detail view.
-fn stored_report(json: Option<&str>, error: Option<String>) -> (Option<Report>, Option<String>) {
-    match json {
-        None => (None, error),
-        Some(json) => match serde_json::from_str::<Report>(json) {
-            Ok(report) => (Some(report), error),
-            // The parse error can quote report content, so it is not logged.
-            Err(_) => {
-                warn!("practice: a saved report could not be read");
-                (None, Some(UNREADABLE_REPORT.to_string()))
-            }
-        },
+/// Reads the stored report. An unreadable one is dropped and the row is marked failed, so the UI offers Retry.
+/// Returns the report and whether it was unreadable. The parse error can quote report content, so it is not logged.
+fn read_stored_report(row: &mut SessionRow) -> (Option<Report>, bool) {
+    let Some(json) = row.report_json.take() else {
+        return (None, false);
+    };
+    match serde_json::from_str::<Report>(&json) {
+        Ok(report) => {
+            row.report_json = Some(json);
+            (Some(report), false)
+        }
+        Err(_) => {
+            warn!("practice: a saved report could not be read");
+            row.report_status = "failed".to_string();
+            row.report_error = Some(UNREADABLE_REPORT.to_string());
+            (None, true)
+        }
     }
 }
 
@@ -687,10 +692,15 @@ pub async fn practice_get_session<R: Runtime>(
     state: State<'_, AppState>,
     id: String,
 ) -> Result<SessionDetail, String> {
-    let (row, turns) = db::get_session(&pool_of(&state), &id)
-        .await?
-        .ok_or("Session not found")?;
-    let (report, report_error) = stored_report(row.report_json.as_deref(), row.report_error.clone());
+    let pool = pool_of(&state);
+    let (mut row, turns) = db::get_session(&pool, &id).await?.ok_or("Session not found")?;
+    let (report, unreadable) = read_stored_report(&mut row);
+    if unreadable {
+        // Saved, so the list and Retry agree with this view. A failed write leaves the old status.
+        if let Err(e) = db::set_report(&pool, &id, "failed", None, Some(UNREADABLE_REPORT)).await {
+            warn!("practice: could not mark the unreadable report failed: {e}");
+        }
+    }
     let audio_path = match row.folder_path.as_deref() {
         // A missing or unreadable recording leaves the report usable without audio.
         Some(folder) => allow_audio(&app, folder).unwrap_or_else(|e| {
@@ -704,7 +714,7 @@ pub async fn practice_get_session<R: Runtime>(
         character: row.character.clone(),
         turns,
         report,
-        report_error,
+        report_error: row.report_error.clone(),
         audio_path,
     })
 }
@@ -745,20 +755,49 @@ mod tests {
     use crate::practice::db::{Material, MaterialMeta, SetupRow};
     use crate::practice::report::Fluency;
 
+    fn session_row(report_json: Option<&str>) -> SessionRow {
+        SessionRow {
+            id: "s".into(),
+            setup_id: None,
+            setup_name: "Thesis".into(),
+            character: "Examiner".into(),
+            voice: "F1".into(),
+            started_at: String::new(),
+            duration_secs: 60.0,
+            folder_path: None,
+            plan: None,
+            status: "ended".into(),
+            end_reason: Some("user".into()),
+            report_json: report_json.map(str::to_string),
+            report_status: "ready".into(),
+            report_error: None,
+        }
+    }
+
     #[test]
-    fn unreadable_saved_report_is_not_fatal() {
-        let (report, error) = stored_report(Some("{not json"), None);
+    fn unreadable_saved_report_becomes_failed_with_retry() {
+        let mut row = session_row(Some("{not json"));
+        let (report, unreadable) = read_stored_report(&mut row);
         assert!(report.is_none());
-        assert_eq!(error.as_deref(), Some("The saved report could not be read — Generate report"));
+        assert!(unreadable);
+        assert_eq!(row.report_status, "failed");
+        assert_eq!(row.report_error.as_deref(), Some("The saved report could not be read — Retry"));
+        assert!(row.report_json.is_none());
+    }
 
+    #[test]
+    fn readable_saved_report_is_kept() {
         let stored = serde_json::to_string(&Report { version: 1, fluency: Fluency::default(), items: vec![], dropped_items: 0 }).unwrap();
-        let (report, error) = stored_report(Some(&stored), None);
+        let mut row = session_row(Some(&stored));
+        let (report, unreadable) = read_stored_report(&mut row);
         assert!(report.is_some());
-        assert!(error.is_none());
+        assert!(!unreadable);
+        assert_eq!(row.report_status, "ready");
+        assert!(row.report_error.is_none());
+        assert_eq!(row.report_json.as_deref(), Some(stored.as_str()));
 
-        let (report, error) = stored_report(None, Some("x".into()));
-        assert!(report.is_none());
-        assert_eq!(error.as_deref(), Some("x"));
+        let mut none = session_row(None);
+        assert!(!read_stored_report(&mut none).1);
     }
 
     fn ok_status() -> PracticeStatus {

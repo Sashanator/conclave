@@ -5,11 +5,13 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
   characterName, formatClock, NOTICE_TEXT, phaseText,
-  type PracticeStatePayload, type PracticeTurnPayload,
+  type Phase, type PracticeStatePayload, type PracticeTurnPayload,
 } from '@/lib/practice';
 
 // Space typed into a text field is text, not a tap
 const TYPING = 'input, textarea, [contenteditable]:not([contenteditable="false"])';
+// No tap while the character's reply is not yet playing, or the call has ended
+const NO_TAP: Phase[] = ['Loading', 'Transcribing', 'Ended'];
 
 export function CallView({ sessionId, setupName, character, onEnded }: {
   sessionId: string;
@@ -23,6 +25,7 @@ export function CallView({ sessionId, setupName, character, onEnded }: {
   const [turns, setTurns] = useState<PracticeTurnPayload[]>([]);
   const [showTranscript, setShowTranscript] = useState(false);
   const name = characterName(state.character);
+  const canTap = !NO_TAP.includes(state.phase);
 
   useEffect(() => {
     let active = true;
@@ -60,14 +63,16 @@ export function CallView({ sessionId, setupName, character, onEnded }: {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key !== ' ' || e.repeat) return;
+      if (e.key !== ' ' || e.repeat || !canTap) return;
+      // Ctrl, Alt or Meta with Space is a shortcut for something else
+      if (e.ctrlKey || e.altKey || e.metaKey) return;
       if ((e.target as Element).closest?.(TYPING)) return;
       e.preventDefault();
       tap();
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, []);
+  }, [canTap]);
 
   const end = () => {
     invoke('practice_end').catch((err) => toast.error('Could not end the session', { description: String(err) }));
@@ -82,7 +87,7 @@ export function CallView({ sessionId, setupName, character, onEnded }: {
         </div>
 
         <div className="mt-8 mb-2 flex h-24 w-24 items-center justify-center rounded-full border-[3px] border-primary bg-muted text-4xl">
-          {name.charAt(0)}
+          {name.split(/\s+/).at(-1)?.charAt(0)}
         </div>
         <div className="text-base font-semibold">{name}</div>
         <p className={`text-sm ${state.phase === 'CharacterSpeaking' ? 'text-primary' : 'text-muted-foreground'}`}>
@@ -93,7 +98,7 @@ export function CallView({ sessionId, setupName, character, onEnded }: {
           <div className="mt-4 w-full max-w-xl rounded-lg border border-border bg-card p-4 text-center">{state.caption}</div>
         )}
 
-        <Button size="lg" className="mt-6 h-14 px-10 text-base" onClick={tap}>
+        <Button size="lg" className="mt-6 h-14 px-10 text-base" disabled={!canTap} onClick={tap}>
           ● Tap to talk <span className="opacity-70">Space</span>
         </Button>
         <div role="status" className="mt-3 h-5 text-sm text-muted-foreground">

@@ -10,7 +10,7 @@ import { SessionList } from '@/components/Practice/SessionList';
 import { SetupEditor } from '@/components/Practice/SetupEditor';
 import { CallView } from '@/components/Practice/CallView';
 import {
-  blockedReason, characterName, planText, type PracticePrepPayload, type PracticeStatus, type SessionSummary, type SetupSummary, type VoicesProgressPayload,
+  blockedReason, characterName, planText, type PracticePrepPayload, type PracticeStatus, type SessionDetail, type SessionSummary, type SetupSummary, type VoicesProgressPayload,
 } from '@/lib/practice';
 
 type View =
@@ -44,13 +44,25 @@ export default function PracticePage() {
       setStatus(s);
       setSetups(list);
       setSessions(past);
+      return s;
     } catch (err) {
       toast.error('Could not load Practice', { description: String(err) });
+      return null;
     }
   }, []);
 
+  // A session still running when the page opens goes back to its call view (R22)
   useEffect(() => {
-    refresh();
+    refresh().then(async (s) => {
+      if (!s?.running_session) return;
+      const sessionId = s.running_session;
+      try {
+        const detail = await invoke<SessionDetail>('practice_get_session', { id: sessionId });
+        setView({ kind: 'call', sessionId, setupName: detail.summary.setup_name, character: detail.character });
+      } catch (err) {
+        toast.error('Could not open the running session', { description: String(err) });
+      }
+    });
   }, [refresh]);
 
   const backToList = () => {

@@ -37,6 +37,9 @@ const SESSION: SessionSummary = {
   id: 's1', setup_name: 'Thesis defence', started_at: '2026-10-19T10:00:00Z', duration_secs: 1080,
   report_status: 'ready', summary: '4 grammar · 31 fillers',
 };
+const RUNNING_DETAIL = {
+  summary: { ...SESSION, id: 'run-1' }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null,
+};
 const READY: PracticeStatus = { has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null };
 
 let status: PracticeStatus;
@@ -56,6 +59,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_status') return structuredClone(status);
   if (command === 'practice_list_setups') return structuredClone(setups);
   if (command === 'practice_list_sessions') return structuredClone(sessions);
+  if (command === 'practice_get_session') return structuredClone(RUNNING_DETAIL);
   if (command === 'practice_save_setup') return null;
   if (command === 'practice_delete_session') return null;
   if (command === 'practice_delete_setup') return null;
@@ -290,6 +294,7 @@ describe('Practice page', () => {
 
   test('space_taps_once_per_press', async () => {
     await startCall();
+    await emit('practice-state', state('UserTurn'));
     invoke.mockClear();
 
     const press = key({});
@@ -304,6 +309,49 @@ describe('Practice page', () => {
     key({}, textarea);
     textarea.remove();
     expect(calls('practice_tap').length).toBe(1);
+  });
+
+  test('tap_is_enabled_only_where_a_tap_means_something', async () => {
+    await startCall();
+    invoke.mockClear();
+    expect(tapButtons()[0].props.disabled).toBe(true);
+    key({});
+    expect(calls('practice_tap').length).toBe(0);
+
+    for (const phase of ['CharacterSpeaking', 'UserTurn', 'Listening', 'Thinking']) {
+      await emit('practice-state', state(phase));
+      expect(tapButtons()[0].props.disabled).toBe(false);
+      key({});
+    }
+    expect(calls('practice_tap').length).toBe(4);
+
+    await emit('practice-state', state('Transcribing'));
+    expect(tapButtons()[0].props.disabled).toBe(true);
+    key({});
+    expect(calls('practice_tap').length).toBe(4);
+  });
+
+  test('space_with_ctrl_alt_or_meta_is_not_a_tap', async () => {
+    await startCall();
+    await emit('practice-state', state('UserTurn'));
+    invoke.mockClear();
+    for (const modifier of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      expect(key(modifier).defaultPrevented).toBe(false);
+    }
+    expect(calls('practice_tap').length).toBe(0);
+  });
+
+  test('avatar_shows_the_initial_of_the_last_word_of_the_name', async () => {
+    await startCall();
+    expect(renderer!.root.findAll((n) => n.type === 'div' && text(n) === 'W').length).toBe(1);
+  });
+
+  test('a session still running when the page opens resumes in its call view', async () => {
+    status = { ...READY, running_session: 'run-1' };
+    await mount();
+    expect(calls('practice_get_session')[0][1]).toEqual({ id: 'run-1' });
+    expect(tapButtons().length).toBe(1);
+    expect(hasText('Thesis defence · 00:00')).toBe(true);
   });
 
   test('phase_and_notice_copy_render', async () => {

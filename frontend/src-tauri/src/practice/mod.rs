@@ -35,6 +35,7 @@ pub mod files;
 pub mod report;
 pub mod report_job;
 pub mod prompts;
+pub mod pron_dict;
 pub mod runner;
 pub mod tts_text;
 pub mod tts;

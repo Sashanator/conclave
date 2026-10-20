@@ -136,10 +136,6 @@ pub fn voices_present() -> bool {
     dir().is_some_and(|dir| present_in(&dir, &FILES))
 }
 
-pub fn pron_present() -> bool {
-    dir().is_some_and(|dir| present_in(&dir, &PRON_FILES))
-}
-
 fn present_in(dir: &Path, files: &[ModelFile]) -> bool {
     files
         .iter()
@@ -283,7 +279,7 @@ mod tests {
         ensure_pron_models(|_, _| {})
             .await
             .expect("download the pronunciation files");
-        assert!(pron_present());
+        assert!(dir().is_some_and(|d| present_in(&d, &PRON_FILES)));
     }
 
     #[tokio::test]

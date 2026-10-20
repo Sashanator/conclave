@@ -40,7 +40,7 @@ const SESSION: SessionSummary = {
   report_status: 'ready', summary: '4 grammar · 31 fillers', end_reason: 'user',
 };
 const RUNNING_DETAIL = {
-  summary: { ...SESSION, id: 'run-1' }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null,
+  summary: { ...SESSION, id: 'run-1', end_reason: null }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null,
 };
 const READY: PracticeStatus = { has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null };
 const REPORT: Report = {
@@ -67,6 +67,8 @@ let status: PracticeStatus;
 let setups: SetupSummary[];
 let sessions: SessionSummary[];
 let detail: SessionDetail;
+// The running session the resume tests open (run-1)
+let running: SessionDetail;
 // What practice_start does in the next call; tests replace it
 let startImpl: () => Promise<unknown> = async () => 'session-1';
 // Starts left pending by holdStarts(), settled by the test in any order
@@ -94,8 +96,8 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_new_questions') return null;
   if (command === 'practice_cancel_start') return null;
   if (command === 'practice_start') return startImpl();
-  // The resume test opens run-1 (a running session); the report tests open s1
-  if (command === 'practice_get_session') return structuredClone(args?.id === 'run-1' ? RUNNING_DETAIL : detail);
+  // The report tests open s1; a call (session-1, or run-1 on resume) reads the running detail
+  if (command === 'practice_get_session') return structuredClone(args?.id === 's1' ? detail : running);
   if (command === 'practice_retry_report') return retryImpl();
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
@@ -214,6 +216,7 @@ beforeEach(async () => {
   setups = structuredClone([THESIS, INTERVIEW]);
   sessions = structuredClone([SESSION]);
   detail = structuredClone(DETAIL);
+  running = structuredClone(RUNNING_DETAIL) as SessionDetail;
   startImpl = async () => 'session-1';
   retryImpl = async () => null;
   pendingStarts = [];
@@ -402,6 +405,32 @@ describe('Practice page', () => {
     expect(calls('practice_get_session')[0][1]).toEqual({ id: 'run-1' });
     expect(tapButtons().length).toBe(1);
     expect(hasText('Thesis defence · 00:00')).toBe(true);
+  });
+
+  test('a resumed session shows the turns said so far', async () => {
+    running = { ...running, turns: TURNS };
+    status = { ...READY, running_session: 'run-1' };
+    await mount();
+    await clickButton('Show full transcript ▾');
+    expect(hasDirectText('Tell me about your thesis.')).toBe(true);
+    expect(hasDirectText('If I will have more data')).toBe(true);
+  });
+
+  test('a resumed session that already ended opens its report', async () => {
+    running = { ...running, summary: { ...running.summary, end_reason: 'user' } };
+    status = { ...READY, running_session: 'run-1' };
+    await mount();
+    expect(tapButtons().length).toBe(0);
+    expect(renderer!.root.findAll((n) => n.type === 'h1' && text(n).startsWith('Thesis defence · ')).length).toBe(1);
+  });
+
+  test('a resumed session is listened to before it is read', async () => {
+    status = { ...READY, running_session: 'run-1' };
+    trace.length = 0;
+    await mount();
+    const listened = trace.indexOf('listen:practice-turn');
+    expect(listened).toBeGreaterThanOrEqual(0);
+    expect(listened).toBeLessThan(trace.lastIndexOf('invoke:practice_get_session'));
   });
 
   test('phase_and_notice_copy_render', async () => {

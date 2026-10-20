@@ -5,7 +5,7 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import {
   characterName, formatClock, NOTICE_TEXT, phaseText,
-  type Phase, type PracticeStatePayload, type PracticeTurnPayload,
+  type Phase, type PracticeStatePayload, type PracticeTurnPayload, type SessionDetail,
 } from '@/lib/practice';
 
 // Space typed into a text field is text, not a tap
@@ -43,9 +43,23 @@ export function CallView({ sessionId, setupName, character, onEnded }: {
         if (e.payload.session_id !== sessionId) return;
         setTurns((prev) => [...prev.filter((t) => t.idx !== e.payload.idx), e.payload].sort((a, b) => a.idx - b.idx));
       }),
-    ]).then((fns) => {
-      if (active) unlisten.push(...fns);
-      else fns.forEach((f) => f());
+    ]).then(async (fns) => {
+      if (!active) {
+        fns.forEach((f) => f());
+        return;
+      }
+      unlisten.push(...fns);
+      // Read after listening, so nothing said in between is lost. A session that already ended goes to its report.
+      try {
+        const detail = await invoke<SessionDetail>('practice_get_session', { id: sessionId });
+        if (!active) return;
+        const earlier = detail.turns.map((t) => ({ session_id: t.session_id, idx: t.idx, speaker: t.speaker, text: t.live_text }));
+        // Turns that arrived as events are newer than the snapshot, so they win
+        setTurns((prev) => [...earlier.filter((t) => !prev.some((p) => p.idx === t.idx)), ...prev].sort((a, b) => a.idx - b.idx));
+        if (detail.summary.end_reason !== null) onEnded();
+      } catch (err) {
+        toast.error('Could not open the session', { description: String(err) });
+      }
     });
     return () => {
       active = false;

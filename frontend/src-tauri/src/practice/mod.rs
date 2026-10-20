@@ -4,7 +4,11 @@
 
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+pub mod audio;
 pub mod db;
+pub mod claude;
+pub mod session;
+pub mod models;
 pub mod files;
 pub mod report;
 pub mod prompts;

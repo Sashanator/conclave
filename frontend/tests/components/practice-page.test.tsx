@@ -39,6 +39,9 @@ const SESSION: SessionSummary = {
   id: 's1', setup_name: 'Thesis defence', started_at: '2026-10-19T10:00:00Z', duration_secs: 1080,
   report_status: 'ready', summary: '4 grammar · 31 fillers', end_reason: 'user',
 };
+const RUNNING_DETAIL = {
+  summary: { ...SESSION, id: 'run-1' }, character: 'Prof. Weber, strict examiner', turns: [], report: null, report_error: null, audio_path: null,
+};
 const READY: PracticeStatus = { has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null };
 const REPORT: Report = {
   version: 1,
@@ -90,7 +93,8 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'practice_new_questions') return null;
   if (command === 'practice_cancel_start') return null;
   if (command === 'practice_start') return startImpl();
-  if (command === 'practice_get_session') return structuredClone(detail);
+  // The resume test opens run-1 (a running session); the report tests open s1
+  if (command === 'practice_get_session') return structuredClone(args?.id === 'run-1' ? RUNNING_DETAIL : detail);
   if (command === 'practice_retry_report') return retryImpl();
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args)}`);
 });
@@ -157,12 +161,42 @@ async function setField(label: string, value: string) {
   });
 }
 
+function tapButtons(): ReactTestInstance[] {
+  return renderer!.root.findAll((n) => n.type === 'button' && text(n).startsWith('● Tap to talk'));
+}
+
+// Starts a session from the list view; the call view is then on screen
+async function startCall() {
+  await clickButton('▶ Start');
+  await flush();
+}
+
+async function emit(event: string, payload: unknown) {
+  await act(async () => {
+    listeners.get(event)?.({ payload });
+  });
+}
+
+function state(phase: string, extra: Record<string, unknown> = {}) {
+  return { session_id: 'session-1', phase, character: 'Prof. Weber, strict examiner', elapsed_secs: 0, caption: null, notice: null, ...extra };
+}
+
+function hasText(value: string): boolean {
+  return renderer!.root.findAll((n) => n.type === 'p' || n.type === 'div' || n.type === 'span').some((n) => text(n) === value);
+}
+
+function key(init: KeyboardEventInit, target: EventTarget = window) {
+  const event = new KeyboardEvent('keydown', { key: ' ', bubbles: true, cancelable: true, ...init });
+  target.dispatchEvent(event);
+  return event;
+}
+
 function calls(command: string) {
   return invoke.mock.calls.filter(([c]) => c === command);
 }
 
 // True when a node has this text as a direct child, so a row is not matched through its parents
-function hasText(value: string): boolean {
+function hasDirectText(value: string): boolean {
   return renderer!.root.findAll((n) => n.children.some((c) => c === value)).length > 0;
 }
 
@@ -277,7 +311,7 @@ describe('Practice page', () => {
     await flush();
     expect(calls('practice_download_voices').length).toBe(1);
     expect(calls('practice_start')[0][1]).toEqual({ setupId: 'seed-thesis', skipPlan: false });
-    expect(renderer!.root.findAll((n) => n.type === 'div' && text(n) === 'Call view').length).toBe(1);
+    expect(tapButtons().length).toBe(1);
   });
 
   test('a plan failure offers Retry and Start without questions', async () => {
@@ -294,6 +328,120 @@ describe('Practice page', () => {
     await clickButton('Start without questions');
     await flush();
     expect(calls('practice_start').at(-1)![1]).toEqual({ setupId: 'seed-thesis', skipPlan: true });
+  });
+
+  test('space_taps_once_per_press', async () => {
+    await startCall();
+    await emit('practice-state', state('UserTurn'));
+    invoke.mockClear();
+
+    const press = key({});
+    expect(calls('practice_tap').length).toBe(1);
+    expect(press.defaultPrevented).toBe(true);
+
+    key({ repeat: true });
+    expect(calls('practice_tap').length).toBe(1);
+
+    const textarea = document.createElement('textarea');
+    document.body.appendChild(textarea);
+    key({}, textarea);
+    textarea.remove();
+    expect(calls('practice_tap').length).toBe(1);
+  });
+
+  test('tap_is_enabled_only_where_a_tap_means_something', async () => {
+    await startCall();
+    invoke.mockClear();
+    expect(tapButtons()[0].props.disabled).toBe(true);
+    key({});
+    expect(calls('practice_tap').length).toBe(0);
+
+    for (const phase of ['CharacterSpeaking', 'UserTurn', 'Listening', 'Thinking']) {
+      await emit('practice-state', state(phase));
+      expect(tapButtons()[0].props.disabled).toBe(false);
+      key({});
+    }
+    expect(calls('practice_tap').length).toBe(4);
+
+    await emit('practice-state', state('Transcribing'));
+    expect(tapButtons()[0].props.disabled).toBe(true);
+    key({});
+    expect(calls('practice_tap').length).toBe(4);
+  });
+
+  test('space_with_ctrl_alt_or_meta_is_not_a_tap', async () => {
+    await startCall();
+    await emit('practice-state', state('UserTurn'));
+    invoke.mockClear();
+    for (const modifier of [{ ctrlKey: true }, { altKey: true }, { metaKey: true }]) {
+      expect(key(modifier).defaultPrevented).toBe(false);
+    }
+    expect(calls('practice_tap').length).toBe(0);
+  });
+
+  test('avatar_shows_the_initial_of_the_last_word_of_the_name', async () => {
+    await startCall();
+    expect(renderer!.root.findAll((n) => n.type === 'div' && text(n) === 'W').length).toBe(1);
+  });
+
+  test('a session still running when the page opens resumes in its call view', async () => {
+    status = { ...READY, running_session: 'run-1' };
+    await mount();
+    expect(calls('practice_get_session')[0][1]).toEqual({ id: 'run-1' });
+    expect(tapButtons().length).toBe(1);
+    expect(hasText('Thesis defence · 00:00')).toBe(true);
+  });
+
+  test('phase_and_notice_copy_render', async () => {
+    await startCall();
+    await emit('practice-state', state('CharacterSpeaking', { caption: 'Hmm. And how did you rule out overfitting?' }));
+    expect(hasText('Prof. Weber is speaking…')).toBe(true);
+    expect(hasText('Hmm. And how did you rule out overfitting?')).toBe(true);
+
+    await emit('practice-state', state('UserTurn', { notice: 'DidNotCatch' }));
+    expect(hasText('Your turn — tap to talk')).toBe(true);
+    expect(hasText("I didn't catch that — tap and try again")).toBe(true);
+
+    await emit('practice-state', state('Listening'));
+    expect(hasText("I didn't catch that — tap and try again")).toBe(false);
+    expect(hasText('Listening… tap when done')).toBe(true);
+  });
+
+  test('ten_minutes_left_notice_shows', async () => {
+    await startCall();
+    await emit('practice-state', state('UserTurn', { elapsed_secs: 3000, notice: 'TenMinutesLeft' }));
+    expect(hasText('10 minutes left')).toBe(true);
+
+    await emit('practice-state', state('UserTurn', { elapsed_secs: 3001 }));
+    expect(hasText('10 minutes left')).toBe(true);
+
+    await emit('practice-state', state('Thinking', { elapsed_secs: 3002 }));
+    expect(hasText('10 minutes left')).toBe(false);
+  });
+
+  test('ended_switches_to_report', async () => {
+    await startCall();
+    await emit('practice-state', state('Ended'));
+    await flush();
+    expect(tapButtons().length).toBe(0);
+    expect(renderer!.root.findAll((n) => n.type === 'h1' && text(n).startsWith('Thesis defence · ')).length).toBe(1);
+  });
+
+  test('transcript_lists_this_sessions_turns_when_expanded', async () => {
+    await startCall();
+    await emit('practice-turn', { session_id: 'session-1', idx: 0, speaker: 'character', text: 'Good morning.' });
+    await emit('practice-turn', { session_id: 'other', idx: 1, speaker: 'user', text: 'Not mine.' });
+    expect(hasText('Good morning.')).toBe(false);
+
+    await clickButton('Show full transcript ▾');
+    expect(hasText('Good morning.')).toBe(true);
+    expect(hasText('Not mine.')).toBe(false);
+  });
+
+  test('end_session_calls_practice_end', async () => {
+    await startCall();
+    await clickButton('End session → report');
+    expect(calls('practice_end').length).toBe(1);
   });
 
   test('a plan rejection without a prep event still offers Retry and Start without questions', async () => {
@@ -337,7 +485,7 @@ describe('Practice page', () => {
       pendingStarts[0].resolve('session-1');
     });
     await flush();
-    expect(renderer!.root.findAll((n) => n.type === 'div' && text(n) === 'Call view').length).toBe(0);
+    expect(tapButtons().length).toBe(0);
     expect(buttons('Cancel').length).toBe(0);
   });
 });
@@ -345,16 +493,16 @@ describe('Practice page', () => {
 describe('Practice report view', () => {
   test('stats_strip_and_cards_render_counts', async () => {
     await openReport();
-    expect(hasText('31')).toBe(true);
-    expect(hasText('112')).toBe(true);
-    expect(hasText('6')).toBe(true);
-    expect(hasText('fillers')).toBe(true);
-    expect(hasText('words/min')).toBe(true);
-    expect(hasText('long pauses')).toBe(true);
+    expect(hasDirectText('31')).toBe(true);
+    expect(hasDirectText('112')).toBe(true);
+    expect(hasDirectText('6')).toBe(true);
+    expect(hasDirectText('fillers')).toBe(true);
+    expect(hasDirectText('words/min')).toBe(true);
+    expect(hasDirectText('long pauses')).toBe(true);
 
     const headings = renderer!.root.findAll((n) => n.type === 'h3').map(text);
     expect(headings).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
-    expect(hasText('um 14 · so basically 9 · like 8')).toBe(true);
+    expect(hasDirectText('um 14 · so basically 9 · like 8')).toBe(true);
   });
 
   test('grammar_quote_strikes_only_the_changed_words', async () => {
@@ -399,7 +547,7 @@ describe('Practice report view', () => {
   test('failed_report_offers_retry', async () => {
     detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: 'Claude did not answer' };
     await openReport();
-    expect(hasText('Claude did not answer')).toBe(true);
+    expect(hasDirectText('Claude did not answer')).toBe(true);
     expect(buttons('Retry').length).toBe(1);
 
     await clickButton('Retry');
@@ -410,21 +558,21 @@ describe('Practice report view', () => {
   test('meeting_end_reason_shows_the_banner', async () => {
     detail = { ...detail, summary: { ...detail.summary, end_reason: 'meeting' } };
     await openReport();
-    expect(hasText('A meeting recording started, so the session ended')).toBe(true);
+    expect(hasDirectText('A meeting recording started, so the session ended')).toBe(true);
   });
 
   test('transcript_prefers_verbatim_text', async () => {
     await openReport();
     await clickButton('Transcript');
-    expect(hasText('Um, if I will have more data')).toBe(true);
-    expect(hasText('If I will have more data')).toBe(false);
-    expect(hasText('Tell me about your thesis.')).toBe(true);
+    expect(hasDirectText('Um, if I will have more data')).toBe(true);
+    expect(hasDirectText('If I will have more data')).toBe(false);
+    expect(hasDirectText('Tell me about your thesis.')).toBe(true);
   });
 
   test('pending_report_offers_generate', async () => {
     detail = { ...detail, summary: { ...detail.summary, report_status: 'pending' }, report: null };
     await openReport();
-    expect(hasText('Report not generated yet')).toBe(true);
+    expect(hasDirectText('Report not generated yet')).toBe(true);
     await clickButton('Generate report');
     await flush();
     expect(calls('practice_retry_report')[0][1]).toEqual({ sessionId: 's1' });
@@ -441,7 +589,7 @@ describe('Practice report view', () => {
   test('failed_without_an_error_says_so', async () => {
     detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: null };
     await openReport();
-    expect(hasText('The report could not be written')).toBe(true);
+    expect(hasDirectText('The report could not be written')).toBe(true);
   });
 
   test('retry_is_disabled_while_the_call_is_in_flight', async () => {
@@ -465,7 +613,7 @@ describe('Practice report view', () => {
   test('empty_filler_breakdown_says_so', async () => {
     detail = { ...detail, report: { ...REPORT, fluency: { ...REPORT.fluency, fillers: {}, filler_total: 0 } } };
     await openReport();
-    expect(hasText('No fillers counted')).toBe(true);
+    expect(hasDirectText('No fillers counted')).toBe(true);
   });
 
   test('short_session_shows_less_than_a_minute', async () => {

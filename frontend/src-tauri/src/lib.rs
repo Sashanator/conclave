@@ -632,7 +632,10 @@ pub fn run() {
             // Speaker models sit beside the Whisper models. The models hash is warmed off the runtime,
             // so later is_active() calls on async paths only read the cache.
             match _app.path().app_data_dir() {
-                Ok(data) => speakers::models::set_models_dir(data.join("models").join("speakers")),
+                Ok(data) => {
+                    speakers::models::set_models_dir(data.join("models").join("speakers"));
+                    practice::models::set_dir(data.join("models").join("practice"));
+                }
                 Err(e) => log::error!("speakers: no app data folder, the feature stays off: {e}"),
             }
             tauri::async_runtime::spawn_blocking(|| {

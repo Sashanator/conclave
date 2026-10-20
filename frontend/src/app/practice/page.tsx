@@ -9,14 +9,15 @@ import { SetupList } from '@/components/Practice/SetupList';
 import { SessionList } from '@/components/Practice/SessionList';
 import { SetupEditor } from '@/components/Practice/SetupEditor';
 import { ReportView } from '@/components/Practice/ReportView';
+import { CallView } from '@/components/Practice/CallView';
 import {
-  blockedReason, characterName, planText, type PracticePrepPayload, type PracticeStatus, type SessionSummary, type SetupSummary, type VoicesProgressPayload,
+  blockedReason, characterName, planText, type PracticePrepPayload, type PracticeStatus, type SessionDetail, type SessionSummary, type SetupSummary, type VoicesProgressPayload,
 } from '@/lib/practice';
 
 type View =
   | { kind: 'list' }
   | { kind: 'edit'; id?: string }
-  | { kind: 'call'; sessionId: string }
+  | { kind: 'call'; sessionId: string; setupName: string; character: string }
   | { kind: 'report'; sessionId: string };
 
 type Overlay =
@@ -44,13 +45,25 @@ export default function PracticePage() {
       setStatus(s);
       setSetups(list);
       setSessions(past);
+      return s;
     } catch (err) {
       toast.error('Could not load Practice', { description: String(err) });
+      return null;
     }
   }, []);
 
+  // A session still running when the page opens goes back to its call view (R22)
   useEffect(() => {
-    refresh();
+    refresh().then(async (s) => {
+      if (!s?.running_session) return;
+      const sessionId = s.running_session;
+      try {
+        const detail = await invoke<SessionDetail>('practice_get_session', { id: sessionId });
+        setView({ kind: 'call', sessionId, setupName: detail.summary.setup_name, character: detail.character });
+      } catch (err) {
+        toast.error('Could not open the running session', { description: String(err) });
+      }
+    });
   }, [refresh]);
 
   const backToList = () => {
@@ -72,7 +85,7 @@ export default function PracticePage() {
       const sessionId = await invoke<string>('practice_start', { setupId: setup.id, skipPlan });
       if (attempt.current !== id) return;
       setOverlay(null);
-      setView({ kind: 'call', sessionId });
+      setView({ kind: 'call', sessionId, setupName: setup.name, character: setup.character });
     } catch (err) {
       if (attempt.current !== id) return;
       // Read through a cast: TypeScript keeps the narrowing from the assignment above across the await
@@ -126,8 +139,16 @@ export default function PracticePage() {
     refresh();
   };
 
-  // Placeholder: the call view comes in a later task
-  if (view.kind === 'call') return <div className="p-8 text-muted-foreground">Call view</div>;
+  if (view.kind === 'call') {
+    return (
+      <CallView
+        sessionId={view.sessionId}
+        setupName={view.setupName}
+        character={view.character}
+        onEnded={() => setView({ kind: 'report', sessionId: view.sessionId })}
+      />
+    );
+  }
   if (view.kind === 'report') return <ReportView sessionId={view.sessionId} onBack={backToList} />;
 
   const editSetup = view.kind === 'edit' && view.id ? setups.find((s) => s.id === view.id) : undefined;

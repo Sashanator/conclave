@@ -149,6 +149,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
 /// is released. Its hold is dropped while the panic unwinds.
 pub async fn supervise<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
     let (session_id, pool, started) = (loaded.session_id.clone(), loaded.pool.clone(), Instant::now());
+    let (character, emitter) = (loaded.setup.character.clone(), app.clone());
     supervised(run(app, loaded), |e| async move {
         warn!("practice: the session stopped unexpectedly: {e}");
         let duration = started.elapsed().as_secs_f64();
@@ -157,8 +158,31 @@ pub async fn supervise<R: Runtime>(app: AppHandle<R>, loaded: Loaded) {
         }
         release_slot(&session_id);
         dictate::unload_if_idle().await;
+        // Tells an open call view and report view what happened, even though the runner is gone.
+        let (state, report) = stopped_events(&session_id, &character, started.elapsed().as_secs());
+        let _ = emitter.emit("practice-state", state);
+        let _ = emitter.emit("practice-report", report);
     })
     .await;
+}
+
+/// The two events a stopped session leaves for the UI: its state is Ended, and its report is pending.
+/// A session that ran to its end has no report yet, so the status is always pending here.
+fn stopped_events(session_id: &str, character: &str, elapsed_secs: u64) -> (PracticeStatePayload, report_job::ReportStatusPayload) {
+    (
+        PracticeStatePayload {
+            session_id: session_id.to_string(),
+            phase: Phase::Ended,
+            character: character.to_string(),
+            elapsed_secs,
+            caption: None,
+            notice: None,
+        },
+        report_job::ReportStatusPayload {
+            session_id: session_id.to_string(),
+            status: "pending",
+        },
+    )
 }
 
 /// Awaits `task` on its own task. If that task panics or is aborted, `on_stop` runs with the error text.
@@ -915,6 +939,18 @@ mod tests {
         })
         .await;
         assert!(!stopped.load(Ordering::SeqCst));
+    }
+
+    #[test]
+    fn a_stopped_session_tells_the_ui_it_ended_with_a_pending_report() {
+        let (state, report) = stopped_events("s1", "Anna", 42);
+        assert_eq!(state.session_id, "s1");
+        assert_eq!(state.phase, Phase::Ended);
+        assert_eq!(state.character, "Anna");
+        assert_eq!(state.elapsed_secs, 42);
+        assert!(state.caption.is_none() && state.notice.is_none());
+        assert_eq!(report.session_id, "s1");
+        assert_eq!(report.status, "pending");
     }
 
     #[test]

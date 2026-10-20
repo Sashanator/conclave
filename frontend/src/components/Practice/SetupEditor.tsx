@@ -21,7 +21,7 @@ function Labeled({ label, children }: { label: string; children: ReactNode }) {
 export function SetupEditor({ setup, onDone, onChanged }: {
   setup: SetupSummary | null;
   onDone: () => void;
-  onChanged: () => Promise<void>;
+  onChanged: () => Promise<unknown>;
 }) {
   const [name, setName] = useState(setup?.name ?? '');
   const [character, setCharacter] = useState(setup?.character ?? '');

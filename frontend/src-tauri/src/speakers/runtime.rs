@@ -125,7 +125,7 @@ fn session(path: &Path, backend: Backend) -> Result<Session, String> {
 
 /// Opens on `preferred`. A DirectML session that fails to start is replaced by a CPU one, and the
 /// backend that actually opened is returned.
-fn open(path: &Path, preferred: Backend) -> Result<(Session, Backend), String> {
+pub(crate) fn open(path: &Path, preferred: Backend) -> Result<(Session, Backend), String> {
     if preferred == Backend::DirectMl {
         match session(path, Backend::DirectMl) {
             Ok(s) => return Ok((s, Backend::DirectMl)),

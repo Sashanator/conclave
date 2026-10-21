@@ -57,6 +57,7 @@ pub mod utils;
 pub mod whisper_engine;
 mod dictate;
 mod speakers;
+mod practice;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
@@ -631,14 +632,18 @@ pub fn run() {
             // Speaker models sit beside the Whisper models. The models hash is warmed off the runtime,
             // so later is_active() calls on async paths only read the cache.
             match _app.path().app_data_dir() {
-                Ok(data) => speakers::models::set_models_dir(data.join("models").join("speakers")),
-                Err(e) => log::error!("speakers: no app data folder, the feature stays off: {e}"),
+                Ok(data) => {
+                    speakers::models::set_models_dir(data.join("models").join("speakers"));
+                    practice::models::set_dir(data.join("models").join("practice"));
+                }
+                Err(e) => log::error!("no app data folder: speaker ID and Practice stay off: {e}"),
             }
             tauri::async_runtime::spawn_blocking(|| {
                 let _ = speakers::models::models_ready();
             });
             speakers::settings::load_at_startup(_app.handle());
             dictate::settings::load_at_startup(_app.handle());
+            practice::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
@@ -716,6 +721,8 @@ pub fn run() {
             .expect("Failed to initialize database");
             // Dictate that was on comes back only now: its model load needs the database.
             dictate::apply_after_db_ready(_app.handle());
+            // A practice session left running by a crash is closed as interrupted.
+            tauri::async_runtime::spawn(practice::commands::recover_at_startup(_app.handle().clone()));
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {
@@ -973,6 +980,28 @@ pub fn run() {
             speakers::commands::people_rename,
             speakers::commands::people_delete,
             speakers::commands::people_merge,
+            // Speaking Practice commands
+            practice::commands::practice_status,
+            practice::commands::practice_list_setups,
+            practice::commands::practice_save_setup,
+            practice::commands::practice_delete_setup,
+            practice::commands::practice_add_material,
+            practice::commands::practice_add_text,
+            practice::commands::practice_delete_material,
+            practice::commands::practice_new_questions,
+            practice::commands::practice_download_voices,
+            practice::commands::practice_preview_voice,
+            practice::commands::practice_speak_word,
+            practice::commands::practice_start,
+            practice::commands::practice_cancel_start,
+            practice::commands::practice_tap,
+            practice::commands::practice_end,
+            practice::commands::practice_list_sessions,
+            practice::commands::practice_get_session,
+            practice::commands::practice_retry_report,
+            practice::commands::practice_delete_session,
+            practice::settings::practice_get_settings,
+            practice::settings::practice_save_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -445,6 +445,7 @@ const Sidebar: React.FC = () => {
     const isMeetingPage = pathname?.includes('/meeting-details');
     const isSettingsPage = pathname === '/settings';
     const isDictatePage = pathname === '/dictate';
+    const isPracticePage = pathname === '/practice';
 
     return (
       <TooltipProvider>
@@ -479,6 +480,22 @@ const Sidebar: React.FC = () => {
             </TooltipTrigger>
             <TooltipContent side="right">
               <p>Dictate</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => go('/practice')}
+                aria-label="Practice"
+                className={`p-2 rounded-lg transition-colors duration-150 ${isPracticePage ? 'bg-muted' : 'hover:bg-accent'
+                  }`}
+              >
+                <GraduationCap className="w-5 h-5 text-muted-foreground" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Practice</p>
             </TooltipContent>
           </Tooltip>
 
@@ -757,6 +774,23 @@ const Sidebar: React.FC = () => {
               >
                 <AudioLines className="w-4 h-4 mr-2" />
                 <span>Dictate</span>
+              </div>
+            )}
+            {!isCollapsed && (
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => go('/practice')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    go('/practice');
+                  }
+                }}
+                className="p-3 text-lg font-semibold items-center hover:bg-accent h-10 flex mx-3 rounded-lg cursor-pointer"
+              >
+                <GraduationCap className="w-4 h-4 mr-2" />
+                <span>Practice</span>
               </div>
             )}
           </div>

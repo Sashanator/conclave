@@ -1,0 +1,114 @@
+//! Speaking Practice: role-play voice practice with a Claude character, local TTS and a weak-spots report.
+//!
+//! Removal checklist (checked against the tree on 2026-10-20):
+//! 1. Delete `frontend/src-tauri/src/practice/`, `frontend/src/app/practice/`, `frontend/src/components/Practice/`,
+//!    `frontend/src/lib/practice.ts`, `frontend/tests/components/practice-page.test.tsx`,
+//!    `frontend/tests/components/practice-models-card.test.tsx`, `frontend/tests/lib/practice.test.ts` and
+//!    `frontend/src-tauri/tests/fixtures/practice/`. The `pron*.rs` files and
+//!    `settings.rs` live inside the folder, so they need no step of their own.
+//!    Keep `frontend/src-tauri/migrations/20261020000000_practice.sql`: an applied migration must stay in the source.
+//! 2. `frontend/src-tauri/src/lib.rs`: the `mod practice;` line; the `practice::models::set_dir` line in setup, and the
+//!    "speaker ID and Practice stay off" log text next to it; the `practice::commands::recover_at_startup` spawn with its
+//!    comment; the `practice::settings::load_at_startup` line; the 19 `practice::commands::practice_*` and the 2
+//!    `practice::settings::practice_*` entries (21 handlers) in `generate_handler!`.
+//! 3. `frontend/src-tauri/src/dictate/mod.rs`, `keeps_model_loaded`: drop the `|| crate::practice::holds_model()` clause and
+//!    the Practice part of its doc comment.
+//! 3a. `frontend/src-tauri/src/whisper_engine/whisper_engine.rs`: remove `transcribe_audio_raw` and fold `transcribe_inner`
+//!    back into `transcribe_audio_with_confidence` (the raw path exists only for the report pass).
+//! 4. `frontend/src-tauri/src/speakers/runtime.rs`, `open`: back to private (optional; `practice/tts.rs` and `practice/pron.rs` both import it, so it goes once step 1 is done).
+//! 5. `frontend/src/components/Sidebar/index.tsx`: the two Practice entries (desktop and mobile).
+//! 6. `frontend/src-tauri/Cargo.toml`: remove `base64` and `unicode-normalization` (used only by practice); move `hound`
+//!    back to `[dev-dependencies]` (test code in `audio/decoder.rs` and `speakers/` still uses it); then let cargo refresh
+//!    `Cargo.lock`.
+//! 7. A new migration: `DROP TABLE practice_turns; DROP TABLE practice_sessions; DROP TABLE practice_materials;
+//!    DROP TABLE practice_setups;` (never edit the old one).
+//! 8. `docs/network-calls.md`: the Practice rows: Supertonic (huggingface.co), the two pronunciation rows
+//!    (huggingface.co `hubert_phoneme_int8.onnx`, raw.githubusercontent.com `cmudict.dict`) and the `practice/claude.rs`
+//!    row (api.anthropic.com); `AGENTS.md`: the Practice Layout row.
+//! 9. Data left behind, for the user to delete: session folders in `conclave-recordings`, the voices and pronunciation
+//!    files in `models/practice` under app data, and `practice.json` (the tauri-store settings file).
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+pub mod audio;
+pub mod commands;
+pub mod db;
+pub mod claude;
+pub mod session;
+pub mod models;
+pub mod files;
+pub mod report;
+pub mod report_job;
+pub mod prompts;
+pub mod pron_dict;
+pub mod runner;
+pub mod settings;
+pub mod tts_text;
+pub mod tts;
+pub mod pron;
+pub mod pron_align;
+pub mod recurring;
+
+pub const CHAT_MAX_TOKENS: u32 = 400;
+pub const LONG_MAX_TOKENS: u32 = 16_000;
+
+pub const MAX_SESSION_SECS: f64 = 3600.0;
+pub const WARN_AT_SECS: f64 = 3000.0;
+pub const WRAP_UP_AT_SECS: f64 = 3300.0;
+pub const MAX_TURN_SECS: f64 = 300.0;
+
+pub const MIN_SPEECH_SECS: f64 = 0.5;
+pub const LONG_PAUSE_SECS: f64 = 1.0;
+pub const LIVE_VAD_REDEMPTION_MS: u64 = 700;
+
+/// Total material bytes per setup.
+pub const MATERIAL_MAX_BYTES: i64 = 20 * 1024 * 1024;
+
+pub const TTS_STEPS: u32 = 8;
+pub const TTS_SPEED: f32 = 1.05;
+pub const TTS_RATE: u32 = 44_100;
+pub const YOU_WAV_RATE: u32 = 16_000;
+
+/// Frames either side of a multi-pronunciation word that the variant pick re-aligns.
+pub const PRON_VARIANT_MARGIN_FRAMES: usize = 4;
+/// A word is hinted when its GOP score (log-probability, 0 is the model's own best phone) is below this.
+pub const PRON_THRESHOLD: f32 = -6.5;
+/// Words of this many phones or fewer get no hint (`the` was the top false flag).
+pub const PRON_MIN_PHONES: usize = 3;
+/// Segments shorter than this get no hints (the model errors on very short input).
+pub const PRON_MIN_CHUNK_SECS: f64 = 0.3;
+/// Longer segments get no hints: one model call on a longer chunk needs gigabytes (self-attention is O(T²)).
+pub const PRON_MAX_CHUNK_SECS: f64 = 20.0;
+/// One model output frame is 20 ms.
+pub const PRON_FRAME_SECS: f64 = 0.02;
+/// GOP-like penalty for an out-of-vocabulary word's wildcard state (below the best column among ids 0..=BLANK, [UNK] included).
+pub const PRON_WILDCARD_PENALTY: f32 = 1.5;
+/// Hint spans are padded by this much on each side, so the ▶ you clip starts and ends in silence.
+pub const PRON_PAD_SECS: f64 = 0.08;
+/// At most this many pronunciation hints go into a report.
+pub const PRON_MAX_HINTS: usize = 6;
+/// Pattern keys from the newest reports that the next report prompt may reuse.
+pub const RECENT_PATTERNS_MAX: usize = 30;
+/// The window for "Keeps coming back": the current session and the newest earlier ones.
+pub const RECURRING_SESSIONS: usize = 5;
+
+/// Counts the live holds on the Whisper model. A session and a report job can overlap.
+static HOLDS: AtomicUsize = AtomicUsize::new(0);
+
+pub fn holds_model() -> bool {
+    HOLDS.load(Ordering::SeqCst) > 0
+}
+
+/// Keeps the model loaded while it is alive. Dropping it releases the hold.
+pub struct ModelHold(());
+
+impl Drop for ModelHold {
+    fn drop(&mut self) {
+        HOLDS.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+
+pub fn hold_model() -> ModelHold {
+    HOLDS.fetch_add(1, Ordering::SeqCst);
+    ModelHold(())
+}

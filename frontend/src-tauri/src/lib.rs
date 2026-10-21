@@ -55,8 +55,8 @@ pub mod summary;
 pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
-mod dictate;
 mod copilot;
+mod dictate;
 mod speakers;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
@@ -640,6 +640,7 @@ pub fn run() {
             });
             speakers::settings::load_at_startup(_app.handle());
             dictate::settings::load_at_startup(_app.handle());
+            copilot::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
@@ -961,6 +962,9 @@ pub fn run() {
             dictate::session::dictate_pill_action,
             dictate::session::dictate_status,
             dictate::pill::dictate_pill_view,
+            // Copilot commands
+            copilot::settings::copilot_get_settings,
+            copilot::settings::copilot_save_settings,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

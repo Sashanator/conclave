@@ -1,7 +1,7 @@
 # Conclave: Live copilot — Design
 
 Date: 2026-10-19
-Status: Draft (written from the backlog notes; the user skipped the brainstorm questions and decided only the answer language)
+Status: Implemented in v0.9.0 (2026-10-21)
 Target release: v0.9.0 (Speaking Practice ships as v0.8.0)
 
 ## 1. Purpose
@@ -56,7 +56,7 @@ All four build one request from the frontend's live transcript and call one new 
 
 | Action | What the model is asked |
 |---|---|
-| Catch me up | What happened in the **last 5 minutes** (by `audio_start_time`), in a few bullets, with the earlier transcript as background. If the meeting is under 5 minutes, the whole meeting. |
+| Catch me up | What happened in the **last 5 minutes** (lines ending in that window, by `audio_end_time`), in a few bullets, with the earlier transcript as background. If the meeting is under 5 minutes, the whole meeting. |
 | What should I ask? | 2–4 short, specific questions the user could ask now, based on what is unclear, undecided, or missing an owner or date. |
 | Explain the last minute | The last **60 seconds** of transcript: a translation into the output language if it is in another language, then a plain explanation of jargon, acronyms and references. |
 | Ask | The user's question, answered from the transcript only; if the transcript doesn't say, the answer says so. |

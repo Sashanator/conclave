@@ -18,6 +18,7 @@ Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src` (exclud
 | api.openai.com | `src-tauri/src/openai/openai.rs:130` (`:127`); `src-tauri/src/summary/llm_client.rs:303` | User-configured LLM summaries | Allowed (user-configured) |
 | api.groq.com | `src-tauri/src/groq/groq.rs:98` (`:95`); `src-tauri/src/summary/llm_client.rs:307` | User-configured LLM summaries | Allowed (user-configured) |
 | openrouter.ai | `src-tauri/src/openrouter/openrouter.rs:45` (`:43`); `src-tauri/src/summary/llm_client.rs:311` | User-configured LLM summaries | Allowed (user-configured) |
+| Same LLM hosts as the rows above (the user's chosen provider) | `src-tauri/src/copilot/ask.rs` (`copilot_ask`, `:247`) | Live copilot: sends the live transcript and notes to the user's LLM, only when the user clicks | Allowed (user-configured) |
 | localhost:11434 (Ollama, default; the user can set another endpoint) | `src-tauri/src/ollama/metadata.rs:145`; `src-tauri/src/ollama/ollama.rs:163,282,441`; `src-tauri/src/summary/llm_client.rs:317`; `src/components/ModelSettingsModal.tsx:1149,1203` | Local Ollama: tags, pull, delete, show, chat | Allowed (localhost Ollama) |
 | localhost:11434 test fixtures | `src-tauri/src/summary/service.rs:798-990` (inside `mod tests`, from `:689`) | Cache-key test values, not requests | Not a call |
 | ollama.com | `src/components/ModelSettingsModal.tsx:739,1236` (`open_external_url`, opens the user's browser) | "Download Ollama" link | Allowed (Ollama download page; user-initiated, see Reported to user) |

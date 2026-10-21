@@ -55,6 +55,7 @@ pub mod summary;
 pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
+mod copilot;
 mod dictate;
 mod speakers;
 mod practice;
@@ -643,6 +644,7 @@ pub fn run() {
             });
             speakers::settings::load_at_startup(_app.handle());
             dictate::settings::load_at_startup(_app.handle());
+            copilot::settings::load_at_startup(_app.handle());
             practice::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
@@ -967,6 +969,11 @@ pub fn run() {
             dictate::session::dictate_pill_action,
             dictate::session::dictate_status,
             dictate::pill::dictate_pill_view,
+            // Copilot commands
+            copilot::settings::copilot_get_settings,
+            copilot::settings::copilot_save_settings,
+            copilot::ask::copilot_ask,
+            copilot::ask::copilot_cancel,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

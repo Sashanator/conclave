@@ -1,0 +1,44 @@
+[
+  {
+    "text": "Good morning, please have a seat.",
+    "voice": "M1",
+    "speed": 1.05,
+    "duration": 2.5356356302897134
+  },
+  {
+    "text": "Hmm — interesting “choice”… e.g., why?",
+    "voice": "M1",
+    "speed": 1.05,
+    "duration": 3.8213271186465305
+  },
+  {
+    "text": "Dr. Smith said 3.5 GB @ TU Munich",
+    "voice": "M1",
+    "speed": 1.05,
+    "duration": 3.8928495134626115
+  },
+  {
+    "text": "No period at the end",
+    "voice": "M1",
+    "speed": 1.05,
+    "duration": 1.7744307290940058
+  },
+  {
+    "text": "Weird  spacing , here !",
+    "voice": "M1",
+    "speed": 1.05,
+    "duration": 1.8355655670166016
+  },
+  {
+    "text": "emoji 😀 and ♥ hearts",
+    "voice": "M1",
+    "speed": 1.05,
+    "duration": 1.6421184085664293
+  },
+  {
+    "text": "Привет, Weber",
+    "voice": "M1",
+    "speed": 1.05,
+    "duration": 1.4360861551193964
+  }
+]

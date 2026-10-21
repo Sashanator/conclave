@@ -672,6 +672,17 @@ impl WhisperEngine {
     /// Transcribe audio with streaming support for partial results and adaptive quality.
     /// The sentences are chunk-local and empty when their timing is unusable.
     pub async fn transcribe_audio_with_confidence(&self, audio_data: Vec<f32>, language: Option<String>, policy: Option<&mut LanguagePolicy>, initial_prompt: Option<&str>) -> Result<(String, f32, bool, Vec<Sentence>)> {
+        self.transcribe_inner(audio_data, language, policy, initial_prompt, true).await
+    }
+
+    /// The text as Whisper wrote it, with repeats, fillers and false starts kept. Used where the exact words matter.
+    pub async fn transcribe_audio_raw(&self, audio_data: Vec<f32>, language: Option<String>, initial_prompt: Option<&str>) -> Result<String> {
+        let (text, ..) = self.transcribe_inner(audio_data, language, None, initial_prompt, false).await?;
+        Ok(text)
+    }
+
+    /// `clean` applies the repetition cleanup and computes sentence timing. The raw path skips both.
+    async fn transcribe_inner(&self, audio_data: Vec<f32>, language: Option<String>, policy: Option<&mut LanguagePolicy>, initial_prompt: Option<&str>, clean: bool) -> Result<(String, f32, bool, Vec<Sentence>)> {
         let started = Instant::now();
         let ctx_lock = self.current_context.read().await;
         let ctx = ctx_lock.as_ref()
@@ -800,7 +811,11 @@ impl WhisperEngine {
         }
 
         let final_result = result.trim().to_string();
-        let cleaned_result = Self::clean_repetitive_text(&final_result);
+        let cleaned_result = if clean {
+            Self::clean_repetitive_text(&final_result)
+        } else {
+            final_result.clone()
+        };
 
         let avg_confidence = if segment_count > 0 {
             total_confidence / segment_count as f32
@@ -809,7 +824,7 @@ impl WhisperEngine {
         };
 
         // Sentences never fail the transcription; a line whose text was changed keeps none
-        let sentences = if sentences_enabled(mode, cleaned_result == final_result) {
+        let sentences = if clean && sentences_enabled(mode, cleaned_result == final_result) {
             match Self::dtw_token_starts(&state, ctx) {
                 Ok(tokens) => build_sentences(&dtw_timed_tokens(tokens, end_cs), pad_before as f64 / 16000.0, duration_seconds),
                 Err(e) => {

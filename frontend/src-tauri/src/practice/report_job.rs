@@ -196,7 +196,7 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     let learner_texts: Vec<&str> = learner.values().map(String::as_str).collect();
     let timing: Vec<(f64, u32)> = heard.iter().filter_map(|h| h.timing).collect();
     let fluency = fluency(&learner_texts, &timing);
-    let pron = pronunciation(&app, &pool, &session_id, &wav, &turns, pron_inputs).await;
+    let pron = pronunciation(&app, &pool, &session_id, &wav, pron_inputs).await;
     if let Err(e) = &pron {
         warn!("practice: pronunciation hints skipped: {e}");
     }
@@ -295,7 +295,7 @@ async fn word_for_word<R: Runtime>(
     Ok((heard, pron_inputs))
 }
 
-/// The pronunciation pass over the kept learner turns, on a blocking thread. `Ok(vec![])` when no turn has audio.
+/// The pronunciation pass over the kept learner turns, on a blocking thread. `Ok(vec![])` when no turn kept verbatim text.
 /// A model download or load failure, or a pass where every turn failed, is an `Err`, which `with_pronunciation`
 /// turns into the note. A recording that starts first takes the job's place, as in the Whisper pass.
 async fn pronunciation<R: Runtime>(
@@ -303,10 +303,10 @@ async fn pronunciation<R: Runtime>(
     pool: &SqlitePool,
     session_id: &str,
     wav: &Path,
-    turns: &[TurnRow],
     inputs: Vec<PronInput>,
 ) -> Result<Vec<PronHint>, String> {
-    if !has_learner_audio(turns) {
+    // No model download or load when no learner turn kept verbatim text (`inputs` only fills from learner audio).
+    if inputs.is_empty() {
         return Ok(vec![]);
     }
     yield_to_recording(app, pool, session_id).await;

@@ -50,7 +50,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   const { transcriptsRef, notesRef } = useTranscripts();
   const { isRecording, isStopping, activeDuration } = useRecordingState();
   const [cards, setCards] = useState<CopilotCard[]>([]);
-  const seqRef = useRef(0);
+  // Seeded from the clock so ids from before a webview reload never repeat (the Rust slot guard keys on them).
+  const seqRef = useRef(Date.now());
   const inFlightRef = useRef<InFlight | null>(null);
 
   // A stopping recording takes its pending call and its cards with it. isStopping comes first: the backend keeps isRecording true through the stop tail.

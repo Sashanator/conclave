@@ -225,6 +225,34 @@ async function openReport() {
   await flush();
 }
 
+// A manual clock for setTimeout: bun:test 1.2 has no fake timers. Call restore() when done.
+function fakeClock() {
+  let now = 0;
+  let next = 1;
+  const pending = new Map<number, { at: number; fn: () => void }>();
+  const realSet = globalThis.setTimeout;
+  const realClear = globalThis.clearTimeout;
+  globalThis.setTimeout = ((fn: () => void, ms = 0) => {
+    pending.set(next, { at: now + ms, fn });
+    return next++;
+  }) as unknown as typeof setTimeout;
+  globalThis.clearTimeout = ((id?: number) => {
+    if (id !== undefined) pending.delete(id);
+  }) as unknown as typeof clearTimeout;
+  return {
+    advance(ms: number) {
+      now += ms;
+      for (const [id, timer] of [...pending]) {
+        if (timer.at <= now && pending.delete(id)) timer.fn();
+      }
+    },
+    restore() {
+      globalThis.setTimeout = realSet;
+      globalThis.clearTimeout = realClear;
+    },
+  };
+}
+
 beforeEach(async () => {
   status = { ...READY };
   setups = structuredClone([THESIS, INTERVIEW]);
@@ -825,6 +853,59 @@ describe('Practice report view', () => {
     await clickButton('▶ reference');
     expect(calls('practice_speak_word')[0][1]).toEqual({ sessionId: 's1', word: 'will' });
     expect(hasDirectText('will')).toBe(true);
+  });
+
+  test('pron_you_pauses_at_its_end_when_timeupdate_does_not_fire', async () => {
+    const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
+    renderer?.unmount();
+    renderer = null;
+    await act(async () => {
+      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
+    });
+    await flush();
+    detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [HINT] } };
+    await openReport();
+
+    // The span is 1.5 s to 1.9 s into the turn, so the timer is about 400 ms; no timeupdate is fired here
+    const clock = fakeClock();
+    try {
+      await clickButton('▶ you');
+      clock.advance(390);
+      expect(audio.pause).not.toHaveBeenCalled();
+      clock.advance(20);
+      expect(audio.pause).toHaveBeenCalledTimes(1);
+    } finally {
+      clock.restore();
+    }
+  });
+
+  test('a_new_clip_or_unmount_cancels_the_pron_you_timer', async () => {
+    const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
+    renderer?.unmount();
+    renderer = null;
+    await act(async () => {
+      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
+    });
+    await flush();
+    detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [HINT] } };
+    await openReport();
+
+    const clock = fakeClock();
+    try {
+      await clickButton('▶ you');
+      // A turn clip starts (10 s to 12 s): the hint timer is gone, so the clip is not cut at 11.9 s
+      await clickButton('▶ 06:12');
+      clock.advance(1000);
+      expect(audio.pause).not.toHaveBeenCalled();
+
+      await clickButton('▶ you');
+      await act(async () => renderer!.unmount());
+      renderer = null;
+      clock.advance(1000);
+      expect(audio.pause).not.toHaveBeenCalled();
+    } finally {
+      clock.restore();
+    }
   });
 
   test('pron_card_shows_note_or_empty_text', async () => {

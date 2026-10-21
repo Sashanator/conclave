@@ -2,7 +2,7 @@
 
 Date: 2026-10-19
 Status: Draft (written from the backlog notes; the user skipped the brainstorm questions and decided only the answer language)
-Target release: v0.8.0
+Target release: v0.9.0 (Speaking Practice ships as v0.8.0)
 
 ## 1. Purpose
 

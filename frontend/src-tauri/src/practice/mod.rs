@@ -15,7 +15,7 @@
 //!    the Practice part of its doc comment.
 //! 3a. `frontend/src-tauri/src/whisper_engine/whisper_engine.rs`: remove `transcribe_audio_raw` and fold `transcribe_inner`
 //!    back into `transcribe_audio_with_confidence` (the raw path exists only for the report pass).
-//! 4. `frontend/src-tauri/src/speakers/runtime.rs`, `open`: back to private (optional; `practice/tts.rs` is its only other user).
+//! 4. `frontend/src-tauri/src/speakers/runtime.rs`, `open`: back to private (optional; `practice/tts.rs` and `practice/pron.rs` both import it, so it goes once step 1 is done).
 //! 5. `frontend/src/components/Sidebar/index.tsx`: the two Practice entries (desktop and mobile).
 //! 6. `frontend/src-tauri/Cargo.toml`: remove `base64` and `unicode-normalization` (used only by practice); move `hound`
 //!    back to `[dev-dependencies]` (test code in `audio/decoder.rs` and `speakers/` still uses it); then let cargo refresh

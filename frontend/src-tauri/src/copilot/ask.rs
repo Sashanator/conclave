@@ -59,6 +59,19 @@ fn instruction(action: CopilotAction) -> &'static str {
     }
 }
 
+/// A provider error can carry a whole response body, so the card shows at most this many characters.
+const MAX_ERROR_CHARS: usize = 200;
+
+/// Cuts a provider error to MAX_ERROR_CHARS characters, marking the cut with "…".
+fn shorten_error(error: String) -> String {
+    if error.chars().count() <= MAX_ERROR_CHARS {
+        return error;
+    }
+    let mut short: String = error.chars().take(MAX_ERROR_CHARS).collect();
+    short.push('…');
+    short
+}
+
 fn chars(lines: &[String]) -> usize {
     lines.iter().map(|line| line.chars().count()).sum()
 }
@@ -131,6 +144,20 @@ pub fn build_prompts(req: &CopilotRequest, max_chars: usize) -> Result<(String, 
         instruction(req.action)
     );
     Ok((system, parts.join("\n\n")))
+}
+
+/// Resolves the model, sizes the context, and makes the call. Returns the user prompt and the reply.
+async fn send<R: Runtime>(app: &AppHandle<R>, request: &CopilotRequest) -> Result<(String, String), String> {
+    let target = copilot_target(app).await?;
+    // The local sidecar cannot be cancelled, so a timed-out call would leave it busy.
+    if target.provider == LLMProvider::BuiltInAI {
+        return Err("Built-in AI is not supported for the copilot".to_string());
+    }
+    let (system, user) = build_prompts(request, budget(&target).await)?;
+    let completion = complete(&target, &system, &user, Some(0.3), None)
+        .await
+        .map_err(shorten_error)?;
+    Ok((user, completion.content))
 }
 
 /// Holds the single in-flight answer: its request id and how to abort it.
@@ -214,26 +241,24 @@ async fn budget(target: &LlmTarget) -> usize {
 }
 
 async fn answer<R: Runtime>(app: AppHandle<R>, request: CopilotRequest) -> Result<String, String> {
-    let target = copilot_target(&app).await?;
-    // The local sidecar cannot be cancelled, so a timed-out call would leave it busy.
-    if target.provider == LLMProvider::BuiltInAI {
-        return Err("Built-in AI is not supported for the copilot".to_string());
-    }
-    let (system, user) = build_prompts(&request, budget(&target).await)?;
     let started = Instant::now();
-    let call = complete(&target, &system, &user, Some(0.3), None);
-    let reply = tokio::time::timeout(Duration::from_secs(ASK_TIMEOUT_SECS), call).await;
+    // The timeout covers the context lookup too, so a stalled Ollama cannot hold the slot.
+    let reply = tokio::time::timeout(
+        Duration::from_secs(ASK_TIMEOUT_SECS),
+        send(&app, &request),
+    )
+    .await;
     let ms = started.elapsed().as_millis();
-    let content = match reply {
+    let (user, content) = match reply {
         Err(_) => {
             warn!("copilot: {:?} timed out after {ms} ms", request.action);
             return Err("Timed out".to_string());
         }
         Ok(Err(e)) => {
-            warn!("copilot: {:?} call failed after {ms} ms", request.action);
+            warn!("copilot: {:?} failed after {ms} ms", request.action);
             return Err(e);
         }
-        Ok(Ok(completion)) => completion.content,
+        Ok(Ok(sent)) => sent,
     };
     let answer = content.trim();
     if answer.is_empty() {
@@ -438,6 +463,17 @@ mod tests {
         assert_eq!(ollama_budget(4000), 7714);
         assert_eq!(ollama_budget(100_000), MAX);
         assert_eq!(ollama_budget(0), 0);
+    }
+
+    #[test]
+    fn provider_error_is_shortened() {
+        let long = format!("Groq error: {}", "x".repeat(5000));
+        let short = shorten_error(long);
+        assert_eq!(short.chars().count(), MAX_ERROR_CHARS + 1);
+        assert!(short.ends_with('…'));
+        assert_eq!(shorten_error("Groq error: 400".to_string()), "Groq error: 400");
+        let exact = "y".repeat(MAX_ERROR_CHARS);
+        assert_eq!(shorten_error(exact.clone()), exact);
     }
 
     #[test]

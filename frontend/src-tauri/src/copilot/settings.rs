@@ -8,7 +8,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex, PoisonError, RwLock};
-use tauri::{AppHandle, Runtime};
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 const STORE_FILE: &str = "copilot.json";
@@ -175,10 +176,29 @@ pub fn set_cache_for_test(s: CopilotSettings) {
     set_cache(s);
 }
 
+/// The reason to log a settings file that failed to load. A missing file is the normal first run.
+/// The reason is the load error only; it never carries the file's content.
+fn store_problem<E: std::fmt::Display>(exists: bool, reload: Result<(), E>) -> Option<String> {
+    match reload {
+        Err(e) if exists => Some(e.to_string()),
+        _ => None,
+    }
+}
+
 pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let raw = match app.store(STORE_FILE) {
-        Ok(store) => store.get(KEY),
+        Ok(store) => {
+            // The plugin drops a broken file silently when it opens, so reload to see the error.
+            let exists = app
+                .path()
+                .resolve(STORE_FILE, BaseDirectory::AppData)
+                .is_ok_and(|path| path.exists());
+            if let Some(problem) = store_problem(exists, store.reload()) {
+                warn!("copilot: settings file unreadable, defaults used: {problem}");
+            }
+            store.get(KEY)
+        }
         Err(e) => {
             warn!("copilot: settings store unreadable, defaults used: {e}");
             None
@@ -311,6 +331,18 @@ mod tests {
         assert_eq!(
             sanitize(Some(json!({"answer_language": "xx"}))).answer_language,
             None
+        );
+    }
+
+    #[test]
+    fn unreadable_file_is_reported_only_when_it_exists() {
+        // A missing file is the normal first run, so only an existing file that fails to load is reported.
+        assert_eq!(store_problem(false, Err::<(), _>("not found")), None);
+        assert_eq!(store_problem(false, Ok::<(), String>(())), None);
+        assert_eq!(store_problem(true, Ok::<(), String>(())), None);
+        assert_eq!(
+            store_problem(true, Err::<(), _>("expected value at line 1 column 1")),
+            Some("expected value at line 1 column 1".to_string())
         );
     }
 

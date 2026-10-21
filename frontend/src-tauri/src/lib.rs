@@ -965,6 +965,8 @@ pub fn run() {
             // Copilot commands
             copilot::settings::copilot_get_settings,
             copilot::settings::copilot_save_settings,
+            copilot::ask::copilot_ask,
+            copilot::ask::copilot_cancel,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

@@ -1,5 +1,4 @@
 //! Live copilot: settings, name alerts, and on-demand answers from the live transcript.
-#![allow(dead_code)] // alert functions are wired in by the transcript listener (Task 3)
 pub mod alert;
 pub mod settings;
 

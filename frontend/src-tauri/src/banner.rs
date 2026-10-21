@@ -141,11 +141,12 @@ pub async fn meeting_banner_action<R: Runtime>(
     action: String,
 ) -> Result<(), String> {
     let kind = take_if_current(window.label());
-    let _ = window.close();
+    // Focus before the close: Windows grants foreground only while the click's process still owns a window.
     if action == "open" && matches!(kind, Some(BannerKind::Mention { .. })) {
         focus_main_window(&app);
         let _ = app.emit_to("main", "copilot-open", ());
     }
+    let _ = window.close();
     if action == "record" {
         if let Some(BannerKind::Detected { call, .. }) = kind {
             // Starting again would reload the main webview mid-recording and queue a recording nobody asked for.

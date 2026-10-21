@@ -771,6 +771,7 @@ async fn stop_recording_inner<R: Runtime>(
     app: AppHandle<R>,
     _args: RecordingArgs,
 ) -> Result<(), String> {
+    crate::copilot::ask::abort_in_flight();
     info!(
         "🛑 Starting optimized recording shutdown - ensuring ALL transcript chunks are preserved"
     );

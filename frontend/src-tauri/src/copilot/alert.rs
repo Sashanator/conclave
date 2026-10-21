@@ -21,6 +21,10 @@ pub fn on_transcript<R: Runtime>(app: &AppHandle<R>, update: &TranscriptUpdate) 
         return;
     }
     let words = settings::current().alert_words;
+    // Cheap checks first: the focus query waits on the main thread.
+    if update.is_partial || update.speaker_idx == Some(0) || !mentions(&words, &update.text) {
+        return;
+    }
     let main_focused = app
         .get_webview_window("main")
         .and_then(|w| w.is_focused().ok())

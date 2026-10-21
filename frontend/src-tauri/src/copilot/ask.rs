@@ -59,6 +59,19 @@ fn instruction(action: CopilotAction) -> &'static str {
     }
 }
 
+/// A provider error can carry a whole response body, so the card shows at most this many characters.
+const MAX_ERROR_CHARS: usize = 200;
+
+/// Cuts a provider error to MAX_ERROR_CHARS characters, marking the cut with "…".
+fn shorten_error(error: String) -> String {
+    if error.chars().count() <= MAX_ERROR_CHARS {
+        return error;
+    }
+    let mut short: String = error.chars().take(MAX_ERROR_CHARS).collect();
+    short.push('…');
+    short
+}
+
 fn chars(lines: &[String]) -> usize {
     lines.iter().map(|line| line.chars().count()).sum()
 }
@@ -133,6 +146,20 @@ pub fn build_prompts(req: &CopilotRequest, max_chars: usize) -> Result<(String, 
     Ok((system, parts.join("\n\n")))
 }
 
+/// Resolves the model, sizes the context, and makes the call. Returns the user prompt and the reply.
+async fn send<R: Runtime>(app: &AppHandle<R>, request: &CopilotRequest) -> Result<(String, String), String> {
+    let target = copilot_target(app).await?;
+    // The local sidecar cannot be cancelled, so a timed-out call would leave it busy.
+    if target.provider == LLMProvider::BuiltInAI {
+        return Err("Built-in AI is not supported for the copilot".to_string());
+    }
+    let (system, user) = build_prompts(request, budget(&target).await)?;
+    let completion = complete(&target, &system, &user, Some(0.3), None)
+        .await
+        .map_err(shorten_error)?;
+    Ok((user, completion.content))
+}
+
 /// Holds the single in-flight answer: its request id and how to abort it.
 static IN_FLIGHT: Mutex<Option<(u64, AbortHandle)>> = Mutex::new(None);
 
@@ -165,6 +192,15 @@ fn abort(id: u64) {
         if let Some((_, handle)) = slot.take() {
             handle.abort();
         }
+    }
+}
+
+/// Aborts whatever answer is in flight. Stop calls this, so a stop from the tray, the meeting
+/// detector or a device error reaches the call even when the webview is throttled.
+pub fn abort_in_flight() {
+    let mut slot = IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, handle)) = slot.take() {
+        handle.abort();
     }
 }
 
@@ -205,26 +241,24 @@ async fn budget(target: &LlmTarget) -> usize {
 }
 
 async fn answer<R: Runtime>(app: AppHandle<R>, request: CopilotRequest) -> Result<String, String> {
-    let target = copilot_target(&app).await?;
-    // The local sidecar cannot be cancelled, so a timed-out call would leave it busy.
-    if target.provider == LLMProvider::BuiltInAI {
-        return Err("Built-in AI is not supported for the copilot".to_string());
-    }
-    let (system, user) = build_prompts(&request, budget(&target).await)?;
     let started = Instant::now();
-    let call = complete(&target, &system, &user, Some(0.3), None);
-    let reply = tokio::time::timeout(Duration::from_secs(ASK_TIMEOUT_SECS), call).await;
+    // The timeout covers the context lookup too, so a stalled Ollama cannot hold the slot.
+    let reply = tokio::time::timeout(
+        Duration::from_secs(ASK_TIMEOUT_SECS),
+        send(&app, &request),
+    )
+    .await;
     let ms = started.elapsed().as_millis();
-    let content = match reply {
+    let (user, content) = match reply {
         Err(_) => {
             warn!("copilot: {:?} timed out after {ms} ms", request.action);
             return Err("Timed out".to_string());
         }
         Ok(Err(e)) => {
-            warn!("copilot: {:?} call failed after {ms} ms", request.action);
+            warn!("copilot: {:?} failed after {ms} ms", request.action);
             return Err(e);
         }
-        Ok(Ok(completion)) => completion.content,
+        Ok(Ok(sent)) => sent,
     };
     let answer = content.trim();
     if answer.is_empty() {
@@ -432,6 +466,17 @@ mod tests {
     }
 
     #[test]
+    fn provider_error_is_shortened() {
+        let long = format!("Groq error: {}", "x".repeat(5000));
+        let short = shorten_error(long);
+        assert_eq!(short.chars().count(), MAX_ERROR_CHARS + 1);
+        assert!(short.ends_with('…'));
+        assert_eq!(shorten_error("Groq error: 400".to_string()), "Groq error: 400");
+        let exact = "y".repeat(MAX_ERROR_CHARS);
+        assert_eq!(shorten_error(exact.clone()), exact);
+    }
+
+    #[test]
     fn request_reads_frontend_json() {
         let json = r#"{"action":"what_to_ask","question":null,"language":"ru","background":[],"focus":["[00:01] You: hi"],"notes":[]}"#;
         let r: CopilotRequest = serde_json::from_str(json).unwrap();
@@ -439,8 +484,23 @@ mod tests {
         assert!(r.question.is_none());
     }
 
+    /// The slot is one global, so the tests that use it run one at a time.
+    static SLOT_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn abort_in_flight_frees_slot() {
+        let _serial = SLOT_TESTS.lock().await;
+        let task = tokio::spawn(tokio::time::sleep(Duration::from_secs(60)));
+        let _guard = claim(1, task.abort_handle()).unwrap();
+        abort_in_flight();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let next = tokio::spawn(async {});
+        let _held = claim(2, next.abort_handle()).unwrap();
+    }
+
     #[tokio::test]
     async fn slot_freed_after_abort() {
+        let _serial = SLOT_TESTS.lock().await;
         let task = tokio::spawn(tokio::time::sleep(Duration::from_secs(60)));
         let guard = claim(1, task.abort_handle()).unwrap();
 

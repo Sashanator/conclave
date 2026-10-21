@@ -23,9 +23,14 @@ const PIN_KEY = 'summaryLanguageDefault';
 
 let settings: CopilotSettings;
 let saveFails: string | null = null;
+// When set, the settings reload waits on it, so a test can edit while the reload is pending
+let holdLoad: Promise<void> | null = null;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'copilot_get_settings') return structuredClone(settings);
+  if (command === 'copilot_get_settings') {
+    await holdLoad;
+    return structuredClone(settings);
+  }
   if (command === 'copilot_save_settings') {
     if (saveFails) throw new Error(saveFails);
     const next = args?.settings as CopilotSettings;
@@ -114,6 +119,7 @@ function calls(command: string) {
 beforeEach(async () => {
   settings = structuredClone(BASE_SETTINGS);
   saveFails = null;
+  holdLoad = null;
   window.localStorage.removeItem(PIN_KEY);
   invoke.mockClear();
   toast.error.mockClear();
@@ -208,5 +214,22 @@ describe('Copilot settings', () => {
     expect(toast.error).toHaveBeenCalled();
     expect(JSON.stringify(toast.error.mock.calls[0])).toContain('Alert list is full');
     expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Remove Sasha').length).toBe(0);
+  });
+
+  test('an edit made while the reload after a failed save is still saved', async () => {
+    saveFails = 'Alert list is full';
+    let release!: () => void;
+    holdLoad = new Promise<void>((resolve) => { release = resolve; });
+    await typeWord('Sasha');
+    await flush(); // the save fails and the reload waits
+    saveFails = null;
+    await typeWord('Anna');
+    await flush();
+    release();
+    holdLoad = null;
+    await flush();
+    await flush();
+    const saves = calls('copilot_save_settings');
+    expect((saves.at(-1)![1] as { settings: CopilotSettings }).settings.alert_words).toEqual(['Sasha', 'Anna']);
   });
 });

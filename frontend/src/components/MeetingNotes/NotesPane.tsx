@@ -16,6 +16,8 @@ interface NotesPaneProps {
   disabledHint?: string;
   /** Freezes edits and deletes; set while a stop is saving the snapshot. */
   locked?: boolean;
+  /** The live page's tab strip carries the title and the hide button instead. */
+  hideHeader?: boolean;
 }
 
 function NoteRow({ note, onUpdate, onDelete, onTimeClick, locked }: { note: MeetingNote; locked?: boolean } & Pick<NotesPaneProps, 'onUpdate' | 'onDelete' | 'onTimeClick'>) {
@@ -64,7 +66,7 @@ function NoteRow({ note, onUpdate, onDelete, onTimeClick, locked }: { note: Meet
   );
 }
 
-export function NotesPane({ notes, onAdd, onUpdate, onDelete, onTimeClick, collapsed, onToggleCollapsed, disabled, disabledHint, locked }: NotesPaneProps) {
+export function NotesPane({ notes, onAdd, onUpdate, onDelete, onTimeClick, collapsed, onToggleCollapsed, disabled, disabledHint, locked, hideHeader }: NotesPaneProps) {
   const [draft, setDraft] = useState('');
 
   if (collapsed) {
@@ -87,13 +89,15 @@ export function NotesPane({ notes, onAdd, onUpdate, onDelete, onTimeClick, colla
 
   return (
     <section aria-label="My notes" className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      <div className="flex items-center justify-between border-b border-border px-3 py-2">
-        <h3 className="text-sm font-medium">My notes ({notes.length})</h3>
-        <button type="button" aria-label="Hide notes" aria-expanded={true} onClick={onToggleCollapsed}
-          className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
-          <ChevronRight className="h-4 w-4" />
-        </button>
-      </div>
+      {!hideHeader && (
+        <div className="flex items-center justify-between border-b border-border px-3 py-2">
+          <h3 className="text-sm font-medium">My notes ({notes.length})</h3>
+          <button type="button" aria-label="Hide notes" aria-expanded={true} onClick={onToggleCollapsed}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground">
+            <ChevronRight className="h-4 w-4" />
+          </button>
+        </div>
+      )}
       <ul className="flex-1 overflow-y-auto px-3">
         {sortNotes(notes).map((n) => (
           <NoteRow key={n.id} note={n} onUpdate={onUpdate} onDelete={onDelete} onTimeClick={onTimeClick} locked={locked} />

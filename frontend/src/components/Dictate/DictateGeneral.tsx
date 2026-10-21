@@ -1,69 +1,12 @@
-import { useEffect, useState } from 'react';
-import { invoke } from '@tauri-apps/api/core';
-import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { CLAUDE_FALLBACK_MODELS, GROQ_FALLBACK_MODELS, OPENAI_FALLBACK_MODELS } from '@/components/ModelSettingsModal';
+import { LlmOverridePicker } from '@/components/shared/LlmOverridePicker';
 import { BUILT_IN_MODES, hotkeyProblem, withHotkey, type Commit, type DictateSettings, type DictateStatus } from '@/lib/dictate';
 import { HotkeyPicker } from './HotkeyPicker';
 
-// Built-in "builtin-ai" is left out: the backend rejects it as a cleanup provider
-const PROVIDERS = [
-  { id: 'claude', label: 'Claude' },
-  { id: 'openai', label: 'OpenAI' },
-  { id: 'groq', label: 'Groq' },
-  { id: 'openrouter', label: 'OpenRouter' },
-  { id: 'ollama', label: 'Ollama' },
-  { id: 'custom-openai', label: 'Custom Server (OpenAI)' },
-];
-const MODEL_SUGGESTIONS: Record<string, string[]> = {
-  claude: CLAUDE_FALLBACK_MODELS,
-  openai: OPENAI_FALLBACK_MODELS,
-  groq: GROQ_FALLBACK_MODELS,
-};
-const SAME_AS_SUMMARIES = 'same';
-
-// Providers with a key, plus ollama or a custom server when configured. A provider already chosen always stays listed.
-async function configuredProviders(): Promise<Set<string>> {
-  const found = new Set<string>();
-  for (const provider of ['claude', 'openai', 'groq', 'openrouter']) {
-    try {
-      if (await invoke<string>('api_get_api_key', { provider })) found.add(provider);
-    } catch {
-      // No key stored for this provider
-    }
-  }
-  try {
-    const config = await invoke<{ provider?: string; ollamaEndpoint?: string | null } | null>('api_get_model_config');
-    if (config?.provider === 'ollama' || config?.ollamaEndpoint) found.add('ollama');
-  } catch {
-    // No model config saved yet
-  }
-  try {
-    if (await invoke('api_get_custom_openai_config')) found.add('custom-openai');
-  } catch {
-    // No custom server configured
-  }
-  return found;
-}
-
 export function DictateGeneral({ settings, status, commit }: { settings: DictateSettings; status: DictateStatus | null; commit: Commit }) {
-  const [configured, setConfigured] = useState<Set<string>>(new Set());
-  const [model, setModel] = useState(settings.cleanup_model ?? '');
-  useEffect(() => {
-    configuredProviders().then(setConfigured);
-  }, []);
-  useEffect(() => setModel(settings.cleanup_model ?? ''), [settings.cleanup_model]);
-
   const blocked = !status || !status.engine_is_whisper || !status.model_downloaded;
-  const providers = PROVIDERS.filter((p) => configured.has(p.id) || p.id === settings.cleanup_provider);
-  const suggestions = settings.cleanup_provider ? MODEL_SUGGESTIONS[settings.cleanup_provider] ?? [] : [];
-
-  const saveModel = () => {
-    const next = model.trim() || null;
-    if (next !== (settings.cleanup_model ?? null)) commit((s) => ({ ...s, cleanup_model: next }));
-  };
 
   return (
     <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-5">
@@ -116,52 +59,15 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
         </Select>
       </div>
 
-      <div className="space-y-2">
-        <div className="flex items-center justify-between gap-4">
-          <div>
-            <Label htmlFor="dictate-cleanup-provider">Cleanup provider</Label>
-            <p className="text-sm text-muted-foreground">Used by every mode except &quot;As spoken&quot;</p>
-          </div>
-          <Select
-            value={settings.cleanup_provider ?? SAME_AS_SUMMARIES}
-            onValueChange={(provider) =>
-              // The model belongs to the old provider, so it is cleared
-              commit((s) => ({ ...s, cleanup_provider: provider === SAME_AS_SUMMARIES ? null : provider, cleanup_model: null }))
-            }
-          >
-            <SelectTrigger id="dictate-cleanup-provider" className="w-56" aria-label="Cleanup provider">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={SAME_AS_SUMMARIES}>Same as summaries</SelectItem>
-              {providers.map((p) => (
-                <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="flex items-center justify-between gap-4">
-          <Label htmlFor="dictate-cleanup-model">Cleanup model</Label>
-          <Input
-            id="dictate-cleanup-model"
-            className="w-56"
-            list="dictate-cleanup-models"
-            disabled={!settings.cleanup_provider}
-            placeholder={settings.cleanup_provider ? 'Model name' : 'Same as summaries'}
-            value={model}
-            onChange={(e) => setModel(e.target.value)}
-            onBlur={saveModel}
-            onKeyDown={(e) => {
-              if (e.key === 'Enter') saveModel();
-            }}
-          />
-          <datalist id="dictate-cleanup-models">
-            {suggestions.map((m) => (
-              <option key={m} value={m} />
-            ))}
-          </datalist>
-        </div>
-      </div>
+      <p className="text-sm text-muted-foreground">Used by every mode except &quot;As spoken&quot;</p>
+      <LlmOverridePicker
+        idPrefix="dictate-cleanup"
+        providerLabel="Cleanup provider"
+        modelLabel="Cleanup model"
+        provider={settings.cleanup_provider}
+        model={settings.cleanup_model}
+        onChange={(cleanup_provider, cleanup_model) => commit((s) => ({ ...s, cleanup_provider, cleanup_model }))}
+      />
     </section>
   );
 }

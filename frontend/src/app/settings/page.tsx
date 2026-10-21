@@ -1,14 +1,15 @@
 'use client';
 
-import React, { useState, useEffect, useLayoutEffect, useRef } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, FlaskConical, FileText, Users } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import React, { useState, useEffect, useLayoutEffect, useRef, Suspense } from 'react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Sparkles, FlaskConical, FileText, Users } from 'lucide-react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
 import { TranscriptSettings } from '@/components/TranscriptSettings';
 import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
+import { CopilotSettings } from '@/components/CopilotSettings';
 import { TemplateSettings } from '@/components/TemplateSettings';
 import { confirmLeave } from '@/lib/unsaved-guard';
 import { BetaSettings } from '@/components/BetaSettings';
@@ -24,16 +25,19 @@ const TABS = [
   { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
   { value: 'speakers', label: 'Speakers', icon: Users },
   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
+  { value: 'copilot', label: 'Copilot', icon: Sparkles },
   { value: 'templates', label: 'Templates', icon: FileText },
   { value: 'beta', label: 'Beta', icon: FlaskConical }
 ] as const;
 
-export default function SettingsPage() {
+function SettingsContent() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
 
-  // Animation state for tabs
-  const [activeTab, setActiveTab] = useState('general');
+  // Animation state for tabs. `?tab=` picks the first tab when it names one.
+  const requestedTab = searchParams.get('tab');
+  const [activeTab, setActiveTab] = useState<string>(() => TABS.find((tab) => tab.value === requestedTab)?.value ?? 'general');
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
   const changeTab = (tab: string) => {
@@ -136,6 +140,9 @@ export default function SettingsPage() {
             <TabsContent value="summaryModels">
               <SummaryModelSettings />
             </TabsContent>
+            <TabsContent value="copilot">
+              <CopilotSettings />
+            </TabsContent>
             <TabsContent value="templates">
               <TemplateSettings />
             </TabsContent>
@@ -147,4 +154,12 @@ export default function SettingsPage() {
       </div>
     </div>
   );
-};
+}
+
+export default function SettingsPage() {
+  return (
+    <Suspense fallback={null}>
+      <SettingsContent />
+    </Suspense>
+  );
+}

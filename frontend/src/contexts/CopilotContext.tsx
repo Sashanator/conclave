@@ -48,19 +48,19 @@ const CopilotContext = createContext<CopilotContextType | null>(null);
 
 export function CopilotProvider({ children }: { children: ReactNode }) {
   const { transcriptsRef, notesRef } = useTranscripts();
-  const { isRecording, activeDuration } = useRecordingState();
+  const { isRecording, isStopping, activeDuration } = useRecordingState();
   const [cards, setCards] = useState<CopilotCard[]>([]);
   const seqRef = useRef(0);
   const inFlightRef = useRef<InFlight | null>(null);
 
-  // A stopped recording takes its pending call and its cards with it.
+  // A stopping recording takes its pending call and its cards with it. isStopping comes first: the backend keeps isRecording true through the stop tail.
   useEffect(() => {
-    if (isRecording) return;
+    if (isRecording && !isStopping) return;
     const f = inFlightRef.current;
     inFlightRef.current = null;
     if (f) invoke('copilot_cancel', { requestId: f.requestId }).catch(() => {});
     setCards([]);
-  }, [isRecording]);
+  }, [isRecording, isStopping]);
 
   const run = (cardId: number, action: CopilotAction, question: string | undefined, askedAt: number) => {
     const f: InFlight = { cardId, requestId: ++seqRef.current };

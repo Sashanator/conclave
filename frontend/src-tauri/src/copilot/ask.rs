@@ -168,6 +168,15 @@ fn abort(id: u64) {
     }
 }
 
+/// Aborts whatever answer is in flight. Stop calls this, so a stop from the tray, the meeting
+/// detector or a device error reaches the call even when the webview is throttled.
+pub fn abort_in_flight() {
+    let mut slot = IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some((_, handle)) = slot.take() {
+        handle.abort();
+    }
+}
+
 /// The copilot model, falling back to the summary model as Dictate cleanup does.
 async fn copilot_target<R: Runtime>(app: &AppHandle<R>) -> Result<LlmTarget, String> {
     let state = app.try_state::<AppState>().ok_or("no database")?;
@@ -439,8 +448,23 @@ mod tests {
         assert!(r.question.is_none());
     }
 
+    /// The slot is one global, so the tests that use it run one at a time.
+    static SLOT_TESTS: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    #[tokio::test]
+    async fn abort_in_flight_frees_slot() {
+        let _serial = SLOT_TESTS.lock().await;
+        let task = tokio::spawn(tokio::time::sleep(Duration::from_secs(60)));
+        let _guard = claim(1, task.abort_handle()).unwrap();
+        abort_in_flight();
+        assert!(task.await.unwrap_err().is_cancelled());
+        let next = tokio::spawn(async {});
+        let _held = claim(2, next.abort_handle()).unwrap();
+    }
+
     #[tokio::test]
     async fn slot_freed_after_abort() {
+        let _serial = SLOT_TESTS.lock().await;
         let task = tokio::spawn(tokio::time::sleep(Duration::from_secs(60)));
         let guard = claim(1, task.abort_handle()).unwrap();
 

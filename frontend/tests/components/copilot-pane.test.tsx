@@ -226,6 +226,23 @@ describe('CopilotPane', () => {
     await flush();
     expect(asks.length).toBe(2);
   });
+
+  test('stopping_while_still_recording_cancels', async () => {
+    // The backend keeps isRecording true through the stop tail; isStopping is the earlier signal.
+    const r = render();
+    click(r, 'Catch me up');
+    await flush();
+    const requestId = asks[0].requestId;
+    recording.isStopping = true;
+    await act(async () => { r.update(tree()); });
+    await flush();
+    expect(invoke).toHaveBeenCalledWith('copilot_cancel', { requestId });
+    expect(card(r, 'Catch me up').length).toBe(0);
+    await act(async () => { asks[0].resolve('answer after stop'); });
+    await flush();
+    expect(JSON.stringify(r.toJSON())).not.toContain('answer after stop');
+    expect(card(r, 'Catch me up').length).toBe(0);
+  });
 });
 
 describe('Live right column tabs', () => {

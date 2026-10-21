@@ -24,9 +24,11 @@ import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { OldAudioReminder } from '@/components/OldAudio/OldAudioReminder'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext'
 import { THEME_INIT_SCRIPT } from '@/lib/theme'
+import { CopilotProvider, writeLiveSideTab } from '@/contexts/CopilotContext'
+import { writeFlag } from '@/lib/meeting-page-layout'
 
 
 const sourceSans3 = Source_Sans_3({
@@ -83,6 +85,9 @@ function AppShell({
   const [showImportDialog, setShowImportDialog] = useState(false)
   const [importFilePath, setImportFilePath] = useState<string | null>(null)
 
+  const pathname = usePathname()
+  const router = useRouter()
+
   useEffect(() => {
     // Check onboarding status first
     invoke<{ completed: boolean } | null>('get_onboarding_status')
@@ -138,6 +143,20 @@ function AppShell({
       unlisten.then(fn => fn());
     };
   }, [showOnboarding]);
+
+  // The name-alert banner's click. On the live page it selects the tab itself; from another page the stored
+  // choice is read when the live page mounts. Never window.location: that would reload over a live recording.
+  useEffect(() => {
+    const unlisten = listen('copilot-open', () => {
+      writeLiveSideTab('copilot');
+      writeFlag('conclave.notesPaneCollapsed', false);
+      if (pathname !== '/') router.push('/');
+    });
+
+    return () => {
+      unlisten.then(fn => fn());
+    };
+  }, [pathname, router]);
 
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
@@ -246,6 +265,7 @@ function AppShell({
     <>
           <RecordingStateProvider>
             <TranscriptProvider>
+              <CopilotProvider>
               <ConfigProvider>
                 <OllamaDownloadProvider>
                   <OnboardingProvider>
@@ -281,6 +301,7 @@ function AppShell({
 
                 </OllamaDownloadProvider>
               </ConfigProvider>
+              </CopilotProvider>
             </TranscriptProvider>
           </RecordingStateProvider>
 

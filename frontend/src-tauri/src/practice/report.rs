@@ -273,10 +273,16 @@ struct RawItem {
     pattern: Option<String>,
 }
 
-/// A pattern key: normalised, 2 to 5 words and at most 60 characters. Anything else is no key.
+/// A pattern key: normalised, 2 to 5 words and at most 60 characters. A standalone "+" (as in "if + will") is kept
+/// and is not a word. Anything else is no key.
 pub fn pattern_key(raw: &str) -> Option<String> {
-    let key = normalise(raw);
-    let words = key.split_whitespace().count();
+    let key = raw
+        .split_whitespace()
+        .map(|t| if t == "+" { t.to_string() } else { normalise(t) })
+        .filter(|t| !t.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ");
+    let words = key.split_whitespace().filter(|w| *w != "+").count();
     ((2..=5).contains(&words) && key.chars().count() <= 60).then_some(key)
 }
 
@@ -487,6 +493,17 @@ mod tests {
         assert_eq!(pattern_key(&sixty).map(|k| k.chars().count()), Some(60));
         let too_long = format!("{} {}", "a".repeat(30), "b".repeat(30));
         assert_eq!(pattern_key(&too_long), None, "61 characters");
+    }
+
+    #[test]
+    fn pattern_keys_keep_a_standalone_plus() {
+        assert_eq!(pattern_key("if + will").as_deref(), Some("if + will"));
+        assert_eq!(pattern_key("  If  +  Will! ").as_deref(), Some("if + will"));
+        assert_eq!(pattern_key("tense+mood").as_deref(), Some("tense mood"), "an attached plus is punctuation");
+        assert_eq!(pattern_key("a +"), None, "one word besides the plus");
+        assert_eq!(pattern_key("+ +"), None, "no word at all");
+        assert_eq!(pattern_key("a + b + c + d + e").as_deref(), Some("a + b + c + d + e"), "the plus is not counted");
+        assert_eq!(pattern_key("a + b + c + d + e + f"), None, "six words");
     }
 
     #[test]

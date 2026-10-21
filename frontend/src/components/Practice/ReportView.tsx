@@ -59,6 +59,9 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const audioRef = useRef<HTMLAudioElement>(null);
   // Where the clip being played ends, in seconds; the audio pauses there
   const stopAt = useRef<number | null>(null);
+  // A ▶ you clip also pauses on a timer, for when timeupdate comes too late for a short span
+  const clipTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(clipTimer.current), []);
 
   const load = useCallback(async () => {
     try {
@@ -104,12 +107,20 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     void load();
   };
 
-  // from and to are seconds into you.wav
-  const play = (from: number, to: number) => {
+  // from and to are seconds into you.wav; timed also pauses at `to` on a timer
+  const play = (from: number, to: number, timed = false) => {
     const el = audioRef.current;
     if (!el) return;
+    clearTimeout(clipTimer.current);
     stopAt.current = to;
     el.currentTime = from;
+    if (timed) {
+      clipTimer.current = setTimeout(() => {
+        if (stopAt.current !== to) return;
+        el.pause();
+        stopAt.current = null;
+      }, (to - from) * 1000);
+    }
     void el.play().catch((e) => toast.error('Could not play the recording', { description: String(e) }));
   };
 
@@ -140,7 +151,7 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     if (!turn || !d.audio_path || turn.wav_offset === null) return null;
     const turnStart = turn.wav_offset / YOU_WAV_RATE;
     return (
-      <button type="button" className="rounded px-1.5 py-0.5 hover:bg-accent" onClick={() => play(turnStart + hint.start_secs, turnStart + hint.end_secs)}>
+      <button type="button" className="rounded px-1.5 py-0.5 hover:bg-accent" onClick={() => play(turnStart + hint.start_secs, turnStart + hint.end_secs, true)}>
         ▶ you
       </button>
     );

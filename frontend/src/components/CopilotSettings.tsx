@@ -20,7 +20,7 @@ export function CopilotSettings() {
   // Edits show at once. Saves run one after another, each from the latest edit.
   const latest = useRef<CopilotSettings | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
-  // Bumped on a failed save: saves queued before that are dropped
+  // Bumped after a failed save and its reload: saves queued before that are dropped
   const generation = useRef(0);
 
   const show = (s: CopilotSettings) => {
@@ -53,9 +53,8 @@ export function CopilotSettings() {
         if (latest.current === next) show(saved);
       } catch (err) {
         toast.error('Copilot settings were not saved', { description: String(err) });
-        // Bumped before the reload, so an edit made while it runs is saved rather than dropped
-        generation.current++;
         await load();
+        generation.current++;
       }
     });
   };

@@ -504,22 +504,24 @@ pub async fn set_verbatim(
 
 /// Distinct `pattern` keys from the newest ready reports, newest first, at most `limit`.
 pub async fn recent_patterns(pool: &SqlitePool, limit: usize) -> Result<Vec<String>, String> {
-    let reports: Vec<(String,)> = sqlx::query_as(
+    // Streamed, so reading stops once `limit` distinct keys are in hand, like `load_recent`
+    let mut rows = sqlx::query_as::<_, (String,)>(
         "SELECT report_json FROM practice_sessions WHERE report_status = 'ready' AND report_json IS NOT NULL ORDER BY started_at DESC",
     )
-    .fetch_all(pool)
-    .await
-    .map_err(db_err)?;
+    .fetch(pool);
     let mut keys: Vec<String> = Vec::new();
-    for (json,) in reports {
+    while keys.len() < limit {
+        let Some((json,)) = rows.try_next().await.map_err(db_err)? else {
+            break;
+        };
         // An unreadable report contributes no keys; the report view already flags it.
         let Ok(report) = serde_json::from_str::<Report>(&json) else { continue };
         for key in report.items.into_iter().filter_map(|item| item.pattern.and_then(|p| pattern_key(&p))) {
-            if keys.len() >= limit {
-                return Ok(keys);
-            }
             if !keys.contains(&key) {
                 keys.push(key);
+            }
+            if keys.len() >= limit {
+                break;
             }
         }
     }
@@ -914,6 +916,36 @@ mod tests {
         set_report(&pool, &mixed.id, "ready", Some(&report_json(&["tense", "e f", "x y z w v u"])), None).await.unwrap();
 
         assert_eq!(recent_patterns(&pool, 30).await.unwrap(), ["e f"]);
+    }
+
+    #[tokio::test]
+    async fn recent_patterns_stop_at_the_limit() {
+        let pool = test_pool().await;
+        let setup = new_setup(&pool, "Chat").await;
+        // 31 reports, each with its own key; minutes order them, newest (minute 31) first
+        for minute in 0..31 {
+            let row = create_session(&pool, &setup, "C:/x", None).await.unwrap();
+            sqlx::query("UPDATE practice_sessions SET started_at = ? WHERE id = ?")
+                .bind(format!("2026-10-01T10:{minute:02}:00Z"))
+                .bind(&row.id)
+                .execute(&pool)
+                .await
+                .unwrap();
+            set_report(&pool, &row.id, "ready", Some(&report_json(&[format!("key{minute:02} here").as_str()])), None).await.unwrap();
+        }
+        // An older row that is not text: reading it fails, so reaching it would fail the whole call
+        let blob = create_session(&pool, &setup, "C:/y", None).await.unwrap();
+        sqlx::query("UPDATE practice_sessions SET started_at = '2026-09-30T10:00:00Z', report_status = 'ready', report_json = ? WHERE id = ?")
+            .bind(vec![0u8, 1, 2])
+            .bind(&blob.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        let keys = recent_patterns(&pool, crate::practice::RECENT_PATTERNS_MAX).await.unwrap();
+        assert_eq!(keys.len(), crate::practice::RECENT_PATTERNS_MAX);
+        assert_eq!(keys[0], "key30 here");
+        assert_eq!(keys[29], "key01 here");
     }
 
     #[tokio::test]

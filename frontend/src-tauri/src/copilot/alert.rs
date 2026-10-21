@@ -1,6 +1,53 @@
-//! Name alert gate (spec §7): pure matching and cooldown, no Tauri or statics.
-use super::{ALERT_COOLDOWN_SECS, MENTION_LINE_CHARS};
+//! Name alert gate (spec §7). Matching and cooldown are pure; `on_transcript` wires them to the banner.
+use super::{settings, ALERT_COOLDOWN_SECS, MENTION_LINE_CHARS};
+use crate::audio::transcription::TranscriptUpdate;
+use crate::banner::{self, BannerKind};
+use log::info;
+use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Manager, Runtime};
+
+/// One cooldown for the whole recording. `reset_for_recording` gives each recording a fresh one.
+static COOLDOWN: Mutex<Cooldown> = Mutex::new(Cooldown::new());
+
+/// Called right before each transcript listener is registered, so a new recording starts with no cooldown.
+pub fn reset_for_recording() {
+    *COOLDOWN.lock().unwrap_or_else(PoisonError::into_inner) = Cooldown::new();
+}
+
+/// Runs for every transcript line. Returns at once when no alert words are set.
+pub fn on_transcript<R: Runtime>(app: &AppHandle<R>, update: &TranscriptUpdate) {
+    if !settings::has_alert_words() {
+        return;
+    }
+    let words = settings::current().alert_words;
+    let main_focused = app
+        .get_webview_window("main")
+        .and_then(|w| w.is_focused().ok())
+        .unwrap_or(false);
+    let fire = {
+        let mut cooldown = COOLDOWN.lock().unwrap_or_else(PoisonError::into_inner);
+        should_alert(
+            &words,
+            &update.text,
+            update.is_partial,
+            update.speaker_idx,
+            main_focused,
+            &mut cooldown,
+            Instant::now(),
+        )
+    };
+    if !fire {
+        return;
+    }
+    let line = banner_line(&update.text);
+    // Creating a window inside the event callback is unsafe, so the banner is shown from a task.
+    let app = app.clone();
+    tauri::async_runtime::spawn(async move {
+        banner::show(&app, BannerKind::Mention { line });
+    });
+    info!("copilot: name alert shown");
+}
 
 /// True when a word of `text` starts with an alert word (case-insensitive, Unicode).
 pub fn mentions(words: &[String], text: &str) -> bool {

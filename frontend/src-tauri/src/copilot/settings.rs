@@ -167,6 +167,11 @@ pub fn current() -> CopilotSettings {
     CACHE.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+/// The per-transcript-line check. Reads the cache in place, so nothing is cloned when no words are set.
+pub fn has_alert_words() -> bool {
+    !CACHE.read().unwrap_or_else(PoisonError::into_inner).alert_words.is_empty()
+}
+
 fn set_cache(s: CopilotSettings) {
     *CACHE.write().unwrap_or_else(PoisonError::into_inner) = s;
 }
@@ -354,6 +359,8 @@ mod tests {
         let s = with_words(&["Sasha"]);
         set_cache_for_test(s.clone());
         assert_eq!(current(), s);
+        assert!(has_alert_words());
         set_cache_for_test(CopilotSettings::default());
+        assert!(!has_alert_words());
     }
 }

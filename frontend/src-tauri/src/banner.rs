@@ -1,11 +1,12 @@
 //! Conclave's own top-centre meeting banner (spec §5.1 Ask mode). It replaces Windows notifications, which do
 //! nothing when clicked (probe check D, 2026-10-13).
+use crate::tray::focus_main_window;
 use meeting_detector::classify::CallApp;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
-use tauri::{AppHandle, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, Runtime, WebviewUrl, WebviewWindow, WebviewWindowBuilder};
 
 const LABEL_PREFIX: &str = "meeting-banner-";
 const WIDTH: f64 = 460.0;
@@ -13,10 +14,12 @@ const HEIGHT: f64 = 72.0;
 const TOP_MARGIN: f64 = 16.0;
 const AUTO_HIDE: Duration = Duration::from_secs(15);
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BannerKind {
     Detected { call: CallApp, certain: bool },
     Ended { call: CallApp },
+    /// A transcript line that said one of the user's alert words (copilot name alert).
+    Mention { line: String },
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -24,14 +27,17 @@ pub struct BannerView {
     pub kind: &'static str,
     pub app: &'static str,
     pub certain: bool,
+    pub line: Option<String>,
 }
 
 impl BannerKind {
-    fn view(self) -> BannerView {
-        match self {
-            BannerKind::Detected { call, certain } => BannerView { kind: "detected", app: call.label(), certain },
-            BannerKind::Ended { call } => BannerView { kind: "ended", app: call.label(), certain: true },
-        }
+    fn view(&self) -> BannerView {
+        let (kind, app, certain, line) = match self {
+            BannerKind::Detected { call, certain } => ("detected", call.label(), *certain, None),
+            BannerKind::Ended { call } => ("ended", call.label(), true, None),
+            BannerKind::Mention { line } => ("mention", "", true, Some(line.clone())),
+        };
+        BannerView { kind, app, certain, line }
     }
 }
 
@@ -66,12 +72,11 @@ fn begin(kind: BannerKind) -> u64 {
 fn take_if_current(label: &str) -> Option<BannerKind> {
     let id = id_from_label(label)?;
     let mut current = CURRENT.lock().unwrap();
-    match *current {
-        Some((cur, kind)) if cur == id => {
-            *current = None;
-            Some(kind)
-        }
-        _ => None,
+    let is_current = matches!(&*current, Some((cur, _)) if *cur == id);
+    if is_current {
+        current.take().map(|(_, kind)| kind)
+    } else {
+        None
     }
 }
 
@@ -122,13 +127,13 @@ pub fn show<R: Runtime>(app: &AppHandle<R>, kind: BannerKind) {
 #[tauri::command]
 pub fn get_meeting_banner<R: Runtime>(window: WebviewWindow<R>) -> Option<BannerView> {
     let id = id_from_label(window.label())?;
-    match *CURRENT.lock().unwrap() {
-        Some((cur, kind)) if cur == id => Some(kind.view()),
+    match &*CURRENT.lock().unwrap() {
+        Some((cur, kind)) if *cur == id => Some(kind.view()),
         _ => None,
     }
 }
 
-/// `action` is "record" or "dismiss". Async: a sync command that touches windows can deadlock on Windows.
+/// `action` is "record", "open" or "dismiss". Async: a sync command that touches windows can deadlock on Windows.
 #[tauri::command]
 pub async fn meeting_banner_action<R: Runtime>(
     app: AppHandle<R>,
@@ -137,6 +142,10 @@ pub async fn meeting_banner_action<R: Runtime>(
 ) -> Result<(), String> {
     let kind = take_if_current(window.label());
     let _ = window.close();
+    if action == "open" && matches!(kind, Some(BannerKind::Mention { .. })) {
+        focus_main_window(&app);
+        let _ = app.emit_to("main", "copilot-open", ());
+    }
     if action == "record" {
         if let Some(BannerKind::Detected { call, .. }) = kind {
             // Starting again would reload the main webview mid-recording and queue a recording nobody asked for.
@@ -182,7 +191,7 @@ mod tests {
         let first = begin(BannerKind::Ended { call: CallApp::Zoom });
         let second = begin(BannerKind::Ended { call: CallApp::Meet });
         assert_ne!(first, second);
-        assert_eq!(CURRENT.lock().unwrap().map(|(id, _)| id), Some(second));
+        assert_eq!(CURRENT.lock().unwrap().as_ref().map(|(id, _)| *id), Some(second));
     }
 
     #[test]
@@ -190,7 +199,7 @@ mod tests {
         let _turn = current_lock();
         *CURRENT.lock().unwrap() = Some((7, BannerKind::Ended { call: CallApp::Zoom }));
         assert_eq!(take_if_current(&label_for(6)), None, "stale banner");
-        assert_eq!(take_if_current(&label_for(7)), Some(BannerKind::Ended { call: CallApp::Zoom }));
+        assert!(matches!(take_if_current(&label_for(7)), Some(BannerKind::Ended { call: CallApp::Zoom })));
         assert_eq!(take_if_current(&label_for(7)), None, "acts once");
     }
 
@@ -199,5 +208,11 @@ mod tests {
         let v = BannerKind::Detected { call: CallApp::Meet, certain: true }.view();
         assert_eq!((v.kind, v.app, v.certain), ("detected", "Google Meet", true));
         assert_eq!(BannerKind::Ended { call: CallApp::Teams }.view().kind, "ended");
+    }
+
+    #[test]
+    fn mention_view() {
+        let v = BannerKind::Mention { line: "x".into() }.view();
+        assert_eq!((v.kind, v.line.as_deref()), ("mention", Some("x")));
     }
 }

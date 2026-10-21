@@ -28,7 +28,10 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   if (command === 'copilot_get_settings') return structuredClone(settings);
   if (command === 'copilot_save_settings') {
     if (saveFails) throw new Error(saveFails);
-    settings = structuredClone(args?.settings as CopilotSettings);
+    const next = args?.settings as CopilotSettings;
+    // Same rule as the backend: provider and model are both set or both empty
+    if ((next.provider === null) !== (next.model === null)) throw new Error('copilot provider and model must both be set or both be empty');
+    settings = structuredClone(next);
     return structuredClone(settings);
   }
   if (command === 'api_get_api_key') return args?.provider === 'claude' ? 'sk-test' : '';
@@ -74,11 +77,16 @@ function text(node: ReactTestInstance): string {
 
 // The text of the option that the select with this trigger id shows for its current value
 function shownLabel(triggerId: string): string {
-  const select = renderer!.root
-    .findAll((n) => n.props.onValueChange !== undefined && n.props.value !== undefined)
-    .find((n) => n.findAll((c) => c.props.id === triggerId).length > 0);
-  const option = select!.findAll((c) => c.type === 'option' && c.props.value === select!.props.value)[0];
+  const select = selectFor(triggerId);
+  const option = select.findAll((c) => c.type === 'option' && c.props.value === select.props.value)[0];
   return text(option);
+}
+
+// The Select whose trigger has this id
+function selectFor(triggerId: string): ReactTestInstance {
+  return renderer!.root
+    .findAll((n) => n.props.onValueChange !== undefined && n.props.value !== undefined)
+    .find((n) => n.findAll((c) => c.props.id === triggerId).length > 0)!;
 }
 
 function input(id: string): ReactTestInstance {
@@ -158,6 +166,39 @@ describe('Copilot settings', () => {
   test('same_as_summaries_default', () => {
     expect(shownLabel('copilot-provider')).toBe('Same as summaries');
     expect(input('copilot-model').props.disabled).toBe(true);
+  });
+
+  test('picking a provider alone does not save; a model with it saves the pair once', async () => {
+    await act(async () => {
+      selectFor('copilot-provider').props.onValueChange('claude');
+    });
+    await flush();
+    expect(calls('copilot_save_settings').length).toBe(0);
+    expect(shownLabel('copilot-provider')).toBe('Claude');
+    expect(input('copilot-model').props.disabled).toBe(false);
+
+    await act(async () => {
+      input('copilot-model').props.onChange({ target: { value: 'claude-sonnet' } });
+    });
+    await act(async () => {
+      input('copilot-model').props.onBlur();
+    });
+    await flush();
+    const saves = calls('copilot_save_settings');
+    expect(saves.length).toBe(1);
+    expect((saves[0][1] as { settings: CopilotSettings }).settings).toEqual({ provider: 'claude', model: 'claude-sonnet', answer_language: null, alert_words: [] });
+  });
+
+  test('same as summaries saves both empty', async () => {
+    settings = { ...BASE_SETTINGS, provider: 'claude', model: 'claude-sonnet' };
+    await mount();
+    await act(async () => {
+      selectFor('copilot-provider').props.onValueChange('same');
+    });
+    await flush();
+    const saves = calls('copilot_save_settings');
+    expect(saves.length).toBe(1);
+    expect((saves[0][1] as { settings: CopilotSettings }).settings).toEqual({ provider: null, model: null, answer_language: null, alert_words: [] });
   });
 
   test('a failed save shows the error and keeps the last saved words', async () => {

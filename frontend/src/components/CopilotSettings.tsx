@@ -15,6 +15,8 @@ import { LANGUAGE_OPTIONS } from '@/lib/summary-languages';
 export function CopilotSettings() {
   const [settings, setSettings] = useState<CopilotSettings | null>(null);
   const [word, setWord] = useState('');
+  // A provider picked without a model. Shown but not saved: the backend takes a provider and model together or neither.
+  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
   // Edits show at once. Saves run one after another, each from the latest edit.
   const latest = useRef<CopilotSettings | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
@@ -73,9 +75,16 @@ export function CopilotSettings() {
         idPrefix="copilot"
         providerLabel="Copilot provider"
         modelLabel="Copilot model"
-        provider={settings.provider}
-        model={settings.model}
-        onChange={(provider, model) => commit((s) => ({ ...s, provider, model }))}
+        provider={pendingProvider ?? settings.provider}
+        model={pendingProvider ? null : settings.model}
+        onChange={(provider, model) => {
+          if (provider && !model) {
+            setPendingProvider(provider);
+            return;
+          }
+          setPendingProvider(null);
+          commit((s) => ({ ...s, provider, model }));
+        }}
       />
 
       <div className="flex items-center justify-between gap-4">

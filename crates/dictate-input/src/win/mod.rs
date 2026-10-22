@@ -21,6 +21,20 @@ pub fn is_altgr_fake_ctrl(vk: u16, scan_code: u32) -> bool {
     vk == 0xA2 && scan_code == ALTGR_FAKE_CTRL_SCAN
 }
 
+/// Clipboard formats whose handle is not global memory (bitmaps, metafiles, palettes, owner-draw
+/// and GDI objects). They cannot be copied byte for byte, so the clipboard save leaves them out.
+pub fn is_skipped_format(format: u32) -> bool {
+    // CF_BITMAP, CF_METAFILEPICT, CF_PALETTE, CF_ENHMETAFILE, CF_OWNERDISPLAY, CF_DSPTEXT..CF_DSPENHMETAFILE, CF_GDIOBJFIRST..LAST
+    matches!(format, 2 | 3 | 9 | 14 | 0x80..=0x83 | 0x8E | 0x300..=0x3FF)
+}
+
+/// Largest total of saved clipboard bytes; a bigger clipboard keeps only text and images.
+pub const CLIPBOARD_CAP: usize = 64 * 1024 * 1024;
+
+pub fn within_clipboard_cap(total: usize) -> bool {
+    total <= CLIPBOARD_CAP
+}
+
 /// Windows drops a low-level hook silently, so the hook thread re-installs it while this is true.
 /// Re-hooking mid-dictation or with a key down could lose that key's up event.
 pub fn can_rehook(idle: bool, is_down: &dyn Fn(u16) -> bool) -> bool {
@@ -38,6 +52,24 @@ mod tests {
         assert!(!can_rehook(false, &none_down));
         assert!(!can_rehook(true, &|vk| vk == 0x41));
         assert!(!can_rehook(false, &|vk| vk == 0x41));
+    }
+
+    #[test]
+    fn skips_formats_that_are_not_global_memory() {
+        for format in [2, 3, 9, 14, 0x80, 0x81, 0x82, 0x83, 0x8E, 0x300, 0x3FF] {
+            assert!(is_skipped_format(format), "format {format:#x}");
+        }
+        // Text, DIB, DIBV5 and registered formats such as PNG are copied.
+        for format in [1, 8, 13, 17, 0x200, 0x2FF, 0xC000] {
+            assert!(!is_skipped_format(format), "format {format:#x}");
+        }
+    }
+
+    #[test]
+    fn clipboard_cap_is_64_mib() {
+        assert!(within_clipboard_cap(0));
+        assert!(within_clipboard_cap(CLIPBOARD_CAP));
+        assert!(!within_clipboard_cap(CLIPBOARD_CAP + 1));
     }
 
     #[test]

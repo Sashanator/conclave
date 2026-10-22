@@ -7,20 +7,19 @@ use std::time::Duration;
 use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber, OpenClipboard,
-    RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
+    GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
 use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_UNICODETEXT};
 
-/// What `save` read from the clipboard. Other formats (HTML, files) are not kept.
+use super::{is_skipped_format, within_clipboard_cap};
+
+/// What `save` read from the clipboard: each copyable format's id and bytes, in clipboard order.
 pub struct SavedClipboard {
-    text: Option<Vec<u16>>,
-    dib: Option<Vec<u8>>,
-    dibv5: Option<Vec<u8>>,
-    png: Option<Vec<u8>>,
+    formats: Vec<(u32, Vec<u8>)>,
 }
 
 /// Closes the clipboard on drop, so every early return still releases it.
@@ -43,18 +42,52 @@ fn open() -> Result<OpenGuard, String> {
     Err("clipboard busy".into())
 }
 
-// shortcut: text and images (CF_DIB, CF_DIBV5, PNG) survive a paste; files and rich text don't, save those too if users copy them before dictating
+// shortcut: over 64 MB only text and images are kept (the old behaviour), so a huge copy is never read into memory
 pub fn save() -> Result<SavedClipboard, String> {
     let _open = open()?;
-    Ok(SavedClipboard {
-        text: read_text()?,
-        dib: best_effort("CF_DIB", read_bytes(u32::from(CF_DIB.0))).flatten(),
-        dibv5: best_effort("CF_DIBV5", read_bytes(u32::from(CF_DIBV5.0))).flatten(),
-        png: best_effort("PNG", register(w!("PNG")).and_then(read_bytes)).flatten(),
-    })
+    let mut formats = enumerate_formats();
+    let total: usize = formats.iter().map(|&f| format_size(f)).sum();
+    if !within_clipboard_cap(total) {
+        log::warn!("dictate: clipboard over the size cap, keeping only text and images");
+        let png = register(w!("PNG")).ok();
+        let text_or_image = [CF_UNICODETEXT, CF_DIB, CF_DIBV5].map(|f| u32::from(f.0));
+        formats.retain(|f| text_or_image.contains(f) || Some(*f) == png);
+    }
+    let formats = formats
+        .into_iter()
+        .filter_map(|f| {
+            best_effort(&f.to_string(), read_bytes(f))
+                .flatten()
+                .map(|bytes| (f, bytes))
+        })
+        .collect();
+    Ok(SavedClipboard { formats })
 }
 
-/// Image formats are best effort: a failure logs the format name and drops that image only.
+/// Ids of the formats on the open clipboard that can be copied, in clipboard order.
+fn enumerate_formats() -> Vec<u32> {
+    let mut formats = Vec::new();
+    let mut format = 0;
+    loop {
+        format = unsafe { EnumClipboardFormats(format) };
+        if format == 0 {
+            return formats;
+        }
+        if !is_skipped_format(format) {
+            formats.push(format);
+        }
+    }
+}
+
+/// Bytes a clipboard item holds, 0 when absent. The clipboard must be open.
+fn format_size(format: u32) -> usize {
+    match unsafe { GetClipboardData(format) } {
+        Ok(handle) if !handle.0.is_null() => unsafe { GlobalSize(HGLOBAL(handle.0)) },
+        _ => 0,
+    }
+}
+
+/// Format reads and writes are best effort: a failure logs the format id and drops that format only.
 fn best_effort<T>(format: &str, result: Result<T, String>) -> Option<T> {
     match result {
         Ok(value) => Some(value),
@@ -97,18 +130,8 @@ pub fn restore(saved: &SavedClipboard, expected_seq: u32) -> Result<bool, String
 fn write_saved(saved: &SavedClipboard) -> Result<(), String> {
     unsafe { EmptyClipboard() }.map_err(|e| format!("EmptyClipboard: {e}"))?;
     write_exclusions()?;
-    // Text first: a failed image write must not lose it.
-    if let Some(text) = &saved.text {
-        set_bytes(u32::from(CF_UNICODETEXT.0), &wide_bytes(text))?;
-    }
-    if let Some(png) = &saved.png {
-        best_effort("PNG", register(w!("PNG")).and_then(|id| set_bytes(id, png)));
-    }
-    if let Some(dibv5) = &saved.dibv5 {
-        best_effort("CF_DIBV5", set_bytes(u32::from(CF_DIBV5.0), dibv5));
-    }
-    if let Some(dib) = &saved.dib {
-        best_effort("CF_DIB", set_bytes(u32::from(CF_DIB.0), dib));
+    for (format, bytes) in &saved.formats {
+        best_effort(&format.to_string(), set_bytes(*format, bytes));
     }
     Ok(())
 }
@@ -190,15 +213,3 @@ fn read_bytes(format: u32) -> Result<Option<Vec<u8>>, String> {
     }
 }
 
-fn read_text() -> Result<Option<Vec<u16>>, String> {
-    let Some(bytes) = read_bytes(u32::from(CF_UNICODETEXT.0))? else {
-        return Ok(None);
-    };
-    let mut units: Vec<u16> = bytes
-        .chunks_exact(2)
-        .map(|c| u16::from_le_bytes([c[0], c[1]]))
-        .collect();
-    let end = units.iter().position(|&u| u == 0).unwrap_or(units.len());
-    units.truncate(end);
-    Ok(Some(units))
-}

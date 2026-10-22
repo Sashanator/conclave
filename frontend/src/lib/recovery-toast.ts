@@ -3,7 +3,7 @@
 export function recoveredDescription(audioStatus: string | undefined): string {
   if (audioStatus === 'success') return 'Transcripts and audio recovered';
   if (audioStatus === 'partial') {
-    return 'Transcripts and most of the audio recovered (some audio could not be restored)';
+    return 'Transcripts and part of the audio recovered (some audio could not be restored)';
   }
   return 'Transcripts recovered (no audio available)';
 }

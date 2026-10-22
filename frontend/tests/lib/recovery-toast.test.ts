@@ -7,9 +7,9 @@ describe('recoveredDescription', () => {
     expect(recoveredDescription('success')).toBe('Transcripts and audio recovered');
   });
 
-  test('a partial audio recovery says most of the audio came back', () => {
+  test('a partial audio recovery says part of the audio came back', () => {
     expect(recoveredDescription('partial')).toBe(
-      'Transcripts and most of the audio recovered (some audio could not be restored)',
+      'Transcripts and part of the audio recovered (some audio could not be restored)',
     );
   });
 

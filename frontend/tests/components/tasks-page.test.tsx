@@ -225,7 +225,7 @@ describe('Tasks page', () => {
   describe('delete with undo', () => {
     // The undo toast of one task, as the component handed it to sonner
     function undoToast(id: string) {
-      const call = toast.mock.calls.filter(([, opts]) => (opts as { id?: string } | undefined)?.id === `task-delete-${id}`).at(-1);
+      const call = toast.mock.calls.filter(([, opts]) => (opts as { id?: string } | undefined)?.id?.startsWith(`task-delete-${id}-`)).at(-1);
       if (!call) throw new Error(`no undo toast for ${id}`);
       return call[1] as { onAutoClose: () => void; onDismiss: () => void; action: { onClick: () => void } };
     }
@@ -350,6 +350,23 @@ describe('Tasks page', () => {
       expect(deletes()).toEqual(['t1']);
       expect(taskButton('Send the deck')).toHaveLength(0);
       expect(renderer!.root.findAll((n) => n.props.role === 'alert' && textOf(n) === 'Could not load tasks.')).toHaveLength(1);
+    });
+
+    test('a late close of an undone toast does not commit a re-delete of the same task', async () => {
+      await mount();
+      await click(deleteButton(0));
+      const first = undoToast('t1');
+      await pressUndo('t1');
+      await click(deleteButton(0));
+      // The first toast finishes its exit animation after the task was deleted again
+      await act(async () => {
+        first.onDismiss();
+      });
+      await flush();
+      expect(deletes()).toEqual([]);
+      expect(taskButton('Send the deck')).toHaveLength(0);
+      await closeToast('t1', 'onAutoClose');
+      expect(deletes()).toEqual(['t1']);
     });
 
     test('a manual task says "deleted", not "dismissed"', async () => {

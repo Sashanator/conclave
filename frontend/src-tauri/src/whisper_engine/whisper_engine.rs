@@ -1346,6 +1346,7 @@ impl WhisperEngine {
 
         let client = Client::builder()
             .user_agent(concat!("Conclave/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| anyhow!("Failed to create download client: {}", e))?;
         let response = tokio::select! {
@@ -1378,7 +1379,9 @@ impl WhisperEngine {
             let chunk_result = tokio::select! {
                 biased;
                 _ = active_download.cancellation.cancelled() => return Err(DownloadCancelled.into()),
-                chunk_result = stream.next() => chunk_result,
+                chunk_result = tokio::time::timeout(Duration::from_secs(30), stream.next()) => {
+                    chunk_result.map_err(|_| anyhow!("Whisper model download stalled for 30 seconds"))?
+                }
             };
 
             let Some(chunk_result) = chunk_result else {
@@ -1951,6 +1954,30 @@ mod tests {
         let _ = release_b.send(());
         let _ = server_a.await;
         let _ = server_b.await;
+    }
+
+    #[tokio::test]
+    async fn stalled_body_fails_within_the_stall_deadline_and_removes_the_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
+        let model_path = dir.path().join("ggml-tiny.bin");
+        engine.discover_models().await.unwrap();
+        let (url, _headers, release, server) = stalled_http_server().await;
+
+        let error = timeout(
+            Duration::from_secs(40),
+            engine.download_model_from_url("tiny", &url, None),
+        )
+        .await
+        .expect("a stalled body should fail within the 30 s stall deadline")
+        .unwrap_err();
+
+        assert!(error.to_string().contains("stalled"));
+        assert!(!engine.active_downloads.lock().await.contains_key("tiny"));
+        assert!(!dir.path().join("ggml-tiny.bin.part").exists());
+        assert!(!model_path.exists());
+        let _ = release.send(());
+        let _ = server.await;
     }
 
     #[tokio::test]

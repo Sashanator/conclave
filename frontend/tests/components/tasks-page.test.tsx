@@ -334,6 +334,24 @@ describe('Tasks page', () => {
       expect(deletes()).toEqual([]);
     });
 
+    test('a reload that fails after a successful delete keeps the task hidden', async () => {
+      await mount();
+      await click(deleteButton(0));
+      const original = invoke.getMockImplementation()!;
+      invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'tasks_list') throw new Error('offline');
+        return original(command, args);
+      });
+      try {
+        await closeToast('t1', 'onAutoClose');
+      } finally {
+        invoke.mockImplementation(original);
+      }
+      expect(deletes()).toEqual(['t1']);
+      expect(taskButton('Send the deck')).toHaveLength(0);
+      expect(renderer!.root.findAll((n) => n.props.role === 'alert' && textOf(n) === 'Could not load tasks.')).toHaveLength(1);
+    });
+
     test('a manual task says "deleted", not "dismissed"', async () => {
       rows[0] = { ...rows[0], source: 'manual' };
       await mount();

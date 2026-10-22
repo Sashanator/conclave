@@ -103,8 +103,11 @@ export function TaskList() {
     } catch {
       setError('Could not load tasks.');
     }
-    unhide(id);
-    if (!deleted) toast.error('Could not delete that task. It is back in the list.');
+    // A deleted task stays hidden even if the reload failed: the backend no longer has it
+    if (!deleted) {
+      unhide(id);
+      toast.error('Could not delete that task. It is back in the list.');
+    }
   };
 
   const scheduleDelete = (task: TaskRow) => {

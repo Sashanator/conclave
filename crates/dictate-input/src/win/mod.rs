@@ -24,8 +24,9 @@ pub fn is_altgr_fake_ctrl(vk: u16, scan_code: u32) -> bool {
 /// Clipboard formats whose handle is not global memory (bitmaps, metafiles, palettes, owner-draw
 /// and GDI objects). They cannot be copied byte for byte, so the clipboard save leaves them out.
 pub fn is_skipped_format(format: u32) -> bool {
-    // CF_BITMAP, CF_METAFILEPICT, CF_PALETTE, CF_ENHMETAFILE, CF_OWNERDISPLAY, CF_DSPTEXT..CF_DSPENHMETAFILE, CF_GDIOBJFIRST..LAST
-    matches!(format, 2 | 3 | 9 | 14 | 0x80..=0x83 | 0x8E | 0x300..=0x3FF)
+    // CF_BITMAP, CF_METAFILEPICT, CF_PALETTE, CF_ENHMETAFILE, CF_OWNERDISPLAY, CF_DSPTEXT..CF_DSPENHMETAFILE,
+    // CF_PRIVATEFIRST..LAST, CF_GDIOBJFIRST..LAST
+    matches!(format, 2 | 3 | 9 | 14 | 0x80..=0x83 | 0x8E | 0x200..=0x2FF | 0x300..=0x3FF)
 }
 
 /// Largest total of saved clipboard bytes; a bigger clipboard keeps only text and images.
@@ -56,11 +57,11 @@ mod tests {
 
     #[test]
     fn skips_formats_that_are_not_global_memory() {
-        for format in [2, 3, 9, 14, 0x80, 0x81, 0x82, 0x83, 0x8E, 0x300, 0x3FF] {
+        for format in [2, 3, 9, 14, 0x80, 0x81, 0x82, 0x83, 0x8E, 0x200, 0x2FF, 0x300, 0x3FF] {
             assert!(is_skipped_format(format), "format {format:#x}");
         }
         // Text, DIB, DIBV5 and registered formats such as PNG are copied.
-        for format in [1, 8, 13, 17, 0x200, 0x2FF, 0xC000] {
+        for format in [1, 8, 13, 17, 0xC000] {
             assert!(!is_skipped_format(format), "format {format:#x}");
         }
     }

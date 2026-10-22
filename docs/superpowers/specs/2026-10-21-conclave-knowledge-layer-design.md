@@ -1,8 +1,8 @@
 # Conclave: Knowledge layer, cost meter, talk-time stats — Design
 
 Date: 2026-10-21
-Status: Approved 2026-10-22
-Target release: v0.10.0 (one branch, five phases, a whole-phase review after each)
+Status: Implemented in v1.0.0 (2026-10-22)
+Target release: Implemented in v1.0.0 (one branch, five phases, a whole-phase review after each)
 
 ## 1. Purpose
 

@@ -166,7 +166,7 @@ fn is_output_limit_stop(stop_reason: Option<&str>) -> bool {
     matches!(stop_reason, Some("max_tokens" | "length"))
 }
 
-pub(crate) const OUTPUT_LIMIT_MESSAGE: &str = "Summary was cut off at the model's output limit";
+pub(crate) const OUTPUT_LIMIT_MESSAGE: &str = "The reply was cut off at the model's output limit";
 
 /// Call only after the reply's usage is recorded: a cut-off reply is still billed.
 pub(crate) fn reject_truncated(completion: &LlmCompletion) -> Result<(), String> {
@@ -1117,7 +1117,7 @@ mod tests {
         assert!(completion.truncated);
         assert_eq!(
             reject_truncated(&completion),
-            Err("Summary was cut off at the model's output limit".to_string())
+            Err("The reply was cut off at the model's output limit".to_string())
         );
 
         let chat: ChatResponse = serde_json::from_value(json!({

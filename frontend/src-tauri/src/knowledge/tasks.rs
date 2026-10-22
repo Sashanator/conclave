@@ -56,21 +56,27 @@ pub(crate) async fn apply_extraction(
         .bind(meeting_id)
         .execute(&mut *tx)
         .await?;
-    let kept: Vec<(String,)> = sqlx::query_as("SELECT text FROM tasks WHERE meeting_id = ?")
-        .bind(meeting_id)
-        .fetch_all(&mut *tx)
-        .await?;
+    let kept: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT text, origin_norm FROM tasks WHERE meeting_id = ?")
+            .bind(meeting_id)
+            .fetch_all(&mut *tx)
+            .await?;
+    // Keys of the kept rows: their text, and the text they were first extracted with (so an edit does not duplicate).
     // Also catches a task the model repeats within one reply.
-    let mut seen: HashSet<String> = kept.iter().map(|(text,)| normalise(text)).collect();
+    let mut seen: HashSet<String> = kept
+        .iter()
+        .flat_map(|(text, origin)| std::iter::once(normalise(text)).chain(origin.clone()))
+        .collect();
     let now = stamp();
     for task in &ex.tasks {
-        if !seen.insert(normalise(&task.text)) {
+        let key = normalise(&task.text);
+        if !seen.insert(key.clone()) {
             continue;
         }
         // Guarded: a meeting deleted mid-run gets no task.
         sqlx::query(
-            "INSERT INTO tasks (id, meeting_id, text, owner, due, at, status, source, edited, created_at) \
-             SELECT ?, ?, ?, ?, ?, ?, 'open', 'auto', 0, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?)",
+            "INSERT INTO tasks (id, meeting_id, text, owner, due, at, status, source, edited, created_at, origin_norm) \
+             SELECT ?, ?, ?, ?, ?, ?, 'open', 'auto', 0, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(meeting_id)
@@ -79,6 +85,7 @@ pub(crate) async fn apply_extraction(
         .bind(&task.due)
         .bind(task.at)
         .bind(&now)
+        .bind(&key)
         .bind(meeting_id)
         .execute(&mut *tx)
         .await?;
@@ -643,5 +650,50 @@ mod tests {
                 ),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn reextract_after_edit_does_not_duplicate() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        apply_extraction(&pool, "M", &extraction(vec![task("A")]), &stamp())
+            .await
+            .unwrap();
+        edit(&pool, &id_of(&pool, "A").await, "A changed")
+            .await
+            .unwrap();
+
+        apply_extraction(&pool, "M", &extraction(vec![task("A")]), &stamp())
+            .await
+            .unwrap();
+
+        let rows: Vec<(String,)> = sqlx::query_as("SELECT text FROM tasks WHERE meeting_id = 'M'")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, vec![("A changed".to_string(),)]);
+    }
+
+    #[tokio::test]
+    async fn reopened_task_survives_reextraction() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        apply_extraction(&pool, "M", &extraction(vec![task("X")]), &stamp())
+            .await
+            .unwrap();
+        let x = id_of(&pool, "X").await;
+        set_status(&pool, &x, "done").await.unwrap();
+        set_status(&pool, &x, "open").await.unwrap();
+
+        apply_extraction(&pool, "M", &extraction(vec![]), &stamp())
+            .await
+            .unwrap();
+
+        let rows: Vec<(String, String)> =
+            sqlx::query_as("SELECT id, status FROM tasks WHERE meeting_id = 'M'")
+                .fetch_all(&pool)
+                .await
+                .unwrap();
+        assert_eq!(rows, vec![(x, "open".to_string())]);
     }
 }

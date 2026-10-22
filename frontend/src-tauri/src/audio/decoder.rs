@@ -397,7 +397,7 @@ pub fn decode_audio_file_with_progress(
     path: &Path,
     progress_callback: Option<ProgressCallback>,
 ) -> Result<DecodedAudio> {
-    info!("Decoding audio file: {}", path.display());
+    info!("Decoding audio file");
 
     // FFmpeg pre-conversion for unsupported formats (MKV, WebM, WMA).
     // If the file is in a format Symphonia can't decode, use ffmpeg to convert
@@ -814,7 +814,7 @@ pub fn decode_to_mono_16k_file(
     output: &Path,
     progress: &mut dyn FnMut(f32),
 ) -> Result<f64> {
-    info!("Streaming decode to 16 kHz: {}", input.display());
+    info!("Streaming decode to 16 kHz");
 
     // Formats Symphonia can't read go through ffmpeg first, as in decode_audio_file.
     let (_temp_wav_guard, decode_path) = if needs_ffmpeg_conversion(input) {
@@ -933,7 +933,7 @@ pub fn decode_to_mono_16k_file(
     let stream = stream.ok_or_else(|| anyhow!("No audio samples decoded from file"))?;
     let seconds = stream.finish(written)?;
     progress(1.0);
-    info!("Streamed {:.2}s of 16 kHz audio to {}", seconds, output.display());
+    info!("Streamed {:.2}s of 16 kHz audio", seconds);
     Ok(seconds)
 }
 

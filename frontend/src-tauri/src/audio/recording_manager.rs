@@ -374,8 +374,8 @@ impl RecordingManager {
 
         // Save the recording with actual duration
         match self.recording_saver.stop_and_save(app, recording_duration).await {
-            Ok(Some(file_path)) => {
-                info!("Recording saved successfully to: {}", file_path);
+            Ok(Some(_)) => {
+                info!("Recording saved successfully");
             }
             Ok(None) => {
                 debug!("Recording not saved (auto-save disabled or no audio data)");
@@ -413,8 +413,8 @@ impl RecordingManager {
 
         // Save the recording with actual duration
         match self.recording_saver.stop_and_save(app, recording_duration).await {
-            Ok(Some(file_path)) => {
-                info!("Recording saved successfully to: {}", file_path);
+            Ok(Some(_)) => {
+                info!("Recording saved successfully");
             }
             Ok(None) => {
                 info!("Recording not saved (auto-save disabled or no audio data)");

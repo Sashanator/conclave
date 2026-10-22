@@ -50,13 +50,13 @@ pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Opti
         fs::symlink_metadata(parent.join(name)).is_ok_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink())
     });
     let (Ok(folder), Ok(base)) = (dunce::canonicalize(folder_path), dunce::canonicalize(recordings_base)) else {
-        warn!("Meeting folder guard: cannot resolve {folder_path}");
+        warn!("Meeting folder guard: cannot resolve the folder");
         return None;
     };
     if plain_dir && folder.parent() == Some(base.as_path()) {
         Some(folder)
     } else {
-        warn!("Meeting folder guard: refusing {} (not a folder directly inside {})", folder.display(), base.display());
+        warn!("Meeting folder guard: refusing a folder that is not directly inside the recordings folder");
         None
     }
 }
@@ -253,8 +253,8 @@ pub fn discard_import_folder(folder: &Path, recordings_base: &Path) {
         .try_for_each(|p| remove_checked(p, &folder, &remove_permanently));
     match removed.and_then(|()| remove_if_empty(&folder, &remove_permanently)) {
         Ok(true) => {}
-        Ok(false) => warn!("Import cleanup left {}: it still holds other files", folder.display()),
-        Err(e) => warn!("Import cleanup left {}: {e}", folder.display()),
+        Ok(false) => warn!("Import cleanup left the folder: it still holds other files"),
+        Err(e) => warn!("Import cleanup left the folder: {e}"),
     }
 }
 
@@ -291,8 +291,9 @@ pub async fn delete_meeting_and_folder(
             Err(e) => Some(format!("Recording folder kept: could not check whether another meeting uses it ({p}): {e}")),
         },
     };
-    if let Some(w) = &warning {
-        warn!("Meeting {meeting_id} deleted, folder kept: {w}");
+    // The reason names the folder, so the log records only the fact; the caller gets the reason.
+    if warning.is_some() {
+        warn!("Meeting {meeting_id} deleted, recording folder kept");
     }
     Ok(Some(warning))
 }

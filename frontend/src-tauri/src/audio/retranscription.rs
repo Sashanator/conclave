@@ -822,7 +822,7 @@ fn write_retranscription_metadata(
     std::fs::write(&temp_path, &json_string)?;
     std::fs::rename(&temp_path, &metadata_path)?;
 
-    info!("Wrote metadata.json to {}", metadata_path.display());
+    info!("Wrote metadata.json");
     Ok(())
 }
 

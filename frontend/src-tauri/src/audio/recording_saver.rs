@@ -316,13 +316,13 @@ impl RecordingSaver {
         // Write to temp file with error handling
         std::fs::write(&temp_path, &json_string)
             .map_err(|e| {
-                error!("Failed to write transcript temp file to {}: {}", temp_path.display(), e);
+                error!("Failed to write transcript temp file: {}", e);
                 anyhow::anyhow!("Failed to write temp file: {}", e)
             })?;
 
         // Verify temp file was written correctly
         if !temp_path.exists() {
-            error!("Temp transcript file does not exist after write: {}", temp_path.display());
+            error!("Temp transcript file does not exist after write");
             return Err(anyhow::anyhow!("Temp file verification failed"));
         }
 
@@ -385,7 +385,7 @@ impl RecordingSaver {
             let mut saver = saver_arc.lock().await;
             match saver.finalize().await {
                 Ok(path) => {
-                    info!("✅ Successfully finalized audio: {}", path.display());
+                    info!("✅ Successfully finalized audio");
                     path
                 }
                 Err(e) => {
@@ -415,10 +415,10 @@ impl RecordingSaver {
             // Verify transcripts were written correctly
             let transcript_path = folder.join("transcripts.json");
             if !transcript_path.exists() {
-                error!("❌ Transcript file was not created at: {}", transcript_path.display());
+                error!("❌ Transcript file was not created");
                 return Err("Transcript file verification failed".to_string());
             }
-            info!("✅ Transcripts saved and verified at: {}", transcript_path.display());
+            info!("✅ Transcripts saved and verified");
         }
 
         // Update metadata to completed status with actual recording duration

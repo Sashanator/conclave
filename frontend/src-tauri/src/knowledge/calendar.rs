@@ -168,17 +168,21 @@ fn expand_here(
             }
             match overrides.remove(&(master.uid.clone(), utc)) {
                 Some(moved) => {
-                    let shown = occurrence(&moved);
-                    if !moved.cancelled && inside(shown.start) {
+                    if let Some(shown) = occurrence(&moved).filter(|s| !moved.cancelled && inside(s.start)) {
                         out.push(shown);
                     }
                 }
-                None => out.push(Occurrence {
-                    uid: master.uid.clone(),
-                    title: master.title.clone(),
-                    start: utc,
-                    end: (start + duration(master)).with_timezone(&Utc),
-                }),
+                None => {
+                    // An end past the calendar's date range is skipped, not a panic that fails the feed.
+                    if let Some(end) = start.checked_add_signed(duration(master)) {
+                        out.push(Occurrence {
+                            uid: master.uid.clone(),
+                            title: master.title.clone(),
+                            start: utc,
+                            end: end.with_timezone(&Utc),
+                        });
+                    }
+                }
             }
         }
     }
@@ -187,9 +191,10 @@ fn expand_here(
         if out.len() >= MAX_FEED_OCCURRENCES {
             break;
         }
-        let shown = occurrence(&moved);
-        if !moved.cancelled && !cancelled_series.contains(&uid) && inside(shown.start) {
-            out.push(shown);
+        if let Some(shown) = occurrence(&moved) {
+            if !moved.cancelled && !cancelled_series.contains(&uid) && inside(shown.start) {
+                out.push(shown);
+            }
         }
     }
     if timed_out {
@@ -283,13 +288,13 @@ fn whole_property(line: &str) -> bool {
     rest.starts_with(':')
 }
 
-fn occurrence(e: &Event) -> Occurrence {
-    Occurrence {
+fn occurrence(e: &Event) -> Option<Occurrence> {
+    Some(Occurrence {
         uid: e.uid.clone(),
         title: e.title.clone(),
         start: e.start.with_timezone(&Utc),
-        end: (e.start + duration(e)).with_timezone(&Utc),
-    }
+        end: e.start.checked_add_signed(duration(e))?.with_timezone(&Utc),
+    })
 }
 
 fn duration(e: &Event) -> Duration {
@@ -305,6 +310,8 @@ fn parse_duration(text: &str) -> Option<Duration> {
         None => (1, text.strip_prefix('+').unwrap_or(text)),
     };
     let body = rest.strip_prefix('P')?;
+    // A longer span is not a meeting, and a hostile one would run past the calendar's dates.
+    const MAX_DAYS: i64 = 366;
     let seconds = match body.split_once('T') {
         Some((_, "")) => return None,
         Some((date, time)) => unit_seconds(date, &[('D', DAY)])?
@@ -313,7 +320,7 @@ fn parse_duration(text: &str) -> Option<Duration> {
         None if body.ends_with('W') => unit_seconds(body, &[('W', 7 * DAY)])?,
         None => unit_seconds(body, &[('D', DAY)])?,
     };
-    Duration::try_seconds(sign * seconds)
+    (seconds <= MAX_DAYS * DAY).then(|| Duration::seconds(sign * seconds))
 }
 
 /// Sums `number+unit` pairs. The units must come in the listed order and each at most once.
@@ -1517,6 +1524,30 @@ mod tests {
     }
 
     #[test]
+    fn hostile_duration_does_not_fail_the_feed() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:hostile",
+            "DTSTART:20200106T090000Z",
+            "RRULE:FREQ=WEEKLY;COUNT=3",
+            "DURATION:P10000000W",
+            "SUMMARY:Hostile",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "UID:fine-1",
+            "DTSTART:20200106T120000Z",
+            "DTEND:20200106T130000Z",
+            "SUMMARY:Fine",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2020, 1, 1, 0, 0), utc(2020, 2, 1, 0, 0)).unwrap();
+        assert!(got.iter().any(|o| o.uid == "fine-1"));
+        assert!(got.iter().filter(|o| o.uid == "hostile").all(|o| o.end == o.start));
+    }
+
+    #[test]
     fn duration_values() {
         assert_eq!(parse_duration("PT1H"), Some(Duration::hours(1)));
         assert_eq!(parse_duration("P1D"), Some(Duration::days(1)));
@@ -1526,6 +1557,9 @@ mod tests {
         assert_eq!(parse_duration("PT90S"), Some(Duration::seconds(90)));
         assert_eq!(parse_duration("-PT15M"), Some(Duration::minutes(-15)));
         assert_eq!(parse_duration("P0D"), Some(Duration::zero()));
+        assert_eq!(parse_duration("P366D"), Some(Duration::days(366)));
+        assert_eq!(parse_duration("P367D"), None);
+        assert_eq!(parse_duration("P10000000W"), None);
         for bad in ["", "P", "PT", "1H", "PT1X", "P1H", "PT1H2H", "PT1H1H", "P1W1D", "PT1D", "P1D1H", "P1DT", "PT99999999999999999999H"] {
             assert_eq!(parse_duration(bad), None, "{bad}");
         }

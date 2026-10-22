@@ -29,14 +29,26 @@ const BRIEF = {
   openTasks: [{ id: 't1', meetingId: 'm-old', meetingTitle: 'x', meetingDate: null, text: 'Book <i>room</i>', owner: 'me', due: null, at: null, status: 'open', source: 'auto', createdAt: 't' }],
 };
 
+const DIGEST = {
+  periodStart: '2026-10-16T09:00:00Z',
+  periodEnd: '2026-10-23T09:00:00Z',
+  markdown: '## Decisions\n- Ship the plan [M1]\n- Chase it [M9]\n<script>alert(1)</script>\n![pixel](https://example.com/p.png)\n[click](https://evil.example)',
+  meetingLinks: [{ id: 'm-old', title: 'Ivan sync' }],
+};
+
 let searchQuery = '';
 const briefGets: unknown[] = [];
+const digestGets: unknown[] = [];
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'briefs_list') return structuredClone(LIST);
   if (command === 'brief_get') {
     briefGets.push(args);
     return structuredClone(BRIEF);
+  }
+  if (command === 'digest_get') {
+    digestGets.push(args);
+    return structuredClone(DIGEST);
   }
   if (command === 'tasks_set_status') return null;
   throw new Error(`Unexpected command: ${command}`);
@@ -89,6 +101,7 @@ async function click(node: ReactTestInstance) {
 beforeEach(() => {
   invoke.mockClear();
   briefGets.length = 0;
+  digestGets.length = 0;
 });
 
 describe('Briefs & digests page', () => {
@@ -119,5 +132,35 @@ describe('Briefs & digests page', () => {
     expect(all).toContain('<img src=x> Ivan sync');
     expect(all).toContain('<b>Send the deck</b>');
     expect(all).toContain('Book <i>room</i>');
+  });
+
+  test('unknown tag left as text', async () => {
+    await mount('id=d1&kind=digest');
+    expect(digestGets).toEqual([{ id: 'd1' }]);
+    // [M1] links to its meeting; [M9] has no meeting, so it stays plain text.
+    const links = renderer!.root.findAll((n) => n.type === 'a');
+    expect(links.map((l) => l.props.href)).toEqual(['/meeting-details?id=m-old']);
+    expect(JSON.stringify(renderer!.toJSON())).toContain('[M9]');
+  });
+
+  test('switching tabs clears the selection', async () => {
+    await mount('id=d1&kind=digest');
+    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(1);
+
+    await click(buttonNamed('Briefs'));
+    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(0);
+
+    await click(buttonNamed('Digests'));
+    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(0);
+  });
+
+  test('digest markdown is sanitised', async () => {
+    await mount('id=d1&kind=digest');
+    expect(renderer!.root.findAll((n) => n.type === 'script' || n.type === 'img')).toHaveLength(0);
+    const all = JSON.stringify(renderer!.toJSON());
+    expect(all).not.toContain('<script>');
+    expect(all).not.toContain('https://example.com/p.png');
+    expect(all).not.toContain('https://evil.example');
+    expect(all).toContain('Ship the plan');
   });
 });

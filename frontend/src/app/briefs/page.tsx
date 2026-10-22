@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { BriefView } from '@/components/Briefs/BriefView';
+import { DigestView } from '@/components/Briefs/DigestView';
 
 type Kind = 'brief' | 'digest';
 type Item = { id: string; kind: Kind; title: string; createdAt: string };
@@ -47,6 +48,12 @@ function BriefsContent() {
     };
   }, []);
 
+  // The selected item belongs to the tab it was opened on, so switching tabs clears it.
+  const switchKind = (next: Kind) => {
+    setKind(next);
+    setSelected(null);
+  };
+
   const shown = items.filter((item) => item.kind === kind);
 
   return (
@@ -55,10 +62,10 @@ function BriefsContent() {
         <h1 className="text-3xl font-bold">Briefs & digests</h1>
 
         <div className="flex items-center gap-2">
-          <Button variant={kind === 'brief' ? 'secondary' : 'ghost'} aria-pressed={kind === 'brief'} onClick={() => setKind('brief')}>
+          <Button variant={kind === 'brief' ? 'secondary' : 'ghost'} aria-pressed={kind === 'brief'} onClick={() => switchKind('brief')}>
             Briefs
           </Button>
-          <Button variant={kind === 'digest' ? 'secondary' : 'ghost'} aria-pressed={kind === 'digest'} onClick={() => setKind('digest')}>
+          <Button variant={kind === 'digest' ? 'secondary' : 'ghost'} aria-pressed={kind === 'digest'} onClick={() => switchKind('digest')}>
             Digests
           </Button>
         </div>
@@ -86,6 +93,7 @@ function BriefsContent() {
         )}
 
         {selected && kind === 'brief' && <BriefView key={selected} id={selected} />}
+        {selected && kind === 'digest' && <DigestView key={selected} id={selected} />}
       </div>
     </div>
   );

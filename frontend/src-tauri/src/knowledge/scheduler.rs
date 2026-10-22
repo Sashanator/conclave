@@ -1,7 +1,8 @@
-//! The knowledge scheduler: one loop, every minute. It refreshes the calendar, makes the briefs that are due and prunes the feed once a day.
+//! The knowledge scheduler: one loop, every minute. It refreshes the calendar, makes the briefs and the weekly digest that are due and prunes the feed once a day.
 
 use crate::knowledge::briefs::{self, due, event_type, make_brief};
 use crate::knowledge::calendar::{self, Occurrence};
+use crate::knowledge::digest;
 use crate::knowledge::extract;
 use crate::knowledge::feed;
 use crate::knowledge::settings;
@@ -21,6 +22,7 @@ const TICK: StdDuration = StdDuration::from_secs(60);
 pub(crate) struct Clock {
     refreshed_at: Option<DateTime<Utc>>,
     pruned_at: Option<DateTime<Utc>>,
+    digest: digest::Tries,
 }
 
 /// Starts the loop once the database is ready, as the extraction worker does.
@@ -80,7 +82,7 @@ pub(crate) async fn tick<R: Runtime>(
             Err(e) => warn!("knowledge: feed prune failed: {e}"),
         }
     }
-    // The digest check goes here (Task 15).
+    digest::digest_step(app, pool, now, settings::current().digest_enabled, &mut clock.digest).await;
     make_due_briefs(app, pool, now, &calendar::upcoming(), templates).await
 }
 

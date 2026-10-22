@@ -4,6 +4,7 @@
 
 pub mod ask;
 pub mod briefs;
+pub mod digest;
 pub mod calendar;
 pub mod extract;
 pub mod feed;
@@ -47,3 +48,11 @@ pub const ASK_MAX_QUESTION_CHARS: usize = 2000;
 
 /// The head of each summary sent to a weekly digest.
 pub const DIGEST_SUMMARY_HEAD_CHARS: usize = 800;
+
+/// Digest prompt limits: the newest meetings and tasks per list, decisions and requests per meeting, and characters per
+/// item and per title. They keep the prompt, and so the cost, bounded however large the period is.
+pub const DIGEST_MAX_MEETINGS: usize = 30;
+pub const DIGEST_MAX_TASKS: usize = 30;
+pub const DIGEST_MAX_ITEMS: usize = 10;
+pub const DIGEST_MAX_ITEM_CHARS: usize = 200;
+pub const DIGEST_MAX_TITLE_CHARS: usize = 120;

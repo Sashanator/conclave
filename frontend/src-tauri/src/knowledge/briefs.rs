@@ -1,6 +1,7 @@
 //! Pre-meeting briefs: what the last meeting of the same type and title left open, shown before the next one.
 
 use crate::knowledge::calendar::Occurrence;
+use crate::knowledge::digest;
 use crate::knowledge::extract;
 use crate::knowledge::feed;
 use crate::knowledge::settings;
@@ -110,7 +111,7 @@ async fn open_task_ids(pool: &SqlitePool, meeting_ids: &[String]) -> Result<Vec<
 }
 
 /// The decisions and requests the extraction stored for a meeting, if it is done.
-async fn read_lists(pool: &SqlitePool, meeting_id: &str) -> Result<Option<(Vec<String>, Vec<String>)>, String> {
+pub(crate) async fn read_lists(pool: &SqlitePool, meeting_id: &str) -> Result<Option<(Vec<String>, Vec<String>)>, String> {
     let row: Option<(String, String, String)> = sqlx::query_as(
         "SELECT status, decisions_json, requests_json FROM meeting_extracts WHERE meeting_id = ?",
     )
@@ -142,8 +143,8 @@ async fn previous_lists(pool: &SqlitePool, meeting_id: &str) -> Result<(Vec<Stri
     Ok(read_lists(pool, meeting_id).await?.unwrap_or_default())
 }
 
-/// True when the error is the brief's UNIQUE key: the brief already exists.
-fn is_duplicate(e: &sqlx::Error) -> bool {
+/// True when the error is a UNIQUE key violation: the brief or digest already exists.
+pub(crate) fn is_duplicate(e: &sqlx::Error) -> bool {
     e.as_database_error().is_some_and(|d| d.is_unique_violation())
 }
 
@@ -249,10 +250,13 @@ pub async fn briefs_list(state: State<'_, AppState>) -> Result<Vec<BriefSummary>
             .fetch_all(state.db_manager.pool())
             .await
             .map_err(|e| e.to_string())?;
-    Ok(rows
+    let mut list: Vec<BriefSummary> = rows
         .into_iter()
         .map(|(id, title, created_at)| BriefSummary { id, kind: "brief".to_string(), title, created_at })
-        .collect())
+        .collect();
+    list.extend(digest::summaries(state.db_manager.pool()).await?);
+    list.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    Ok(list)
 }
 
 #[tauri::command]

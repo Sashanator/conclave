@@ -15,6 +15,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { confirmLeave } from '@/lib/unsaved-guard';
+import { SearchHits } from './SearchHits';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
 import { useConfig } from '@/contexts/ConfigContext';
 
@@ -259,7 +260,7 @@ const Sidebar: React.FC = () => {
     // If we have search results, highlight matching meetings
     if (searchResults.length > 0) {
       // Get the IDs of meetings that matched in transcripts
-      const matchedMeetingIds = new Set(searchResults.map(result => result.id));
+      const matchedMeetingIds = new Set(searchResults.map(result => result.meetingId));
 
       return sidebarItems
         .map(folder => {
@@ -573,10 +574,10 @@ const Sidebar: React.FC = () => {
     );
   };
 
-  // Find matching transcript snippet for a meeting item
-  const findMatchingSnippet = (itemId: string) => {
-    if (!searchQuery.trim() || !searchResults.length) return null;
-    return searchResults.find(result => result.id === itemId);
+  // All search hits for a meeting item, in the order the search returned them
+  const hitsFor = (itemId: string) => {
+    if (!searchQuery.trim() || !searchResults.length) return [];
+    return searchResults.filter(result => result.meetingId === itemId);
   };
 
   const renderItem = (item: SidebarItem, depth = 0) => {
@@ -585,9 +586,9 @@ const Sidebar: React.FC = () => {
     const isActive = item.type === 'file' && currentMeeting?.id === item.id;
     const isMeetingItem = item.id.includes('-') && !item.id.startsWith('intro-call');
 
-    // Check if this item has a matching transcript snippet
-    const matchingResult = isMeetingItem ? findMatchingSnippet(item.id) : null;
-    const hasTranscriptMatch = !!matchingResult;
+    // Check if this item has search hits
+    const hits = isMeetingItem ? hitsFor(item.id) : [];
+    const hasTranscriptMatch = hits.length > 0;
 
     if (isCollapsed) return null;
 
@@ -670,11 +671,16 @@ const Sidebar: React.FC = () => {
                 )}
               </div>
 
-              {/* Show transcript match snippet if available */}
+              {/* Search hits under the meeting: source label and snippet, each opens its place */}
               {hasTranscriptMatch && (
-                <div className="mt-1 ml-8 text-xs text-muted-foreground bg-yellow-50 dark:bg-yellow-950/40 p-1.5 rounded border border-yellow-100 dark:border-yellow-800 line-clamp-2">
-                  <span className="font-medium text-yellow-600">Match:</span> {matchingResult.matchContext}
-                </div>
+                <SearchHits
+                  hits={hits}
+                  onOpen={(href) => {
+                    if (!confirmLeave()) return;
+                    setCurrentMeeting({ id: item.id, title: item.title });
+                    router.push(href);
+                  }}
+                />
               )}
             </div>
           )}

@@ -5,6 +5,7 @@ import { usePathname, useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { SummaryProcessResponse } from '@/types';
+import type { SearchHit } from '@/lib/meeting-target';
 
 
 
@@ -18,14 +19,6 @@ interface SidebarItem {
 export interface CurrentMeeting {
   id: string;
   title: string;
-}
-
-// Search result type for transcript search
-interface TranscriptSearchResult {
-  id: string;
-  title: string;
-  matchContext: string;
-  timestamp: string;
 }
 
 interface SummaryPoll {
@@ -46,7 +39,7 @@ interface SidebarContextType {
   setIsMeetingActive: (active: boolean) => void;
   handleRecordingToggle: () => void;
   searchTranscripts: (query: string) => Promise<void>;
-  searchResults: TranscriptSearchResult[];
+  searchResults: SearchHit[];
   isSearching: boolean;
   setServerAddress: (address: string) => void;
   serverAddress: string;
@@ -78,7 +71,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [meetings, setMeetings] = useState<CurrentMeeting[]>([]);
   const [sidebarItems, setSidebarItems] = useState<SidebarItem[]>([]);
   const [isMeetingActive, setIsMeetingActive] = useState(false);
-  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
   const [isSearching, setIsSearching] = useState(false);
   const [serverAddress, setServerAddress] = useState('');
   const summaryPollsRef = React.useRef(new Map<string, SummaryPoll>());
@@ -175,7 +168,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       setIsSearching(true);
 
 
-      const results = await invoke('api_search_transcripts', { query }) as TranscriptSearchResult[];
+      const results = await invoke('api_search_transcripts', { query }) as SearchHit[];
       setSearchResults(results);
     } catch (error) {
       console.error('Error searching transcripts:', error);

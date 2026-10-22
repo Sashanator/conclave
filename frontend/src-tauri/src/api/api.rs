@@ -10,7 +10,7 @@ use crate::{
         models::MeetingModel,
         repositories::{
             meeting::MeetingsRepository, meeting_notes::parse_notes, setting::SettingsRepository,
-            transcript::TranscriptsRepository,
+            transcript::{search_all, SearchHit, TranscriptsRepository},
         },
     },
     state::AppState,
@@ -36,15 +36,6 @@ pub struct Meeting {
 #[derive(Debug, Serialize, Deserialize)]
 pub struct SearchRequest {
     pub query: String,
-}
-
-#[derive(Debug, Serialize, Deserialize)]
-pub struct TranscriptSearchResult {
-    pub id: String,
-    pub title: String,
-    #[serde(rename = "matchContext")]
-    pub match_context: String,
-    pub timestamp: String,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -393,16 +384,18 @@ pub async fn api_search_transcripts<R: Runtime>(
     state: tauri::State<'_, AppState>,
     query: String,
     auth_token: Option<String>,
-) -> Result<Vec<TranscriptSearchResult>, String> {
+) -> Result<Vec<SearchHit>, String> {
+    // The query is user content: log its length only
+    let query_len = query.chars().count();
     log_info!(
-        "api_search_transcripts called with query: '{}', auth_token: {}",
-        query,
+        "api_search_transcripts called with query of {} chars, auth_token: {}",
+        query_len,
         auth_token.is_some()
     );
 
     let pool = state.db_manager.pool();
 
-    match TranscriptsRepository::search_transcripts(pool, &query).await {
+    match search_all(pool, &query).await {
         Ok(results) => {
             log_info!(
                 "Search completed successfully with {} results.",
@@ -411,7 +404,7 @@ pub async fn api_search_transcripts<R: Runtime>(
             Ok(results)
         }
         Err(e) => {
-            log_error!("Error searching transcripts for query '{}': {}", query, e);
+            log_error!("Error searching for a query of {} chars: {}", query_len, e);
             Err(format!("Failed to search transcripts: {}", e))
         }
     }

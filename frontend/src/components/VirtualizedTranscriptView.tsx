@@ -38,6 +38,9 @@ export interface VirtualizedTranscriptViewProps {
     loadedCount?: number;
     onLoadMore?: () => void;
 
+    /** Row to scroll to and flash for 2 s. Loads more pages until the row is present. */
+    focusSegmentId?: string | null;
+
     // Marks and playback (meeting page); all optional, lines render as before without them
     onMarkChange?: (segmentId: string, mark: TranscriptMark | null) => void;
     onPlayFrom?: (seconds: number) => void;
@@ -51,6 +54,8 @@ export interface VirtualizedTranscriptViewProps {
 
 // Threshold for enabling virtualization (below this, use simple rendering)
 const VIRTUALIZATION_THRESHOLD = 10;
+// How long a row requested by focusSegmentId stays highlighted
+const FOCUS_FLASH_MS = 2000;
 
 // Helper function to format seconds as recording-relative time [MM:SS]
 function formatRecordingTime(seconds: number | undefined): string {
@@ -176,6 +181,7 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     onMarkChange,
     onPlayFrom,
     playheadSeconds,
+    focusSegmentId,
     getSpeakerLabel,
     renderSpeakerLabel,
 }) => {
@@ -279,6 +285,29 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
     // Use simple rendering for small lists, virtualization for large lists
     const useVirtualization = segments.length >= VIRTUALIZATION_THRESHOLD;
 
+    // Focus a requested row: load pages until it is present, scroll to it, and flash it
+    const focusIndex = focusSegmentId ? segments.findIndex((s) => s.id === focusSegmentId) : -1;
+    const [flashId, setFlashId] = useState<string | null>(null);
+    useEffect(() => {
+        if (!focusSegmentId) return;
+        setFlashId(focusSegmentId);
+        const timer = setTimeout(() => setFlashId(null), FOCUS_FLASH_MS);
+        return () => clearTimeout(timer);
+    }, [focusSegmentId]);
+    useEffect(() => {
+        if (focusSegmentId && focusIndex < 0 && hasMore && !isLoadingMore && !isRecording && onLoadMore) {
+            onLoadMore();
+        }
+    }, [focusSegmentId, focusIndex, hasMore, isLoadingMore, isRecording, onLoadMore]);
+    useEffect(() => {
+        if (focusIndex < 0) return;
+        if (useVirtualization) {
+            virtualizer.scrollToIndex(focusIndex, { align: 'center' });
+        } else {
+            scrollRef.current?.querySelector(`[data-index="${focusIndex}"]`)?.scrollIntoView({ block: 'center' });
+        }
+    }, [focusSegmentId, focusIndex, useVirtualization]);
+
     return (
         <div ref={scrollRef} className="flex flex-col h-full overflow-y-auto px-4 py-2">
             {/* Recording Status Bar - Sticky at top, always visible when recording */}
@@ -336,6 +365,8 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                                 <div
                                     key={segment.id}
                                     data-index={virtualRow.index}
+                                    data-focused={flashId === segment.id ? 'true' : undefined}
+                                    className="rounded-md data-[focused=true]:bg-yellow-100 dark:data-[focused=true]:bg-yellow-900/40"
                                     ref={virtualizer.measureElement}
                                     style={{
                                         position: "absolute",
@@ -397,12 +428,15 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
                 // Simple rendering for small lists (better animations)
                 <>
                     <div className="space-y-1">
-                        {segments.map((segment) => {
+                        {segments.map((segment, index) => {
                             const isStreaming = streamingSegmentId === segment.id;
 
                             return (
                                 <motion.div
                                     key={segment.id}
+                                    data-index={index}
+                                    data-focused={flashId === segment.id ? 'true' : undefined}
+                                    className="rounded-md data-[focused=true]:bg-yellow-100 dark:data-[focused=true]:bg-yellow-900/40"
                                     initial={{ opacity: 0, y: 5 }}
                                     animate={{ opacity: 1, y: 0 }}
                                     transition={{ duration: 0.15 }}

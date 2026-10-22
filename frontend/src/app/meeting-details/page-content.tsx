@@ -46,6 +46,8 @@ export default function PageContent({
   onLoadMore,
   onSetTranscriptMark,
   onSetTranscriptSpeaker,
+  focusSegmentId = null,
+  requestedTab = null,
 }: {
   meeting: any;
   summaryData: MeetingSummary | null;
@@ -63,6 +65,9 @@ export default function PageContent({
   onLoadMore?: () => void;
   onSetTranscriptMark?: (id: string, mark: TranscriptMark | null) => Promise<void>;
   onSetTranscriptSpeaker?: (id: string, idx: number | null) => void;
+  // From a search hit: the transcript line to scroll to, and the summary or notes view to open
+  focusSegmentId?: string | null;
+  requestedTab?: 'summary' | 'notes' | null;
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
@@ -203,6 +208,14 @@ export default function PageContent({
     meeting,
   });
 
+  // A link to a line or a view opens it. Latching the tab as chosen keeps the summary auto-switch from overriding it.
+  useEffect(() => {
+    if (!focusSegmentId && !requestedTab) return;
+    manuallySelectedTabMeetingIdsRef.current.add(meeting.id);
+    if (requestedTab === 'notes') setNotesCollapsed(false);
+    setActiveTab(requestedTab ?? 'transcript');
+  }, [meeting.id, focusSegmentId, requestedTab]);
+
   useEffect(() => {
     if (
       (meetingData.aiSummary || summaryGeneration.summaryStatus === 'completed')
@@ -303,6 +316,7 @@ export default function PageContent({
               onMarkChange={onSetTranscriptMark}
               onPlayFrom={audio.info?.path ? audio.playFrom : undefined}
               playheadSeconds={audio.playhead}
+              focusSegmentId={focusSegmentId}
               footer={<AudioPlayerBar audio={audio} />}
               speakers={speakers}
             />

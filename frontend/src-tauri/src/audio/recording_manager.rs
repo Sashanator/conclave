@@ -276,7 +276,13 @@ impl RecordingManager {
             return Err(RecordingStartError::TranscriptionRuntime(error));
         }
 
-        self.recording_saver.start_accumulation(auto_save, recording_receiver);
+        if let Err(error) = self.recording_saver.start_accumulation(auto_save, recording_receiver) {
+            self.state.stop_recording();
+            if let Err(e) = self.pipeline_manager.stop().await {
+                error!("Error stopping audio pipeline: {}", e);
+            }
+            return Err(RecordingStartError::Other(error));
+        }
         self.recording_saver.set_device_info(
             microphone_device.as_ref().map(|d| d.name.clone()),
             system_device.as_ref().map(|d| d.name.clone())

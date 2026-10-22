@@ -264,18 +264,13 @@ impl RecordingState {
     }
 
     pub fn report_error(&self, error: AudioError) {
-        let count = self.error_count.fetch_add(1, Ordering::SeqCst) + 1;
+        self.error_count.fetch_add(1, Ordering::SeqCst);
 
         // Track recoverable vs non-recoverable errors separately
         if error.is_recoverable() {
             let recoverable_count = self.recoverable_error_count.fetch_add(1, Ordering::SeqCst) + 1;
+            // Never stop here: a stop clears the pipeline sender while the UI still shows "Recording".
             log::warn!("Recoverable audio error ({}): {:?}", recoverable_count, error);
-
-            // Allow more recoverable errors before stopping
-            if recoverable_count >= 10 {
-                log::error!("Too many recoverable errors ({}), stopping recording", recoverable_count);
-                self.stop_recording();
-            }
         } else {
             log::error!("Non-recoverable audio error: {:?}", error);
             // Stop immediately for non-recoverable errors
@@ -289,11 +284,6 @@ impl RecordingState {
             callback(&error);
         }
 
-        // Fallback: stop recording after too many total errors
-        if count >= 15 {
-            log::error!("Too many total audio errors ({}), stopping recording", count);
-            self.stop_recording();
-        }
     }
 
     pub fn get_error_count(&self) -> u32 {
@@ -414,5 +404,33 @@ impl Clone for RecordingStats {
             total_duration: self.total_duration,
             last_activity: self.last_activity,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn many_recoverable_errors_do_not_stop_recording() {
+        let state = RecordingState::new();
+        let (tx, mut rx) = mpsc::unbounded_channel();
+        state.start_recording().unwrap();
+        state.set_audio_sender(tx);
+
+        for _ in 0..50 {
+            state.report_error(AudioError::StreamFailed);
+        }
+
+        assert!(state.is_recording());
+        let chunk = AudioChunk {
+            data: vec![0.0; 4],
+            sample_rate: 48000,
+            timestamp: 0.0,
+            chunk_id: 1,
+            device_type: DeviceType::Microphone,
+        };
+        assert!(state.send_audio_chunk(chunk).is_ok());
+        assert!(rx.try_recv().is_ok());
     }
 }

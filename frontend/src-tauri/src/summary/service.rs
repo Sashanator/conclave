@@ -53,6 +53,11 @@ fn ollama_chunk_tokens(context_size: usize) -> usize {
         .saturating_sub(chunk_prompt_overhead_tokens() + OLLAMA_REPLY_TOKENS)
 }
 
+/// Chunk size when the model's context cannot be fetched: Ollama's default runtime context.
+fn ollama_fallback_chunk_tokens() -> usize {
+    ollama_chunk_tokens(4096)
+}
+
 /// Strips the first `#` heading line; returns "" if no `#` is found.
 fn strip_leading_title(markdown: &str) -> String {
     if let Some(hash_pos) = markdown.find('#') {
@@ -290,7 +295,7 @@ impl SummaryService {
                         "Failed to fetch context for {}: {}. Using default 4000",
                         model_name, e
                     );
-                    4000  // Fallback to safe default
+                    ollama_fallback_chunk_tokens()
                 }
             }
         } else if provider == LLMProvider::BuiltInAI {
@@ -558,6 +563,12 @@ mod tests {
     use super::*;
     use crate::database::repositories::{test_pool, transcript::TranscriptsRepository};
     use crate::summary::llm_client::TokenUsage;
+
+    #[test]
+    fn ollama_fallback_chunks_leave_room_for_the_reply() {
+        let chunk = ollama_fallback_chunk_tokens();
+        assert!(chunk + chunk_prompt_overhead_tokens() + OLLAMA_REPLY_TOKENS <= 4096);
+    }
 
     #[test]
     fn ollama_chunks_leave_room_for_the_reply_in_the_default_context() {

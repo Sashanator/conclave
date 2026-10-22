@@ -218,45 +218,69 @@ fn nesting_refused(unfolded: &str) -> bool {
     guard_depth(unfolded).is_none_or(|d| d > MAX_NESTING)
 }
 
-/// The deepest component nesting, or None for input the guard cannot count reliably. The parser ends a
-/// component by prefix, so `END:ABEGIN:A` closes one component and opens another from the rest of the line:
-/// a line may carry one tag only. Parameter values can also run across line breaks in the parser, which
-/// would swallow a line counted here: so every line must hold an unquoted ':' (RFC 5545 content lines
-/// do), and then no construct spans lines. Tags are matched case-insensitively, as the parser does.
+/// The deepest component nesting, or None for input the guard cannot count reliably. Every line must be
+/// one the parser reads whole, so its components start and end where the lines say. The parser ends a
+/// component by prefix, so `END:ABEGIN:A` closes one component and opens another from the rest of the
+/// line: a BEGIN or END line holds a name and nothing else. Tags are matched case-insensitively, as the
+/// parser does.
 fn guard_depth(unfolded: &str) -> Option<usize> {
     let (mut depth, mut deepest) = (0usize, 0usize);
-    for line in unfolded.lines().filter(|l| !l.is_empty()) {
-        let mut quoted = false;
-        if !line.chars().any(|c| match c {
-            '"' => {
-                quoted = !quoted;
-                false
+    for line in unfolded.lines() {
+        if let Some(name) = strip_tag(line, "begin:") {
+            if !name.chars().all(key_char) {
+                return None;
             }
-            ':' => !quoted,
-            _ => false,
-        }) {
-            return None;
-        }
-        let lower = line.to_ascii_lowercase();
-        let (opens, tag_len) = if lower.starts_with("begin:") {
-            (true, 6)
-        } else if lower.starts_with("end:") {
-            (false, 4)
-        } else {
-            continue;
-        };
-        let rest = &lower[tag_len..];
-        if rest.contains("begin:") || rest.contains("end:") {
-            return None;
-        }
-        if opens {
             depth += 1;
             deepest = deepest.max(depth);
-        } else {
+        } else if let Some(name) = strip_tag(line, "end:") {
+            if !name.chars().all(key_char) {
+                return None;
+            }
             depth = depth.saturating_sub(1);
+        } else if line.contains(['"', ';', ':']) && !whole_property(line) {
+            // A line with none of these has no parameter or value to run on; the parser reads it as bare
+            // names or fails on it.
+            return None;
         }
     }
     Some(deepest)
+}
+
+fn strip_tag<'a>(line: &'a str, tag: &str) -> Option<&'a str> {
+    let head = line.get(..tag.len())?;
+    head.eq_ignore_ascii_case(tag).then(|| &line[tag.len()..])
+}
+
+/// A character of a name or parameter key, as the parser reads them.
+fn key_char(c: char) -> bool {
+    c.is_alphanumeric() || matches!(c, '.' | ',' | '/' | '_' | '-')
+}
+
+/// Whether the parser reads the line as one property ending at its ':', in the parser's grammar:
+/// `name *(";" [spaces] key ["=" value]) ":"`. A value is quoted only when '"' follows '=' and a later
+/// '"' closes it with something between; that '"' must be on this line, as the parser looks past line
+/// ends for it. Any other value runs to the next ';' or ':', which must also be on this line.
+fn whole_property(line: &str) -> bool {
+    let mut rest = line
+        .trim_start_matches([' ', '\t'])
+        .trim_start_matches(key_char);
+    while let Some(param) = rest.strip_prefix(';') {
+        rest = param
+            .trim_start_matches([' ', '\t'])
+            .trim_start_matches(key_char);
+        let Some(value) = rest.strip_prefix('=') else {
+            continue;
+        };
+        rest = match value.strip_prefix('"').map(|quoted| quoted.find('"')) {
+            Some(Some(end)) if end > 0 => &value[end + 2..],
+            Some(None) => return false,
+            _ => match value.find([';', ':']) {
+                Some(end) => &value[end..],
+                None => return false,
+            },
+        };
+    }
+    rest.starts_with(':')
 }
 
 fn occurrence(e: &Event) -> Occurrence {
@@ -1102,8 +1126,26 @@ mod tests {
     #[test]
     fn lines_spanning_params_refused() {
         // A parameter value may run across a line break in the parser, which swallows the END the guard counts.
-        for pair in ["BEGIN:A\r\nX;P=\"a\r\nEND:A\":v\r\n", "BEGIN:A\r\nX;P=a\r\nEND:A\r\n"] {
+        for pair in [
+            "BEGIN:A\r\nX;P=\"a\r\nEND:A\":v\r\n",
+            "BEGIN:A\r\nX;P=a\r\nEND:A\r\n",
+        ] {
             let body = format!("BEGIN:VCALENDAR\r\n{}", pair.repeat(100_000));
+            let err = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap_err();
+            assert_eq!(err, "Calendar could not be read", "{pair}");
+        }
+    }
+
+    #[test]
+    fn param_quote_bypass_refused() {
+        // A '"' only opens a quoted value right after '='; elsewhere it is literal, and a quoted value runs
+        // to the next '"' even on a later line, swallowing the END the guard counts.
+        for pair in [
+            "BEGIN:A\r\nX;P=a\"b;Q=\"c:d\r\nEND:A\r\nY:\":v\r\n",
+            "BEGIN:A\r\nX;P=a\";Q=\":\r\nEND:A\":v\r\n",
+            "BEGIN:A\r\nX;P=a=\"b;Q=\"c:d\r\nEND:A\r\nY:\":v\r\n",
+        ] {
+            let body = format!("BEGIN:VCALENDAR\r\n{}", pair.repeat(60_000));
             let err = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap_err();
             assert_eq!(err, "Calendar could not be read", "{pair}");
         }
@@ -1116,27 +1158,65 @@ mod tests {
 
     #[test]
     fn guard_depth_bounds_parser_depth() {
-        // The parser wants matching END names, so build mostly well-formed trees, then add raw pieces that
-        // break lines apart (a quote, a bare ':', a lone line break, an END with a different name).
-        let noise = ["\"", ":", ";P=", "X", "v", "\r\n", "\n", "\r", "BEGIN:A", "END:A", "end:b", "X;P=\"a\r\n", "X;P=a\r\n"];
-        let names = ["A", "b", "VCALENDAR", "vevent"];
         let mut seed = 0x2545_F491_4F6C_DD1Du64;
         let mut next = move || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
             (seed >> 33) as usize
         };
-        let (mut parsed, mut deep) = (0, 0);
-        for _ in 0..20_000 {
+        // The parser's depth and whether the guard counted, once the guard is checked not to count less.
+        let check = |raw: &str| -> Option<(usize, bool)> {
+            let text = normalize(raw);
+            let calendar = read_calendar(&text).ok()?;
+            let actual = calendar
+                .components
+                .iter()
+                .map(tree_depth)
+                .max()
+                .unwrap_or(0);
+            let counted = guard_depth(&text);
+            if let Some(max) = counted {
+                assert!(
+                    actual <= max,
+                    "{raw:?}: parser depth {actual} > guard depth {max}"
+                );
+            }
+            Some((actual, counted.is_some()))
+        };
+        let (mut parsed, mut deep, mut run_on) = (0, 0, 0);
+
+        // The parser wants matching END names, so build mostly well-formed trees, then add raw pieces that
+        // break lines apart (a quote, a bare ':', a lone line break, an END with a different name).
+        let noise = [
+            "\"",
+            ":",
+            ";P=",
+            "X",
+            "v",
+            "\r\n",
+            "\n",
+            "\r",
+            "BEGIN:A",
+            "END:A",
+            "end:b",
+            "X;P=\"a\r\n",
+            "X;P=a\r\n",
+        ];
+        let names = ["A", "b", "VCALENDAR", "vevent"];
+        for _ in 0..50_000 {
             let mut raw = String::new();
             let mut open: Vec<&str> = Vec::new();
-            for _ in 0..1 + next() % 14 {
+            for _ in 0..1 + next() % 24 {
                 match next() % 8 {
                     0 | 1 | 2 if open.len() < 6 => {
                         let n = names[next() % names.len()];
                         raw.push_str(&format!("BEGIN:{n}\r\n"));
                         open.push(n);
                     }
-                    3 | 4 if !open.is_empty() => raw.push_str(&format!("END:{}\r\n", open.pop().unwrap())),
+                    3 | 4 if !open.is_empty() => {
+                        raw.push_str(&format!("END:{}\r\n", open.pop().unwrap()))
+                    }
                     5 => raw.push_str("X;P=\"a, b\":v\r\n"),
                     6 => raw.push_str(noise[next() % noise.len()]),
                     _ => raw.push_str("X:v\r\n"),
@@ -1147,15 +1227,33 @@ mod tests {
                     raw.push_str(&format!("END:{n}\r\n"));
                 }
             }
-            let text = normalize(&raw);
-            let Some(max) = guard_depth(&text) else { continue };
-            let Ok(calendar) = read_calendar(&text) else { continue };
-            parsed += 1;
-            let actual = calendar.components.iter().map(tree_depth).max().unwrap_or(0);
-            deep += usize::from(actual > 1);
-            assert!(actual <= max, "{raw:?}: parser depth {actual} > guard depth {max}");
+            if let Some((actual, true)) = check(&raw) {
+                parsed += 1;
+                deep += usize::from(actual > 1);
+            }
         }
-        assert!(parsed > 2_000 && deep > 500, "weak generator: parsed {parsed}, nested {deep}");
+
+        // A content line that runs on swallows the END after it; a later line may close what it left open
+        // (a quoted value), and the extra END lets the parser finish one level deeper than the lines say.
+        let fragments = [
+            ";P=", ";Q=\"", "\"", ":", "v", "c:d", "\"a\"", "a\"b", "\";Q=\"", "=", "=\"", "a=\"b",
+            ",", ";", " ",
+        ];
+        let closers = ["X:\":v", "X;P=\":v", "\":v", "X:v", ""];
+        for _ in 0..100_000 {
+            let mut line = String::from("X");
+            for _ in 0..1 + next() % 5 {
+                line.push_str(fragments[next() % fragments.len()]);
+            }
+            let closer = closers[next() % closers.len()];
+            let raw =
+                format!("BEGIN:A\r\n{line}\r\nEND:A\r\n{closer}\r\nBEGIN:A\r\nEND:A\r\nEND:A\r\n");
+            run_on += usize::from(check(&raw).is_some_and(|(actual, _)| actual == 2));
+        }
+        assert!(
+            parsed > 2_500 && deep > 1_500 && run_on > 6_000,
+            "weak generator: parsed {parsed}, nested {deep}, run-on lines {run_on}"
+        );
     }
 
     #[test]
@@ -1169,6 +1267,11 @@ mod tests {
             "DTEND;TZID=Europe/Berlin:20261020T130000",
             "ATTENDEE;CUTYPE=INDIVIDUAL;CN=\"Doe, Jane\";X-NUM-GUESTS=0:mailto:jane@example.com",
             "ORGANIZER;CN=Boss:mailto:boss@example.com",
+            "ATTENDEE;CN=\"a:b\";ROLE=REQ-PARTICIPANT:mailto:ab@example.com",
+            "DESCRIPTION;ALTREP=\"http://x\":Notes",
+            "X-FOO:",
+            // A broken fold leaves a bare word, which the parser reads as a property without a value.
+            "continued",
             "SUMMARY:Standup",
             "BEGIN:VALARM",
             "ACTION:DISPLAY",

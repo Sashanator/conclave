@@ -1,29 +1,28 @@
-// Knowledge settings. They live in knowledge.json, not in a shared preferences object, so a save
-// from another page cannot drop them. Startup reads them leniently; a save is checked strictly.
+// Knowledge settings live in knowledge.json, and the calendar URL in calendar.json, not in a shared
+// preferences object, so a save from another page cannot drop them. Startup reads them leniently;
+// a save is checked strictly.
 
 use super::{MAX_NAMES, MAX_NAME_CHARS};
 use crate::copilot;
+use crate::copilot::settings::PROVIDERS;
 use crate::summary::llm_target::{target_with_override, LlmTarget};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
+use std::fs;
+use std::io::{ErrorKind, Write};
+use std::path::{Path, PathBuf};
 use std::sync::{LazyLock, Mutex, PoisonError, RwLock};
-use tauri::{AppHandle, Runtime};
+use tauri::path::BaseDirectory;
+use tauri::{AppHandle, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 const STORE_FILE: &str = "knowledge.json";
 const KEY: &str = "settings";
-/// The same allow-list as Copilot.
-pub(crate) const PROVIDERS: [&str; 6] = [
-    "claude",
-    "openai",
-    "groq",
-    "openrouter",
-    "ollama",
-    "custom-openai",
-];
+/// The calendar URL lives here, outside the plugin store, which the webview can read.
+const CALENDAR_FILE: &str = "calendar.json";
 
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct KnowledgeSettings {
@@ -33,7 +32,8 @@ pub struct KnowledgeSettings {
     pub my_names: Vec<String>,
     pub extract_enabled: bool,
     pub digest_enabled: bool,
-    /// A credential. It is stored here and never returned to the frontend.
+    /// A credential. It is kept in calendar.json, never in the plugin store or the frontend.
+    #[serde(skip)]
     pub calendar_url: Option<String>,
     /// Set once the names have been seeded from Copilot's alert words, so a cleared list stays empty.
     pub names_seeded: bool,
@@ -116,7 +116,7 @@ pub fn sanitize(raw: Option<Value>) -> KnowledgeSettings {
         my_names: names(&obj),
         extract_enabled: flag(&obj, "extract_enabled", true),
         digest_enabled: flag(&obj, "digest_enabled", true),
-        calendar_url: text_field(&obj, "calendar_url"),
+        calendar_url: None,
         names_seeded: flag(&obj, "names_seeded", false),
     };
     normalise(candidate, false).unwrap_or_default()
@@ -311,23 +311,105 @@ pub(crate) fn set_calendar_url<R: Runtime>(
 ) -> Result<(), String> {
     let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let s = with_calendar_url(current(), url);
-    persist(app, &s)?;
+    write_calendar_at(&calendar_path(app)?, s.calendar_url.as_deref())?;
     set_cache(s);
     Ok(())
 }
 
+fn calendar_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    app.path()
+        .resolve(CALENDAR_FILE, BaseDirectory::AppData)
+        .map_err(|e| e.to_string())
+}
+
+#[derive(Serialize, Deserialize)]
+struct CalendarFile {
+    calendar_url: Option<String>,
+}
+
+/// Writes to a temp file and renames it over the old one, so a crash cannot leave half a file.
+fn write_calendar_at(path: &Path, url: Option<&str>) -> Result<(), String> {
+    let bytes = serde_json::to_vec(&CalendarFile {
+        calendar_url: url.map(str::to_string),
+    })
+    .map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    let tmp = path.with_extension("tmp");
+    {
+        let mut file = fs::File::create(&tmp).map_err(|e| e.to_string())?;
+        file.write_all(&bytes).map_err(|e| e.to_string())?;
+        file.sync_all().map_err(|e| e.to_string())?;
+    }
+    fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
+/// A missing file is no URL. A broken file is an error that never carries its content.
+fn read_calendar_at(path: &Path) -> Result<Option<String>, String> {
+    let bytes = match fs::read(path) {
+        Ok(bytes) => bytes,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    };
+    let file: CalendarFile = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    Ok(optional(file.calendar_url))
+}
+
+/// What startup does with the loaded value: the settings to cache, and whether to save them.
+/// A store that failed to load is seeded in memory only, so its content is never overwritten.
+fn startup_plan(
+    raw: Option<Value>,
+    loaded: bool,
+    alert_words: Vec<String>,
+) -> (KnowledgeSettings, bool) {
+    let s = sanitize(raw);
+    if s.names_seeded {
+        return (s, false);
+    }
+    (seed_names(s, alert_words), loaded)
+}
+
+/// The reason to log a store file that failed to load. A missing file is the normal first run.
+/// The reason is the load error only; it never carries the file's content.
+fn store_problem<E: std::fmt::Display>(exists: bool, reload: Result<(), E>) -> Option<String> {
+    match reload {
+        Err(e) if exists => Some(e.to_string()),
+        _ => None,
+    }
+}
+
 pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let raw = match app.store(STORE_FILE) {
-        Ok(store) => store.get(KEY),
+    let (raw, loaded) = match app.store(STORE_FILE) {
+        Ok(store) => {
+            // The plugin drops a broken file silently when it opens, so reload to see the error.
+            let exists = app
+                .path()
+                .resolve(STORE_FILE, BaseDirectory::AppData)
+                .is_ok_and(|path| path.exists());
+            match store_problem(exists, store.reload()) {
+                Some(problem) => {
+                    warn!("knowledge: settings file unreadable, defaults used: {problem}");
+                    (None, false)
+                }
+                None => (store.get(KEY), true),
+            }
+        }
         Err(e) => {
             warn!("knowledge: settings store unreadable, defaults used: {e}");
+            (None, false)
+        }
+    };
+    let (mut s, save) = startup_plan(raw, loaded, copilot::settings::current().alert_words);
+    s.calendar_url = match calendar_path(app).and_then(|path| read_calendar_at(&path)) {
+        Ok(url) => url,
+        Err(problem) => {
+            warn!("knowledge: calendar file unreadable, treated as unset: {problem}");
             None
         }
     };
-    let mut s = sanitize(raw);
-    if !s.names_seeded {
-        s = seed_names(s, copilot::settings::current().alert_words);
+    if save {
         if let Err(e) = persist(app, &s) {
             warn!("knowledge: could not save the seeded names: {e}");
         }
@@ -447,6 +529,18 @@ mod tests {
     }
 
     #[test]
+    fn store_that_failed_to_load_is_seeded_but_not_saved() {
+        let words = vec!["Sasha".to_string()];
+        let (s, save) = startup_plan(None, false, words.clone());
+        assert_eq!(s.my_names, ["Sasha"]);
+        assert!(!save, "a store that failed to load must not be overwritten");
+        let (_, save) = startup_plan(None, true, words.clone());
+        assert!(save);
+        let (_, save) = startup_plan(Some(json!({"names_seeded": true})), true, words);
+        assert!(!save);
+    }
+
+    #[test]
     fn save_keeps_calendar_url() {
         let stored = KnowledgeSettings {
             calendar_url: Some("https://calendar.example.com/private/abc?token=t".to_string()),
@@ -481,6 +575,48 @@ mod tests {
             assert!(!json.contains(secret), "{secret} leaked: {json}");
         }
         assert_eq!(view(&KnowledgeSettings::default()).calendar_host, None);
+    }
+
+    #[test]
+    fn calendar_file_round_trip() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("calendar.json");
+        assert_eq!(read_calendar_at(&path).unwrap(), None);
+        write_calendar_at(&path, Some("https://a.example/x?t=1")).unwrap();
+        assert_eq!(
+            read_calendar_at(&path).unwrap().as_deref(),
+            Some("https://a.example/x?t=1")
+        );
+        write_calendar_at(&path, None).unwrap();
+        assert_eq!(read_calendar_at(&path).unwrap(), None);
+        assert!(!dir.path().join("calendar.tmp").exists());
+    }
+
+    #[test]
+    fn corrupt_calendar_file_is_an_error_without_content() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("calendar.json");
+        fs::write(&path, b"{\"calendar_url\": \"https://a.example/secret").unwrap();
+        let err = read_calendar_at(&path).unwrap_err();
+        assert!(
+            !err.contains("a.example") && !err.contains("secret"),
+            "{err}"
+        );
+    }
+
+    #[test]
+    fn stored_value_never_contains_url() {
+        // The plugin store emits its whole value to every webview, so the URL must not be in it.
+        let s = KnowledgeSettings {
+            calendar_url: Some(
+                "https://calendar.example.com/private/abc123?token=secret".to_string(),
+            ),
+            ..Default::default()
+        };
+        let stored = serde_json::to_string(&s).unwrap();
+        for secret in ["calendar.example.com", "abc123", "token", "secret"] {
+            assert!(!stored.contains(secret), "{secret} is in the stored value");
+        }
     }
 
     #[test]

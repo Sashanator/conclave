@@ -352,7 +352,9 @@ fn read_calendar_at(path: &Path) -> Result<Option<String>, String> {
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
         Err(e) => return Err(e.to_string()),
     };
-    let file: CalendarFile = serde_json::from_slice(&bytes).map_err(|e| e.to_string())?;
+    // serde_json's own message can quote the content (a bare string), so only the position is kept.
+    let file: CalendarFile = serde_json::from_slice(&bytes)
+        .map_err(|e| format!("invalid JSON at line {} column {}", e.line(), e.column()))?;
     Ok(optional(file.calendar_url))
 }
 
@@ -370,13 +372,10 @@ fn startup_plan(
     (seed_names(s, alert_words), loaded)
 }
 
-/// The reason to log a store file that failed to load. A missing file is the normal first run.
-/// The reason is the load error only; it never carries the file's content.
-fn store_problem<E: std::fmt::Display>(exists: bool, reload: Result<(), E>) -> Option<String> {
-    match reload {
-        Err(e) if exists => Some(e.to_string()),
-        _ => None,
-    }
+/// A file that exists but fails to load. A missing file is the normal first run. Only the flag is
+/// kept: the plugin's error can quote the file (a top-level string), so its text is never logged.
+fn store_unreadable<E>(exists: bool, reload: Result<(), E>) -> bool {
+    exists && reload.is_err()
 }
 
 pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
@@ -388,16 +387,15 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
                 .path()
                 .resolve(STORE_FILE, BaseDirectory::AppData)
                 .is_ok_and(|path| path.exists());
-            match store_problem(exists, store.reload()) {
-                Some(problem) => {
-                    warn!("knowledge: settings file unreadable, defaults used: {problem}");
-                    (None, false)
-                }
-                None => (store.get(KEY), true),
+            if store_unreadable(exists, store.reload()) {
+                warn!("knowledge: settings file unreadable, defaults used");
+                (None, false)
+            } else {
+                (store.get(KEY), true)
             }
         }
-        Err(e) => {
-            warn!("knowledge: settings store unreadable, defaults used: {e}");
+        Err(_) => {
+            warn!("knowledge: settings store unreadable, defaults used");
             (None, false)
         }
     };
@@ -410,8 +408,8 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
         }
     };
     if save {
-        if let Err(e) = persist(app, &s) {
-            warn!("knowledge: could not save the seeded names: {e}");
+        if persist(app, &s).is_err() {
+            warn!("knowledge: could not save the seeded names");
         }
     }
     info!("knowledge: settings loaded, {} names", s.my_names.len());
@@ -600,6 +598,13 @@ mod tests {
         let err = read_calendar_at(&path).unwrap_err();
         assert!(
             !err.contains("a.example") && !err.contains("secret"),
+            "{err}"
+        );
+        // A bare string is a type error, which serde_json quotes in full: the URL must not appear.
+        fs::write(&path, b"\"https://cal.example/x?token=s\"").unwrap();
+        let err = read_calendar_at(&path).unwrap_err();
+        assert!(
+            !err.contains("cal.example") && !err.contains("token"),
             "{err}"
         );
     }

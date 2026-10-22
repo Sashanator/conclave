@@ -16,7 +16,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
     KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW,
+    CallNextHookEx, GetMessageW, KillTimer, PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW,
     UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WM_APP,
     WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
 };
@@ -28,7 +28,6 @@ use crate::machine::{Action, Binding, HotkeyMachine};
 const MSG_SET_BINDINGS: u32 = WM_APP + 1;
 const MSG_RESET: u32 = WM_APP + 2;
 /// Windows removes a low-level hook that misses its timeout without telling us, so re-install it periodically.
-const REHOOK_TIMER_ID: usize = 1;
 const REHOOK_INTERVAL_MS: u32 = 60_000;
 
 struct HookState {
@@ -150,9 +149,14 @@ fn run(
             return;
         }
     };
-    if unsafe { SetTimer(None, REHOOK_TIMER_ID, REHOOK_INTERVAL_MS, None) } == 0 {
-        log::warn!("dictate: re-hook timer not set, the keyboard hook is not re-checked");
-    }
+    // With no window, SetTimer ignores the id it is given and returns the one it made: keep that one.
+    let rehook_timer = match unsafe { SetTimer(None, 0, REHOOK_INTERVAL_MS, None) } {
+        0 => {
+            log::warn!("dictate: re-hook timer not set, the keyboard hook is not re-checked");
+            None
+        }
+        id => Some(id),
+    };
     STATE.with(|s| {
         *s.borrow_mut() = Some(HookState {
             machine: HotkeyMachine::new(bindings, hold_threshold_ms),
@@ -179,24 +183,27 @@ fn run(
             MSG_RESET => {
                 with_state(|st| st.machine.reset());
             }
-            WM_TIMER if msg.wParam.0 == REHOOK_TIMER_ID => {
+            WM_TIMER if rehook_timer == Some(msg.wParam.0) => {
                 let idle = with_state(|st| st.machine.is_idle()).unwrap_or(false);
                 // A missing hook is replaced at once: installing does not touch keys that are held.
                 if hook.is_none() || can_rehook(idle, &key_is_down) {
-                    if let Some(old) = hook.take() {
-                        let _ = unsafe { UnhookWindowsHookEx(old) };
-                    }
-                    hook = match install_hook(module) {
-                        Ok(new) => Some(new),
-                        Err(e) => {
-                            log::warn!("dictate: keyboard hook re-install failed, will retry: {e}");
-                            None
+                    // The new hook goes in before the old one comes out, so there is no gap. Both calls run
+                    // before this thread pumps messages again, so no key reaches both hooks.
+                    match install_hook(module) {
+                        Ok(new) => {
+                            if let Some(old) = hook.replace(new) {
+                                let _ = unsafe { UnhookWindowsHookEx(old) };
+                            }
                         }
-                    };
+                        Err(e) => log::warn!("dictate: keyboard hook re-install failed, will retry: {e}"),
+                    }
                 }
             }
             _ => {}
         }
+    }
+    if let Some(id) = rehook_timer {
+        let _ = unsafe { KillTimer(None, id) };
     }
     if let Some(hook) = hook {
         let _ = unsafe { UnhookWindowsHookEx(hook) };

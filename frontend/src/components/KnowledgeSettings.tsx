@@ -4,19 +4,28 @@ import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { X } from 'lucide-react';
+import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { LlmOverridePicker } from '@/components/shared/LlmOverridePicker';
 
-// The Rust `KnowledgeSettingsView` (snake_case, no rename). The calendar URL never reaches the frontend, only its host.
+// The Rust `KnowledgeSettingsView` (snake_case, no rename)
 type KnowledgeView = {
   provider: string | null;
   model: string | null;
   my_names: string[];
   extract_enabled: boolean;
   digest_enabled: boolean;
-  calendar_host: string | null;
+};
+
+// The Rust `CalendarStatus` (snake_case, no rename). The feed URL is a secret and never reaches the frontend, only its host.
+type CalendarStatus = {
+  connected: boolean;
+  host: string | null;
+  last_ok_at: string | null;
+  last_error: string | null;
+  upcoming: number;
 };
 
 // Same limits as the backend (knowledge/mod.rs)
@@ -43,6 +52,11 @@ export function KnowledgeSettings() {
   const queue = useRef<Promise<void>>(Promise.resolve());
   // Bumped after a failed save and its reload: saves queued before that are dropped
   const generation = useRef(0);
+  const [calendar, setCalendar] = useState<CalendarStatus | null>(null);
+  // The feed URL lives only in this input, and is cleared once a connect succeeds
+  const [feedUrl, setFeedUrl] = useState('');
+  const [feedBusy, setFeedBusy] = useState(false);
+  const [feedMessage, setFeedMessage] = useState<string | null>(null);
 
   const show = (v: KnowledgeView) => {
     latest.current = v;
@@ -57,8 +71,43 @@ export function KnowledgeSettings() {
     }
   };
 
+  const loadCalendar = async () => {
+    try {
+      setCalendar(await invoke<CalendarStatus>('calendar_status'));
+    } catch (err) {
+      toast.error('Could not load calendar status', { description: String(err) });
+    }
+  };
+
+  const connect = async () => {
+    const url = feedUrl.trim();
+    if (!url || feedBusy) return;
+    setFeedBusy(true);
+    setFeedMessage(null);
+    try {
+      const status = await invoke<CalendarStatus>('calendar_connect', { url });
+      setFeedUrl('');
+      setCalendar(status);
+      setFeedMessage(`Found ${status.upcoming} upcoming events`);
+    } catch (err) {
+      setFeedMessage(String(err));
+    } finally {
+      setFeedBusy(false);
+    }
+  };
+
+  const disconnect = async () => {
+    try {
+      setCalendar(await invoke<CalendarStatus>('calendar_disconnect'));
+      setFeedMessage(null);
+    } catch (err) {
+      setFeedMessage(String(err));
+    }
+  };
+
   useEffect(() => {
     load();
+    loadCalendar();
   }, []);
 
   const commit = (change: (v: KnowledgeView) => KnowledgeView) => {
@@ -169,10 +218,45 @@ export function KnowledgeSettings() {
         </div>
       </section>
 
-      <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-2">
-        <h3 className="text-lg font-semibold text-foreground">Calendar</h3>
-        <p className="text-sm text-muted-foreground">{view.calendar_host ?? 'Not connected'}</p>
-      </section>
+      {calendar && (
+        <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-4">
+          <h3 className="text-lg font-semibold text-foreground">Calendar</h3>
+
+          {calendar.connected ? (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">{calendar.host}</p>
+              <p className="text-sm text-muted-foreground">
+                Last sync: {calendar.last_ok_at ? new Date(calendar.last_ok_at).toLocaleString() : 'never'}
+              </p>
+              {calendar.last_error && <p className="text-sm text-red-600">Last error: {calendar.last_error}</p>}
+              <Button variant="outline" size="sm" onClick={disconnect}>
+                Disconnect
+              </Button>
+            </div>
+          ) : (
+            <div className="space-y-2">
+              <p className="text-sm text-muted-foreground">Not connected</p>
+              <Label htmlFor="calendar-url">Secret address (iCal)</Label>
+              <Input
+                id="calendar-url"
+                type="password"
+                aria-label="Calendar secret address"
+                autoComplete="off"
+                value={feedUrl}
+                onChange={(e) => setFeedUrl(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                In Google Calendar: Settings → your calendar → Integrate calendar → Secret address in iCal format
+              </p>
+              <Button size="sm" onClick={connect} disabled={!feedUrl.trim() || feedBusy}>
+                Connect
+              </Button>
+            </div>
+          )}
+
+          {feedMessage && <p className="text-sm text-muted-foreground">{feedMessage}</p>}
+        </section>
+      )}
     </div>
   );
 }

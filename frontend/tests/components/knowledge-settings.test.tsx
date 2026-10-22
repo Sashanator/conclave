@@ -23,17 +23,45 @@ type View = {
   my_names: string[];
   extract_enabled: boolean;
   digest_enabled: boolean;
-  calendar_host: string | null;
 };
 
+type Calendar = {
+  connected: boolean;
+  host: string | null;
+  last_ok_at: string | null;
+  last_error: string | null;
+  upcoming: number;
+};
+
+const disconnected: Calendar = { connected: false, host: null, last_ok_at: null, last_error: null, upcoming: 0 };
+const connected: Calendar = {
+  connected: true,
+  host: 'calendar.example.com',
+  last_ok_at: '2026-10-22T09:00:00Z',
+  last_error: null,
+  upcoming: 3,
+};
+
+const FEED = 'https://calendar.example.com/private/basic.ics';
+
 let view: View;
+let calendar: Calendar;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'knowledge_get_settings') return structuredClone(view);
   if (command === 'knowledge_save_settings') {
-    const input = args?.input as Omit<View, 'calendar_host'>;
-    view = { ...structuredClone(input), calendar_host: view.calendar_host };
+    view = structuredClone(args?.input as View);
     return structuredClone(view);
+  }
+  if (command === 'calendar_status') return structuredClone(calendar);
+  if (command === 'calendar_connect') {
+    if (String(args?.url).includes('bad')) throw 'calendar feed did not parse';
+    calendar = structuredClone(connected);
+    return structuredClone(calendar);
+  }
+  if (command === 'calendar_disconnect') {
+    calendar = structuredClone(disconnected);
+    return structuredClone(calendar);
   }
   if (command === 'api_get_api_key') return '';
   if (command === 'api_get_model_config') return null;
@@ -89,6 +117,12 @@ function byLabel(label: string): ReactTestInstance {
   return found[0];
 }
 
+function byButton(text: string): ReactTestInstance {
+  const found = renderer!.root.findAll((n) => n.type === 'button' && textOf(n) === text);
+  if (found.length === 0) throw new Error(`no button "${text}"`);
+  return found[0];
+}
+
 beforeEach(() => {
   view = {
     provider: null,
@@ -96,8 +130,8 @@ beforeEach(() => {
     my_names: ['Sasha'],
     extract_enabled: true,
     digest_enabled: true,
-    calendar_host: 'calendar.example.com',
   };
+  calendar = structuredClone(disconnected);
   invoke.mockClear();
 });
 
@@ -129,18 +163,87 @@ describe('KnowledgeSettings', () => {
     );
   });
 
-  test('the view never shows the calendar URL, only the host', async () => {
-    view.calendar_host = 'calendar.example.com';
+  test('the calendar card shows the host and last sync, never the URL', async () => {
+    calendar = structuredClone(connected);
     await mount();
     const text = allText();
     expect(text).toContain('calendar.example.com');
+    expect(text).toContain('Disconnect');
     expect(text).not.toContain('http');
     expect(text).not.toContain('://');
   });
 
-  test('the calendar card says Not connected without a host', async () => {
-    view.calendar_host = null;
+  test('the calendar card says Not connected when disconnected', async () => {
     await mount();
     expect(allText()).toContain('Not connected');
+  });
+
+  test('the secret address input is a password field', async () => {
+    await mount();
+    expect(byLabel('Calendar secret address').props.type).toBe('password');
+  });
+
+  test('Connect is disabled while the address is empty', async () => {
+    await mount();
+    expect(byButton('Connect').props.disabled).toBe(true);
+    await act(async () => {
+      byLabel('Calendar secret address').props.onChange({ target: { value: FEED } });
+    });
+    expect(byButton('Connect').props.disabled).toBe(false);
+  });
+
+  test('Connect shows the number of upcoming events', async () => {
+    await mount();
+    await act(async () => {
+      byLabel('Calendar secret address').props.onChange({ target: { value: FEED } });
+    });
+    await act(async () => {
+      await byButton('Connect').props.onClick();
+    });
+    await flush();
+    expect(invoke).toHaveBeenCalledWith('calendar_connect', { url: FEED });
+    expect(allText()).toContain('Found 3 upcoming events');
+  });
+
+  test('a successful Connect clears the address input', async () => {
+    await mount();
+    await act(async () => {
+      byLabel('Calendar secret address').props.onChange({ target: { value: FEED } });
+    });
+    await act(async () => {
+      await byButton('Connect').props.onClick();
+    });
+    await flush();
+    // Connected now, so the input is gone; the next form shown after a disconnect must be empty
+    await act(async () => {
+      await byButton('Disconnect').props.onClick();
+    });
+    await flush();
+    expect(byLabel('Calendar secret address').props.value).toBe('');
+  });
+
+  test('a failed Connect shows the error text and keeps the address', async () => {
+    await mount();
+    const bad = 'https://calendar.example.com/bad.ics';
+    await act(async () => {
+      byLabel('Calendar secret address').props.onChange({ target: { value: bad } });
+    });
+    await act(async () => {
+      await byButton('Connect').props.onClick();
+    });
+    await flush();
+    expect(allText()).toContain('calendar feed did not parse');
+    expect(byLabel('Calendar secret address').props.value).toBe(bad);
+  });
+
+  test('Disconnect calls calendar_disconnect and shows the form again', async () => {
+    calendar = structuredClone(connected);
+    await mount();
+    await act(async () => {
+      await byButton('Disconnect').props.onClick();
+    });
+    await flush();
+    expect(invoke).toHaveBeenCalledWith('calendar_disconnect');
+    expect(byLabel('Calendar secret address').props.type).toBe('password');
   });
 });

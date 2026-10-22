@@ -1,7 +1,7 @@
 //! Tasks from summaries (auto) and by hand, and the re-extraction rule that keeps the user's own edits.
 
 use crate::knowledge::extract::Extraction;
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -31,12 +31,19 @@ pub(crate) fn normalise(text: &str) -> String {
         .to_lowercase()
 }
 
+/// The current time as a fixed-width UTC string, so the text compares in time order.
+pub(crate) fn stamp() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true)
+}
+
 /// Replaces this meeting's untouched auto tasks with the extraction (spec 6.2), in one transaction.
+/// Returns false, and writes nothing, when the run was superseded: a newer pending mark exists (see `set_extract`).
 pub(crate) async fn apply_extraction(
     pool: &SqlitePool,
     meeting_id: &str,
     ex: &Extraction,
-) -> Result<(), sqlx::Error> {
+    started: &str,
+) -> Result<bool, sqlx::Error> {
     let decisions =
         serde_json::to_string(&ex.decisions).map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     let requests =
@@ -52,7 +59,7 @@ pub(crate) async fn apply_extraction(
         .await?;
     // Also catches a task the model repeats within one reply.
     let mut seen: HashSet<String> = kept.iter().map(|(text,)| normalise(text)).collect();
-    let now = Utc::now().to_rfc3339();
+    let now = stamp();
     for task in &ex.tasks {
         if !seen.insert(normalise(&task.text)) {
             continue;
@@ -73,48 +80,63 @@ pub(crate) async fn apply_extraction(
         .execute(&mut *tx)
         .await?;
     }
-    set_extract(
+    let written = set_extract(
         &mut *tx,
         meeting_id,
         "done",
         None,
         Some((&decisions, &requests)),
+        Some(started),
     )
     .await?;
-    tx.commit().await
+    if written == 0 {
+        // Dropping the transaction rolls back the deletes and inserts above.
+        return Ok(false);
+    }
+    tx.commit().await?;
+    Ok(true)
 }
 
-/// Sets an extraction's status. `lists` replaces the decisions and requests JSON; None keeps them (a new row gets empty
-/// lists). Guarded: a meeting that no longer exists gets no row.
+/// Sets an extraction's status and returns the rows written. `lists` replaces the decisions and requests JSON; None
+/// keeps them (a new row gets empty lists). Guarded: a meeting that no longer exists gets no row. With `started`, the
+/// write is skipped (0 rows) when a pending mark was set after `started`, so a summary saved mid-run is not lost.
 pub(crate) async fn set_extract<'c>(
     exec: impl sqlx::SqliteExecutor<'c>,
     meeting_id: &str,
     status: &str,
     error: Option<&str>,
     lists: Option<(&str, &str)>,
-) -> Result<(), sqlx::Error> {
+    started: Option<&str>,
+) -> Result<u64, sqlx::Error> {
     let (decisions, requests) = lists.unwrap_or(("[]", "[]"));
     let keep = lists.is_none();
-    sqlx::query(
+    let guard = if started.is_some() {
+        " WHERE NOT (meeting_extracts.status = 'pending' AND meeting_extracts.extracted_at > ?)"
+    } else {
+        ""
+    };
+    let sql = format!(
         "INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, error, extracted_at) \
          SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?) \
          ON CONFLICT(meeting_id) DO UPDATE SET \
-           decisions_json = CASE WHEN ? THEN decisions_json ELSE excluded.decisions_json END, \
-           requests_json = CASE WHEN ? THEN requests_json ELSE excluded.requests_json END, \
-           status = excluded.status, error = excluded.error, extracted_at = excluded.extracted_at",
-    )
-    .bind(meeting_id)
-    .bind(decisions)
-    .bind(requests)
-    .bind(status)
-    .bind(error)
-    .bind(Utc::now().to_rfc3339())
-    .bind(meeting_id)
-    .bind(keep)
-    .bind(keep)
-    .execute(exec)
-    .await?;
-    Ok(())
+           decisions_json = CASE WHEN ? THEN meeting_extracts.decisions_json ELSE excluded.decisions_json END, \
+           requests_json = CASE WHEN ? THEN meeting_extracts.requests_json ELSE excluded.requests_json END, \
+           status = excluded.status, error = excluded.error, extracted_at = excluded.extracted_at{guard}"
+    );
+    let mut query = sqlx::query(&sql)
+        .bind(meeting_id)
+        .bind(decisions)
+        .bind(requests)
+        .bind(status)
+        .bind(error)
+        .bind(stamp())
+        .bind(meeting_id)
+        .bind(keep)
+        .bind(keep);
+    if let Some(started) = started {
+        query = query.bind(started);
+    }
+    Ok(query.execute(exec).await?.rows_affected())
 }
 
 #[cfg(test)]
@@ -189,21 +211,40 @@ mod tests {
         insert_task(&pool, "d", Some("M"), "D", "dismissed", "auto", 0).await;
 
         let ex = extraction(vec![task("A2"), task("b"), task("C"), task("E")]);
-        apply_extraction(&pool, "M", &ex).await.unwrap();
+        assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
 
-        let rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT text, status FROM tasks WHERE meeting_id = 'M' ORDER BY text")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
+        // (id, text, status, edited): the kept rows must keep their ids, which proves they were not touched.
+        let rows: Vec<(String, String, String, i64)> = sqlx::query_as(
+            "SELECT id, text, status, edited FROM tasks WHERE meeting_id = 'M' ORDER BY text",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        let kept: Vec<(&str, &str, &str, i64)> = rows
+            .iter()
+            .filter(|r| ["b", "c", "d"].contains(&r.0.as_str()))
+            .map(|r| (r.0.as_str(), r.1.as_str(), r.2.as_str(), r.3))
+            .collect();
         assert_eq!(
-            rows,
+            kept,
             vec![
-                ("A2".to_string(), "open".to_string()),
-                ("B".to_string(), "done".to_string()),
-                ("C".to_string(), "open".to_string()),
-                ("D".to_string(), "dismissed".to_string()),
-                ("E".to_string(), "open".to_string()),
+                ("b", "B", "done", 0),
+                ("c", "C", "open", 1),
+                ("d", "D", "dismissed", 0),
+            ]
+        );
+        let texts: Vec<(&str, &str, i64)> = rows
+            .iter()
+            .map(|r| (r.1.as_str(), r.2.as_str(), r.3))
+            .collect();
+        assert_eq!(
+            texts,
+            vec![
+                ("A2", "open", 0),
+                ("B", "done", 0),
+                ("C", "open", 1),
+                ("D", "dismissed", 0),
+                ("E", "open", 0),
             ]
         );
     }
@@ -211,7 +252,7 @@ mod tests {
     #[tokio::test]
     async fn apply_extraction_writes_nothing_for_a_deleted_meeting() {
         let pool = test_pool().await;
-        apply_extraction(&pool, "gone", &extraction(vec![task("A")]))
+        apply_extraction(&pool, "gone", &extraction(vec![task("A")]), &stamp())
             .await
             .unwrap();
 

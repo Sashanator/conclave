@@ -2,7 +2,6 @@
 
 use crate::knowledge::calendar::Occurrence;
 use crate::knowledge::digest;
-use crate::knowledge::extract;
 use crate::knowledge::feed;
 use crate::knowledge::settings;
 use crate::knowledge::tasks::{self, normalise, stamp, TaskRow};
@@ -129,42 +128,32 @@ fn parse_list(raw: &str) -> Vec<String> {
     serde_json::from_str(raw).unwrap_or_default()
 }
 
-/// The previous meeting's decisions and requests. Extraction runs first when it is missing and extraction is on.
-/// A failed run leaves the lists empty, and the brief is still made.
-async fn previous_lists(pool: &SqlitePool, meeting_id: &str) -> Result<(Vec<String>, Vec<String>), String> {
-    if let Some(lists) = read_lists(pool, meeting_id).await? {
-        return Ok(lists);
-    }
-    if settings::current().extract_enabled {
-        if let Err(e) = extract::run_one(pool, meeting_id).await {
-            warn!("knowledge: brief could not extract the previous meeting: {e}");
-        }
-    }
-    Ok(read_lists(pool, meeting_id).await?.unwrap_or_default())
-}
-
 /// True when the error is a UNIQUE key violation: the brief or digest already exists.
 pub(crate) fn is_duplicate(e: &sqlx::Error) -> bool {
     e.as_database_error().is_some_and(|d| d.is_unique_violation())
 }
 
 /// Builds and stores the brief, pushes the feed item, shows the toast. Ok(None) = nothing made: no previous meeting,
-/// or the brief already exists.
+/// its lists not ready, the occurrence no longer due, the previous meeting deleted meanwhile, or the brief already exists.
+/// `now` is read again just before the insert: waiting for the extraction can take minutes.
 pub(crate) async fn make_brief<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
     occ: &Occurrence,
     template: &TemplateEntry,
+    now: &(dyn Fn() -> DateTime<Utc> + Sync),
 ) -> Result<Option<String>, String> {
     let past = matching_meetings(pool, &template.id, &occ.title).await?;
     let Some(previous) = past.first() else {
         return Ok(None);
     };
-    // Its extraction is still running: wait for the next tick rather than make the brief without its lists.
-    if extract::extraction_running(&previous.id) {
+    // Its extraction is still running or queued: wait for the next tick rather than make the brief without its lists.
+    let Some((decisions, requests)) = digest::ready_lists(pool, &previous.id, settings::current().extract_enabled).await? else {
+        return Ok(None);
+    };
+    if !due(occ, now()) {
         return Ok(None);
     }
-    let (decisions, requests) = previous_lists(pool, &previous.id).await?;
     let ids: Vec<String> = past.iter().map(|p| p.id.clone()).collect();
     let stored = Stored {
         content: BriefContent {
@@ -180,33 +169,11 @@ pub(crate) async fn make_brief<R: Runtime>(
         },
         open_task_ids: open_task_ids(pool, &ids).await?,
     };
-    let id = Uuid::new_v4().to_string();
-    let content_json = serde_json::to_string(&stored).map_err(|e| e.to_string())?;
+    let (decisions, requests, open) = (stored.content.decisions.len(), stored.content.requests.len(), stored.open_task_ids.len());
     let line = brief_line(occ);
-    // The brief and its feed item commit together. Dropping the transaction on an error rolls both back.
-    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
-    let inserted = sqlx::query(
-        "INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    )
-    .bind(&id)
-    .bind(&occ.uid)
-    .bind(start_key(occ.start))
-    .bind(&occ.title)
-    .bind(&template.id)
-    .bind(&previous.id)
-    .bind(content_json)
-    .bind(stamp())
-    .execute(&mut *tx)
-    .await;
-    match inserted {
-        Ok(_) => {}
-        // Another run made this brief first; nothing more to do.
-        Err(e) if is_duplicate(&e) => return Ok(None),
-        Err(e) => return Err(e.to_string()),
-    }
-    feed::insert_in(&mut *tx, "brief", &line, &id).await.map_err(|e| e.to_string())?;
-    tx.commit().await.map_err(|e| e.to_string())?;
+    let Some(id) = store(pool, occ, template, &previous.id, &stored, &line).await? else {
+        return Ok(None);
+    };
     // Only after the commit: the UI and the toast never show a brief that was not saved.
     feed::announce(app);
     if let Some(manager) = app.try_state::<NotificationManagerState<Wry>>() {
@@ -214,12 +181,48 @@ pub(crate) async fn make_brief<R: Runtime>(
             warn!("knowledge: brief toast not shown: {e}");
         }
     }
-    info!(
-        "knowledge: brief made, {} decisions, {} requests, {} open tasks",
-        stored.content.decisions.len(),
-        stored.content.requests.len(),
-        stored.open_task_ids.len()
-    );
+    info!("knowledge: brief made, {decisions} decisions, {requests} requests, {open} open tasks");
+    Ok(Some(id))
+}
+
+/// Writes the brief and its feed item in one transaction. None when the brief already exists or the previous meeting
+/// was deleted while the lists were being made (the check is in the INSERT, so a delete cannot slip in between).
+async fn store(
+    pool: &SqlitePool,
+    occ: &Occurrence,
+    template: &TemplateEntry,
+    previous_id: &str,
+    stored: &Stored,
+    line: &str,
+) -> Result<Option<String>, String> {
+    let id = Uuid::new_v4().to_string();
+    let content_json = serde_json::to_string(stored).map_err(|e| e.to_string())?;
+    // The brief and its feed item commit together. Dropping the transaction on an error rolls both back.
+    let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    let inserted = sqlx::query(
+        "INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) \
+         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?)",
+    )
+    .bind(&id)
+    .bind(&occ.uid)
+    .bind(start_key(occ.start))
+    .bind(&occ.title)
+    .bind(&template.id)
+    .bind(previous_id)
+    .bind(content_json)
+    .bind(stamp())
+    .bind(previous_id)
+    .execute(&mut *tx)
+    .await;
+    match inserted {
+        Ok(done) if done.rows_affected() == 0 => return Ok(None),
+        Ok(_) => {}
+        // Another run made this brief first; nothing more to do.
+        Err(e) if is_duplicate(&e) => return Ok(None),
+        Err(e) => return Err(e.to_string()),
+    }
+    feed::insert_in(&mut *tx, "brief", line, &id).await.map_err(|e| e.to_string())?;
+    tx.commit().await.map_err(|e| e.to_string())?;
     Ok(Some(id))
 }
 
@@ -387,7 +390,7 @@ mod tests {
         task(&pool, "t-petr", "petr", "Not Ivan's").await;
 
         let one_on_one = template("one_on_one", "1:1", &["1:1"]);
-        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 ivan", at(11, 0)), &one_on_one)
+        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 ivan", at(11, 0)), &one_on_one, &|| at(10, 30))
             .await
             .unwrap()
             .expect("a brief");
@@ -413,7 +416,7 @@ mod tests {
         meeting(&pool, "ivan-plain_text_summary_does_not_stop_the_brief", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
 
         let one_on_one = template("one_on_one", "1:1", &["1:1"]);
-        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one)
+        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30))
             .await
             .unwrap()
             .expect("a brief");
@@ -430,14 +433,14 @@ mod tests {
 
         // The previous meeting's extraction is running: no brief goes out without its lists yet.
         let flight = extract::hold_in_flight("ivan-in-flight");
-        assert_eq!(make_brief(app.handle(), &pool, &occ, &one_on_one).await.unwrap(), None);
+        assert_eq!(make_brief(app.handle(), &pool, &occ, &one_on_one, &|| at(10, 30)).await.unwrap(), None);
         assert_eq!(brief_rows(&pool).await, 0);
         assert_eq!(feed_count(&pool).await, 0);
 
         // Once it finishes, the next tick makes the brief.
         drop(flight);
         extracted(&pool, "ivan-in-flight", r#"["Ship the plan"]"#, "[]").await;
-        assert!(make_brief(app.handle(), &pool, &occ, &one_on_one).await.unwrap().is_some());
+        assert!(make_brief(app.handle(), &pool, &occ, &one_on_one, &|| at(10, 30)).await.unwrap().is_some());
         assert_eq!(brief_rows(&pool).await, 1);
         assert_eq!(feed_count(&pool).await, 1);
     }
@@ -454,7 +457,7 @@ mod tests {
             .unwrap();
 
         let one_on_one = template("one_on_one", "1:1", &["1:1"]);
-        let result = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one).await;
+        let result = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30)).await;
         assert!(result.is_err(), "{result:?}");
         assert_eq!(brief_rows(&pool).await, 0);
     }
@@ -466,7 +469,7 @@ mod tests {
         meeting(&pool, "other", "1:1 Petr", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
 
         let one_on_one = template("one_on_one", "1:1", &["1:1"]);
-        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one)
+        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30))
             .await
             .unwrap();
         assert_eq!(made, None);
@@ -482,7 +485,7 @@ mod tests {
         meeting(&pool, "ivan-brief_made_pushes_feed_item", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
 
         let one_on_one = template("one_on_one", "1:1", &["1:1"]);
-        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one)
+        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30))
             .await
             .unwrap()
             .expect("a brief");
@@ -503,7 +506,7 @@ mod tests {
         task(&pool, "t2", "ivan-brief_get_reads_tasks_live", "Second").await;
 
         let one_on_one = template("one_on_one", "1:1", &["1:1"]);
-        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one)
+        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30))
             .await
             .unwrap()
             .expect("a brief");
@@ -513,5 +516,72 @@ mod tests {
         let texts: Vec<&str> = stored.open_tasks.iter().map(|t| t.text.as_str()).collect();
         assert_eq!(texts, vec!["Second"]);
         assert_eq!(get(&pool, "missing").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn deleted_previous_meeting_leaves_no_brief() {
+        let pool = test_pool().await;
+        let one_on_one = template("one_on_one", "1:1", &["1:1"]);
+        let occ = occurrence("u1", "1:1 Ivan", at(11, 0));
+        meeting(&pool, "ivan-deleted_previous", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        let stored = Stored {
+            content: BriefContent {
+                event_title: occ.title.clone(),
+                event_start: start_key(occ.start),
+                template_name: "1:1".into(),
+                previous_meeting_id: "ivan-deleted_previous".into(),
+                previous_title: "1:1 Ivan".into(),
+                previous_date: "d".into(),
+                requests: Vec::new(),
+                decisions: Vec::new(),
+                open_tasks: Vec::new(),
+            },
+            open_task_ids: Vec::new(),
+        };
+
+        // The meeting is deleted after the lookup, while the extraction was being waited for.
+        sqlx::query("DELETE FROM meetings WHERE id = 'ivan-deleted_previous'").execute(&pool).await.unwrap();
+        let made = store(&pool, &occ, &one_on_one, "ivan-deleted_previous", &stored, "Brief: x").await.unwrap();
+
+        assert_eq!(made, None);
+        assert_eq!(brief_rows(&pool).await, 0);
+        assert_eq!(feed_count(&pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn no_longer_due_after_the_wait_makes_no_brief() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        meeting(&pool, "ivan-no_longer_due", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        let one_on_one = template("one_on_one", "1:1", &["1:1"]);
+        let occ = occurrence("u1", "1:1 Ivan", at(11, 0));
+
+        // The meeting started while the previous one was being extracted.
+        let made = make_brief(app.handle(), &pool, &occ, &one_on_one, &|| at(11, 1)).await.unwrap();
+
+        assert_eq!(made, None);
+        assert_eq!(brief_rows(&pool).await, 0);
+        assert_eq!(feed_count(&pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn brief_waits_while_extraction_is_queued() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        meeting(&pool, "ivan-queued", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        // Queued and not running (extraction off, or its worker has not got to it): the brief waits for the lists.
+        sqlx::query("INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, extracted_at) VALUES ('ivan-queued', '[]', '[]', 'pending', 't')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let one_on_one = template("one_on_one", "1:1", &["1:1"]);
+        let occ = occurrence("u1", "1:1 Ivan", at(11, 0));
+
+        // With extraction off nothing runs it: a queued row is "not ready", not "no lists".
+        assert_eq!(digest::ready_lists(&pool, "ivan-queued", false).await.unwrap(), None);
+        // With it on, hold the slot so the run inside ready_lists is a no-op and the row stays pending.
+        let _flight = extract::hold_in_flight("ivan-queued");
+        assert_eq!(make_brief(app.handle(), &pool, &occ, &one_on_one, &|| at(10, 30)).await.unwrap(), None);
+        assert_eq!(brief_rows(&pool).await, 0);
     }
 }

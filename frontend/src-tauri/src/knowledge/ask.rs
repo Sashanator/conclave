@@ -219,7 +219,11 @@ where
     Fut: Future<Output = Result<LlmCompletion, String>>,
 {
     let today = Local::now().format("%Y-%m-%d").to_string();
-    let types: Vec<String> = templates::list_templates().templates.into_iter().map(|t| t.template.name).collect();
+    // The template folder is read on a blocking thread, not on the async runtime.
+    let types: Vec<String> = tauri::async_runtime::spawn_blocking(|| templates::list_templates().templates)
+        .await
+        .map(|list| list.into_iter().map(|t| t.template.name).collect())
+        .unwrap_or_default();
     let people: Vec<String> = SpeakersRepository::list_people(pool)
         .await
         .map_err(|_| "Could not search your meetings".to_string())?

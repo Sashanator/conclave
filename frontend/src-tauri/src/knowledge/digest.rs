@@ -408,7 +408,7 @@ where
 
 /// The meeting's decisions and requests for the digest. None when they are not ready yet: its extraction is running,
 /// or queued and not yet done. A failed extraction has no lists and is not waited for; the user's Retry handles it.
-async fn ready_lists(
+pub(crate) async fn ready_lists(
     pool: &SqlitePool,
     meeting_id: &str,
     extract_on: bool,

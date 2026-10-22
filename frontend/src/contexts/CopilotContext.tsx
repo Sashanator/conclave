@@ -47,7 +47,7 @@ interface InFlight { cardId: number; requestId: number }
 const CopilotContext = createContext<CopilotContextType | null>(null);
 
 export function CopilotProvider({ children }: { children: ReactNode }) {
-  const { transcriptsRef, notesRef } = useTranscripts();
+  const { transcriptsRef, notesRef, currentMeetingId } = useTranscripts();
   const { isRecording, isStopping, activeDuration } = useRecordingState();
   const [cards, setCards] = useState<CopilotCard[]>([]);
   // Seeded from the clock so ids from before a webview reload never repeat (the Rust slot guard keys on them).
@@ -77,7 +77,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         const settings = await invoke<CopilotSettings>('copilot_get_settings');
         if (inFlightRef.current !== f) return;
         const language = resolveAnswerLanguage(settings.answer_language, readPinnedSummaryLanguageDefault());
-        const { request, range } = buildCopilotRequest(action, transcriptsRef.current, notesRef.current, language, question);
+        const { request, range } = buildCopilotRequest(action, transcriptsRef.current, notesRef.current, language, question, currentMeetingId);
         setCards((prev) => prev.map((c) => (c.id === cardId ? { ...c, range } : c)));
         const answer = await invoke<string>('copilot_ask', { requestId: f.requestId, request });
         finish({ status: 'done', answer });

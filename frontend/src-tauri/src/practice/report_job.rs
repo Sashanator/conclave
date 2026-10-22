@@ -217,10 +217,11 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     let (system, user) = report_prompts(&rows, &recent);
     let models = settings::current();
     let body = claude::report_body(&models.plan_model, &models.plan_effort, &system, &user, &schema());
-    let text = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), |_| {})
+    let streamed = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), |_| {})
         .await
         .map_err(|e| report_copy(&e).to_string())?;
-    parse_report(&text, fluency, &learner).map(|report| with_pronunciation(report, pron))
+    claude::record_usage(&pool, &body, &streamed.usage).await;
+    parse_report(&streamed.text, fluency, &learner).map(|report| with_pronunciation(report, pron))
 }
 
 /// Re-transcribes each learner turn that has audio, word for word, and stores it. Other turns keep their live text.

@@ -133,4 +133,9 @@ describe('copilot request building', () => {
     const full = Array.from({ length: 30 }, (_, i) => `w${i}`);
     expect(addAlertWord(full, 'extra')).toBe(full);
   });
+
+  test('recording id rides on every copilot request', () => {
+    expect(buildCopilotRequest('ask', [line(10)], [], 'en', 'What now?', 'meeting-1').request.recording_id).toBe('meeting-1');
+    expect(buildCopilotRequest('catch_up', [line(10)], [], 'en').request.recording_id).toBeNull();
+  });
 });

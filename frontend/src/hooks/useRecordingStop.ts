@@ -58,6 +58,7 @@ export function useRecordingStop(
     clearTranscripts,
     meetingTitle,
     markMeetingAsSaved,
+    currentMeetingId,
   } = useTranscripts();
 
   const {
@@ -258,7 +259,8 @@ export function useRecordingStop(
             savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
             freshTranscripts,
             folderPath,
-            [...notesRef.current]
+            [...notesRef.current],
+            currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id')
           );
 
           const meetingId = responseData.meeting_id;

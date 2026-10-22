@@ -490,7 +490,9 @@ async fn plan_text(
     let (system, user) = plan_prompts(&setup.character, &setup.situation);
     let models = settings::current();
     let body = claude::plan_body(&models.plan_model, &models.plan_effort, &system, &user, materials);
-    claude::stream(&claude::http_client(), &key, &body, token, |_| {}).await
+    let streamed = claude::stream(&claude::http_client(), &key, &body, token, |_| {}).await?;
+    claude::record_usage(pool, &body, &streamed.usage).await;
+    Ok(streamed.text)
 }
 
 /// Loads the engine, voices, microphone, speaker and session folder. On error, what was created is undone

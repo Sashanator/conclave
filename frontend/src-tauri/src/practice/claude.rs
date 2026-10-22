@@ -2,6 +2,7 @@
 
 use crate::database::repositories::setting::SettingsRepository;
 use crate::practice::db::{Material, MaterialKind};
+use crate::summary::llm_client::TokenUsage;
 use crate::practice::{CHAT_MAX_TOKENS, LONG_MAX_TOKENS};
 use base64::Engine as _;
 use futures_util::StreamExt;
@@ -18,6 +19,8 @@ const MAX_LINE_BYTES: usize = 1024 * 1024;
 #[derive(Debug, PartialEq)]
 pub enum SseEvent {
     Text(String),
+    /// A partial usage: the input side from `message_start`, the output count from `message_delta`.
+    Usage(TokenUsage),
     StopReason(String),
     Stop,
     Error { kind: String, message: String },
@@ -37,35 +40,78 @@ impl SseParser {
             let line: String = self.buf.drain(..=nl).collect();
             // Each event's JSON is on one `data:` line and carries its own `type`, so `event:` lines are not needed.
             if let Some(data) = line.trim_end().strip_prefix("data:") {
-                out.push(parse_event(data.trim()));
+                out.extend(parse_event(data.trim()));
             }
         }
         out
     }
 }
 
-fn parse_event(data: &str) -> SseEvent {
+fn parse_event(data: &str) -> Vec<SseEvent> {
     let Ok(v) = serde_json::from_str::<Value>(data) else {
-        return SseEvent::Ignore;
+        return vec![SseEvent::Ignore];
     };
     match v["type"].as_str() {
         Some("content_block_delta") if v["delta"]["type"] == "text_delta" => {
-            SseEvent::Text(v["delta"]["text"].as_str().unwrap_or_default().to_string())
+            vec![SseEvent::Text(v["delta"]["text"].as_str().unwrap_or_default().to_string())]
         }
-        Some("message_delta") => match v["delta"]["stop_reason"].as_str() {
-            Some(reason) => SseEvent::StopReason(reason.to_string()),
-            None => SseEvent::Ignore,
-        },
-        Some("message_stop") => SseEvent::Stop,
-        Some("error") => SseEvent::Error {
+        // message_start's output_tokens is a placeholder; the final count comes with message_delta.
+        Some("message_start") if v["message"]["usage"].is_object() => {
+            let usage = &v["message"]["usage"];
+            vec![SseEvent::Usage(TokenUsage {
+                input: usage["input_tokens"].as_u64(),
+                cache_read: usage["cache_read_input_tokens"].as_u64(),
+                cache_write: usage["cache_creation_input_tokens"].as_u64(),
+                ..TokenUsage::default()
+            })]
+        }
+        Some("message_delta") => {
+            let mut events = Vec::new();
+            if v["usage"].is_object() {
+                events.push(SseEvent::Usage(TokenUsage {
+                    output: v["usage"]["output_tokens"].as_u64(),
+                    ..TokenUsage::default()
+                }));
+            }
+            match v["delta"]["stop_reason"].as_str() {
+                Some(reason) => events.push(SseEvent::StopReason(reason.to_string())),
+                None if events.is_empty() => events.push(SseEvent::Ignore),
+                None => {}
+            }
+            events
+        }
+        Some("message_stop") => vec![SseEvent::Stop],
+        Some("error") => vec![SseEvent::Error {
             kind: v["error"]["type"].as_str().unwrap_or("unknown").to_string(),
             message: v["error"]["message"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
-        },
-        _ => SseEvent::Ignore,
+        }],
+        _ => vec![SseEvent::Ignore],
     }
+}
+
+/// Folds a partial usage into the total: a field the part carries replaces the total's.
+fn merge_usage(total: &mut TokenUsage, part: TokenUsage) {
+    total.input = part.input.or(total.input);
+    total.output = part.output.or(total.output);
+    total.cache_read = part.cache_read.or(total.cache_read);
+    total.cache_write = part.cache_write.or(total.cache_write);
+}
+
+/// Records one Speaking Practice call. The model is the request body's.
+pub(crate) async fn record_usage(pool: &sqlx::SqlitePool, body: &Value, usage: &TokenUsage) {
+    crate::usage::record(
+        pool,
+        "claude",
+        body["model"].as_str().unwrap_or_default(),
+        crate::usage::Purpose::Practice,
+        None,
+        None,
+        Some(usage),
+    )
+    .await;
 }
 
 pub struct ChatMsg {
@@ -168,13 +214,20 @@ impl ClaudeError {
     }
 }
 
+/// A finished reply and the tokens the call used.
+#[derive(Debug, PartialEq)]
+pub struct Streamed {
+    pub text: String,
+    pub usage: TokenUsage,
+}
+
 pub async fn stream(
     client: &reqwest::Client,
     key: &str,
     body: &Value,
     cancel: &CancellationToken,
     on_text: impl FnMut(&str),
-) -> Result<String, ClaudeError> {
+) -> Result<Streamed, ClaudeError> {
     let idle = Duration::from_secs(STREAM_IDLE_SECS);
     stream_with_idle(client, MESSAGES_URL, key, body, cancel, idle, on_text).await
 }
@@ -187,7 +240,7 @@ async fn stream_with_idle(
     cancel: &CancellationToken,
     idle: Duration,
     mut on_text: impl FnMut(&str),
-) -> Result<String, ClaudeError> {
+) -> Result<Streamed, ClaudeError> {
     let request = client
         .post(url)
         .header("x-api-key", key)
@@ -212,6 +265,7 @@ async fn stream_with_idle(
     let mut parser = SseParser::default();
     let mut pending = Vec::new();
     let mut text = String::new();
+    let mut usage = TokenUsage::default();
     let mut stop_reason: Option<String> = None;
     let mut chunks = resp.bytes_stream();
     loop {
@@ -236,6 +290,7 @@ async fn stream_with_idle(
                     on_text(&t);
                     text.push_str(&t);
                 }
+                SseEvent::Usage(part) => merge_usage(&mut usage, part),
                 SseEvent::StopReason(reason) => stop_reason = Some(reason),
                 SseEvent::Stop => {
                     return match stop_reason.as_deref() {
@@ -245,7 +300,7 @@ async fn stream_with_idle(
                         }
                         _ => {
                             log::debug!("practice: Claude reply of {} chars", text.len());
-                            Ok(text)
+                            Ok(Streamed { text, usage })
                         }
                     };
                 }
@@ -377,6 +432,45 @@ mod tests {
         let events = p.push(s);
         assert_eq!(events.len(), 7);
         assert!(events.iter().all(|e| *e == SseEvent::Ignore));
+    }
+
+    #[test]
+    fn sse_parser_reads_usage() {
+        // message_start's output_tokens is a placeholder; the final count is in message_delta.
+        let s = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":3,\"output_tokens\":1}}}\n\n\
+                 event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":40},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n";
+        let events = SseParser::default().push(s);
+        assert_eq!(
+            events,
+            vec![
+                SseEvent::Usage(TokenUsage {
+                    input: Some(12),
+                    cache_read: Some(3),
+                    ..TokenUsage::default()
+                }),
+                SseEvent::Usage(TokenUsage {
+                    output: Some(40),
+                    ..TokenUsage::default()
+                }),
+                SseEvent::StopReason("end_turn".into()),
+            ]
+        );
+        let mut total = TokenUsage::default();
+        for event in events {
+            if let SseEvent::Usage(part) = event {
+                merge_usage(&mut total, part);
+            }
+        }
+        assert_eq!(
+            total,
+            TokenUsage {
+                input: Some(12),
+                output: Some(40),
+                cache_read: Some(3),
+                cache_write: None,
+                reported_cost_usd: None,
+            }
+        );
     }
 
     #[test]
@@ -689,6 +783,7 @@ mod tests {
             |_| {},
         )
         .await
+        .map(|streamed| streamed.text)
     }
 
     #[tokio::test]

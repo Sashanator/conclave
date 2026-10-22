@@ -1,4 +1,4 @@
-use crate::summary::llm_client::{generate_summary, LLMProvider};
+use crate::summary::llm_client::{generate_summary, LLMProvider, TokenUsage};
 use crate::summary::templates::Template;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -301,6 +301,8 @@ pub(crate) async fn generate_meeting_summary(
     top_p: Option<f32>,
     app_data_dir: Option<&PathBuf>,
     cancellation_token: Option<&CancellationToken>,
+    // Every call that got a response adds its usage here, even when the call then fails: the caller records it.
+    usage: &mut Vec<TokenUsage>,
 ) -> Result<GeneratedMeetingSummary, String> {
     if cancellation_token.is_some_and(CancellationToken::is_cancelled) {
         return Err("Summary generation was cancelled".to_string());
@@ -334,6 +336,7 @@ pub(crate) async fn generate_meeting_summary(
                 .await
                 {
                     Ok(completion) => {
+                        usage.extend(completion.usage);
                         let cleaned = clean_llm_markdown_detailed(&completion.content);
                         reasoning_stripped |=
                             completion.reasoning_stripped || cleaned.reasoning_stripped;
@@ -397,6 +400,7 @@ pub(crate) async fn generate_meeting_summary(
                 app_data_dir, cancellation_token,
             )
             .await?;
+            usage.extend(completion.usage);
             let cleaned = clean_llm_markdown_detailed(&completion.content);
             reasoning_stripped |=
                 completion.reasoning_stripped || cleaned.reasoning_stripped;
@@ -417,6 +421,7 @@ pub(crate) async fn generate_meeting_summary(
         app_data_dir, cancellation_token,
     )
     .await?;
+    usage.extend(completion.usage);
     let cleaned = clean_llm_markdown_detailed(&completion.content);
     reasoning_stripped |= completion.reasoning_stripped || cleaned.reasoning_stripped;
     require_visible_markdown("Final summary", &cleaned)?;
@@ -431,6 +436,102 @@ pub(crate) async fn generate_meeting_summary(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::templates;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::{TcpListener, TcpStream};
+
+    fn long_transcript() -> String {
+        "The team reviewed the quarterly plan and agreed on next steps. ".repeat(50)
+    }
+
+    fn reply(content: &str, completion_tokens: u32) -> String {
+        format!(
+            r#"{{"choices":[{{"message":{{"content":"{content}"}}}}],"usage":{{"prompt_tokens":10,"completion_tokens":{completion_tokens}}}}}"#
+        )
+    }
+
+    fn outputs(usage: &[TokenUsage]) -> Vec<Option<u64>> {
+        usage.iter().map(|u| u.output).collect()
+    }
+
+    async fn read_request(stream: &mut TcpStream) {
+        let mut buf = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let n = stream.read(&mut chunk).await.unwrap();
+            assert_ne!(n, 0, "connection closed before the request was complete");
+            buf.extend_from_slice(&chunk[..n]);
+            if let Some(end) = buf.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&buf[..end]).to_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map_or(0, |v| v.trim().parse::<usize>().unwrap());
+                if buf.len() >= end + 4 + length {
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Serves one canned (status line, JSON body) per connection, in order. Returns the base URL.
+    async fn serve(replies: Vec<(&'static str, String)>) -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for (status, body) in replies {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                read_request(&mut stream).await;
+                let head = format!(
+                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                );
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(body.as_bytes()).await.unwrap();
+            }
+        });
+        format!("http://{address}")
+    }
+
+    /// Ollama with a threshold that splits `long_transcript` into two chunks.
+    async fn run_chunked(endpoint: &str, usage: &mut Vec<TokenUsage>) -> Result<GeneratedMeetingSummary, String> {
+        let template = templates::get_template(templates::STANDARD_TEMPLATE_ID).unwrap();
+        generate_meeting_summary(
+            &Client::new(), &LLMProvider::Ollama, "m", "", &long_transcript(), "", None, &[],
+            &template, "English", 1000, Some(endpoint), None, None, None, None, None, None, usage,
+        )
+        .await
+    }
+
+    #[tokio::test]
+    async fn chunked_summary_collects_usage() {
+        assert_eq!(chunk_text(&long_transcript(), 700, 100).len(), 2);
+        let endpoint = serve(vec![
+            ("200 OK", reply("Chunk one.", 1)),
+            ("200 OK", reply("Chunk two.", 2)),
+            ("200 OK", reply("Combined.", 3)),
+            ("200 OK", reply("Final summary.", 4)),
+        ])
+        .await;
+        let mut usage = Vec::new();
+        let generated = run_chunked(&endpoint, &mut usage).await.unwrap();
+        assert_eq!(generated.successful_chunk_count, 2);
+        // Two chunks, the combine call and the final call: one entry per HTTP call, in order.
+        assert_eq!(outputs(&usage), vec![Some(1), Some(2), Some(3), Some(4)]);
+    }
+
+    #[tokio::test]
+    async fn chunk_failure_keeps_usage_of_earlier_calls() {
+        let endpoint = serve(vec![
+            ("200 OK", reply("Chunk one.", 1)),
+            ("500 Internal Server Error", "{}".to_string()),
+            ("500 Internal Server Error", "{}".to_string()),
+        ])
+        .await;
+        let mut usage = Vec::new();
+        assert!(run_chunked(&endpoint, &mut usage).await.is_err());
+        assert_eq!(outputs(&usage), vec![Some(1)]);
+    }
 
     #[test]
     fn chunk_text_preserves_content_after_early_sentence_boundary() {

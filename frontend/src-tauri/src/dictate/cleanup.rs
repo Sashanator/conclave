@@ -7,6 +7,8 @@ use crate::dictate::settings::{
 use crate::dictate::CLEANUP_TIMEOUT_SECS;
 use crate::summary::llm_client::LLMProvider;
 use crate::summary::llm_target::{complete, LlmTarget};
+use crate::usage::{self, Purpose};
+use sqlx::SqlitePool;
 use log::{info, warn};
 use std::time::{Duration, Instant};
 
@@ -139,6 +141,7 @@ fn strip_tags(s: &str) -> &str {
 
 /// One cleanup call with a timeout. Err means the caller should paste the as-spoken text instead.
 pub async fn clean(
+    pool: &SqlitePool,
     target: &LlmTarget,
     m: &ModeSpec,
     text: &str,
@@ -162,7 +165,19 @@ pub async fn clean(
             warn!("dictate: cleanup call failed after {} ms", elapsed);
             return Err(e);
         }
-        Ok(Ok(completion)) => completion.content,
+        Ok(Ok(completion)) => {
+            usage::record(
+                pool,
+                target.provider.as_str(),
+                &target.model,
+                Purpose::Dictate,
+                None,
+                None,
+                completion.usage.as_ref(),
+            )
+            .await;
+            completion.content
+        }
     };
     match accept_output(m, text, &out) {
         Some(cleaned) => {
@@ -318,7 +333,8 @@ mod tests {
             temperature: None,
             top_p: None,
         };
-        let err = clean(&target, &ModeSpec::CleanedUp, "hi", &[]).await.unwrap_err();
+        let pool = crate::database::repositories::test_pool().await;
+        let err = clean(&pool, &target, &ModeSpec::CleanedUp, "hi", &[]).await.unwrap_err();
         assert!(err.contains("not supported"), "{err}");
     }
 }

@@ -1,10 +1,12 @@
 use log::{debug as log_debug, error as log_error, info as log_info, warn as log_warn};
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_store::StoreExt;
 
 use crate::speakers::sentences::Sentence;
+use crate::summary::llm_client::{parse_usage, LLMProvider};
+use crate::usage::{self, Purpose};
 use crate::{
     database::{
         models::MeetingModel,
@@ -970,6 +972,15 @@ pub async fn api_save_meeting_title<R: Runtime>(
     }
 }
 
+/// Attaches the recording's copilot usage to the saved meeting. Call only after `save_transcript` has
+/// committed: `attach_recording` needs the meeting row to exist.
+async fn attach_recording_usage(pool: &sqlx::SqlitePool, recording_id: Option<&str>, meeting_id: &str) {
+    let Some(recording_id) = recording_id else { return };
+    if let Err(e) = usage::attach_recording(pool, recording_id, meeting_id).await {
+        log_warn!("usage: could not attach the recording's usage: {}", e);
+    }
+}
+
 #[tauri::command]
 pub async fn api_save_transcript<R: Runtime>(
     app: AppHandle<R>,
@@ -979,6 +990,7 @@ pub async fn api_save_transcript<R: Runtime>(
     folder_path: Option<String>,
     notes: Option<Vec<serde_json::Value>>,
     auth_token: Option<String>,
+    recording_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
         "api_save_transcript called for meeting: {}, transcripts: {}, folder_path: {:?}, auth_token: {}",
@@ -1032,6 +1044,7 @@ pub async fn api_save_transcript<R: Runtime>(
                 "Successfully saved transcript and created meeting with id: {}",
                 meeting_id
             );
+            attach_recording_usage(pool, recording_id.as_deref(), &meeting_id).await;
             if speakers_active {
                 crate::speakers::job::wake();
                 let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
@@ -1375,7 +1388,7 @@ pub async fn api_get_custom_openai_config<R: Runtime>(
 /// Makes a minimal request to verify the endpoint is reachable and responds correctly
 #[tauri::command]
 pub async fn api_test_custom_openai_connection<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     endpoint: String,
     api_key: Option<String>,
     model: String,
@@ -1430,6 +1443,19 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
                 // Parse response as JSON to verify it's a valid OpenAI-compatible response
                 match serde_json::from_str::<serde_json::Value>(&response_text) {
                     Ok(json) => {
+                        if let Some(state) = app.try_state::<AppState>() {
+                            let usage = parse_usage(&LLMProvider::CustomOpenAI, &json["usage"]);
+                            usage::record(
+                                state.db_manager.pool(),
+                                LLMProvider::CustomOpenAI.as_str(),
+                                &model,
+                                Purpose::ConnectionTest,
+                                None,
+                                None,
+                                usage.as_ref(),
+                            )
+                            .await;
+                        }
                         // Verify the response has the expected OpenAI structure
                         if let Some(choices) = json.get("choices") {
                             if let Some(choices_array) = choices.as_array() {
@@ -1482,6 +1508,38 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
                 Err(format!("Connection failed: {}", e))
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod save_usage_tests {
+    use super::attach_recording_usage;
+    use crate::database::repositories::{test_pool, transcript::TranscriptsRepository};
+    use crate::summary::llm_client::TokenUsage;
+    use crate::usage::{self, Purpose};
+
+    #[tokio::test]
+    async fn recording_usage_attaches_once_the_meeting_is_saved() {
+        let pool = test_pool().await;
+        let usage_row = TokenUsage { input: Some(1), output: Some(1), ..TokenUsage::default() };
+        usage::record(&pool, "claude", "m", Purpose::Copilot, None, Some("R"), Some(&usage_row)).await;
+        // A meeting row that does not exist yet attaches nothing, so the call must follow the save.
+        attach_recording_usage(&pool, Some("R"), "meeting-x").await;
+        let unattached: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM llm_usage WHERE meeting_id IS NULL")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(unattached.0, 1);
+        let meeting_id = TranscriptsRepository::save_transcript(&pool, "M", &[], None, &[], false)
+            .await
+            .unwrap();
+        attach_recording_usage(&pool, Some("R"), &meeting_id).await;
+        let attached: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM llm_usage WHERE meeting_id = ?")
+            .bind(&meeting_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(attached.0, 1);
     }
 }
 

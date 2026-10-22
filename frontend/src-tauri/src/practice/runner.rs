@@ -538,6 +538,7 @@ impl<R: Runtime> Runner<R> {
             self.client.clone(),
             self.key.clone(),
             body,
+            self.pool.clone(),
             reply,
             cancel,
             self.tx.clone(),
@@ -744,6 +745,7 @@ async fn chat_reply(
     client: reqwest::Client,
     key: String,
     body: Value,
+    pool: SqlitePool,
     reply: u64,
     cancel: CancellationToken,
     tx: UnboundedSender<Event>,
@@ -772,10 +774,14 @@ async fn chat_reply(
     })
     .await;
     watchdog.abort();
-    // Hitting the CHAT_MAX_TOKENS cap ends the reply normally: the text so far is spoken.
     let result = match result {
+        Ok(streamed) => {
+            claude::record_usage(&pool, &body, &streamed.usage).await;
+            Ok(streamed.text)
+        }
+        // Hitting the CHAT_MAX_TOKENS cap ends the reply normally: the text so far is spoken.
         Err(e) if is_token_cap(&e) => Ok(String::new()),
-        other => other,
+        Err(e) => Err(e),
     };
     match result {
         Ok(_) => {

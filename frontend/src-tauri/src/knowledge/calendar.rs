@@ -110,11 +110,7 @@ fn expand_here(
     to: DateTime<Utc>,
 ) -> Result<Vec<Occurrence>, String> {
     // The parser's error quotes the input, so only fixed messages leave the function.
-    // The guard splits lines by str::lines and the parser by CRLF, so one line ending must be used for both.
-    let unfolded = unfold(ics)
-        .replace("\r\n", "\n")
-        .replace('\r', "\n")
-        .replace('\n', "\r\n");
+    let unfolded = normalize(ics);
     if nesting_refused(&unfolded) {
         return Err(UNREADABLE.to_string());
     }
@@ -209,12 +205,38 @@ fn expand_here(
     Ok(out)
 }
 
-/// Refuses a structure the parser could recurse on too deeply. The parser ends a component by prefix, so
-/// `END:ABEGIN:A` closes one component and opens another from the rest of the line: a line may carry
-/// one tag only, and the depth is counted per line. Tags are matched case-insensitively, as the parser does.
+/// Unfolds, then turns every line ending into CRLF: the guard splits lines by str::lines and the parser by CRLF.
+fn normalize(ics: &str) -> String {
+    unfold(ics)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n")
+}
+
+/// Refuses a structure the parser could recurse on too deeply.
 fn nesting_refused(unfolded: &str) -> bool {
-    let mut depth = 0usize;
-    for line in unfolded.lines() {
+    guard_depth(unfolded).is_none_or(|d| d > MAX_NESTING)
+}
+
+/// The deepest component nesting, or None for input the guard cannot count reliably. The parser ends a
+/// component by prefix, so `END:ABEGIN:A` closes one component and opens another from the rest of the line:
+/// a line may carry one tag only. Parameter values can also run across line breaks in the parser, which
+/// would swallow a line counted here: so every line must hold an unquoted ':' (RFC 5545 content lines
+/// do), and then no construct spans lines. Tags are matched case-insensitively, as the parser does.
+fn guard_depth(unfolded: &str) -> Option<usize> {
+    let (mut depth, mut deepest) = (0usize, 0usize);
+    for line in unfolded.lines().filter(|l| !l.is_empty()) {
+        let mut quoted = false;
+        if !line.chars().any(|c| match c {
+            '"' => {
+                quoted = !quoted;
+                false
+            }
+            ':' => !quoted,
+            _ => false,
+        }) {
+            return None;
+        }
         let lower = line.to_ascii_lowercase();
         let (opens, tag_len) = if lower.starts_with("begin:") {
             (true, 6)
@@ -225,18 +247,16 @@ fn nesting_refused(unfolded: &str) -> bool {
         };
         let rest = &lower[tag_len..];
         if rest.contains("begin:") || rest.contains("end:") {
-            return true;
+            return None;
         }
         if opens {
             depth += 1;
-            if depth > MAX_NESTING {
-                return true;
-            }
+            deepest = deepest.max(depth);
         } else {
             depth = depth.saturating_sub(1);
         }
     }
-    false
+    Some(deepest)
 }
 
 fn occurrence(e: &Event) -> Occurrence {
@@ -1077,6 +1097,89 @@ mod tests {
             let err = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap_err();
             assert_eq!(err, "Calendar could not be read", "{pair}");
         }
+    }
+
+    #[test]
+    fn lines_spanning_params_refused() {
+        // A parameter value may run across a line break in the parser, which swallows the END the guard counts.
+        for pair in ["BEGIN:A\r\nX;P=\"a\r\nEND:A\":v\r\n", "BEGIN:A\r\nX;P=a\r\nEND:A\r\n"] {
+            let body = format!("BEGIN:VCALENDAR\r\n{}", pair.repeat(100_000));
+            let err = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap_err();
+            assert_eq!(err, "Calendar could not be read", "{pair}");
+        }
+    }
+
+    /// Depth of a parsed component; a top-level one has depth 1, as the guard counts it.
+    fn tree_depth(c: &Component<'_>) -> usize {
+        1 + c.components.iter().map(tree_depth).max().unwrap_or(0)
+    }
+
+    #[test]
+    fn guard_depth_bounds_parser_depth() {
+        // The parser wants matching END names, so build mostly well-formed trees, then add raw pieces that
+        // break lines apart (a quote, a bare ':', a lone line break, an END with a different name).
+        let noise = ["\"", ":", ";P=", "X", "v", "\r\n", "\n", "\r", "BEGIN:A", "END:A", "end:b", "X;P=\"a\r\n", "X;P=a\r\n"];
+        let names = ["A", "b", "VCALENDAR", "vevent"];
+        let mut seed = 0x2545_F491_4F6C_DD1Du64;
+        let mut next = move || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+            (seed >> 33) as usize
+        };
+        let (mut parsed, mut deep) = (0, 0);
+        for _ in 0..20_000 {
+            let mut raw = String::new();
+            let mut open: Vec<&str> = Vec::new();
+            for _ in 0..1 + next() % 14 {
+                match next() % 8 {
+                    0 | 1 | 2 if open.len() < 6 => {
+                        let n = names[next() % names.len()];
+                        raw.push_str(&format!("BEGIN:{n}\r\n"));
+                        open.push(n);
+                    }
+                    3 | 4 if !open.is_empty() => raw.push_str(&format!("END:{}\r\n", open.pop().unwrap())),
+                    5 => raw.push_str("X;P=\"a, b\":v\r\n"),
+                    6 => raw.push_str(noise[next() % noise.len()]),
+                    _ => raw.push_str("X:v\r\n"),
+                }
+            }
+            while let Some(n) = open.pop() {
+                if next() % 8 != 0 {
+                    raw.push_str(&format!("END:{n}\r\n"));
+                }
+            }
+            let text = normalize(&raw);
+            let Some(max) = guard_depth(&text) else { continue };
+            let Ok(calendar) = read_calendar(&text) else { continue };
+            parsed += 1;
+            let actual = calendar.components.iter().map(tree_depth).max().unwrap_or(0);
+            deep += usize::from(actual > 1);
+            assert!(actual <= max, "{raw:?}: parser depth {actual} > guard depth {max}");
+        }
+        assert!(parsed > 2_000 && deep > 500, "weak generator: parsed {parsed}, nested {deep}");
+    }
+
+    #[test]
+    fn google_style_feed_still_parses() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "PRODID:-//Google Inc//Google Calendar 70.9054//EN",
+            "BEGIN:VEVENT",
+            "UID:g1@google.com",
+            "DTSTART;TZID=Europe/Berlin:20261020T120000",
+            "DTEND;TZID=Europe/Berlin:20261020T130000",
+            "ATTENDEE;CUTYPE=INDIVIDUAL;CN=\"Doe, Jane\";X-NUM-GUESTS=0:mailto:jane@example.com",
+            "ORGANIZER;CN=Boss:mailto:boss@example.com",
+            "SUMMARY:Standup",
+            "BEGIN:VALARM",
+            "ACTION:DISPLAY",
+            "END:VALARM",
+            "END:VEVENT",
+            "END:VCALENDAR",
+            "",
+        ]);
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].title, "Standup");
     }
 
     #[test]

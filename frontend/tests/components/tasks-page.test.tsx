@@ -1,15 +1,17 @@
-import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { TaskRow } from '../../src/lib/tasks';
 
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
+  sonner: { ...await import('sonner') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
+  mock.module('sonner', () => originals.sonner);
 });
 
 const BASE: TaskRow = {
@@ -66,9 +68,17 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   throw new Error(`Unexpected command: ${command}`);
 });
 
+// sonner's toast is a function with helpers; the mock keeps the same shape
+const toast = Object.assign(mock((_what: string, _opts?: unknown) => {}), {
+  error: mock((_what: string, _opts?: unknown) => {}),
+  dismiss: mock((_id?: unknown) => {}),
+});
+
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
+mock.module('sonner', () => ({ toast }));
 
 const { default: TasksPage } = await import('../../src/app/tasks/page');
+
 
 let renderer: ReactTestRenderer | null = null;
 
@@ -210,5 +220,199 @@ describe('Tasks page', () => {
     await flush();
     // The open-tab reload finished last, but the Done tab is showing: it must not list the open task
     expect(renderer!.root.findAll((n) => textOf(n) === '<img src=x>').length).toBe(0);
+  });
+
+  describe('delete with undo', () => {
+    // The undo toast of one task, as the component handed it to sonner
+    function undoToast(id: string) {
+      const call = toast.mock.calls.filter(([, opts]) => (opts as { id?: string } | undefined)?.id?.startsWith(`task-delete-${id}-`)).at(-1);
+      if (!call) throw new Error(`no undo toast for ${id}`);
+      return call[1] as { onAutoClose: () => void; onDismiss: () => void; action: { onClick: () => void } };
+    }
+
+    // The toast closes by its timer (onAutoClose) or by the user (onDismiss)
+    async function closeToast(id: string, how: 'onAutoClose' | 'onDismiss') {
+      await act(async () => {
+        undoToast(id)[how]();
+      });
+      await flush();
+    }
+
+    async function pressUndo(id: string) {
+      await act(async () => {
+        undoToast(id).action.onClick();
+      });
+      await flush();
+    }
+
+    const deletes = () => invoke.mock.calls.filter(([command]) => command === 'tasks_delete').map(([, args]) => (args as { id: string }).id);
+
+    beforeEach(() => {
+      toast.mockClear();
+      toast.error.mockClear();
+      toast.dismiss.mockClear();
+    });
+
+    // Unmount here, before the next test resets the rows: a pending delete runs on unmount
+    afterEach(async () => {
+      if (renderer) {
+        await act(async () => {
+          renderer!.unmount();
+        });
+        renderer = null;
+      }
+    });
+
+    function deleteButton(index: number): ReactTestInstance {
+      return renderer!.root.findAll((n) => n.props['aria-label'] === 'Delete task')[index];
+    }
+
+    function taskButton(text: string): ReactTestInstance[] {
+      return renderer!.root.findAll((n) => n.type === 'button' && textOf(n) === text);
+    }
+
+    test('a click hides the task at once and shows an undo toast, with no delete yet', async () => {
+      await mount();
+      await click(deleteButton(0));
+      expect(taskButton('Send the deck')).toHaveLength(0);
+      expect(toast).toHaveBeenCalledWith('Task dismissed', expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) }));
+      expect(deletes()).toEqual([]);
+    });
+
+    test('Undo shows the task again, and the toast closing afterwards does not delete it', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await pressUndo('t1');
+      expect(taskButton('Send the deck')).toHaveLength(1);
+      await closeToast('t1', 'onAutoClose');
+      await closeToast('t1', 'onDismiss');
+      expect(deletes()).toEqual([]);
+      expect(taskButton('Send the deck')).toHaveLength(1);
+    });
+
+    test('when the toast times out without Undo, tasks_delete is called once', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await closeToast('t1', 'onAutoClose');
+      expect(deletes()).toEqual(['t1']);
+      expect(taskButton('Send the deck')).toHaveLength(0);
+    });
+
+    test('closing the toast by hand (close button or swipe) also deletes', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await closeToast('t1', 'onDismiss');
+      expect(deletes()).toEqual(['t1']);
+    });
+
+    test('Undo after the delete has started does nothing', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await act(async () => {
+        undoToast('t1').onAutoClose();
+        undoToast('t1').action.onClick();
+      });
+      await flush();
+      expect(deletes()).toEqual(['t1']);
+      expect(taskButton('Send the deck')).toHaveLength(0);
+    });
+
+    test('a delete never commits twice, whatever order the toast fires in', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await closeToast('t1', 'onAutoClose');
+      await closeToast('t1', 'onDismiss');
+      await closeToast('t1', 'onAutoClose');
+      expect(deletes()).toEqual(['t1']);
+    });
+
+    test('the dismiss that follows an Undo does not delete', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await pressUndo('t1');
+      await closeToast('t1', 'onDismiss');
+      expect(deletes()).toEqual([]);
+    });
+
+    test('a reload that fails after a successful delete keeps the task hidden', async () => {
+      await mount();
+      await click(deleteButton(0));
+      const original = invoke.getMockImplementation()!;
+      invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+        if (command === 'tasks_list') throw new Error('offline');
+        return original(command, args);
+      });
+      try {
+        await closeToast('t1', 'onAutoClose');
+      } finally {
+        invoke.mockImplementation(original);
+      }
+      expect(deletes()).toEqual(['t1']);
+      expect(taskButton('Send the deck')).toHaveLength(0);
+      expect(renderer!.root.findAll((n) => n.props.role === 'alert' && textOf(n) === 'Could not load tasks.')).toHaveLength(1);
+    });
+
+    test('a late close of an undone toast does not commit a re-delete of the same task', async () => {
+      await mount();
+      await click(deleteButton(0));
+      const first = undoToast('t1');
+      await pressUndo('t1');
+      await click(deleteButton(0));
+      // The first toast finishes its exit animation after the task was deleted again
+      await act(async () => {
+        first.onDismiss();
+      });
+      await flush();
+      expect(deletes()).toEqual([]);
+      expect(taskButton('Send the deck')).toHaveLength(0);
+      await closeToast('t1', 'onAutoClose');
+      expect(deletes()).toEqual(['t1']);
+    });
+
+    test('a manual task says "deleted", not "dismissed"', async () => {
+      rows[0] = { ...rows[0], source: 'manual' };
+      await mount();
+      await click(deleteButton(0));
+      expect(toast).toHaveBeenCalledWith('Task deleted', expect.anything());
+    });
+
+    test('a failed tasks_delete shows the task again and an error toast', async () => {
+      await mount();
+      await click(deleteButton(0));
+      invoke.mockImplementationOnce(async () => {
+        throw new Error('db locked');
+      });
+      const logged = spyOn(console, 'error').mockImplementation(() => {});
+      await closeToast('t1', 'onAutoClose');
+      logged.mockRestore();
+      expect(toast.error).toHaveBeenCalledTimes(1);
+      expect(taskButton('Send the deck')).toHaveLength(1);
+    });
+
+    test('several quick deletes each commit on their own toast', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await click(deleteButton(0));
+      expect(taskButton('Send the deck')).toHaveLength(0);
+      expect(taskButton('<img src=x>')).toHaveLength(0);
+      await closeToast('t2', 'onAutoClose');
+      await closeToast('t1', 'onDismiss');
+      expect(deletes().sort()).toEqual(['t1', 't2']);
+    });
+
+    test('unmounting commits a pending delete once, and a later toast close does not repeat it', async () => {
+      await mount();
+      await click(deleteButton(0));
+      const toastOpts = undoToast('t1');
+      await act(async () => {
+        renderer!.unmount();
+      });
+      renderer = null;
+      await flush();
+      toastOpts.onAutoClose();
+      toastOpts.onDismiss();
+      await flush();
+      expect(deletes()).toEqual(['t1']);
+    });
   });
 });

@@ -41,7 +41,6 @@ export function AskChat() {
 
   // `prior` is the chat before this question; only its answered turns are history
   const ask = (requestId: number, question: string, prior: Chat[]) => {
-    cancelInFlight();
     inFlight.current = requestId;
     const history: Turn[] = prior
       .filter((t) => t.status === 'answered')
@@ -90,7 +89,7 @@ export function AskChat() {
         </Button>
       </div>
 
-      <div className="flex-1 space-y-6 overflow-y-auto p-8">
+      <div role="log" aria-live="polite" className="flex-1 space-y-6 overflow-y-auto p-8">
         {turns.map((t, index) => (
           <div key={t.requestId} className="space-y-2">
             <p className="ml-auto max-w-[80%] whitespace-pre-wrap rounded-lg bg-primary/10 p-3">{t.question}</p>
@@ -143,6 +142,7 @@ export function AskChat() {
           rows={2}
           value={draft}
           disabled={busy}
+          aria-label="Ask about your meetings"
           placeholder="Ask about your meetings…"
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {

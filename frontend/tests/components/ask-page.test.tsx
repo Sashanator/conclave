@@ -211,6 +211,15 @@ describe('Ask page', () => {
     expect(askCalls()[1]).toEqual({ requestId: expect.any(Number), question: 'Q', history: [] });
   });
 
+  test('the textarea has an accessible name and the turns are a polite log', async () => {
+    // Same check as getByRole('textbox', { name }): a textarea is a textbox named by its aria-label
+    expect(textarea().props['aria-label']).toBe('Ask about your meetings');
+
+    const logs = renderer!.root.findAll((n) => n.props.role === 'log');
+    expect(logs).toHaveLength(1);
+    expect(logs[0].props['aria-live']).toBe('polite');
+  });
+
   test('leaving the page cancels the pending question', async () => {
     await send('Q');
     const requestId = askCalls()[0].requestId;

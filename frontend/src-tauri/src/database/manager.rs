@@ -3,6 +3,9 @@ use std::fs;
 use std::path::Path;
 use tauri::Manager;
 
+/// The main database file inside the app data folder.
+pub const DB_FILE_NAME: &str = "meeting_minutes.sqlite";
+
 #[derive(Clone)]
 pub struct DatabaseManager {
     pool: SqlitePool,
@@ -56,7 +59,7 @@ impl DatabaseManager {
     async fn open_in_data_dir(app_data_dir: &Path) -> Result<Self> {
         // Define database paths
         let tauri_db_path = app_data_dir
-            .join("meeting_minutes.sqlite")
+            .join(DB_FILE_NAME)
             .to_string_lossy()
             .to_string();
         // Legacy backend DB path (for auto-migration if exists)
@@ -89,7 +92,7 @@ impl DatabaseManager {
             .app_data_dir()
             .expect("failed to get app data dir");
 
-        let tauri_db_path = app_data_dir.join("meeting_minutes.sqlite");
+        let tauri_db_path = app_data_dir.join(DB_FILE_NAME);
 
         Ok(!tauri_db_path.exists())
     }
@@ -179,7 +182,7 @@ mod tests {
     #[tokio::test]
     async fn damaged_database_keeps_its_wal_file() {
         let dir = tempfile::tempdir().unwrap();
-        let db = dir.path().join("meeting_minutes.sqlite");
+        let db = dir.path().join(DB_FILE_NAME);
         let wal = dir.path().join("meeting_minutes.sqlite-wal");
         let db_str = db.to_string_lossy().to_string();
         Sqlite::create_database(&db_str).await.unwrap();

@@ -496,6 +496,8 @@ const WINDOWS_ZONES: &[(&str, &str)] = &[
     ("GMT Standard Time", "Europe/London"),
     ("W. Europe Standard Time", "Europe/Berlin"),
     ("Central Europe Standard Time", "Europe/Budapest"),
+    ("Central European Standard Time", "Europe/Warsaw"),
+    ("Romance Standard Time", "Europe/Paris"),
     ("FLE Standard Time", "Europe/Kyiv"),
     ("E. Europe Standard Time", "Europe/Chisinau"),
     ("Russian Standard Time", "Europe/Moscow"),
@@ -1041,6 +1043,9 @@ mod tests {
     fn windows_zone_names_map_to_iana_not_local() {
         for (windows, iana) in WINDOWS_ZONES {
             assert!(iana.parse::<chrono_tz::Tz>().is_ok(), "{iana}");
+            assert!(tzid_zone(windows).is_some_and(|z| !z.is_local()), "{windows}");
+        }
+        for windows in ["Central Europe Standard Time", "Central European Standard Time", "Romance Standard Time"] {
             assert!(tzid_zone(windows).is_some_and(|z| !z.is_local()), "{windows}");
         }
         // Moscow is UTC+3 all year, so 10:00 Moscow is 07:00 UTC on any machine.

@@ -328,7 +328,16 @@ pub(crate) async fn generate_meeting_summary(
         && total_tokens >= token_threshold
     {
         chunked = true;
-        let chunks = chunk_text(text, token_threshold - 300, 100);
+        // Ollama's threshold already reserves room for the prompt; BuiltInAI's is the bare context.
+        let chunk_tokens = if provider == &LLMProvider::Ollama {
+            token_threshold
+        } else {
+            token_threshold.saturating_sub(300).max(1)
+        };
+        if chunk_tokens == 0 {
+            return Err("The model's context is too small to summarize this transcript".to_string());
+        }
+        let chunks = chunk_text(text, chunk_tokens, 100);
         let num_chunks = chunks.len();
         let mut chunk_summaries = Vec::with_capacity(num_chunks);
         for (index, chunk) in chunks.iter().enumerate() {
@@ -560,6 +569,21 @@ mod tests {
         assert_eq!(error, crate::summary::llm_client::OUTPUT_LIMIT_MESSAGE);
         // The cut-off call is billed once and not repeated with the same prompt.
         assert_eq!(outputs(&usage), vec![Some(8192)]);
+    }
+
+    #[tokio::test]
+    async fn ollama_without_room_for_a_chunk_fails_before_any_call() {
+        let template = templates::get_template(templates::STANDARD_TEMPLATE_ID).unwrap();
+        let mut usage = Vec::new();
+        let error = generate_meeting_summary(
+            &Client::new(), &LLMProvider::Ollama, "m", "", &long_transcript(), "", None, &[],
+            &template, "English", 0, Some("http://127.0.0.1:9"), None, None, None, None, None, None,
+            &mut usage,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("too small"), "unexpected error: {error}");
+        assert!(usage.is_empty());
     }
 
     #[test]

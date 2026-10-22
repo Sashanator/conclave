@@ -36,7 +36,7 @@ export default function Home() {
   const recordingState = useRecordingState();
 
   // Extract status from global state
-  const { status, isStopping, isProcessing, isSaving } = recordingState;
+  const { status, isStopping, isProcessing, isSaving, setStatus } = recordingState;
 
   // Hooks
   const { hasMicrophone } = usePermissionCheck();
@@ -249,6 +249,7 @@ export default function Home() {
                       onRecordingStart={handleRecordingStart}
                       onTranscriptReceived={() => { }} // Not actually used by RecordingControls
                       onStopInitiated={() => setIsStopping(true)}
+                      onStopFailed={() => setStatus(RecordingStatus.RECORDING)}
                       barHeights={barHeights}
                       onTranscriptionError={(message) => {
                         showModal('errorAlert', message);

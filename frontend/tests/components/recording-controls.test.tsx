@@ -54,6 +54,7 @@ const { RecordingControls } = await import('../../src/components/RecordingContro
 let renderer: ReactTestRenderer | undefined;
 let onRecordingStop: ReturnType<typeof mock>;
 let onTranscriptionError: ReturnType<typeof mock>;
+let onStopFailed: ReturnType<typeof mock>;
 
 // New arrow functions on every call, as app/page.tsx passes them on every render
 function props() {
@@ -64,6 +65,7 @@ function props() {
     onRecordingStart: async () => {},
     onTranscriptReceived: () => {},
     onTranscriptionError: (message: string) => onTranscriptionError(message),
+    onStopFailed: () => onStopFailed(),
     isRecordingDisabled: false,
     isParentProcessing: false,
   };
@@ -85,6 +87,7 @@ beforeEach(() => {
   listen.mockClear();
   onRecordingStop = mock((_callApi?: boolean) => {});
   onTranscriptionError = mock((_message: string) => {});
+  onStopFailed = mock(() => {});
   stopInvoke = async () => undefined;
   invoke.mockClear();
   toast.error.mockClear();
@@ -121,6 +124,7 @@ describe('stop failures', () => {
     await flush();
     expect(onRecordingStop).not.toHaveBeenCalled();
     expect(toast.error).toHaveBeenCalledWith('Could not stop recording', expect.anything());
+    expect(onStopFailed).toHaveBeenCalledTimes(1);
 
     stopInvoke = async () => undefined;
     await act(async () => { stopButton().props.onClick(); });

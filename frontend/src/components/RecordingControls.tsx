@@ -20,6 +20,7 @@ interface RecordingControlsProps {
   onTranscriptReceived: (summary: SummaryResponse) => void;
   onTranscriptionError?: (message: string) => void;
   onStopInitiated?: () => void; // Called immediately when stop button is clicked
+  onStopFailed?: () => void; // Called when stop_recording fails, so the status can go back to recording
   isRecordingDisabled: boolean;
   isParentProcessing: boolean;
   selectedDevices?: {
@@ -37,6 +38,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   onTranscriptReceived,
   onTranscriptionError,
   onStopInitiated,
+  onStopFailed,
   isRecordingDisabled,
   isParentProcessing,
   selectedDevices,
@@ -177,12 +179,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         }
       }
       setIsProcessing(false);
-      // Recording is still running, so the user can press Stop again; calling onRecordingStop(false) would block that.
+      // Stop failed, so the session may still be live. Reset the status so Stop can be pressed again;
+      // onRecordingStop(false) would take the stop gate and block that retry.
+      onStopFailed?.();
       toast.error('Could not stop recording', { description: error instanceof Error ? error.message : String(error), duration: 5000 });
     } finally {
       setIsStopping(false);
     }
-  }, [onRecordingStop]);
+  }, [onRecordingStop, onStopFailed]);
 
   const handleStopRecording = useCallback(async () => {
     console.log('handleStopRecording called - isRecording:', isRecording, 'isStarting:', isStarting, 'isStopping:', isStopping, 'isStartingRecording:', isStartingRecording);

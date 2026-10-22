@@ -74,7 +74,7 @@ pub fn build_openai_compat_chat_body(
         temperature.filter(|_| !rejects_temperature(model_name))
     };
 
-    serde_json::json!(ChatRequest {
+    let mut body = serde_json::json!(ChatRequest {
         model: model_name.to_string(),
         messages: vec![
             ChatMessage {
@@ -90,13 +90,20 @@ pub fn build_openai_compat_chat_body(
         temperature: temperature_val,
         top_p: top_p_val,
         reasoning_effort: (*provider == LLMProvider::Ollama).then_some("none"),
-    })
+    });
+    if *provider == LLMProvider::OpenRouter {
+        // OpenRouter only reports the request cost when asked.
+        body["usage"] = serde_json::json!({"include": true});
+    }
+    body
 }
 
 // Generic structure for OpenAI-compatible API chat responses
 #[derive(Deserialize, Debug)]
 pub struct ChatResponse {
     pub choices: Vec<Choice>,
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -121,16 +128,13 @@ pub struct ClaudeRequest {
     pub max_tokens: u32,
     pub system: String,
     pub messages: Vec<ChatMessage>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub temperature: Option<f32>,
 }
 
-/// Build the Claude messages body.
+/// Build the Claude messages body. Temperature is never sent: newer Claude models reject it.
 pub fn build_claude_body(
     model_name: &str,
     system_prompt: &str,
     user_prompt: &str,
-    temperature: Option<f32>,
 ) -> serde_json::Value {
     serde_json::json!(ClaudeRequest {
         system: system_prompt.to_string(),
@@ -142,7 +146,6 @@ pub fn build_claude_body(
             role: "user".to_string(),
             content: user_prompt.to_string(),
         }],
-        temperature,
     })
 }
 
@@ -150,6 +153,8 @@ pub fn build_claude_body(
 #[derive(Deserialize, Debug)]
 pub struct ClaudeChatResponse {
     pub content: Vec<ClaudeChatContent>,
+    #[serde(default)]
+    pub usage: Option<serde_json::Value>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -173,14 +178,54 @@ impl ClaudeChatResponse {
             reasoning_stripped: self.content.iter().any(|block| {
                 matches!(block.block_type.as_str(), "thinking" | "redacted_thinking")
             }),
+            usage: None,
         })
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Default, Serialize)]
+pub(crate) struct TokenUsage {
+    pub input: Option<u64>,        // uncached input tokens
+    pub output: Option<u64>,       // incl. thinking
+    pub cache_read: Option<u64>,
+    pub cache_write: Option<u64>,
+    pub reported_cost_usd: Option<f64>, // provider-reported (OpenRouter `usage.cost`)
+}
+
+/// Maps a provider's `usage` object onto `TokenUsage`. BuiltInAI reports none.
+pub(crate) fn parse_usage(provider: &LLMProvider, usage: &serde_json::Value) -> Option<TokenUsage> {
+    if !usage.is_object() {
+        return None;
+    }
+    let number = |key: &str| usage.get(key).and_then(serde_json::Value::as_u64);
+    match provider {
+        LLMProvider::BuiltInAI => None,
+        LLMProvider::Claude => Some(TokenUsage {
+            input: number("input_tokens"),
+            output: number("output_tokens"),
+            cache_read: number("cache_read_input_tokens"),
+            cache_write: number("cache_creation_input_tokens"),
+            reported_cost_usd: None,
+        }),
+        _ => Some(TokenUsage {
+            input: number("prompt_tokens"),
+            output: number("completion_tokens"),
+            cache_read: usage
+                .pointer("/prompt_tokens_details/cached_tokens")
+                .and_then(serde_json::Value::as_u64),
+            cache_write: None,
+            reported_cost_usd: (*provider == LLMProvider::OpenRouter)
+                .then(|| usage.get("cost").and_then(serde_json::Value::as_f64))
+                .flatten(),
+        }),
+    }
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct LlmCompletion {
     pub content: String,
     pub reasoning_stripped: bool,
+    pub usage: Option<TokenUsage>,
 }
 
 impl ChatResponse {
@@ -201,6 +246,7 @@ impl ChatResponse {
                 .into_iter()
                 .flatten()
                 .any(|reasoning| !reasoning.trim().is_empty()),
+            usage: None,
         })
     }
 }
@@ -330,6 +376,7 @@ pub(crate) async fn generate_summary(
         .map(|content| LlmCompletion {
             content,
             reasoning_stripped: false,
+            usage: None,
         })
         .map_err(|e| e.to_string());
     }
@@ -414,7 +461,7 @@ pub(crate) async fn generate_summary(
             top_p,
         )
     } else {
-        build_claude_body(model_name, system_prompt, user_prompt, temperature)
+        build_claude_body(model_name, system_prompt, user_prompt)
     };
 
     info!("🐞 LLM Request to {}: model={}", provider_name(provider), model_name);
@@ -521,10 +568,14 @@ pub(crate) async fn generate_summary(
 
         info!("🐞 LLM Response received from Claude");
 
+        let usage = chat_response
+            .usage
+            .as_ref()
+            .and_then(|usage| parse_usage(provider, usage));
         let completion = chat_response
             .completion()
             .ok_or("No text content in LLM response")?;
-        Ok(completion)
+        Ok(LlmCompletion { usage, ..completion })
     } else {
         let chat_response = await_or_cancel(
             response.json::<ChatResponse>(),
@@ -534,7 +585,13 @@ pub(crate) async fn generate_summary(
         .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
 
         info!("🐞 LLM Response received from {}", provider_name(provider));
-        chat_response.completion()
+        let usage = chat_response
+            .usage
+            .as_ref()
+            .and_then(|usage| parse_usage(provider, usage));
+        chat_response
+            .completion()
+            .map(|completion| LlmCompletion { usage, ..completion })
     }
 }
 
@@ -607,7 +664,7 @@ mod tests {
             })
         );
         assert_eq!(
-            build_claude_body("claude-x", "sys", "user", None),
+            build_claude_body("claude-x", "sys", "user"),
             json!({
                 "model": "claude-x",
                 "max_tokens": 8192,
@@ -631,8 +688,7 @@ mod tests {
             );
             assert_eq!(body["temperature"].as_f64(), Some(0.0), "{provider:?}");
         }
-        let claude = build_claude_body("claude-x", "sys", "user", Some(0.0));
-        assert_eq!(claude["temperature"].as_f64(), Some(0.0));
+        assert!(build_claude_body("claude-x", "sys", "user").get("temperature").is_none());
     }
 
     #[test]
@@ -696,6 +752,7 @@ mod tests {
                 LlmCompletion {
                     content: String::new(),
                     reasoning_stripped: true,
+                    usage: None,
                 }
             );
         }
@@ -981,6 +1038,7 @@ mod tests {
             LlmCompletion {
                 content: "Meeting summary.".to_string(),
                 reasoning_stripped: false,
+                usage: None,
             }
         );
     }
@@ -1000,6 +1058,115 @@ mod tests {
             Some(LlmCompletion {
                 content: "Meeting summary.".to_string(),
                 reasoning_stripped: true,
+                usage: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_usage_claude() {
+        let usage = json!({"input_tokens":10,"output_tokens":20,"cache_read_input_tokens":5,"cache_creation_input_tokens":7});
+        assert_eq!(
+            parse_usage(&LLMProvider::Claude, &usage),
+            Some(TokenUsage {
+                input: Some(10),
+                output: Some(20),
+                cache_read: Some(5),
+                cache_write: Some(7),
+                reported_cost_usd: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_usage_openai() {
+        let usage = json!({"prompt_tokens":100,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":40}});
+        assert_eq!(
+            parse_usage(&LLMProvider::OpenAI, &usage),
+            Some(TokenUsage {
+                input: Some(100),
+                output: Some(50),
+                cache_read: Some(40),
+                cache_write: None,
+                reported_cost_usd: None,
+            })
+        );
+    }
+
+    #[test]
+    fn parse_usage_openrouter_cost() {
+        let usage = json!({"prompt_tokens":100,"completion_tokens":50,"prompt_tokens_details":{"cached_tokens":40},"cost":0.0021});
+        assert_eq!(
+            parse_usage(&LLMProvider::OpenRouter, &usage).unwrap().reported_cost_usd,
+            Some(0.0021)
+        );
+        assert_eq!(
+            parse_usage(&LLMProvider::OpenAI, &usage).unwrap().reported_cost_usd,
+            None
+        );
+    }
+
+    #[test]
+    fn parse_usage_missing() {
+        assert_eq!(parse_usage(&LLMProvider::Claude, &serde_json::Value::Null), None);
+        assert_eq!(parse_usage(&LLMProvider::OpenAI, &json!("not an object")), None);
+        assert_eq!(parse_usage(&LLMProvider::BuiltInAI, &json!({"prompt_tokens":1})), None);
+    }
+
+    #[test]
+    fn claude_body_has_no_temperature() {
+        let claude = build_claude_body("claude-x", "sys", "user");
+        assert!(claude.get("temperature").is_none());
+    }
+
+    #[test]
+    fn openrouter_body_requests_usage() {
+        let openrouter = build_openai_compat_chat_body(
+            &LLMProvider::OpenRouter, "m", "sys", "user", None, None, None,
+        );
+        assert_eq!(openrouter["usage"]["include"], true);
+        let groq = build_openai_compat_chat_body(
+            &LLMProvider::Groq, "m", "sys", "user", None, None, None,
+        );
+        assert!(groq.get("usage").is_none());
+    }
+
+    #[tokio::test]
+    async fn completion_carries_reported_token_usage() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut stream).await;
+            let body = br#"{"choices":[{"message":{"content":"Meeting summary."}}],"usage":{"prompt_tokens":3,"completion_tokens":4}}"#;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let client = Client::new();
+        let endpoint = format!("http://{address}");
+        let completion = generate_summary(
+            &client, &LLMProvider::Ollama, "model", "", "system", "user",
+            Some(&endpoint), None, None, None, None, None, None,
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+
+        assert_eq!(
+            completion.usage,
+            Some(TokenUsage {
+                input: Some(3),
+                output: Some(4),
+                cache_read: None,
+                cache_write: None,
+                reported_cost_usd: None,
             })
         );
     }

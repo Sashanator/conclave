@@ -296,6 +296,45 @@ fn duration(e: &Event) -> Duration {
     e.end.map_or(Duration::zero(), |end| end - e.start)
 }
 
+/// An RFC 5545 DURATION: PT1H, P1DT2H30M, P2W, -PT15M. None when it does not parse.
+fn parse_duration(text: &str) -> Option<Duration> {
+    const DAY: i64 = 86_400;
+    let text = text.trim();
+    let (sign, rest) = match text.strip_prefix('-') {
+        Some(rest) => (-1, rest),
+        None => (1, text.strip_prefix('+').unwrap_or(text)),
+    };
+    let body = rest.strip_prefix('P')?;
+    let seconds = match body.split_once('T') {
+        Some((_, "")) => return None,
+        Some((date, time)) => unit_seconds(date, &[('D', DAY)])?
+            .checked_add(unit_seconds(time, &[('H', 3_600), ('M', 60), ('S', 1)])?)?,
+        None if body.is_empty() => return None,
+        None if body.ends_with('W') => unit_seconds(body, &[('W', 7 * DAY)])?,
+        None => unit_seconds(body, &[('D', DAY)])?,
+    };
+    Duration::try_seconds(sign * seconds)
+}
+
+/// Sums `number+unit` pairs. The units must come in the listed order and each at most once.
+fn unit_seconds(text: &str, units: &[(char, i64)]) -> Option<i64> {
+    let mut total = 0i64;
+    let mut digits = String::new();
+    let mut next = 0;
+    for c in text.chars() {
+        if c.is_ascii_digit() {
+            digits.push(c);
+            continue;
+        }
+        let at = next + units[next..].iter().position(|(unit, _)| *unit == c)?;
+        let n: i64 = digits.parse().ok()?;
+        total = total.checked_add(n.checked_mul(units[at].1)?)?;
+        digits.clear();
+        next = at + 1;
+    }
+    digits.is_empty().then_some(total)
+}
+
 /// Estimated rrule steps from DTSTART to `to`: the span over the period, times the BY* fan-out. Monthly,
 /// yearly and weekly rules with BY* parts are walked by day, so they are costed by day.
 /// shortcut: an upper estimate, not a count; rrule's real cost per step varies by rule.
@@ -382,6 +421,14 @@ fn event<'a>(c: &'a Component<'a>, unknown_tz_warned: &mut bool) -> Option<Event
         Some(p) => Some(when(p, unknown_tz_warned)?.with_timezone(&Utc)),
         None => None,
     };
+    let end = match prop(c, "DTEND") {
+        Some(p) => when(p, unknown_tz_warned),
+        // RFC 5545: DURATION stands in for DTEND. A negative one is not an event.
+        None => prop(c, "DURATION")
+            .and_then(|p| parse_duration(p.val.as_str()))
+            .filter(|d| *d >= Duration::zero())
+            .and_then(|d| start.checked_add_signed(d)),
+    };
     Some(Event {
         uid,
         title: clean_title(prop(c, "SUMMARY").map_or("", |p| p.val.as_str())),
@@ -389,7 +436,7 @@ fn event<'a>(c: &'a Component<'a>, unknown_tz_warned: &mut bool) -> Option<Event
         cancelled: prop(c, "STATUS")
             .is_some_and(|p| p.val.as_str().trim().eq_ignore_ascii_case("CANCELLED")),
         start,
-        end: prop(c, "DTEND").and_then(|p| when(p, unknown_tz_warned)),
+        end,
         rrule: prop(c, "RRULE").map(|p| p.val.as_str().trim().to_string()),
         exdates,
     })
@@ -1449,6 +1496,38 @@ mod tests {
             title: format!("Title {uid}"),
             start,
             end: start + Duration::minutes(mins),
+        }
+    }
+
+    #[test]
+    fn duration_instead_of_end_is_honoured() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:dur-1",
+            "DTSTART:20261022T090000Z",
+            "DURATION:PT1H",
+            "SUMMARY:Standup",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 22, 0, 0), utc(2026, 10, 23, 0, 0)).unwrap();
+        assert_eq!(got[0].end, utc(2026, 10, 22, 10, 0));
+        assert_eq!(event_for_start(&got, utc(2026, 10, 22, 9, 30)).map(|o| o.uid.as_str()), Some("dur-1"));
+    }
+
+    #[test]
+    fn duration_values() {
+        assert_eq!(parse_duration("PT1H"), Some(Duration::hours(1)));
+        assert_eq!(parse_duration("P1D"), Some(Duration::days(1)));
+        assert_eq!(parse_duration("P1W"), Some(Duration::weeks(1)));
+        assert_eq!(parse_duration("+P2W"), Some(Duration::weeks(2)));
+        assert_eq!(parse_duration("P1DT2H30M"), Some(Duration::hours(26) + Duration::minutes(30)));
+        assert_eq!(parse_duration("PT90S"), Some(Duration::seconds(90)));
+        assert_eq!(parse_duration("-PT15M"), Some(Duration::minutes(-15)));
+        assert_eq!(parse_duration("P0D"), Some(Duration::zero()));
+        for bad in ["", "P", "PT", "1H", "PT1X", "P1H", "PT1H2H", "PT1H1H", "P1W1D", "PT1D", "P1D1H", "P1DT", "PT99999999999999999999H"] {
+            assert_eq!(parse_duration(bad), None, "{bad}");
         }
     }
 

@@ -15,6 +15,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, PoisonError, RwLock};
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager, Runtime};
@@ -104,6 +105,8 @@ static CACHE: LazyLock<RwLock<KnowledgeSettings>> =
     LazyLock::new(|| RwLock::new(KnowledgeSettings::default()));
 /// Held across validate, store write and cache update, so concurrent saves cannot interleave.
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
+/// Set by startup when the settings file was read (or is missing). An unreadable file is never written automatically.
+static FILE_LOADED: AtomicBool = AtomicBool::new(false);
 
 /// Startup read. Never fails: a broken entry is dropped and logged, the rest is kept.
 pub fn sanitize(raw: Option<Value>) -> KnowledgeSettings {
@@ -274,14 +277,25 @@ pub(crate) fn digest_since() -> Option<DateTime<Utc>> {
 /// The first digest tick with no start stored: the feature starts at `now`. A start saved meanwhile is kept.
 pub(crate) fn start_digest_feature<R: Runtime>(app: &AppHandle<R>, now: DateTime<Utc>) -> Result<(), String> {
     let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let current = current();
-    if current.digest_since.is_some() {
-        return Ok(());
-    }
-    let s = stamped(current, now);
-    persist(app, &s)?;
+    let (s, saved) = start_digest_in(current(), now, FILE_LOADED.load(Ordering::SeqCst), |s| persist(app, s));
     set_cache(s);
-    Ok(())
+    saved
+}
+
+/// The start is always kept in memory, so a failed save does not make every tick retry. The file is written
+/// only when startup read it, so an unreadable file is not overwritten with defaults.
+fn start_digest_in(
+    s: KnowledgeSettings,
+    now: DateTime<Utc>,
+    file_loaded: bool,
+    save: impl FnOnce(&KnowledgeSettings) -> Result<(), String>,
+) -> (KnowledgeSettings, Result<(), String>) {
+    if s.digest_since.is_some() {
+        return (s, Ok(()));
+    }
+    let s = stamped(s, now);
+    let saved = if file_loaded { save(&s) } else { Ok(()) };
+    (s, saved)
 }
 
 /// Fills the names from Copilot's alert words, once. After that, the user's list is never touched.
@@ -444,6 +458,7 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
             (None, false)
         }
     };
+    FILE_LOADED.store(loaded, Ordering::SeqCst);
     let (mut s, save) = startup_plan(raw, loaded, copilot::settings::current().alert_words);
     s.calendar_url = match calendar_path(app).and_then(|path| read_calendar_at(&path)) {
         Ok(url) => url,
@@ -484,6 +499,7 @@ mod tests {
     use super::*;
     use chrono::TimeZone;
     use serde_json::json;
+    use std::cell::Cell;
 
     fn with_names(names: &[&str]) -> KnowledgeSettings {
         KnowledgeSettings {
@@ -525,6 +541,27 @@ mod tests {
         assert_eq!(good.digest_since.as_deref(), Some("2026-10-22T08:00:00Z"));
         let bad = sanitize(Some(json!({"digest_since": "soon"})));
         assert_eq!(bad.digest_since, None);
+    }
+
+    #[test]
+    fn failed_save_keeps_the_start_in_memory() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 22, 8, 0, 0).unwrap();
+        let (s, saved) = start_digest_in(KnowledgeSettings::default(), now, true, |_| Err("disk full".to_string()));
+        assert_eq!(s.digest_since.as_deref(), Some("2026-10-22T08:00:00+00:00"));
+        assert!(saved.is_err());
+    }
+
+    #[test]
+    fn unreadable_file_is_not_written_by_the_stamp() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 22, 8, 0, 0).unwrap();
+        let writes = Cell::new(0);
+        let (s, saved) = start_digest_in(KnowledgeSettings::default(), now, false, |_| {
+            writes.set(writes.get() + 1);
+            Ok(())
+        });
+        assert_eq!(writes.get(), 0);
+        assert!(s.digest_since.is_some());
+        assert!(saved.is_ok());
     }
 
     #[test]

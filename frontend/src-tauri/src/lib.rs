@@ -732,12 +732,7 @@ pub fn run() {
             // A practice session left running by a crash is closed as interrupted.
             tauri::async_runtime::spawn(practice::commands::recover_at_startup(_app.handle().clone()));
             // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
-            let summary_pool = _app.state::<state::AppState>().db_manager.pool().clone();
-            match tauri::async_runtime::block_on(database::repositories::summary::SummaryProcessesRepository::fail_interrupted(&summary_pool)) {
-                Ok(0) => {}
-                Ok(n) => log::info!("summary: marked {n} interrupted summaries as failed"),
-                Err(e) => log::warn!("summary: could not recover interrupted summaries: {e}"),
-            }
+            tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {

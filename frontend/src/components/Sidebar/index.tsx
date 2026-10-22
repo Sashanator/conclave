@@ -18,6 +18,7 @@ import { confirmLeave } from '@/lib/unsaved-guard';
 import { SearchHits } from './SearchHits';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
 import { useConfig } from '@/contexts/ConfigContext';
+import { FeedBell } from '@/components/Feed/FeedBell';
 
 import {
   Dialog,
@@ -553,6 +554,8 @@ const Sidebar: React.FC = () => {
             </TooltipContent>
           </Tooltip>
 
+          <FeedBell side="right" />
+
           <Tooltip>
             <TooltipTrigger asChild>
               <button
@@ -870,13 +873,16 @@ const Sidebar: React.FC = () => {
               </button>
             )}
 
-            <button
-              onClick={() => go('/settings')}
-              className="w-full flex items-center justify-center px-3 py-1.5 mt-1 mb-1 text-sm font-medium text-foreground bg-muted hover:bg-muted-foreground/20 rounded-lg transition-colors shadow-sm"
-            >
-              <Settings className="w-4 h-4 mr-2" />
-              <span>Settings</span>
-            </button>
+            <div className="flex items-center gap-1 mt-1 mb-1">
+              <button
+                onClick={() => go('/settings')}
+                className="flex-1 flex items-center justify-center px-3 py-1.5 text-sm font-medium text-foreground bg-muted hover:bg-muted-foreground/20 rounded-lg transition-colors shadow-sm"
+              >
+                <Settings className="w-4 h-4 mr-2" />
+                <span>Settings</span>
+              </button>
+              <FeedBell />
+            </div>
             <Info isCollapsed={isCollapsed} />
             <div className="w-full flex items-center justify-center px-3 py-1 text-xs text-muted-foreground">
               v0.4.1

@@ -39,6 +39,13 @@ You implement exactly one task of the Conclave plan. Conclave is a Windows 10 me
   - `actionlint`
 - The `gh` default repo is `Sashanator/conclave`. Never target the upstream Meetily repo.
 
+## Context budget
+- Open plans, specs and constraints files only at the line ranges the brief cites. Read a constraints file once per task.
+- Find code with Grep (or the codebase-memory graph), then Read with offset/limit. Read a whole file only if it is under ~300 lines or you are mostly rewriting it.
+- Don't re-read a file you haven't changed since you last read it. Don't `cat` or `sed -n` large ranges through Bash when Read with a range works.
+- Iterate with the narrowest test command (one test file or filter). Trim output: `| tail -n 40`, `--stat` before a full diff, summary reporters.
+- Look at a screenshot at most once.
+
 ## Process
 1. Read the brief, the constraints and the rulings. Ask (`NEEDS_CONTEXT`) before starting if anything is unclear.
 2. Use TDD where the brief has a failing-test step. Record the RED output, then the GREEN output.

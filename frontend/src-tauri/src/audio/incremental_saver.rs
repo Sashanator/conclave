@@ -157,14 +157,10 @@ impl IncrementalAudioSaver {
         self.merge_checkpoints(&final_audio_path).await?;
 
         // ffmpeg can exit 0 after skipping a corrupt chunk, so keep the chunks unless the output is complete.
-        let merged = std::fs::metadata(&final_audio_path)?.len();
-        let chunks = (0..self.checkpoint_count)
-            .map(|i| std::fs::metadata(self.checkpoints_dir.join(format!("audio_chunk_{:03}.mp4", i))).map(|m| m.len()))
-            .sum::<std::io::Result<u64>>()?;
-        if merged_is_complete(merged, chunks) {
+        if merge_is_complete_on_disk(&final_audio_path, &self.checkpoints_dir, self.checkpoint_count) {
             self.remove_merged_checkpoints(&crate::audio::recording_preferences::get_default_recordings_folder());
         } else {
-            error!("Merged audio is {} bytes but the checkpoints total {} bytes: keeping the checkpoints", merged, chunks);
+            error!("Merged audio does not match the checkpoints, or could not be checked: keeping the checkpoints");
         }
 
         info!("Finalized recording");
@@ -315,6 +311,18 @@ fn verify_chunk(ffmpeg: &Path, chunk: &Path) -> Result<()> {
             String::from_utf8_lossy(&output.stderr).trim()
         ))
     }
+}
+
+/// True when the merged file exists and passes `merged_is_complete` against the chunk files. Any
+/// read error counts as not complete, so the chunks are kept.
+fn merge_is_complete_on_disk(merged: &Path, checkpoints_dir: &Path, checkpoint_count: u32) -> bool {
+    let Ok(merged_bytes) = std::fs::metadata(merged).map(|m| m.len()) else {
+        return false;
+    };
+    let chunk_bytes = (0..checkpoint_count)
+        .map(|i| std::fs::metadata(checkpoints_dir.join(format!("audio_chunk_{:03}.mp4", i))).map(|m| m.len()))
+        .sum::<std::io::Result<u64>>();
+    chunk_bytes.is_ok_and(|chunk_bytes| merged_is_complete(merged_bytes, chunk_bytes))
 }
 
 /// True when the meeting has checkpoint chunks but no audio file, i.e. the Stop-time merge failed.
@@ -731,6 +739,21 @@ mod tests {
         assert!(merged_is_complete(900, 1000));
         assert!(!merged_is_complete(899, 1000));
         assert!(merged_is_complete(0, 0));
+    }
+
+    #[test]
+    fn an_unreadable_merge_keeps_the_checkpoints() {
+        let temp_dir = tempdir().unwrap();
+        let checkpoints = temp_dir.path().join(".checkpoints");
+        std::fs::create_dir_all(&checkpoints).unwrap();
+        let merged = temp_dir.path().join("audio.mp4");
+        std::fs::write(checkpoints.join("audio_chunk_000.mp4"), vec![0u8; 100]).unwrap();
+        std::fs::write(checkpoints.join("audio_chunk_001.mp4"), vec![0u8; 100]).unwrap();
+
+        assert!(!merge_is_complete_on_disk(&merged, &checkpoints, 2), "no merged file");
+        std::fs::write(&merged, vec![0u8; 190]).unwrap();
+        assert!(merge_is_complete_on_disk(&merged, &checkpoints, 2));
+        assert!(!merge_is_complete_on_disk(&merged, &checkpoints, 3), "a chunk is missing");
     }
 
     #[tokio::test]

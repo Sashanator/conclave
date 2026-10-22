@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod feed;
+pub mod retrieve;
 pub mod settings;
 
 /// LLM call timeouts, in seconds.

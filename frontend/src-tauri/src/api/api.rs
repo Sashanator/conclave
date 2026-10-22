@@ -1194,6 +1194,20 @@ pub async fn debug_backend_connection<R: Runtime>(app: AppHandle<R>) -> Result<S
     }
 }
 
+/// The API key travels with every request, so plain http is allowed only to this machine.
+fn validate_endpoint_scheme(endpoint: &str) -> Result<(), String> {
+    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
+        return Err("Endpoint must start with http:// or https://".to_string());
+    }
+    if endpoint.starts_with("http://") {
+        let host = url::Url::parse(endpoint).ok().and_then(|u| u.host_str().map(str::to_string));
+        if !matches!(host.as_deref(), Some("localhost" | "127.0.0.1" | "[::1]")) {
+            return Err("Plain http is only allowed for localhost; use https:// for remote endpoints".to_string());
+        }
+    }
+    Ok(())
+}
+
 /// Only https links leave the app; the webview is not trusted to choose schemes or shells.
 fn validate_external_url(raw: &str) -> Result<url::Url, String> {
     if raw.is_empty()
@@ -1296,9 +1310,7 @@ pub async fn api_save_custom_openai_config<R: Runtime>(
     }
 
     // Validate endpoint URL format
-    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
-        return Err("Endpoint must start with http:// or https://".to_string());
-    }
+    validate_endpoint_scheme(&endpoint)?;
 
     // Validate optional numeric parameters
     if let Some(temp) = temperature {
@@ -1386,9 +1398,7 @@ pub async fn api_test_custom_openai_connection<R: Runtime>(
     );
 
     // Validate endpoint URL format
-    if !endpoint.starts_with("http://") && !endpoint.starts_with("https://") {
-        return Err("Endpoint must start with http:// or https://".to_string());
-    }
+    validate_endpoint_scheme(&endpoint)?;
 
     // Build the URL - append /chat/completions to the base endpoint
     let url = format!("{}/chat/completions", endpoint.trim_end_matches('/'));
@@ -1628,5 +1638,35 @@ mod segment_parse_tests {
         .unwrap();
         assert_eq!(segs[0].mark.as_deref(), Some("action"));
         assert_eq!(segs[1].mark, None);
+    }
+}
+
+#[cfg(test)]
+mod endpoint_scheme_tests {
+    use super::validate_endpoint_scheme;
+
+    #[test]
+    fn plain_http_is_allowed_only_to_this_machine() {
+        for ok in [
+            "https://api.example.com/v1",
+            "https://localhost:8443",
+            "http://localhost:11434/v1",
+            "http://LOCALHOST:8080",
+            "http://127.0.0.1:8080/v1",
+            "http://[::1]:8080/v1",
+        ] {
+            assert!(validate_endpoint_scheme(ok).is_ok(), "{ok} should pass");
+        }
+        for bad in [
+            "http://example.com/v1",
+            "http://192.168.1.10:8000",
+            "http://localhost.example.com",
+            "http://127.0.0.1.nip.io",
+            "http://",
+            "example.com",
+            "ftp://localhost",
+        ] {
+            assert!(validate_endpoint_scheme(bad).is_err(), "{bad} should be rejected");
+        }
     }
 }

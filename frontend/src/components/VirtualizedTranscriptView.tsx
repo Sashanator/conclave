@@ -58,6 +58,8 @@ const VIRTUALIZATION_THRESHOLD = 10;
 const FOCUS_FLASH_MS = 2000;
 // Retry gap for loading pages toward a focus row; the loader drops calls under 100 ms apart
 const FOCUS_LOAD_RETRY_MS = 120;
+// Retries allowed without a new page arriving (25 x 120 ms, about 3 s), so failing loads stop
+const FOCUS_LOAD_MAX_TRIES = 25;
 
 // Helper function to format seconds as recording-relative time [MM:SS]
 function formatRecordingTime(seconds: number | undefined): string {
@@ -296,9 +298,18 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         const timer = setTimeout(() => setFlashId(null), FOCUS_FLASH_MS);
         return () => clearTimeout(timer);
     }, [focusSegmentId]);
+    const focusTries = useRef(0);
+    useEffect(() => { focusTries.current = 0; }, [focusSegmentId, segments.length]);
     useEffect(() => {
         if (!focusSegmentId || focusIndex >= 0 || !hasMore || isLoadingMore || isRecording || !onLoadMore) return;
-        const timer = setInterval(() => onLoadMore(), FOCUS_LOAD_RETRY_MS);
+        const timer = setInterval(() => {
+            if (focusTries.current >= FOCUS_LOAD_MAX_TRIES) {
+                clearInterval(timer);
+                return;
+            }
+            focusTries.current += 1;
+            onLoadMore();
+        }, FOCUS_LOAD_RETRY_MS);
         return () => clearInterval(timer);
     }, [focusSegmentId, focusIndex, hasMore, isLoadingMore, isRecording, onLoadMore]);
     useEffect(() => {

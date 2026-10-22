@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ChevronDown } from 'lucide-react';
-import { formatUsd, type MeetingCost } from '@/lib/stats';
+import { formatUsd, purposeLabel, type MeetingCost } from '@/lib/stats';
 
 /** refreshKey (the summary status) refetches the cost after a summary is generated. */
 export function MeetingCostLine({ meetingId, refreshKey }: { meetingId: string; refreshKey?: string }) {
@@ -41,7 +41,7 @@ export function MeetingCostLine({ meetingId, refreshKey }: { meetingId: string; 
       {open && (
         <ul className="mt-1 space-y-0.5 pl-1">
           {cost.by_purpose.map((p) => (
-            <li key={p.purpose}>{`${p.purpose} · ${(p.tokens / 1000).toFixed(1)}k tokens · ${formatUsd(p.cost_usd)}`}</li>
+            <li key={p.purpose}>{`${purposeLabel(p.purpose)} · ${(p.tokens / 1000).toFixed(1)}k tokens · ${formatUsd(p.cost_usd)}`}</li>
           ))}
         </ul>
       )}

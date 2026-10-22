@@ -103,4 +103,19 @@ describe('ExtractionStatusLine', () => {
     expect(renderer!.toJSON()).toBeNull();
     expect(invoke.mock.calls.filter(([c]) => c === 'extraction_status').length).toBeGreaterThan(2);
   });
+
+  test('calls onSettled once when a pending extraction finishes', async () => {
+    status = 'pending';
+    const onSettled = mock(() => {});
+    await act(async () => {
+      renderer = create(<ExtractionStatusLine meetingId="m1" recheckMs={5} onSettled={onSettled} />);
+    });
+    await flush();
+    expect(onSettled).not.toHaveBeenCalled();
+    status = 'done';
+    await wait(40);
+    expect(onSettled).toHaveBeenCalledTimes(1);
+    renderer!.unmount();
+    renderer = null;
+  });
 });

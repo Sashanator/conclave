@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { formatTokens, formatUsd, readStatsPeriod, saveStatsPeriod, sharePct } from '../../src/lib/stats';
+import { formatTokens, formatUsd, purposeLabel, readStatsPeriod, saveStatsPeriod, sharePct } from '../../src/lib/stats';
 
 describe('formatUsd', () => {
   test('always three decimals, dash for unpriced', () => {
@@ -57,5 +57,15 @@ describe('stats period storage', () => {
     } finally {
       Object.defineProperty(globalThis, 'localStorage', { configurable: true, value: storage });
     }
+  });
+});
+
+describe('purposeLabel', () => {
+  test('plain labels for the recorded purpose ids, raw id for unknown ones', () => {
+    expect(purposeLabel('template_pick')).toBe('Template choice');
+    expect(purposeLabel('connection_test')).toBe('Connection test');
+    expect(purposeLabel('extraction')).toBe('Task extraction');
+    expect(purposeLabel('something_new')).toBe('something_new');
+    expect(purposeLabel('constructor')).toBe('constructor');
   });
 });

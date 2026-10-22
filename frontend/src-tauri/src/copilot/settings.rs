@@ -183,9 +183,19 @@ pub fn set_cache_for_test(s: CopilotSettings) {
 
 /// The reason to log a settings file that failed to load. A missing file is the normal first run.
 /// The reason is the load error only; it never carries the file's content.
-fn store_problem<E: std::fmt::Display>(exists: bool, reload: Result<(), E>) -> Option<String> {
+/// The kind of a store error, for logs. Its text can quote the store file, so the text is never logged.
+fn store_error_kind(e: &tauri_plugin_store::Error) -> String {
+    use tauri_plugin_store::Error;
+    match e {
+        Error::Io(e) => format!("io {:?}", e.kind()),
+        Error::Json(e) => format!("json {:?}", e.classify()),
+        _ => "other".to_string(),
+    }
+}
+
+fn store_problem(exists: bool, reload: Result<(), tauri_plugin_store::Error>) -> Option<String> {
     match reload {
-        Err(e) if exists => Some(e.to_string()),
+        Err(e) if exists => Some(store_error_kind(&e)),
         _ => None,
     }
 }
@@ -200,12 +210,12 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
                 .resolve(STORE_FILE, BaseDirectory::AppData)
                 .is_ok_and(|path| path.exists());
             if let Some(problem) = store_problem(exists, store.reload()) {
-                warn!("copilot: settings file unreadable, defaults used: {problem}");
+                warn!("copilot: settings file unreadable, defaults used ({problem})");
             }
             store.get(KEY)
         }
         Err(e) => {
-            warn!("copilot: settings store unreadable, defaults used: {e}");
+            warn!("copilot: settings store unreadable, defaults used ({})", store_error_kind(&e));
             None
         }
     };
@@ -341,14 +351,16 @@ mod tests {
 
     #[test]
     fn unreadable_file_is_reported_only_when_it_exists() {
+        use std::io::{Error as IoError, ErrorKind};
+        use tauri_plugin_store::Error as StoreError;
         // A missing file is the normal first run, so only an existing file that fails to load is reported.
-        assert_eq!(store_problem(false, Err::<(), _>("not found")), None);
-        assert_eq!(store_problem(false, Ok::<(), String>(())), None);
-        assert_eq!(store_problem(true, Ok::<(), String>(())), None);
-        assert_eq!(
-            store_problem(true, Err::<(), _>("expected value at line 1 column 1")),
-            Some("expected value at line 1 column 1".to_string())
-        );
+        let io = || StoreError::Io(IoError::from(ErrorKind::InvalidData));
+        assert_eq!(store_problem(false, Err(io())), None);
+        assert_eq!(store_problem(true, Ok(())), None);
+        // Only the kind is reported: the error text can quote the store file
+        assert_eq!(store_problem(true, Err(io())), Some("io InvalidData".to_string()));
+        let json = serde_json::from_str::<u8>("\"alert words\"").unwrap_err();
+        assert_eq!(store_problem(true, Err(StoreError::Json(json))), Some("json Data".to_string()));
     }
 
     #[test]

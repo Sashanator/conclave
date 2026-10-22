@@ -68,4 +68,29 @@ describe('VirtualizedTranscriptView focus', () => {
     expect(JSON.stringify(r.toJSON())).toContain('"data-focused":"true"');
     act(() => r.unmount());
   });
+
+  test('stops asking for pages when loads keep failing', async () => {
+    let calls = 0;
+    let r!: ReactTestRenderer;
+    act(() => {
+      r = create(
+        <VirtualizedTranscriptView
+          segments={[{ id: 'seg-0', timestamp: 0, text: 'line 0' }]}
+          hasMore
+          isLoadingMore={false}
+          totalCount={PAGES * PAGE_ROWS}
+          loadedCount={1}
+          onLoadMore={() => { calls += 1; }}
+          focusSegmentId={FOCUS}
+        />,
+      );
+    });
+    await sleep(3500); // 25 retries at 120 ms take about 3 s
+    const atStop = calls;
+    expect(atStop).toBeGreaterThan(5);
+    expect(atStop).toBeLessThanOrEqual(25);
+    await sleep(1000);
+    expect(calls).toBe(atStop);
+    act(() => r.unmount());
+  }, 10000);
 });

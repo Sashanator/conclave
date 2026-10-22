@@ -83,7 +83,7 @@ describe('stats page', () => {
     const text = pageText();
     expect(text).toContain('$0.012');
     expect(text).toContain('claude');
-    expect(text).toContain('Input 18.4k');
+    expect(text).toContain('Uncached input 18.4k');
     expect(text).toContain('Output 2.1k');
     expect(text).toContain('2 unpriced');
     expect(text).toContain('$0.500');

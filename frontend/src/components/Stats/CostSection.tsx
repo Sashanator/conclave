@@ -28,7 +28,7 @@ export function CostSection({ periods, period }: { periods: CostPeriod[]; period
           {current.providers.map((p) => (
             <li key={p.provider} className="flex items-center justify-between py-2 text-sm">
               <span className="font-medium">{p.provider}</span>
-              <span className="text-muted-foreground">{`Input ${formatTokens(p.input_tokens)} · Output ${formatTokens(p.output_tokens)}`}</span>
+              <span className="text-muted-foreground">{`Uncached input ${formatTokens(p.input_tokens)} · Output ${formatTokens(p.output_tokens)}`}</span>
               <span>{formatUsd(p.cost_usd)}</span>
               {p.unpriced_calls > 0 && <span className="text-amber-600">{`${p.unpriced_calls} unpriced`}</span>}
             </li>

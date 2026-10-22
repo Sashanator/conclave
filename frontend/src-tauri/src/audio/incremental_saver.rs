@@ -17,6 +17,9 @@ struct AudioData {
 
 /// Incremental audio saver that writes checkpoints every 30 seconds
 /// to minimize memory usage and enable crash recovery
+/// Length of one checkpoint chunk, in seconds.
+const CHECKPOINT_SECONDS: u32 = 30;
+
 pub struct IncrementalAudioSaver {
     checkpoint_buffer: Vec<AudioData>,
     checkpoint_interval_samples: usize,  // 30s at 48kHz = 1,440,000 samples
@@ -43,8 +46,8 @@ impl IncrementalAudioSaver {
 
         Ok(Self {
             checkpoint_buffer: Vec::new(),
-            checkpoint_interval_samples: sample_rate as usize * 30, // 30 seconds
-            next_checkpoint_samples: sample_rate as usize * 30,
+            checkpoint_interval_samples: sample_rate as usize * CHECKPOINT_SECONDS as usize,
+            next_checkpoint_samples: sample_rate as usize * CHECKPOINT_SECONDS as usize,
             checkpoint_count: 0,
             checkpoints_dir,
             meeting_folder,
@@ -388,6 +391,13 @@ pub async fn recover_audio_from_checkpoints(
     recover_checkpoints_in(&folder_path)
 }
 
+/// Removes temporary files, ignoring any that are already gone.
+fn remove_temp_files(files: &[PathBuf]) {
+    for file in files {
+        let _ = std::fs::remove_file(file);
+    }
+}
+
 /// Merges the checkpoint chunks of a guarded meeting folder into audio.mp4. A chunk that fails
 /// `verify_chunk` is left out of the merge and kept on disk ("partial"); if none is usable the
 /// result is "failed" and no output is written.
@@ -430,7 +440,7 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
     checkpoint_files.sort_by_key(|entry| entry.path());
 
     let chunk_count = checkpoint_files.len() as u32;
-    let estimated_duration = (chunk_count as f64) * 30.0; // 30 seconds per chunk
+    let estimated_duration = (chunk_count as f64) * CHECKPOINT_SECONDS as f64;
 
     info!("Found {} checkpoint files, estimated duration: {:.2}s", chunk_count, estimated_duration);
 
@@ -438,36 +448,60 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
         .ok_or_else(|| "FFmpeg not found next to Conclave.exe — reinstall Conclave.".to_string())?;
     info!("Using FFmpeg at: {:?}", ffmpeg_path);
 
-    // A corrupt chunk is left out of the merge but stays on disk, so the audio around it is still recovered.
-    let mut usable = Vec::new();
-    let mut skipped = Vec::new();
-    let mut first_error = None;
+    // Check every chunk first. A corrupt chunk stays on disk and is left out of the merge.
+    let mut bad: Vec<Option<String>> = Vec::new();
     for entry in &checkpoint_files {
-        let path = entry.path();
-        match verify_chunk(&ffmpeg_path, &path) {
-            Ok(()) => usable.push(path),
+        match verify_chunk(&ffmpeg_path, &entry.path()) {
+            Ok(()) => bad.push(None),
             Err(e) => {
                 error!("{}", e);
-                skipped.push(entry.file_name().to_string_lossy().into_owned());
-                first_error.get_or_insert_with(|| e.to_string());
+                bad.push(Some(e.to_string()));
             }
         }
     }
-    if usable.is_empty() {
+    if bad.iter().all(Option::is_some) {
         return Ok(AudioRecoveryStatus {
             status: "failed".to_string(),
             chunk_count,
             estimated_duration_seconds: estimated_duration,
             audio_file_path: None,
-            message: first_error.unwrap_or_default(),
+            message: bad.iter().flatten().next().cloned().unwrap_or_default(),
         });
     }
+    let skipped: Vec<String> = checkpoint_files
+        .iter()
+        .zip(&bad)
+        .filter(|(_, verdict)| verdict.is_some())
+        .map(|(entry, _)| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    let usable_count = bad.iter().filter(|verdict| verdict.is_none()).count();
 
-    // Create FFmpeg concat file from the usable chunks
+    // Concat list in order. A corrupt chunk becomes silence of one checkpoint length, so the audio
+    // after it keeps its place on the timeline. A corrupt last chunk has nothing after it: dropped.
+    let last = checkpoint_files.len() - 1;
+    let mut concat_list: Vec<PathBuf> = Vec::new();
+    let mut silence_files: Vec<PathBuf> = Vec::new();
+    for (i, (entry, verdict)) in checkpoint_files.iter().zip(&bad).enumerate() {
+        if verdict.is_none() {
+            concat_list.push(entry.path());
+        } else if i < last {
+            let silence = checkpoints_dir.join(format!("silence_{:03}.part", i));
+            let zeros = vec![0u8; CHECKPOINT_SECONDS as usize * 48000 * 4];
+            if let Err(e) = encode_single_audio(&zeros, 48000, 1, &silence) {
+                silence_files.push(silence);
+                remove_temp_files(&silence_files);
+                return Err(format!("Could not make silence for a corrupt chunk: {}", e));
+            }
+            silence_files.push(silence.clone());
+            concat_list.push(silence);
+        }
+    }
+
+    // Create FFmpeg concat file
     let concat_file_path = checkpoints_dir.join("concat_list.txt");
     let mut concat_content = String::new();
 
-    for path in &usable {
+    for path in &concat_list {
         let path = path.canonicalize()
             .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
         concat_content.push_str(&format!("file '{}'\n", path.display()));
@@ -495,6 +529,7 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
     }
 
     let ffmpeg_result = command.output();
+    remove_temp_files(&silence_files);
 
     match ffmpeg_result {
         Ok(output) if output.status.success() => {
@@ -509,8 +544,8 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
                 (
                     "partial",
                     format!(
-                        "Recovered {} of {} audio chunks. Not merged, kept on disk: {}",
-                        usable.len(),
+                        "Recovered {} of {} audio chunks. Replaced by silence, kept on disk: {}",
+                        usable_count,
                         chunk_count,
                         skipped.join(", ")
                     ),
@@ -789,16 +824,16 @@ mod tests {
     }
 
     #[test]
-    fn a_truncated_chunk_is_skipped_and_the_rest_recovered_as_partial() {
+    fn a_corrupt_chunk_is_replaced_by_silence_so_later_audio_keeps_its_place() {
         let temp_dir = tempdir().unwrap();
         let folder = temp_dir.path().join("Partial_Recovery");
         let checkpoints = folder.join(".checkpoints");
         std::fs::create_dir_all(&checkpoints).unwrap();
-        let pcm: Vec<u8> = bytemuck::cast_slice(&vec![0.5f32; 48000]).to_vec();
+        // Full 30 s checkpoints, as the saver writes them.
+        let pcm: Vec<u8> = bytemuck::cast_slice(&vec![0.5f32; 48000 * 30]).to_vec();
         for i in 0..3 {
             encode_single_audio(&pcm, 48000, 1, &checkpoints.join(format!("audio_chunk_{:03}.mp4", i))).unwrap();
         }
-        let good_len = std::fs::metadata(checkpoints.join("audio_chunk_000.mp4")).unwrap().len();
         let middle = checkpoints.join("audio_chunk_001.mp4");
         let bytes = std::fs::read(&middle).unwrap();
         std::fs::write(&middle, &bytes[..bytes.len() / 2]).unwrap();
@@ -807,9 +842,19 @@ mod tests {
 
         assert_eq!(status.status, "partial");
         assert!(status.message.contains("audio_chunk_001.mp4"), "{}", status.message);
-        let merged_len = std::fs::metadata(folder.join("audio.mp4")).unwrap().len();
-        assert!(merged_is_complete(merged_len, 2 * good_len), "merged {merged_len} bytes");
         assert!(middle.exists(), "the corrupt chunk stays on disk");
+        assert!(!checkpoints.join("silence_001.part").exists(), "the silence stand-in is removed");
+        // Decode the output to raw samples: three checkpoint lengths, the middle one silent.
+        let merged = folder.join("audio.mp4");
+        let raw = std::process::Command::new(find_ffmpeg_path().unwrap())
+            .args(["-v", "error", "-i"])
+            .arg(&merged)
+            .args(["-f", "f32le", "-ac", "1", "-ar", "48000", "-"])
+            .output()
+            .unwrap()
+            .stdout;
+        let seconds = raw.len() as f64 / 4.0 / 48000.0;
+        assert!((seconds - 90.0).abs() < 1.0, "output is {seconds} s");
     }
 
     #[test]

@@ -184,7 +184,8 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         metadata.title,
         formattedTranscripts,
         folderPath ?? null,
-        metadata.notes ?? []
+        metadata.notes ?? [],
+        meetingId
       );
 
       const savedMeetingId = saveResponse.meeting_id;

@@ -698,7 +698,12 @@ async fn process<R: Runtime>(
         ModeSpec::AsSpoken => (text.clone(), false),
         _ => {
             let cleaned = match cleanup_target(&app).await {
-                Ok(llm) => cleanup::clean(&llm, &spec, &text, &s.dictionary).await,
+                Ok(llm) => match app.try_state::<AppState>() {
+                    Some(state) => {
+                        cleanup::clean(state.db_manager.pool(), &llm, &spec, &text, &s.dictionary).await
+                    }
+                    None => Err("no database".to_string()),
+                },
                 Err(e) => Err(e),
             };
             match cleaned {

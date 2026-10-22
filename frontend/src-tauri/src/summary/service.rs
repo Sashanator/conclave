@@ -1,7 +1,7 @@
 use crate::database::repositories::{
     meeting::MeetingsRepository, summary::SummaryProcessesRepository,
 };
-use crate::summary::llm_client::{generate_summary, LLMProvider};
+use crate::summary::llm_client::{generate_summary, LLMProvider, TokenUsage};
 use crate::summary::language_choice::{resolve_summary_language, LanguageChoice};
 use crate::summary::language_detection::detect_summary_language;
 use crate::summary::llm_target::{resolve_llm_target, LlmTarget};
@@ -18,6 +18,7 @@ use crate::summary::template_choice::{
     TemplateSource,
 };
 use crate::summary::templates;
+use crate::usage::{self, Purpose};
 use crate::ollama::metadata::ModelMetadataCache;
 use chrono::{DateTime, Utc};
 use sqlx::SqlitePool;
@@ -62,6 +63,19 @@ fn strip_title_if_present(markdown: &str) -> String {
         strip_leading_title(markdown)
     } else {
         markdown.to_string()
+    }
+}
+
+/// One row per summary call that got a response. Called after the summary, with no lock held.
+async fn record_summary_usage(
+    pool: &SqlitePool,
+    provider: &LLMProvider,
+    model: &str,
+    meeting_id: &str,
+    calls: &[TokenUsage],
+) {
+    for call in calls {
+        usage::record(pool, provider.as_str(), model, Purpose::Summary, Some(meeting_id), None, Some(call)).await;
     }
 }
 
@@ -329,6 +343,9 @@ impl SummaryService {
                         ollama_endpoint.as_deref(), custom_openai_endpoint.as_deref(), custom_openai_max_tokens,
                         temperature, custom_openai_top_p, app_data_dir.as_ref(), Some(&cancellation_token)),
                 ).await;
+                if let Ok(Ok(c)) = &answer {
+                    usage::record(&pool, provider.as_str(), &model_name, Purpose::TemplatePick, Some(&meeting_id), None, c.usage.as_ref()).await;
+                }
                 match answer {
                     Ok(Ok(c)) => match auto_pick_answer_id(&c.content, &listing.templates) {
                         Some(id) => (id, TemplateSource::Auto),
@@ -384,6 +401,7 @@ impl SummaryService {
         let notes_block = crate::summary::user_notes::render_notes_block(&notes);
         let dictionary = crate::dictate::settings::current().dictionary;
 
+        let mut calls = Vec::new();
         let result = generate_meeting_summary(
             &client,
             &provider,
@@ -403,8 +421,10 @@ impl SummaryService {
             custom_openai_top_p,
             app_data_dir.as_ref(),
             Some(&cancellation_token),
+            &mut calls,
         )
         .await;
+        record_summary_usage(&pool, &provider, &model_name, &meeting_id, &calls).await;
 
         let duration = start_time.elapsed().as_secs_f64();
 
@@ -526,6 +546,29 @@ impl SummaryService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::database::repositories::{test_pool, transcript::TranscriptsRepository};
+    use crate::summary::llm_client::TokenUsage;
+
+    #[tokio::test]
+    async fn summary_usage_is_recorded_for_each_call() {
+        let pool = test_pool().await;
+        let meeting_id = TranscriptsRepository::save_transcript(&pool, "M", &[], None, &[], false)
+            .await
+            .unwrap();
+        let calls = [
+            TokenUsage { input: Some(1), output: Some(2), ..TokenUsage::default() },
+            TokenUsage { output: Some(3), ..TokenUsage::default() },
+        ];
+        record_summary_usage(&pool, &LLMProvider::Claude, "claude-sonnet-5-5", &meeting_id, &calls).await;
+        let rows: Vec<(i64,)> = sqlx::query_as(
+            "SELECT output_tokens FROM llm_usage WHERE meeting_id = ? AND purpose = 'summary' ORDER BY id",
+        )
+        .bind(&meeting_id)
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, vec![(2,), (3,)]);
+    }
 
     #[test]
     fn stale_cleanup_keeps_the_replacement_cancellation_token() {

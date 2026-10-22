@@ -47,6 +47,7 @@ const recording = { isRecording: true, isStopping: false, isProcessing: false, i
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recordingState, useRecordingState: () => recording }));
 
 const tx = {
+  currentMeetingId: 'meeting-rec-1' as string | null,
   transcripts: [] as Transcript[],
   notes: [] as { id: string; at: number | null; text: string }[],
   addNote: mock((_text: string, _at: number | null) => {}),
@@ -115,6 +116,13 @@ describe('CopilotPane', () => {
     expect(button(r, 'What should I ask?').props.disabled).toBe(true);
     expect(button(r, 'Explain the last minute').props.disabled).toBe(true);
     expect(JSON.stringify(r.toJSON())).toContain('Copilot starts once there is transcript');
+  });
+
+  test('ask_sends_the_recording_id', async () => {
+    const r = render();
+    click(r, 'Catch me up');
+    await flush();
+    expect((invoke.mock.calls.find((c) => c[0] === 'copilot_ask')![1] as any).request.recording_id).toBe('meeting-rec-1');
   });
 
   test('ask_shows_pending_then_answer', async () => {

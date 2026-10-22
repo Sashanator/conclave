@@ -315,9 +315,11 @@ pub(crate) async fn generate_meeting_summary(
     let mut reasoning_stripped = false;
     let mut chunked = false;
 
-    if let Some(chunk_size) = chunk_size_for(provider, token_threshold, total_tokens) {
+    if (provider == &LLMProvider::Ollama || provider == &LLMProvider::BuiltInAI)
+        && total_tokens >= token_threshold
+    {
         chunked = true;
-        let chunks = chunk_text(text, chunk_size, 100);
+        let chunks = chunk_text(text, token_threshold - 300, 100);
         let num_chunks = chunks.len();
         let mut chunk_summaries = Vec::with_capacity(num_chunks);
         for (index, chunk) in chunks.iter().enumerate() {
@@ -431,37 +433,12 @@ pub(crate) async fn generate_meeting_summary(
     })
 }
 
-/// Chunk size when a summary must be split, or `None` when it fits in one pass. service.rs passes
-/// BuiltInAI's bare context, so the 300-token prompt reserve is taken here, once. Ollama's threshold
-/// already has the reserve from service.rs, and its chunks take another 300 (as before).
-fn chunk_size_for(provider: &LLMProvider, token_threshold: usize, total_tokens: usize) -> Option<usize> {
-    match provider {
-        LLMProvider::BuiltInAI => {
-            let budget = token_threshold.saturating_sub(300);
-            (total_tokens >= budget).then_some(budget)
-        }
-        LLMProvider::Ollama => {
-            (total_tokens >= token_threshold).then(|| token_threshold.saturating_sub(300))
-        }
-        _ => None,
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::summary::templates;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::{TcpListener, TcpStream};
-
-    #[test]
-    fn builtin_ai_takes_the_prompt_reserve_once() {
-        // service.rs passes BuiltInAI's bare context: a 2048-token model gates at 1748 and chunks at 1748.
-        assert_eq!(chunk_size_for(&LLMProvider::BuiltInAI, 2048, 5000), Some(1748));
-        assert_eq!(chunk_size_for(&LLMProvider::BuiltInAI, 2048, 1747), None);
-        // Ollama's threshold already has service.rs's reserve, so its chunks are still 300 shorter.
-        assert_eq!(chunk_size_for(&LLMProvider::Ollama, 1748, 1748), Some(1448));
-    }
 
     fn long_transcript() -> String {
         "The team reviewed the quarterly plan and agreed on next steps. ".repeat(50)

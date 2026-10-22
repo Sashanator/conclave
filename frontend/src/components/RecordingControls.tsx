@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { Play, Pause, Square, Mic, AlertCircle, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -176,7 +177,8 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         }
       }
       setIsProcessing(false);
-      onRecordingStop(false);
+      // Recording is still running, so the user can press Stop again; calling onRecordingStop(false) would block that.
+      toast.error('Could not stop recording', { description: error instanceof Error ? error.message : String(error), duration: 5000 });
     } finally {
       setIsStopping(false);
     }
@@ -260,8 +262,6 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             return newCount;
           });
           setIsProcessing(false);
-          console.log('Calling onRecordingStop(false) due to transcript error');
-          onRecordingStop(false);
           if (onTranscriptionError) {
             onTranscriptionError(errorMessage);
           }
@@ -279,11 +279,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           });
           setIsProcessing(false);
 
-          if (event.payload.phase === 'active') {
-            console.log('Calling onRecordingStop(false) due to active transcription error');
-            onRecordingStop(false);
-          }
-
+          // Rust keeps recording after an active error, so this must not end the session (that would take the stop gate).
           // For actionable errors (like model loading failures), the main page will handle showing the model selector
           // For regular errors, they are handled by useModalState global listener which shows a toast
         });

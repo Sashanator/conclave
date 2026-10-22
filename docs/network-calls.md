@@ -19,6 +19,9 @@ Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src` (exclud
 | api.groq.com | `src-tauri/src/groq/groq.rs:98` (`:95`); `src-tauri/src/summary/llm_client.rs:307` | User-configured LLM summaries | Allowed (user-configured) |
 | openrouter.ai | `src-tauri/src/openrouter/openrouter.rs:45` (`:43`); `src-tauri/src/summary/llm_client.rs:311` | User-configured LLM summaries | Allowed (user-configured) |
 | Same LLM hosts as the rows above (the user's chosen provider) | `src-tauri/src/copilot/ask.rs` (`copilot_ask`, `:247`) | Live copilot: sends the live transcript and notes to the user's LLM, only when the user clicks | Allowed (user-configured) |
+| Same LLM hosts as the rows above (the Knowledge model's provider) | `src-tauri/src/knowledge/extract.rs` (`run_one` `:250`, `call_model` `:258`, `complete` `:264`) | Task extraction: after each summary and on Retry, sends the summary and the user's own lines to the Knowledge model | Allowed (user-configured) |
+| Same LLM hosts as the rows above (the Knowledge model's provider) | `src-tauri/src/knowledge/digest.rs` (`call_model` `:414`, `complete` `:420`) | Friday weekly digest: sends the head of each summary from the week to the Knowledge model, once a week | Allowed (user-configured) |
+| Same LLM hosts as the rows above (the Knowledge model's provider) | `src-tauri/src/knowledge/ask.rs` (`ask`, `complete` `:259`) | Ask: sends the question, the chat so far and retrieved excerpts of the user's meetings to the Knowledge model, only when the user asks | Allowed (user-configured) |
 | The user's calendar host (the iCal "secret address" the user pastes; https only) | `src-tauri/src/knowledge/calendar.rs` (`get_body`, `fetch`; `CALENDAR_REFRESH_MINS` in `knowledge/mod.rs`) | GET of the user's calendar feed: once on connect, then every 30 min while running, only while connected. The URL is never logged or put in an error; only the status shows the host | Allowed (user-configured; no Meetily-owned host) |
 | localhost:11434 (Ollama, default; the user can set another endpoint) | `src-tauri/src/ollama/metadata.rs:145`; `src-tauri/src/ollama/ollama.rs:163,282,441`; `src-tauri/src/summary/llm_client.rs:317`; `src/components/ModelSettingsModal.tsx:1149,1203` | Local Ollama: tags, pull, delete, show, chat | Allowed (localhost Ollama) |
 | localhost:11434 test fixtures | `src-tauri/src/summary/service.rs:798-990` (inside `mod tests`, from `:689`) | Cache-key test values, not requests | Not a call |
@@ -62,6 +65,8 @@ These are the request sites, with the base URL each one builds from.
 Auto-pick of a summary template: one short request to the same provider before the summary (first 4,000 characters of the transcript plus template names and "Use when" lines).
 
 Dictate sends only the transcribed text to the LLM, never audio, and only when a cloud mode (Cleaned up or a custom mode) is used. The As spoken mode makes no request.
+
+Token usage (for Costs and Stats) is read from the `usage` object of replies the app already receives. OpenRouter is asked to include usage in its reply (`summary/llm_client.rs:96`, same host), and Speaking Practice reads usage from its Claude stream (`practice/claude.rs`, same host). These add no host.
 
 Test-only clients (`reqwest::Client::new()` at `llm_client.rs:698,784,860`, `whisper_engine.rs:1601,1641,1796`, `parakeet_engine.rs:1341`) talk only to local mock servers in `mod tests`.
 

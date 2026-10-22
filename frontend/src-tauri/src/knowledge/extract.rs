@@ -12,10 +12,10 @@ use crate::usage::{self, Purpose};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{LazyLock, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::{Notify, Semaphore};
 
@@ -29,6 +29,11 @@ static IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new
 
 /// One extraction at a time, whoever asks: the worker, Retry, a brief or the digest.
 static ONE_AT_A_TIME: Semaphore = Semaphore::const_new(1);
+
+/// Meetings whose save failed: the failure count and the earliest time an automatic run may try again.
+/// The worker and the digest and brief lists check it, so none of them re-bills a failing meeting. Retry ignores it.
+static HELD_BACK: LazyLock<Mutex<HashMap<String, (u32, Instant)>>> =
+    LazyLock::new(|| Mutex::new(HashMap::new()));
 
 /// Whether a model call is running for this meeting now.
 pub(crate) fn extraction_running(meeting_id: &str) -> bool {
@@ -198,7 +203,8 @@ pub async fn enqueue(pool: &SqlitePool, meeting_id: &str) {
     }
 }
 
-/// The oldest queued meeting that no call is running for. Busy ones are skipped, so the worker never spins on them.
+/// The oldest queued meeting that no call is running for and that is not held back after a failed save.
+/// Skipped ones are not picked again, so the worker never spins on them.
 async fn next_pending(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
     let ids: Vec<(String,)> = sqlx::query_as(
         "SELECT meeting_id FROM meeting_extracts WHERE status = 'pending' ORDER BY extracted_at, meeting_id",
@@ -208,7 +214,7 @@ async fn next_pending(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> 
     Ok(ids
         .into_iter()
         .map(|(id,)| id)
-        .find(|id| !InFlight::is_busy(id)))
+        .find(|id| !InFlight::is_busy(id) && !held_back(id)))
 }
 
 pub(crate) async fn wait_for_pool(database: impl Fn() -> Option<SqlitePool>) -> SqlitePool {
@@ -217,6 +223,37 @@ pub(crate) async fn wait_for_pool(database: impl Fn() -> Option<SqlitePool>) -> 
             return pool;
         }
         tokio::time::sleep(Duration::from_secs(1)).await;
+    }
+}
+
+/// How long an automatic run leaves a meeting alone after its save failed: 10 min, doubling, at most 2 h.
+pub(crate) fn retry_backoff(failures: u32) -> Duration {
+    let minutes = (10u64 << failures.saturating_sub(1).min(8)).min(120);
+    Duration::from_secs(minutes * 60)
+}
+
+/// True while a failed save holds the meeting back from automatic runs.
+pub(crate) fn held_back(meeting_id: &str) -> bool {
+    HELD_BACK
+        .lock()
+        .unwrap_or_else(PoisonError::into_inner)
+        .get(meeting_id)
+        .is_some_and(|(_, retry_at)| *retry_at > Instant::now())
+}
+
+/// Records how a run ended: a failed save holds the meeting back, a good run clears that.
+pub(crate) fn record_outcome(meeting_id: &str, result: &Result<(), String>) {
+    let mut held = HELD_BACK.lock().unwrap_or_else(PoisonError::into_inner);
+    match result {
+        Ok(()) => {
+            held.remove(meeting_id);
+        }
+        Err(e) => {
+            let failures = held.get(meeting_id).map_or(0, |(n, _)| *n) + 1;
+            let retry_at = Instant::now() + retry_backoff(failures);
+            held.insert(meeting_id.to_string(), (failures, retry_at));
+            error!("knowledge: extraction of {meeting_id} could not be saved, held back: {e}");
+        }
     }
 }
 
@@ -229,10 +266,15 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
         })
         .await;
         loop {
+            // Turning extraction off stops the queue. Retry still runs a meeting directly, so it keeps working.
+            if !settings::current().extract_enabled {
+                let _ = tokio::time::timeout(Duration::from_secs(30), WAKE.notified()).await;
+                continue;
+            }
             match next_pending(&pool).await {
                 Ok(Some(id)) => {
-                    if let Err(e) = run_one(&pool, &id).await {
-                        error!("knowledge: extraction of {id} could not be saved: {e}");
+                    // A failed save is held back by run_one, so the next pass does not pick it up at once.
+                    if run_one(&pool, &id).await.is_err() {
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     }
                 }
@@ -250,6 +292,7 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
 }
 
 /// Extracts one meeting with the knowledge model. A call already running for the meeting makes this a no-op.
+/// Retry calls this directly, so it ignores the hold; the worker and the digest check `held_back` first.
 pub(crate) async fn run_one(pool: &SqlitePool, meeting_id: &str) -> Result<(), String> {
     run_with(pool, meeting_id, |system, user| {
         call_model(pool.clone(), system, user)
@@ -294,6 +337,8 @@ where
     // Taken before the summary is read, so a pending mark set after it belongs to a newer summary.
     let started = stamp();
     let superseded = extract_once(pool, meeting_id, &started, &call).await;
+    // Recorded here, not in run_one: a call that found the slot busy returns above and must not touch the hold.
+    record_outcome(meeting_id, &superseded.as_ref().map(|_| ()).map_err(|e| e.clone()));
     // Released before the wake, so the woken worker does not find the meeting still busy.
     drop(flight);
     if superseded? {
@@ -485,6 +530,17 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::sync::Notify;
+
+    #[test]
+    fn retry_backoff_doubles_from_ten_minutes_and_caps_at_two_hours() {
+        let minutes = |failures| retry_backoff(failures).as_secs() / 60;
+        assert_eq!(minutes(1), 10);
+        assert_eq!(minutes(2), 20);
+        assert_eq!(minutes(3), 40);
+        assert_eq!(minutes(4), 80);
+        assert_eq!(minutes(5), 120);
+        assert_eq!(minutes(u32::MAX), 120);
+    }
 
     const VALID: &str = r#"{"tasks":[{"text":"Send the deck","owner":"me","at":62.5}],"decisions":["Ship"],"requests":[]}"#;
 
@@ -792,5 +848,29 @@ mod tests {
 
         let queued = next_pending(&pool).await.unwrap();
         assert_eq!(queued.as_deref(), Some("M"));
+    }
+
+    #[tokio::test]
+    async fn run_that_finds_the_meeting_busy_keeps_its_hold() {
+        let pool = test_pool().await;
+        record_outcome("busy-hold", &Err("could not save".into()));
+        // Another run holds the slot. This call returns at once and must not clear the hold.
+        let _busy = hold_in_flight("busy-hold");
+
+        assert_eq!(run_one(&pool, "busy-hold").await, Ok(()));
+        assert!(held_back("busy-hold"));
+    }
+
+    #[tokio::test]
+    async fn worker_skips_a_meeting_held_back_after_a_failed_save() {
+        let pool = test_pool().await;
+        meeting_with_summary(&pool, "held-worker", "# Notes").await;
+        sqlx::query("INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, extracted_at) VALUES ('held-worker', '[]', '[]', 'pending', '2026-10-01T00:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        record_outcome("held-worker", &Err("could not save".into()));
+
+        assert_eq!(next_pending(&pool).await.unwrap(), None);
     }
 }

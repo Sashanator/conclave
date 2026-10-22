@@ -21,9 +21,92 @@ pub fn is_altgr_fake_ctrl(vk: u16, scan_code: u32) -> bool {
     vk == 0xA2 && scan_code == ALTGR_FAKE_CTRL_SCAN
 }
 
+/// Standard clipboard formats the save keeps: CF_UNICODETEXT, CF_TEXT, CF_DIB, CF_DIBV5, CF_HDROP.
+/// Only these and the registered ones below are read: other formats (OLE data, private, GDI) do not restore.
+pub const STANDARD_FORMATS: [u32; 5] = [13, 1, 8, 17, 15];
+
+/// Registered clipboard formats the save keeps, looked up by name.
+pub const REGISTERED_FORMATS: [&str; 7] = [
+    "PNG",
+    "HTML Format",
+    "Rich Text Format",
+    "Preferred DropEffect",
+    "FileNameW",
+    "FileName",
+    "Shell IDList Array",
+];
+
+/// What a clipboard over the size cap keeps from the allowlist: CF_UNICODETEXT, CF_DIB, CF_DIBV5 (and PNG by name).
+pub const TEXT_AND_IMAGE_FORMATS: [u32; 3] = [13, 8, 17];
+
+/// The allowed formats that are on the clipboard, in allowlist order.
+pub fn formats_to_save(allowed: &[u32], is_available: impl Fn(u32) -> bool) -> Vec<u32> {
+    allowed.iter().copied().filter(|&f| is_available(f)).collect()
+}
+
+/// Largest total of saved clipboard bytes; a bigger clipboard keeps only text and images.
+pub const CLIPBOARD_CAP: usize = 64 * 1024 * 1024;
+
+pub fn within_clipboard_cap(total: usize) -> bool {
+    total <= CLIPBOARD_CAP
+}
+
+/// Windows drops a low-level hook silently, so the hook thread re-installs it while this is true.
+/// Re-hooking mid-dictation or with a key down could lose that key's up event.
+pub fn can_rehook(idle: bool, is_down: &dyn Fn(u16) -> bool) -> bool {
+    idle && !(1..=254).any(is_down)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rehook_only_when_idle_and_no_key_down() {
+        let none_down = |_: u16| false;
+        assert!(can_rehook(true, &none_down));
+        assert!(!can_rehook(false, &none_down));
+        assert!(!can_rehook(true, &|vk| vk == 0x41));
+        assert!(!can_rehook(false, &|vk| vk == 0x41));
+    }
+
+    #[test]
+    fn allowlist_keeps_text_images_and_files_only() {
+        for format in [13, 1, 8, 17, 15] {
+            assert!(STANDARD_FORMATS.contains(&format), "format {format}");
+        }
+        assert!(REGISTERED_FORMATS.contains(&"PNG"));
+        assert!(REGISTERED_FORMATS.contains(&"Shell IDList Array"));
+        // OLE data, private and GDI formats are not on the list.
+        for name in ["DataObject", "Ole Private Data", "Native"] {
+            assert!(!REGISTERED_FORMATS.contains(&name), "{name}");
+        }
+        for format in [2, 3, 9, 14, 0x80, 0x200, 0x300] {
+            assert!(!STANDARD_FORMATS.contains(&format), "format {format:#x}");
+        }
+    }
+
+    #[test]
+    fn saves_only_the_allowed_formats_that_are_available_in_order() {
+        let allowed = [13, 1, 8, 17, 15];
+        assert_eq!(formats_to_save(&allowed, |f| f != 1 && f != 15), vec![13, 8, 17]);
+        assert_eq!(formats_to_save(&allowed, |_| false), Vec::<u32>::new());
+        assert_eq!(formats_to_save(&allowed, |_| true), allowed.to_vec());
+    }
+
+    #[test]
+    fn over_cap_keeps_text_and_images_from_the_allowlist() {
+        for format in TEXT_AND_IMAGE_FORMATS {
+            assert!(STANDARD_FORMATS.contains(&format), "format {format}");
+        }
+    }
+
+    #[test]
+    fn clipboard_cap_is_64_mib() {
+        assert!(within_clipboard_cap(0));
+        assert!(within_clipboard_cap(CLIPBOARD_CAP));
+        assert!(!within_clipboard_cap(CLIPBOARD_CAP + 1));
+    }
 
     #[test]
     fn injected_flag() {

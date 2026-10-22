@@ -205,7 +205,7 @@ impl IncrementalAudioSaver {
 
             // Use absolute path for FFmpeg (required for safe mode)
             let abs_path = checkpoint_path.canonicalize()?;
-            list_content.push_str(&format!("file '{}'\n", abs_path.display()));
+            list_content.push_str(&concat_line(&abs_path));
         }
 
         std::fs::write(&list_file, list_content)?;
@@ -277,6 +277,12 @@ pub struct AudioRecoveryStatus {
     pub estimated_duration_seconds: f64,
     pub audio_file_path: Option<String>,
     pub message: String,
+}
+
+/// One line of an ffmpeg concat list. A single quote in the path is escaped as `'\''`, so a folder
+/// such as "John's 1-1" still parses.
+fn concat_line(path: &Path) -> String {
+    format!("file '{}'\n", path.display().to_string().replace('\'', r"'\''"))
 }
 
 /// ffmpeg concat with stream copy. Chunks are checked with `verify_chunk` first: `-xerror` here
@@ -508,7 +514,7 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
     for path in &concat_list {
         let path = path.canonicalize()
             .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
-        concat_content.push_str(&format!("file '{}'\n", path.display()));
+        concat_content.push_str(&concat_line(&path));
     }
 
     std::fs::write(&concat_file_path, concat_content)
@@ -878,6 +884,27 @@ mod tests {
 
         assert!(recover_checkpoints_in(&folder).is_err());
         assert!(!checkpoints.join("silence_001.part").exists());
+    }
+
+    #[tokio::test]
+    async fn merges_work_in_a_folder_whose_name_has_a_quote() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("John's 1-1");
+        let checkpoints = folder.join(".checkpoints");
+        std::fs::create_dir_all(&checkpoints).unwrap();
+        let pcm: Vec<u8> = bytemuck::cast_slice(&vec![0.5f32; 48000]).to_vec();
+        for i in 0..2 {
+            encode_single_audio(&pcm, 48000, 1, &checkpoints.join(format!("audio_chunk_{:03}.mp4", i))).unwrap();
+        }
+
+        let mut saver = IncrementalAudioSaver::new(folder.clone(), 48000).unwrap();
+        saver.checkpoint_count = 2;
+        saver.merge_checkpoints(&folder.join("merged.mp4")).await.unwrap();
+        assert!(folder.join("merged.mp4").exists());
+
+        let status = recover_checkpoints_in(&folder).unwrap();
+        assert_eq!(status.status, "success", "{}", status.message);
+        assert!(folder.join("audio.mp4").exists());
     }
 
     #[test]

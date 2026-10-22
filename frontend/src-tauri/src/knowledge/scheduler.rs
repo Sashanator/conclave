@@ -94,6 +94,9 @@ pub(crate) async fn make_due_briefs<R: Runtime>(
     occurrences: &[Occurrence],
     templates: &[TemplateEntry],
 ) -> Result<(), String> {
+    // The clock the brief re-reads before it saves: the tick's time plus what has passed since (so a test clock works).
+    let begun = std::time::Instant::now();
+    let later = || now + Duration::from_std(begun.elapsed()).unwrap_or_else(|_| Duration::zero());
     for occ in occurrences.iter().filter(|o| due(o, now)) {
         let Some(template) = event_type(&occ.title, templates) else {
             continue;
@@ -101,7 +104,7 @@ pub(crate) async fn make_due_briefs<R: Runtime>(
         if brief_made(pool, occ).await? {
             continue;
         }
-        if let Err(e) = make_brief(app, pool, occ, template).await {
+        if let Err(e) = make_brief(app, pool, occ, template, &later).await {
             error!("knowledge: brief not made: {e}");
         }
     }

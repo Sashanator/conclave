@@ -217,6 +217,12 @@ mod tests {
     async fn feed_is_pruned_once_a_day() {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
+        // The digest feature has started. Otherwise the tick would store the start, and mock apps have no store.
+        let started = crate::knowledge::settings::KnowledgeSettings {
+            digest_since: Some(at(0, 0).to_rfc3339()),
+            ..crate::knowledge::settings::current()
+        };
+        crate::knowledge::settings::set_cache(started);
         let mut clock = Clock::default();
         let templates: Vec<TemplateEntry> = Vec::new();
         let old_item = |created: DateTime<Utc>| {

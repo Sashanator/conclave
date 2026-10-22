@@ -173,7 +173,7 @@ async fn keyword_matches(
                         continue;
                     }
                     match summary_section(&m.text, &needle) {
-                        Some(section) => cut_chars(&section, SUMMARY_SHARE_CHARS),
+                        Some(section) => window_around(&section, &needle, SUMMARY_SHARE_CHARS),
                         None => continue,
                     }
                 }
@@ -181,7 +181,7 @@ async fn keyword_matches(
                     if !filters.person_in_meeting(&m.meeting_id, meta) {
                         continue;
                     }
-                    cut_chars(&m.text, SUMMARY_SHARE_CHARS)
+                    window_around(&m.text, &needle, SUMMARY_SHARE_CHARS)
                 }
                 _ => continue,
             };
@@ -473,6 +473,19 @@ fn cut_chars(text: &str, max: usize) -> String {
     text.chars().take(max).collect()
 }
 
+/// At most `max` characters, centred on the first match of `needle` (lowercase), or from the start when none.
+fn window_around(text: &str, needle: &str, max: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.len() <= max {
+        return text.to_string();
+    }
+    // The match index is counted in the lowercased text; it differs from `text` only where case mapping changes length
+    let lower = text.to_lowercase();
+    let centre = lower.find(needle).map_or(0, |b| lower[..b].chars().count());
+    let start = centre.saturating_sub(max / 2).min(chars.len() - max);
+    chars[start..start + max].iter().collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -727,6 +740,48 @@ mod tests {
         assert_eq!(hits[0].source, "summary");
         assert_eq!(hits[0].text.chars().count(), SUMMARY_SHARE_CHARS);
         assert!(hits[0].text.starts_with("бюджет"));
+    }
+
+    #[tokio::test]
+    async fn summary_excerpt_centres_on_a_deep_keyword() {
+        let pool = test_pool().await;
+        let id = meeting(&pool, "Sync", "2026-10-05", vec![seg("Пусто", 0.0, None)]).await;
+        // The keyword sits past the excerpt share, so a window cut from the start would miss it
+        let markdown = format!("# Итоги\n{}бюджет{}", "я".repeat(3000), "я".repeat(3000));
+        summary(&pool, &id, "standard_meeting", "Standard meeting", &markdown).await;
+        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source, "summary");
+        assert_eq!(hits[0].text.chars().count(), SUMMARY_SHARE_CHARS);
+        assert!(hits[0].text.contains("бюджет"));
+    }
+
+    #[tokio::test]
+    async fn notes_excerpt_centres_on_a_deep_keyword() {
+        let pool = test_pool().await;
+        let id = meeting(&pool, "Sync", "2026-10-05", vec![seg("Пусто", 0.0, None)]).await;
+        let text = format!("{}бюджет{}", "я".repeat(3000), "я".repeat(3000));
+        let json = serde_json::json!([{ "id": "n1", "at": 1.0, "text": text }]).to_string();
+        sqlx::query("INSERT INTO meeting_notes (meeting_id, notes_json, created_at, updated_at) VALUES (?, ?, '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z')")
+            .bind(&id).bind(json).execute(&pool).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source, "notes");
+        assert_eq!(hits[0].text.chars().count(), SUMMARY_SHARE_CHARS);
+        assert!(hits[0].text.contains("бюджет"));
+    }
+
+    #[test]
+    fn window_around_pins_to_the_ends_and_falls_back_to_the_start() {
+        // A match at the very end: the window is pinned to the end and keeps its full size
+        let text = format!("{}бюджет", "я".repeat(100));
+        let w = window_around(&text, "бюджет", 20);
+        assert_eq!(w.chars().count(), 20);
+        assert!(w.ends_with("бюджет"));
+        // No match: from the start, cut on a character boundary
+        assert_eq!(window_around("абвгд еёжз", "нет", 4), "абвг");
+        // Shorter than the window: the whole text
+        assert_eq!(window_around("бюджет", "бюджет", 40), "бюджет");
     }
 
     #[tokio::test]

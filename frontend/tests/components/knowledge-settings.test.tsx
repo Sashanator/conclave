@@ -46,6 +46,9 @@ const FEED = 'https://calendar.example.com/private/basic.ics';
 
 let view: View;
 let calendar: Calendar;
+// Per test: how many events a connect finds, and whether reading the calendar status fails
+let upcomingOnConnect: number;
+let statusFails: boolean;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'knowledge_get_settings') return structuredClone(view);
@@ -53,10 +56,13 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
     view = structuredClone(args?.input as View);
     return structuredClone(view);
   }
-  if (command === 'calendar_status') return structuredClone(calendar);
+  if (command === 'calendar_status') {
+    if (statusFails) throw 'calendar status unavailable';
+    return structuredClone(calendar);
+  }
   if (command === 'calendar_connect') {
     if (String(args?.url).includes('bad')) throw 'calendar feed did not parse';
-    calendar = structuredClone(connected);
+    calendar = { ...structuredClone(connected), upcoming: upcomingOnConnect };
     return structuredClone(calendar);
   }
   if (command === 'calendar_disconnect') {
@@ -117,6 +123,12 @@ function byLabel(label: string): ReactTestInstance {
   return found[0];
 }
 
+function paragraphWith(text: string): ReactTestInstance {
+  const found = renderer!.root.findAll((n) => n.type === 'p' && textOf(n).includes(text));
+  if (found.length === 0) throw new Error(`no paragraph with "${text}"`);
+  return found[0];
+}
+
 function byButton(text: string): ReactTestInstance {
   const found = renderer!.root.findAll((n) => n.type === 'button' && textOf(n) === text);
   if (found.length === 0) throw new Error(`no button "${text}"`);
@@ -132,6 +144,8 @@ beforeEach(() => {
     digest_enabled: true,
   };
   calendar = structuredClone(disconnected);
+  upcomingOnConnect = 3;
+  statusFails = false;
   invoke.mockClear();
 });
 
@@ -203,6 +217,51 @@ describe('KnowledgeSettings', () => {
     await flush();
     expect(invoke).toHaveBeenCalledWith('calendar_connect', { url: FEED });
     expect(allText()).toContain('Found 3 upcoming events');
+  });
+
+  test('Connect says "1 upcoming event" for a single event', async () => {
+    upcomingOnConnect = 1;
+    await mount();
+    await act(async () => {
+      byLabel('Calendar secret address').props.onChange({ target: { value: FEED } });
+    });
+    await act(async () => {
+      await byButton('Connect').props.onClick();
+    });
+    await flush();
+    expect(allText()).toContain('Found 1 upcoming event');
+    expect(allText()).not.toContain('Found 1 upcoming events');
+  });
+
+  test('a failed Connect message is red, a successful one is not', async () => {
+    await mount();
+    await act(async () => {
+      byLabel('Calendar secret address').props.onChange({ target: { value: 'https://calendar.example.com/bad.ics' } });
+    });
+    await act(async () => {
+      await byButton('Connect').props.onClick();
+    });
+    await flush();
+    expect(paragraphWith('calendar feed did not parse').props.className).toContain('text-red-600');
+  });
+
+  test('a successful Connect message is not red', async () => {
+    await mount();
+    await act(async () => {
+      byLabel('Calendar secret address').props.onChange({ target: { value: FEED } });
+    });
+    await act(async () => {
+      await byButton('Connect').props.onClick();
+    });
+    await flush();
+    expect(paragraphWith('Found 3 upcoming events').props.className).not.toContain('text-red-600');
+  });
+
+  test('the connect form still shows when calendar_status fails', async () => {
+    statusFails = true;
+    await mount();
+    expect(allText()).toContain('Not connected');
+    expect(byLabel('Calendar secret address').props.type).toBe('password');
   });
 
   test('a successful Connect clears the address input', async () => {

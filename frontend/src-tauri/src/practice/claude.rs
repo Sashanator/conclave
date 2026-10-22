@@ -2,6 +2,7 @@
 
 use crate::database::repositories::setting::SettingsRepository;
 use crate::practice::db::{Material, MaterialKind};
+use crate::summary::llm_client::TokenUsage;
 use crate::practice::{CHAT_MAX_TOKENS, LONG_MAX_TOKENS};
 use base64::Engine as _;
 use futures_util::StreamExt;
@@ -18,6 +19,8 @@ const MAX_LINE_BYTES: usize = 1024 * 1024;
 #[derive(Debug, PartialEq)]
 pub enum SseEvent {
     Text(String),
+    /// A partial usage: the input side from `message_start`, the output count from `message_delta`.
+    Usage(TokenUsage),
     StopReason(String),
     Stop,
     Error { kind: String, message: String },
@@ -37,35 +40,80 @@ impl SseParser {
             let line: String = self.buf.drain(..=nl).collect();
             // Each event's JSON is on one `data:` line and carries its own `type`, so `event:` lines are not needed.
             if let Some(data) = line.trim_end().strip_prefix("data:") {
-                out.push(parse_event(data.trim()));
+                out.extend(parse_event(data.trim()));
             }
         }
         out
     }
 }
 
-fn parse_event(data: &str) -> SseEvent {
+fn parse_event(data: &str) -> Vec<SseEvent> {
     let Ok(v) = serde_json::from_str::<Value>(data) else {
-        return SseEvent::Ignore;
+        return vec![SseEvent::Ignore];
     };
     match v["type"].as_str() {
         Some("content_block_delta") if v["delta"]["type"] == "text_delta" => {
-            SseEvent::Text(v["delta"]["text"].as_str().unwrap_or_default().to_string())
+            vec![SseEvent::Text(v["delta"]["text"].as_str().unwrap_or_default().to_string())]
         }
-        Some("message_delta") => match v["delta"]["stop_reason"].as_str() {
-            Some(reason) => SseEvent::StopReason(reason.to_string()),
-            None => SseEvent::Ignore,
-        },
-        Some("message_stop") => SseEvent::Stop,
-        Some("error") => SseEvent::Error {
+        // message_start's output_tokens is a placeholder; the final count comes with message_delta.
+        Some("message_start") if v["message"]["usage"].is_object() => {
+            let usage = &v["message"]["usage"];
+            vec![SseEvent::Usage(TokenUsage {
+                input: usage["input_tokens"].as_u64(),
+                cache_read: usage["cache_read_input_tokens"].as_u64(),
+                cache_write: usage["cache_creation_input_tokens"].as_u64(),
+                ..TokenUsage::default()
+            })]
+        }
+        Some("message_delta") => {
+            let mut events = Vec::new();
+            if v["usage"].is_object() {
+                events.push(SseEvent::Usage(TokenUsage {
+                    output: v["usage"]["output_tokens"].as_u64(),
+                    ..TokenUsage::default()
+                }));
+            }
+            match v["delta"]["stop_reason"].as_str() {
+                Some(reason) => events.push(SseEvent::StopReason(reason.to_string())),
+                None if events.is_empty() => events.push(SseEvent::Ignore),
+                None => {}
+            }
+            events
+        }
+        Some("message_stop") => vec![SseEvent::Stop],
+        Some("error") => vec![SseEvent::Error {
             kind: v["error"]["type"].as_str().unwrap_or("unknown").to_string(),
             message: v["error"]["message"]
                 .as_str()
                 .unwrap_or_default()
                 .to_string(),
-        },
-        _ => SseEvent::Ignore,
+        }],
+        _ => vec![SseEvent::Ignore],
     }
+}
+
+/// Folds a partial usage into the total: a field the part carries replaces the total's.
+fn merge_usage(total: &mut TokenUsage, part: TokenUsage) {
+    total.input = part.input.or(total.input);
+    total.output = part.output.or(total.output);
+    total.cache_read = part.cache_read.or(total.cache_read);
+    total.cache_write = part.cache_write.or(total.cache_write);
+}
+
+/// Records one Speaking Practice call, whatever it returned. The model is the request body's.
+/// Nothing is written when no usage arrived (a refused or failed request before message_start).
+pub(crate) async fn record_usage(pool: &sqlx::SqlitePool, body: &Value, usage: &TokenUsage) {
+    let known = (*usage != TokenUsage::default()).then_some(usage);
+    crate::usage::record(
+        pool,
+        "claude",
+        body["model"].as_str().unwrap_or_default(),
+        crate::usage::Purpose::Practice,
+        None,
+        None,
+        known,
+    )
+    .await;
 }
 
 pub struct ChatMsg {
@@ -168,15 +216,17 @@ impl ClaudeError {
     }
 }
 
+/// `usage` is filled as the events arrive, so it holds the tokens even when the call returns an error.
 pub async fn stream(
     client: &reqwest::Client,
     key: &str,
     body: &Value,
     cancel: &CancellationToken,
+    usage: &mut TokenUsage,
     on_text: impl FnMut(&str),
 ) -> Result<String, ClaudeError> {
     let idle = Duration::from_secs(STREAM_IDLE_SECS);
-    stream_with_idle(client, MESSAGES_URL, key, body, cancel, idle, on_text).await
+    stream_with_idle(client, MESSAGES_URL, key, body, cancel, idle, usage, on_text).await
 }
 
 async fn stream_with_idle(
@@ -186,6 +236,7 @@ async fn stream_with_idle(
     body: &Value,
     cancel: &CancellationToken,
     idle: Duration,
+    usage: &mut TokenUsage,
     mut on_text: impl FnMut(&str),
 ) -> Result<String, ClaudeError> {
     let request = client
@@ -236,6 +287,7 @@ async fn stream_with_idle(
                     on_text(&t);
                     text.push_str(&t);
                 }
+                SseEvent::Usage(part) => merge_usage(usage, part),
                 SseEvent::StopReason(reason) => stop_reason = Some(reason),
                 SseEvent::Stop => {
                     return match stop_reason.as_deref() {
@@ -377,6 +429,45 @@ mod tests {
         let events = p.push(s);
         assert_eq!(events.len(), 7);
         assert!(events.iter().all(|e| *e == SseEvent::Ignore));
+    }
+
+    #[test]
+    fn sse_parser_reads_usage() {
+        // message_start's output_tokens is a placeholder; the final count is in message_delta.
+        let s = "event: message_start\ndata: {\"type\":\"message_start\",\"message\":{\"usage\":{\"input_tokens\":12,\"cache_read_input_tokens\":3,\"output_tokens\":1}}}\n\n\
+                 event: message_delta\ndata: {\"type\":\"message_delta\",\"usage\":{\"output_tokens\":40},\"delta\":{\"stop_reason\":\"end_turn\"}}\n\n";
+        let events = SseParser::default().push(s);
+        assert_eq!(
+            events,
+            vec![
+                SseEvent::Usage(TokenUsage {
+                    input: Some(12),
+                    cache_read: Some(3),
+                    ..TokenUsage::default()
+                }),
+                SseEvent::Usage(TokenUsage {
+                    output: Some(40),
+                    ..TokenUsage::default()
+                }),
+                SseEvent::StopReason("end_turn".into()),
+            ]
+        );
+        let mut total = TokenUsage::default();
+        for event in events {
+            if let SseEvent::Usage(part) = event {
+                merge_usage(&mut total, part);
+            }
+        }
+        assert_eq!(
+            total,
+            TokenUsage {
+                input: Some(12),
+                output: Some(40),
+                cache_read: Some(3),
+                cache_write: None,
+                reported_cost_usd: None,
+            }
+        );
     }
 
     #[test]
@@ -686,9 +777,61 @@ mod tests {
             &body,
             &CancellationToken::new(),
             idle,
+            &mut TokenUsage::default(),
             |_| {},
         )
         .await
+    }
+
+    #[tokio::test]
+    async fn max_tokens_reply_keeps_its_usage_and_records_a_row() {
+        // A reply cut at the token cap is an Err, but it was billed: its usage must still be recorded.
+        let body = format!(
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":12,\"cache_read_input_tokens\":3,\"output_tokens\":1}}}}}}\n\n{}event: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":40}},\"delta\":{{\"stop_reason\":\"max_tokens\"}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+            delta("Hi")
+        );
+        let url = serve_once(sse(&body), Duration::ZERO).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let request = chat_body("claude-haiku-5-5", "s", &[]);
+        let mut usage = TokenUsage::default();
+        let result = stream_with_idle(
+            &client,
+            &url,
+            SAMPLE_KEY,
+            &request,
+            &CancellationToken::new(),
+            Duration::from_secs(5),
+            &mut usage,
+            |_| {},
+        )
+        .await;
+        assert_eq!(result, Err(ClaudeError::Stream("max_tokens".into())));
+        assert_eq!(
+            usage,
+            TokenUsage {
+                input: Some(12),
+                output: Some(40),
+                cache_read: Some(3),
+                cache_write: None,
+                reported_cost_usd: None,
+            }
+        );
+
+        let _guard = crate::usage::prices::CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::usage::prices::set_cache_for_test(Vec::new());
+        let pool = crate::database::repositories::test_pool().await;
+        record_usage(&pool, &request, &usage).await;
+        // A call that failed before any usage arrived writes nothing.
+        record_usage(&pool, &request, &TokenUsage::default()).await;
+        let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
+            "SELECT COUNT(*), MAX(output_tokens) FROM llm_usage WHERE purpose = 'practice' AND provider = 'claude' AND model = 'claude-haiku-5-5'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, vec![(1, Some(40))]);
     }
 
     #[tokio::test]
@@ -780,7 +923,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let body = chat_body("claude-haiku-5-5", "s", &[]);
-        let r = stream(&http_client(), SAMPLE_KEY, &body, &cancel, |_| {}).await;
+        let r = stream(&http_client(), SAMPLE_KEY, &body, &cancel, &mut TokenUsage::default(), |_| {}).await;
         assert_eq!(r, Err(ClaudeError::Cancelled));
     }
 

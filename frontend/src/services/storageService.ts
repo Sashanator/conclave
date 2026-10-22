@@ -35,19 +35,22 @@ export class StorageService {
    * @param transcripts - Array of transcript segments
    * @param folderPath - Optional folder path for audio file
    * @param notes - The user's live notes (saved with the meeting)
+   * @param recordingId - The recording's recovery id, so its LLM usage attaches to the meeting
    * @returns Promise with { meeting_id: string }
    */
   async saveMeeting(
     meetingTitle: string,
     transcripts: Transcript[],
     folderPath: string | null,
-    notes: MeetingNote[] = []
+    notes: MeetingNote[] = [],
+    recordingId: string | null = null
   ): Promise<SaveMeetingResponse> {
     return invoke<SaveMeetingResponse>('api_save_transcript', {
       meetingTitle,
       transcripts,
       folderPath,
       notes,
+      recordingId,
     });
   }
 

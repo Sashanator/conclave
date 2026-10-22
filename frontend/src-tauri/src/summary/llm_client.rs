@@ -323,6 +323,19 @@ impl LLMProvider {
             _ => Err(format!("Unsupported LLM provider: {}", s)),
         }
     }
+
+    /// The settings key `from_str` accepts; the usage log and the price table use it.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::OpenAI => "openai",
+            Self::Claude => "claude",
+            Self::Groq => "groq",
+            Self::Ollama => "ollama",
+            Self::OpenRouter => "openrouter",
+            Self::BuiltInAI => "builtin-ai",
+            Self::CustomOpenAI => "custom-openai",
+        }
+    }
 }
 
 /// Generates a summary using the specified LLM provider

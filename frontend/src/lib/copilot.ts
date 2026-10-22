@@ -12,6 +12,8 @@ export interface CopilotRequest {
   background: string[];
   focus: string[];
   notes: string[];
+  /** The recording's recovery id, so the call's usage attaches to the meeting when it is saved. */
+  recording_id: string | null;
 }
 
 /** Mirrors the Rust `CopilotSettings` (snake_case fields). */
@@ -49,6 +51,7 @@ export function buildCopilotRequest(
   notes: MeetingNote[],
   language: string,
   question?: string,
+  recordingId: string | null = null,
 ): { request: CopilotRequest; range: [number, number] | null } {
   const finals = transcripts.filter((t) => !t.is_partial);
   const now = finals.reduce((max, t) => Math.max(max, endOf(t)), 0);
@@ -67,6 +70,7 @@ export function buildCopilotRequest(
       background,
       focus,
       notes: sortNotes(notes).map(formatNote),
+      recording_id: recordingId,
     },
     range: window === null ? null : [Math.max(0, now - window), now],
   };

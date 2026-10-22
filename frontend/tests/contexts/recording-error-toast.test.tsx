@@ -16,7 +16,10 @@ afterAll(() => {
 
 type Handler = (event: { payload: unknown }) => void;
 const handlers = new Map<string, Handler>();
+// Set to hold the recording-error registration until the test releases it, as a slow Tauri registration can be
+let gate: Promise<void> | null = null;
 const listen = mock(async (event: string, handler: Handler) => {
+  if (event === 'recording-error' && gate) await gate;
   handlers.set(event, handler);
   return () => { if (handlers.get(event) === handler) handlers.delete(event); };
 });
@@ -32,6 +35,7 @@ let renderer: ReactTestRenderer | undefined;
 afterEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
   renderer = undefined;
+  gate = null;
   handlers.clear();
   toast.error.mockClear();
 });
@@ -49,5 +53,16 @@ describe('recording-error event', () => {
     const message = 'Audio stream disconnected after extended operation. Please restart recording.';
     await act(async () => { handlers.get('recording-error')!({ payload: message }); });
     expect(toast.error).toHaveBeenCalledWith(message, expect.anything());
+  });
+
+  test('a listener that resolves after unmount is removed', async () => {
+    let release!: () => void;
+    gate = new Promise<void>((resolve) => { release = resolve; });
+    await act(async () => { renderer = create(<RecordingStateProvider><div /></RecordingStateProvider>); });
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    release();
+    await flush();
+    expect(handlers.has('recording-error')).toBe(false);
   });
 });

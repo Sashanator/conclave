@@ -207,17 +207,22 @@ pub(crate) fn parse_usage(provider: &LLMProvider, usage: &serde_json::Value) -> 
             cache_write: number("cache_creation_input_tokens"),
             reported_cost_usd: None,
         }),
-        _ => Some(TokenUsage {
-            input: number("prompt_tokens"),
-            output: number("completion_tokens"),
-            cache_read: usage
+        _ => {
+            // prompt_tokens includes the cached part, so the uncached input is what remains.
+            let cache_read = usage
                 .pointer("/prompt_tokens_details/cached_tokens")
-                .and_then(serde_json::Value::as_u64),
-            cache_write: None,
-            reported_cost_usd: (*provider == LLMProvider::OpenRouter)
-                .then(|| usage.get("cost").and_then(serde_json::Value::as_f64))
-                .flatten(),
-        }),
+                .and_then(serde_json::Value::as_u64);
+            Some(TokenUsage {
+                input: number("prompt_tokens")
+                    .map(|prompt| prompt.saturating_sub(cache_read.unwrap_or(0))),
+                output: number("completion_tokens"),
+                cache_read,
+                cache_write: None,
+                reported_cost_usd: (*provider == LLMProvider::OpenRouter)
+                    .then(|| usage.get("cost").and_then(serde_json::Value::as_f64))
+                    .flatten(),
+            })
+        }
     }
 }
 
@@ -1084,9 +1089,21 @@ mod tests {
         assert_eq!(
             parse_usage(&LLMProvider::OpenAI, &usage),
             Some(TokenUsage {
-                input: Some(100),
+                input: Some(60),
                 output: Some(50),
                 cache_read: Some(40),
+                cache_write: None,
+                reported_cost_usd: None,
+            })
+        );
+        // Without cached-token details, all prompt tokens are uncached input.
+        let usage = json!({"prompt_tokens":100,"completion_tokens":50});
+        assert_eq!(
+            parse_usage(&LLMProvider::Groq, &usage),
+            Some(TokenUsage {
+                input: Some(100),
+                output: Some(50),
+                cache_read: None,
                 cache_write: None,
                 reported_cost_usd: None,
             })

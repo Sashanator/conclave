@@ -7,6 +7,7 @@
 
 import { invoke } from '@tauri-apps/api/core';
 import { MeetingNote, Transcript } from '@/types';
+import type { TitleOrigin } from '@/lib/calendar-title';
 
 export interface SaveMeetingRequest {
   meetingTitle: string;
@@ -36,6 +37,7 @@ export class StorageService {
    * @param folderPath - Optional folder path for audio file
    * @param notes - The user's live notes (saved with the meeting)
    * @param recordingId - The recording's recovery id, so its LLM usage attaches to the meeting
+   * @param titleOrigin - Where the title came from; the summary only renames a default title
    * @returns Promise with { meeting_id: string }
    */
   async saveMeeting(
@@ -43,7 +45,8 @@ export class StorageService {
     transcripts: Transcript[],
     folderPath: string | null,
     notes: MeetingNote[] = [],
-    recordingId: string | null = null
+    recordingId: string | null = null,
+    titleOrigin: TitleOrigin = { source: 'default' }
   ): Promise<SaveMeetingResponse> {
     return invoke<SaveMeetingResponse>('api_save_transcript', {
       meetingTitle,
@@ -51,6 +54,9 @@ export class StorageService {
       folderPath,
       notes,
       recordingId,
+      titleSource: titleOrigin.source,
+      calendarUid: titleOrigin.uid ?? null,
+      calendarStart: titleOrigin.start ?? null,
     });
   }
 

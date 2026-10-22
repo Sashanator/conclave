@@ -1005,6 +1005,7 @@ pub fn run() {
             knowledge::calendar::calendar_connect,
             knowledge::calendar::calendar_disconnect,
             knowledge::calendar::calendar_status,
+            knowledge::calendar::calendar_title_now,
             usage::stats::stats_cost,
             usage::stats::meeting_cost,
             usage::stats::stats_talk_time,

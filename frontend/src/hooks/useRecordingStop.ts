@@ -57,6 +57,8 @@ export function useRecordingStop(
     flushBuffer,
     clearTranscripts,
     meetingTitle,
+    titleSource,
+    calendarLink,
     markMeetingAsSaved,
     currentMeetingId,
   } = useTranscripts();
@@ -260,7 +262,8 @@ export function useRecordingStop(
             freshTranscripts,
             folderPath,
             [...notesRef.current],
-            currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id')
+            currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id'),
+            { source: titleSource, uid: calendarLink?.uid, start: calendarLink?.start }
           );
 
           const meetingId = responseData.meeting_id;
@@ -386,6 +389,8 @@ export function useRecordingStop(
     flushBuffer,
     clearTranscripts,
     meetingTitle,
+    titleSource,
+    calendarLink,
     markMeetingAsSaved,
     refetchMeetings,
     setCurrentMeeting,

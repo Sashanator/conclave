@@ -3,7 +3,7 @@
 
 use super::settings;
 use super::{
-    CALENDAR_AHEAD_DAYS, CALENDAR_BEHIND_DAYS, CALENDAR_FETCH_TIMEOUT_SECS, CALENDAR_MAX_BYTES,
+    AUTO_TITLE_LEAD_MINS, CALENDAR_AHEAD_DAYS, CALENDAR_BEHIND_DAYS, CALENDAR_FETCH_TIMEOUT_SECS, CALENDAR_MAX_BYTES,
     MAX_EVENT_TITLE_CHARS,
 };
 use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, Offset, TimeZone, Utc};
@@ -727,6 +727,32 @@ pub async fn calendar_status() -> CalendarStatus {
     status()
 }
 
+/// Pure: the event a recording starting at `now` belongs to. Several match: the closest start wins.
+pub fn event_for_start(occ: &[Occurrence], now: DateTime<Utc>) -> Option<&Occurrence> {
+    let lead = Duration::minutes(AUTO_TITLE_LEAD_MINS);
+    occ.iter()
+        .filter(|o| o.start - lead <= now && now < o.end)
+        .min_by_key(|o| (o.start - now).num_milliseconds().abs())
+}
+
+/// The event a recording starting now is named after.
+#[derive(Serialize)]
+pub struct CalendarTitle {
+    pub title: String,
+    pub uid: String,
+    pub start: String,
+}
+
+#[tauri::command]
+pub async fn calendar_title_now() -> Option<CalendarTitle> {
+    let occurrences = upcoming();
+    event_for_start(&occurrences, Utc::now()).map(|o| CalendarTitle {
+        title: o.title.clone(),
+        uid: o.uid.clone(),
+        start: o.start.to_rfc3339(),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1415,5 +1441,29 @@ mod tests {
     fn corrupt_cache_is_empty_and_silent() {
         assert!(parse_cache(b"{\"occurrences\": [{\"uid\": \"secret-").is_none());
         assert!(parse_cache(b"[]").is_none());
+    }
+
+    fn occ(uid: &str, start: DateTime<Utc>, mins: i64) -> Occurrence {
+        Occurrence {
+            uid: uid.into(),
+            title: format!("Title {uid}"),
+            start,
+            end: start + Duration::minutes(mins),
+        }
+    }
+
+    #[test]
+    fn event_for_start_window() {
+        let now = utc(2026, 10, 22, 9, 0);
+        let ten_before = [occ("a", utc(2026, 10, 22, 9, 10), 30)];
+        assert_eq!(event_for_start(&ten_before, now).map(|o| o.uid.as_str()), Some("a"));
+        let eleven_before = [occ("a", utc(2026, 10, 22, 9, 11), 30)];
+        assert!(event_for_start(&eleven_before, now).is_none());
+        // Ends exactly at now: already over.
+        let at_end = [occ("a", utc(2026, 10, 22, 8, 30), 30)];
+        assert!(event_for_start(&at_end, now).is_none());
+        // Two overlapping: the closest start wins, whatever the input order.
+        let two = [occ("late", utc(2026, 10, 22, 9, 8), 60), occ("early", utc(2026, 10, 22, 9, 3), 60)];
+        assert_eq!(event_for_start(&two, now).map(|o| o.uid.as_str()), Some("early"));
     }
 }

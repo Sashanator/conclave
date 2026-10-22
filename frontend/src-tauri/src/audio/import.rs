@@ -723,8 +723,8 @@ async fn create_meeting_with_transcripts(
 
     // Insert meeting
     sqlx::query(
-        "INSERT INTO meetings (id, title, created_at, updated_at, folder_path)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, title_source)
+         VALUES (?, ?, ?, ?, ?, 'default')",
     )
     .bind(&meeting_id)
     .bind(title)

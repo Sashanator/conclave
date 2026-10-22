@@ -6,6 +6,36 @@ use tracing::{error, info};
 
 pub struct MeetingsRepository;
 
+/// Where a new meeting's title came from. The calendar fields are kept only for source `calendar`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TitleOrigin {
+    pub source: String,
+    pub calendar_uid: Option<String>,
+    pub calendar_start: Option<String>,
+}
+
+impl TitleOrigin {
+    /// An unknown source counts as `default`, so a bad value from the frontend never fails a save.
+    pub fn new(source: Option<&str>, calendar_uid: Option<String>, calendar_start: Option<String>) -> Self {
+        let source = match source {
+            Some(s @ ("calendar" | "user")) => s,
+            _ => "default",
+        };
+        let calendar = source == "calendar";
+        Self {
+            source: source.to_string(),
+            calendar_uid: if calendar { calendar_uid } else { None },
+            calendar_start: if calendar { calendar_start } else { None },
+        }
+    }
+}
+
+impl Default for TitleOrigin {
+    fn default() -> Self {
+        Self::new(None, None, None)
+    }
+}
+
 impl MeetingsRepository {
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
         let meetings =
@@ -194,7 +224,7 @@ impl MeetingsRepository {
         let now = Utc::now().naive_utc();
 
         let rows_affected =
-            sqlx::query("UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?")
+            sqlx::query("UPDATE meetings SET title = ?, title_source = 'user', updated_at = ? WHERE id = ?")
                 .bind(new_title)
                 .bind(now)
                 .bind(meeting_id)
@@ -208,7 +238,9 @@ impl MeetingsRepository {
         Ok(true)
     }
 
-    pub async fn update_meeting_name(
+    /// The summary's rename. Only a meeting still on its default title is renamed; a calendar or user
+    /// title is kept. Returns false when nothing was renamed.
+    pub async fn update_meeting_name_if_default(
         pool: &SqlitePool,
         meeting_id: &str,
         new_title: &str,
@@ -217,17 +249,18 @@ impl MeetingsRepository {
         let now = Utc::now();
 
         // Update meetings table
-        let meeting_update =
-            sqlx::query("UPDATE meetings SET title = ?, updated_at = ? WHERE id = ?")
-                .bind(new_title)
-                .bind(now)
-                .bind(meeting_id)
-                .execute(&mut *transaction)
-                .await?;
+        let meeting_update = sqlx::query(
+            "UPDATE meetings SET title = ?, title_source = 'summary', updated_at = ? WHERE id = ? AND title_source = 'default'",
+        )
+        .bind(new_title)
+        .bind(now)
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
 
         if meeting_update.rows_affected() == 0 {
             transaction.rollback().await?;
-            return Ok(false); // Meeting not found
+            return Ok(false); // Not found, or not a default title
         }
 
         // Update transcript_chunks table
@@ -330,6 +363,7 @@ async fn delete_meeting_with_transaction(
 mod migration_tests {
     use super::*;
     use crate::database::repositories::test_pool;
+    use crate::database::repositories::transcript::TranscriptsRepository;
     use sqlx::migrate::Migrator;
     use sqlx::sqlite::SqlitePoolOptions;
     use std::path::Path;
@@ -484,6 +518,110 @@ mod migration_tests {
             .unwrap();
         assert_eq!(left_tasks, vec![("t4".to_string(),), ("t5".to_string(),)]);
         assert_eq!(left_extracts, vec![("N".to_string(),)]);
+    }
+
+    const TITLE_SOURCE_VERSION: i64 = 20261022000003;
+
+    async fn insert_titled(pool: &SqlitePool, id: &str, source: &str) {
+        insert_meeting(pool, id).await;
+        sqlx::query("UPDATE meetings SET title_source = ? WHERE id = ?")
+            .bind(source)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    async fn title_source(pool: &SqlitePool, id: &str) -> (String, Option<String>, Option<String>) {
+        sqlx::query_as("SELECT title_source, calendar_uid, calendar_start FROM meetings WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn summary_renames_default_only() {
+        let pool = test_pool().await;
+        insert_titled(&pool, "D", "default").await;
+        insert_titled(&pool, "C", "calendar").await;
+        insert_titled(&pool, "U", "user").await;
+        sqlx::query("INSERT INTO transcript_chunks (meeting_id, meeting_name, transcript_text, model, model_name, created_at) VALUES ('D', 'M', 't', 'm', 'm', 't')")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(MeetingsRepository::update_meeting_name_if_default(&pool, "D", "Summary name").await.unwrap());
+        assert!(!MeetingsRepository::update_meeting_name_if_default(&pool, "C", "Summary name").await.unwrap());
+        assert!(!MeetingsRepository::update_meeting_name_if_default(&pool, "U", "Summary name").await.unwrap());
+        // Once renamed by a summary, a later summary does not rename again.
+        assert!(!MeetingsRepository::update_meeting_name_if_default(&pool, "D", "Second").await.unwrap());
+
+        assert_eq!(title_source(&pool, "D").await.0, "summary");
+        assert_eq!(title_source(&pool, "C").await.0, "calendar");
+        assert_eq!(title_source(&pool, "U").await.0, "user");
+        let (title,): (String,) = sqlx::query_as("SELECT title FROM meetings WHERE id = 'D'").fetch_one(&pool).await.unwrap();
+        let (chunk_name,): (String,) = sqlx::query_as("SELECT meeting_name FROM transcript_chunks WHERE meeting_id = 'D'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((title.as_str(), chunk_name.as_str()), ("Summary name", "Summary name"));
+    }
+
+    #[tokio::test]
+    async fn user_rename_sets_user() {
+        let pool = test_pool().await;
+        insert_titled(&pool, "C", "calendar").await;
+        assert!(MeetingsRepository::update_meeting_title(&pool, "C", "Mine").await.unwrap());
+        assert_eq!(title_source(&pool, "C").await.0, "user");
+    }
+
+    #[tokio::test]
+    async fn save_transcript_stores_calendar_fields() {
+        let pool = test_pool().await;
+        let start = "2026-10-22T09:00:00+00:00";
+        let cal = TitleOrigin::new(Some("calendar"), Some("uid-1".into()), Some(start.into()));
+        let id = TranscriptsRepository::save_transcript(&pool, "Standup", &[], None, &[], false, &cal).await.unwrap();
+        let got = title_source(&pool, &id).await;
+        assert_eq!(got, ("calendar".into(), Some("uid-1".into()), Some(start.into())));
+
+        // Calendar fields are kept only for the calendar source.
+        let user = TitleOrigin::new(Some("user"), Some("uid-2".into()), Some(start.into()));
+        let id = TranscriptsRepository::save_transcript(&pool, "Mine", &[], None, &[], false, &user).await.unwrap();
+        assert_eq!(title_source(&pool, &id).await, ("user".into(), None, None));
+
+        // An unknown source is stored as default; the save still succeeds.
+        let bogus = TitleOrigin::new(Some("bogus"), Some("uid-3".into()), Some(start.into()));
+        let id = TranscriptsRepository::save_transcript(&pool, "Other", &[], None, &[], false, &bogus).await.unwrap();
+        assert_eq!(title_source(&pool, &id).await, ("default".into(), None, None));
+    }
+
+    #[tokio::test]
+    async fn existing_rows_migrate_as_user() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let mut before = Migrator::new(Path::new("./migrations")).await.unwrap();
+        before.migrations = before
+            .migrations
+            .iter()
+            .filter(|m| m.version < TITLE_SOURCE_VERSION)
+            .cloned()
+            .collect::<Vec<_>>()
+            .into();
+        before.run(&pool).await.unwrap();
+        insert_meeting(&pool, "old").await;
+
+        Migrator::new(Path::new("./migrations"))
+            .await
+            .unwrap()
+            .run(&pool)
+            .await
+            .unwrap();
+
+        assert_eq!(title_source(&pool, "old").await, ("user".into(), None, None));
     }
 
     #[tokio::test]

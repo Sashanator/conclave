@@ -466,7 +466,7 @@ impl SummaryService {
                                 .filter(|name| !name.is_empty())
                         {
                             if let Err(error) =
-                                MeetingsRepository::update_meeting_name(&pool, &meeting_id, &name)
+                                MeetingsRepository::update_meeting_name_if_default(&pool, &meeting_id, &name)
                                     .await
                             {
                                 error!("Failed to update meeting name for {}: {}", meeting_id, error);
@@ -555,7 +555,7 @@ mod tests {
     #[tokio::test]
     async fn summary_usage_is_recorded_for_each_call() {
         let pool = test_pool().await;
-        let meeting_id = TranscriptsRepository::save_transcript(&pool, "M", &[], None, &[], false)
+        let meeting_id = TranscriptsRepository::save_transcript(&pool, "M", &[], None, &[], false, &crate::database::repositories::meeting::TitleOrigin::default())
             .await
             .unwrap();
         let calls = [

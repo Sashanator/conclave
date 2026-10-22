@@ -1,4 +1,5 @@
 use crate::api::TranscriptSegment;
+use crate::database::repositories::meeting::TitleOrigin;
 use crate::database::repositories::speakers::SpeakersRepository;
 use crate::speakers::sentences::{is_valid, Sentence};
 use crate::database::repositories::meeting_notes::{
@@ -24,6 +25,7 @@ impl TranscriptsRepository {
         folder_path: Option<String>,
         notes: &[MeetingNote],
         enqueue_speakers: bool,
+        title: &TitleOrigin,
     ) -> Result<String, SqlxError> {
         let meeting_id = format!("meeting-{}", Uuid::new_v4());
 
@@ -34,13 +36,16 @@ impl TranscriptsRepository {
 
         // 1. Create the new meeting
         let result = sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path) VALUES (?, ?, ?, ?, ?)",
+            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, title_source, calendar_uid, calendar_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
         .bind(meeting_title)
         .bind(now)
         .bind(now)
         .bind(&folder_path)
+        .bind(&title.source)
+        .bind(&title.calendar_uid)
+        .bind(&title.calendar_start)
         .execute(&mut *transaction)
         .await;
 
@@ -359,7 +364,7 @@ mod tests {
         let mut line = seg("Hi.", 0.0, None);
         line.sentences = Some(vec![Sentence(0.0, 1.0, "Hi.".into())]);
         line.speaker_idx = Some(0);
-        let id = TranscriptsRepository::save_transcript(&pool, "M", &[line], None, &[], false).await.unwrap();
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[line], None, &[], false, &TitleOrigin::default()).await.unwrap();
         let (idx, sentences): (Option<i64>, Option<String>) = sqlx::query_as("SELECT speaker_idx, sentences FROM transcripts WHERE meeting_id = ?")
             .bind(&id).fetch_one(&pool).await.unwrap();
         assert_eq!(idx, Some(0));
@@ -377,7 +382,7 @@ mod tests {
         // Well-formed sentences whose text does not match the line are dropped by save_transcript
         let mut mismatched = seg("a", 2.0, None);
         mismatched.sentences = Some(vec![Sentence(2.0, 3.0, "Other.".into())]);
-        let id = TranscriptsRepository::save_transcript(&pool, "M", &[malformed, mismatched], None, &[], false).await.unwrap();
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[malformed, mismatched], None, &[], false, &TitleOrigin::default()).await.unwrap();
         let rows: Vec<(Option<i64>, Option<String>)> = sqlx::query_as("SELECT speaker_idx, sentences FROM transcripts WHERE meeting_id = ?")
             .bind(&id).fetch_all(&pool).await.unwrap();
         assert_eq!(rows, vec![(None, None), (None, None)]);
@@ -387,7 +392,7 @@ mod tests {
     async fn save_transcript_stores_marks_and_notes() {
         let pool = crate::database::repositories::test_pool().await;
         let notes = vec![MeetingNote { id: "note-1".into(), at: Some(1.5), text: "ask".into() }];
-        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, Some("action")), seg("b", 2.0, None)], None, &notes, false).await.unwrap();
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, Some("action")), seg("b", 2.0, None)], None, &notes, false, &TitleOrigin::default()).await.unwrap();
         let marks: Vec<(Option<String>,)> = sqlx::query_as("SELECT mark FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time")
             .bind(&id).fetch_all(&pool).await.unwrap();
         assert_eq!(marks, vec![(Some("action".into()),), (None,)]);
@@ -401,7 +406,7 @@ mod tests {
             MeetingNote { id: "note-1".into(), at: Some(f64::NAN), text: "  ".into() },
             MeetingNote { id: "note-2".into(), at: None, text: "z".repeat(5000) },
         ];
-        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, Some("nonsense"))], None, &notes, false).await.unwrap();
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, Some("nonsense"))], None, &notes, false, &TitleOrigin::default()).await.unwrap();
         let (mark,): (Option<String>,) = sqlx::query_as("SELECT mark FROM transcripts WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
         assert_eq!(mark, None);
         let saved = MeetingNotesRepository::get(&pool, &id).await.unwrap();
@@ -412,7 +417,7 @@ mod tests {
     #[tokio::test]
     async fn set_mark_and_keep_audio_round_trip() {
         let pool = crate::database::repositories::test_pool().await;
-        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, None)], None, &[], false).await.unwrap();
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, None)], None, &[], false, &TitleOrigin::default()).await.unwrap();
         let (tid,): (String,) = sqlx::query_as("SELECT id FROM transcripts WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
         assert!(TranscriptsRepository::set_mark(&pool, &tid, Some("important")).await.unwrap());
         assert!(!TranscriptsRepository::set_mark(&pool, "nope", Some("important")).await.unwrap());
@@ -427,7 +432,7 @@ mod tests {
     async fn delete_meeting_removes_notes() {
         let pool = crate::database::repositories::test_pool().await;
         let notes = vec![MeetingNote { id: "note-1".into(), at: None, text: "x".into() }];
-        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, None)], None, &notes, false).await.unwrap();
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("a", 0.0, None)], None, &notes, false, &TitleOrigin::default()).await.unwrap();
         assert!(crate::database::repositories::meeting::MeetingsRepository::delete_meeting(&pool, &id).await.unwrap());
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_notes").fetch_one(&pool).await.unwrap();
         assert_eq!(n, 0);
@@ -437,7 +442,7 @@ mod tests {
         let segs: Vec<TranscriptSegment> = lines.iter().enumerate().map(|(i, t)| seg(t, i as f64, None)).collect();
         let notes: Vec<MeetingNote> = notes.iter().enumerate()
             .map(|(i, t)| MeetingNote { id: format!("note-{i}"), at: None, text: t.to_string() }).collect();
-        let id = TranscriptsRepository::save_transcript(pool, title, &segs, None, &notes, false).await.unwrap();
+        let id = TranscriptsRepository::save_transcript(pool, title, &segs, None, &notes, false, &TitleOrigin::default()).await.unwrap();
         if let Some(md) = summary {
             let result = serde_json::json!({ "markdown": md }).to_string();
             sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES (?, 'completed', '2026-10-22T00:00:00Z', '2026-10-22T00:00:00Z', ?)")

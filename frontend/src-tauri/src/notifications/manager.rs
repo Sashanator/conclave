@@ -276,7 +276,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Check if we should show a specific notification based on settings
     async fn should_show_notification(&self, notification: &Notification) -> bool {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
 
         // Check basic consent and permissions
         if !settings.consent_given || !settings.system_permission_granted {
@@ -317,7 +317,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Get notification statistics (for analytics/debugging)
     pub async fn get_stats(&self) -> NotificationStats {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
 
         NotificationStats {
             consent_given: settings.consent_given,

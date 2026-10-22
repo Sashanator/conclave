@@ -100,7 +100,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Show a recording started notification
     pub async fn show_recording_started(&self, meeting_name: Option<String>) -> Result<()> {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
         log_info!("🔔 Checking notification settings - show_recording_started: {}", settings.notification_preferences.show_recording_started);
 
         if !settings.notification_preferences.show_recording_started {
@@ -115,7 +115,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Show a recording stopped notification
     pub async fn show_recording_stopped(&self) -> Result<()> {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
         if !settings.notification_preferences.show_recording_stopped {
             return Ok(());
         }
@@ -126,7 +126,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Show a recording paused notification
     pub async fn show_recording_paused(&self) -> Result<()> {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
         if !settings.notification_preferences.show_recording_paused {
             return Ok(());
         }
@@ -137,7 +137,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Show a recording resumed notification
     pub async fn show_recording_resumed(&self) -> Result<()> {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
         if !settings.notification_preferences.show_recording_resumed {
             return Ok(());
         }
@@ -148,7 +148,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Show a transcription complete notification
     pub async fn show_transcription_complete(&self, file_path: Option<String>) -> Result<()> {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
         if !settings.notification_preferences.show_transcription_complete {
             return Ok(());
         }
@@ -159,7 +159,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Show a meeting reminder notification
     pub async fn show_meeting_reminder(&self, minutes_until: u64, meeting_title: Option<String>) -> Result<()> {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
         if !settings.notification_preferences.show_meeting_reminders {
             return Ok(());
         }
@@ -175,7 +175,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Show a system error notification
     pub async fn show_system_error(&self, error: String) -> Result<()> {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
         if !settings.notification_preferences.show_system_errors {
             return Ok(());
         }
@@ -218,7 +218,7 @@ impl<R: Runtime> NotificationManager<R> {
 
     /// Check if Do Not Disturb is active (system or manual)
     pub async fn is_dnd_active(&self) -> bool {
-        let settings = self.settings.read().await;
+        let settings = self.settings.read().await.clone();
 
         // Check manual DND first
         if settings.manual_dnd_mode {
@@ -339,4 +339,41 @@ pub struct NotificationStats {
     pub system_dnd_active: bool,
     pub recording_notifications_enabled: bool,
     pub meeting_reminders_enabled: bool,
+}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::Duration;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn show_does_not_deadlock_when_a_writer_is_queued() {
+        let app = tauri::test::mock_app();
+        let mut settings = NotificationSettings::default();
+        settings.consent_given = true;
+        settings.system_permission_granted = true;
+        settings.notification_preferences.show_recording_stopped = true;
+        let manager = Arc::new(NotificationManager {
+            app_handle: app.handle().clone(),
+            system_handler: Arc::new(SystemNotificationHandler::new(app.handle().clone())),
+            consent_manager: Arc::new(ConsentManager::new(app.handle().clone()).unwrap()),
+            settings: Arc::new(RwLock::new(settings)),
+            initialized: Arc::new(RwLock::new(true)),
+        });
+        for _ in 0..200 {
+            let shown = tokio::spawn({
+                let manager = manager.clone();
+                async move { manager.show_recording_stopped().await }
+            });
+            let writer = tokio::spawn({
+                let manager = manager.clone();
+                async move { manager.settings.write().await.manual_dnd_mode = false }
+            });
+            tokio::time::timeout(Duration::from_secs(5), async {
+                let _ = shown.await;
+                writer.await.unwrap();
+            })
+            .await
+            .expect("show_recording_stopped deadlocked against a queued settings writer");
+        }
+    }
 }

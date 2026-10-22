@@ -4,7 +4,7 @@ use super::FEED_RETENTION_DAYS;
 use crate::state::AppState;
 use chrono::{DateTime, Duration, SecondsFormat, Utc};
 use serde::Serialize;
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::{SqliteConnection, SqliteExecutor, SqlitePool};
 use tauri::{AppHandle, Emitter, Runtime, State};
 
 /// Newest items the bell lists.
@@ -26,16 +26,23 @@ fn stamp(at: DateTime<Utc>) -> String {
     at.to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-async fn insert(pool: &SqlitePool, kind: &str, title: &str, target_id: &str) -> Result<(), sqlx::Error> {
+/// Inserts a feed item. The caller's executor decides whether it commits, so it can share a transaction.
+async fn insert<'c>(exec: impl SqliteExecutor<'c>, kind: &str, title: &str, target_id: &str) -> Result<(), sqlx::Error> {
     sqlx::query("INSERT INTO feed_items (id, kind, title, target_id, created_at) VALUES (?, ?, ?, ?, ?)")
         .bind(uuid::Uuid::new_v4().to_string())
         .bind(kind)
         .bind(title)
         .bind(target_id)
         .bind(stamp(Utc::now()))
-        .execute(pool)
+        .execute(exec)
         .await?;
     Ok(())
+}
+
+/// Tells the open UI that the feed changed. Call it after the item's transaction has committed.
+pub(crate) fn announce<R: Runtime>(app: &AppHandle<R>) {
+    // A failed emit only delays the badge until the next refresh
+    let _ = app.emit("feed-updated", ());
 }
 
 pub(crate) async fn push<R: Runtime>(
@@ -46,9 +53,13 @@ pub(crate) async fn push<R: Runtime>(
     target_id: &str,
 ) -> Result<(), sqlx::Error> {
     insert(pool, kind, title, target_id).await?;
-    // A failed emit only delays the badge until the next refresh
-    let _ = app.emit("feed-updated", ());
+    announce(app);
     Ok(())
+}
+
+/// Inserts a feed item in the caller's transaction, for a brief written with it.
+pub(crate) async fn insert_in(conn: &mut SqliteConnection, kind: &str, title: &str, target_id: &str) -> Result<(), sqlx::Error> {
+    insert(conn, kind, title, target_id).await
 }
 
 pub(crate) async fn prune(pool: &SqlitePool, now: DateTime<Utc>) -> Result<u64, sqlx::Error> {

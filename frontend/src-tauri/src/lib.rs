@@ -740,6 +740,8 @@ pub fn run() {
             speakers::job::start_worker(_app.handle().clone());
             // The extraction worker, likewise: its queue is the pending rows, so it needs no startup cleanup.
             knowledge::extract::start_worker(_app.handle().clone());
+            // The scheduler: calendar refresh, briefs and the daily feed prune. It waits for the database too.
+            knowledge::scheduler::start(_app.handle().clone());
 
             // Copy the shipped templates into the user's templates folder once; deleted ones stay deleted.
             match summary::templates::seed_templates() {
@@ -990,6 +992,8 @@ pub fn run() {
             knowledge::settings::knowledge_save_settings,
             knowledge::ask::ask_meetings,
             knowledge::ask::ask_cancel,
+            knowledge::briefs::briefs_list,
+            knowledge::briefs::brief_get,
             knowledge::feed::feed_list,
             knowledge::feed::feed_unread_count,
             knowledge::feed::feed_mark_read,

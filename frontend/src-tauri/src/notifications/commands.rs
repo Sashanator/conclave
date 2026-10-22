@@ -430,6 +430,18 @@ pub async fn show_recording_resumed_notification(
     }
 }
 
+/// Shows the brief toast through the manager, so consent and do-not-disturb apply. The line is not logged.
+pub async fn show_brief_toast(
+    manager_state: &NotificationManagerState<Wry>,
+    line: String,
+) -> Result<()> {
+    let manager_lock = manager_state.read().await;
+    match manager_lock.as_ref() {
+        Some(manager) => manager.show_notification(Notification::brief_ready(line)).await,
+        None => Err(anyhow::anyhow!("notification manager not initialized")),
+    }
+}
+
 /// Show transcription complete notification (internal use)
 pub async fn show_transcription_complete_notification(
     manager_state: &NotificationManagerState<Wry>,

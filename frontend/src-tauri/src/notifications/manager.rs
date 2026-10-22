@@ -91,7 +91,8 @@ impl<R: Runtime> NotificationManager<R> {
         }
 
         // Log the notification attempt
-        log_info!("Showing notification: {} - {}", notification.title, notification.body);
+        // The body is not logged: a brief body names the event.
+        log_info!("Showing notification: {}", notification.title);
 
         // Show the notification
         self.system_handler.show_notification(notification).await

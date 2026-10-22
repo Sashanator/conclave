@@ -27,6 +27,17 @@ static WAKE: Notify = Notify::const_new();
 /// Meetings with a model call running. The worker and a Retry, brief or digest may ask for the same one at once.
 static IN_FLIGHT: LazyLock<Mutex<HashSet<String>>> = LazyLock::new(|| Mutex::new(HashSet::new()));
 
+/// Whether a model call is running for this meeting now.
+pub(crate) fn extraction_running(meeting_id: &str) -> bool {
+    InFlight::is_busy(meeting_id)
+}
+
+/// Test helper: holds a meeting's slot as a running call would, until the returned guard drops.
+#[cfg(test)]
+pub(crate) fn hold_in_flight(meeting_id: &str) -> impl Drop {
+    InFlight::claim(meeting_id).expect("meeting not busy")
+}
+
 /// Holds a meeting's place in IN_FLIGHT. Released on drop, so a panic does not leave it stuck.
 struct InFlight(String);
 
@@ -197,7 +208,7 @@ async fn next_pending(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> 
         .find(|id| !InFlight::is_busy(id)))
 }
 
-async fn wait_for_pool(database: impl Fn() -> Option<SqlitePool>) -> SqlitePool {
+pub(crate) async fn wait_for_pool(database: impl Fn() -> Option<SqlitePool>) -> SqlitePool {
     loop {
         if let Some(pool) = database() {
             return pool;

@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap, BarChart3, MessageCircleQuestion, ListChecks } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap, BarChart3, MessageCircleQuestion, ListChecks, Newspaper } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -451,6 +451,7 @@ const Sidebar: React.FC = () => {
     const isStatsPage = pathname === '/stats';
     const isAskPage = pathname === '/ask';
     const isTasksPage = pathname === '/tasks';
+    const isBriefsPage = pathname === '/briefs';
 
     return (
       <TooltipProvider>
@@ -485,6 +486,22 @@ const Sidebar: React.FC = () => {
             </TooltipTrigger>
             <TooltipContent side="right">
               <p>Tasks</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => go('/briefs')}
+                aria-label="Briefs & digests"
+                className={`p-2 rounded-lg transition-colors duration-150 ${isBriefsPage ? 'bg-muted' : 'hover:bg-accent'
+                  }`}
+              >
+                <Newspaper className="w-5 h-5 text-muted-foreground" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Briefs & digests</p>
             </TooltipContent>
           </Tooltip>
 
@@ -834,6 +851,23 @@ const Sidebar: React.FC = () => {
               >
                 <ListChecks className="w-4 h-4 mr-2" />
                 <span>Tasks</span>
+              </div>
+            )}
+            {!isCollapsed && (
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => go('/briefs')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    go('/briefs');
+                  }
+                }}
+                className="p-3 text-lg font-semibold items-center hover:bg-accent h-10 flex mx-3 rounded-lg cursor-pointer"
+              >
+                <Newspaper className="w-4 h-4 mr-2" />
+                <span>Briefs & digests</span>
               </div>
             )}
             {!isCollapsed && (

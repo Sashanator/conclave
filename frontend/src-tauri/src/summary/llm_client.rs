@@ -109,6 +109,8 @@ pub struct ChatResponse {
 #[derive(Deserialize, Debug)]
 pub struct Choice {
     pub message: MessageContent,
+    #[serde(default)]
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]
@@ -155,6 +157,18 @@ pub struct ClaudeChatResponse {
     pub content: Vec<ClaudeChatContent>,
     #[serde(default)]
     pub usage: Option<serde_json::Value>,
+    #[serde(default)]
+    pub stop_reason: Option<String>,
+}
+
+/// Rejects a reply that stopped at the output limit: "max_tokens" (Claude) or "length" (OpenAI-style).
+fn ensure_complete(stop_reason: Option<&str>) -> Result<(), String> {
+    match stop_reason {
+        Some("max_tokens" | "length") => {
+            Err("Summary was cut off at the model's output limit".to_string())
+        }
+        _ => Ok(()),
+    }
 }
 
 #[derive(Deserialize, Debug)]
@@ -235,11 +249,9 @@ pub(crate) struct LlmCompletion {
 
 impl ChatResponse {
     fn completion(&self) -> Result<LlmCompletion, String> {
-        let message = &self
-            .choices
-            .first()
-            .ok_or("No content in LLM response")?
-            .message;
+        let choice = self.choices.first().ok_or("No content in LLM response")?;
+        ensure_complete(choice.finish_reason.as_deref())?;
+        let message = &choice.message;
         Ok(LlmCompletion {
             content: message
                 .content
@@ -585,6 +597,7 @@ pub(crate) async fn generate_summary(
         .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
 
         info!("🐞 LLM Response received from Claude");
+        ensure_complete(chat_response.stop_reason.as_deref())?;
 
         let usage = chat_response
             .usage
@@ -1079,6 +1092,44 @@ mod tests {
                 usage: None,
             })
         );
+    }
+
+    #[test]
+    fn output_limit_stops_are_errors_not_summaries() {
+        let claude: ClaudeChatResponse = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "Half a summ"}],
+            "stop_reason": "max_tokens"
+        }))
+        .unwrap();
+        assert_eq!(
+            ensure_complete(claude.stop_reason.as_deref()),
+            Err("Summary was cut off at the model's output limit".to_string())
+        );
+
+        let chat: ChatResponse = serde_json::from_value(json!({
+            "choices": [{"message": {"content": "Half a summ"}, "finish_reason": "length"}]
+        }))
+        .unwrap();
+        assert_eq!(
+            chat.completion(),
+            Err("Summary was cut off at the model's output limit".to_string())
+        );
+    }
+
+    #[test]
+    fn finished_replies_pass_the_stop_check() {
+        let claude: ClaudeChatResponse = serde_json::from_value(json!({
+            "content": [{"type": "text", "text": "Whole summary."}],
+            "stop_reason": "end_turn"
+        }))
+        .unwrap();
+        assert_eq!(ensure_complete(claude.stop_reason.as_deref()), Ok(()));
+
+        let chat: ChatResponse = serde_json::from_value(json!({
+            "choices": [{"message": {"content": "Whole summary."}, "finish_reason": "stop"}]
+        }))
+        .unwrap();
+        assert_eq!(chat.completion().unwrap().content, "Whole summary.");
     }
 
     #[test]

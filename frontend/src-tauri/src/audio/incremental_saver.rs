@@ -281,6 +281,9 @@ pub async fn merge_leftover_checkpoints(folder: &Path) {
     .await;
 }
 
+/// Serialises leftover merges: the speaker job and audio playback can ask for the same folder at once.
+static MERGE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// `merge` does the actual merge. It is a parameter so the cleanup after a failed merge can be
 /// tested without ffmpeg.
 async fn merge_leftover_checkpoints_with<F, Fut>(folder: &Path, merge: F)
@@ -289,6 +292,11 @@ where
     Fut: std::future::Future<Output = Result<AudioRecoveryStatus, String>>,
 {
     if super::recording_commands::is_recording_now() || !needs_checkpoint_merge(folder) {
+        return;
+    }
+    let _merging = MERGE_LOCK.lock().await;
+    // Another caller may have merged this folder while we waited for the lock.
+    if !needs_checkpoint_merge(folder) {
         return;
     }
     match merge(folder.to_path_buf()).await {
@@ -659,5 +667,28 @@ mod tests {
         }).await;
 
         assert!(folder.join("audio.mp4").exists());
+    }
+
+    #[tokio::test]
+    async fn concurrent_merges_of_one_folder_merge_once() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("Shared_Merge");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        std::fs::write(folder.join(".checkpoints").join("audio_chunk_000.mp4"), b"chunk").unwrap();
+        let merges = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        let merge = |merges: std::sync::Arc<std::sync::atomic::AtomicUsize>| move |dir: PathBuf| async move {
+            merges.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            // Yield so the other caller gets a turn while this merge is in progress.
+            tokio::task::yield_now().await;
+            std::fs::write(dir.join("audio.mp4"), b"merged").unwrap();
+            Ok(recovery_status("success"))
+        };
+        tokio::join!(
+            merge_leftover_checkpoints_with(&folder, merge(merges.clone())),
+            merge_leftover_checkpoints_with(&folder, merge(merges.clone())),
+        );
+
+        assert_eq!(merges.load(std::sync::atomic::Ordering::SeqCst), 1);
     }
 }

@@ -258,6 +258,15 @@ export class RecordingService {
       callback(event.payload);
     });
   }
+
+  /**
+   * Listen for recording-error event (a recording problem from Rust, e.g. the audio stream dropped)
+   */
+  async onRecordingError(callback: (message: string) => void): Promise<UnlistenFn> {
+    return listen<string>('recording-error', (event) => {
+      callback(event.payload);
+    });
+  }
 }
 
 // Export singleton instance

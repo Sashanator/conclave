@@ -3,9 +3,11 @@
 #![allow(dead_code)]
 
 pub mod ask;
+pub mod extract;
 pub mod feed;
 pub mod retrieve;
 pub mod settings;
+pub mod tasks;
 
 /// LLM call timeouts, in seconds.
 pub const EXTRACT_TIMEOUT_SECS: u64 = 90;
@@ -29,6 +31,9 @@ pub const FEED_RETENTION_DAYS: i64 = 30;
 pub const MAX_NAMES: usize = 20;
 pub const MAX_NAME_CHARS: usize = 40;
 pub const MAX_TASK_CHARS: usize = 500;
+/// Items kept per extraction list, and the cap on the user lines sent to the model (cost).
+pub const EXTRACT_MAX_ITEMS: usize = 50;
+pub const EXTRACT_MAX_OWN_LINES_CHARS: usize = 20_000;
 pub const MAX_EVENT_TITLE_CHARS: usize = 200;
 
 /// Ask limits: keywords, excerpts, excerpt size and question size.

@@ -300,6 +300,17 @@ async fn delete_meeting_with_transaction(
         .execute(&mut *transaction)
         .await?;
 
+    // Explicit: tasks and extracts have no FK, so they are deleted here only. Manual tasks (NULL meeting) stay.
+    sqlx::query("DELETE FROM tasks WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
+    sqlx::query("DELETE FROM meeting_extracts WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
     // 3. Delete from transcripts
     sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
         .bind(meeting_id)
@@ -437,6 +448,42 @@ mod migration_tests {
             .await
             .unwrap();
         assert_eq!((for_m, left), (0, 2));
+    }
+
+    #[tokio::test]
+    async fn delete_meeting_deletes_tasks_and_extract() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        insert_meeting(&pool, "N").await;
+        sqlx::query(
+            "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES \
+             ('t1', 'M', 'open', 'me', 'open', 'auto', 0, 't'), ('t2', 'M', 'done', 'me', 'done', 'auto', 0, 't'), \
+             ('t3', 'M', 'edited', 'me', 'open', 'auto', 1, 't'), ('t4', NULL, 'manual', 'me', 'open', 'manual', 0, 't'), \
+             ('t5', 'N', 'other', 'me', 'open', 'auto', 0, 't')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, extracted_at) VALUES \
+             ('M', '[]', '[]', 'done', 't'), ('N', '[]', '[]', 'done', 't')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
+
+        let left_tasks: Vec<(String,)> = sqlx::query_as("SELECT id FROM tasks ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        let left_extracts: Vec<(String,)> = sqlx::query_as("SELECT meeting_id FROM meeting_extracts")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(left_tasks, vec![("t4".to_string(),), ("t5".to_string(),)]);
+        assert_eq!(left_extracts, vec![("N".to_string(),)]);
     }
 
     #[tokio::test]

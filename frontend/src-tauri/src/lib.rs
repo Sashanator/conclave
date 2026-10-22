@@ -737,6 +737,8 @@ pub fn run() {
             }
             // The worker waits for the database (a first launch has none yet) and requeues interrupted jobs once it exists.
             speakers::job::start_worker(_app.handle().clone());
+            // The extraction worker, likewise: its queue is the pending rows, so it needs no startup cleanup.
+            knowledge::extract::start_worker(_app.handle().clone());
 
             // Copy the shipped templates into the user's templates folder once; deleted ones stay deleted.
             match summary::templates::seed_templates() {
@@ -991,6 +993,8 @@ pub fn run() {
             knowledge::feed::feed_unread_count,
             knowledge::feed::feed_mark_read,
             knowledge::feed::feed_mark_all_read,
+            knowledge::extract::extraction_retry,
+            knowledge::extract::extraction_status,
             usage::stats::stats_cost,
             usage::stats::meeting_cost,
             usage::stats::stats_talk_time,

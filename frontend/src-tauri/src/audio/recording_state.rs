@@ -83,10 +83,10 @@ impl AudioError {
     }
 }
 
-/// The UI hears about every non-recoverable error, the first recoverable one, then every 100th,
+/// The UI hears about every non-recoverable error and about recoverable errors 1, 2, 4, 8, ...,
 /// so a device that keeps failing does not flood the UI with toasts.
 fn notifies_ui(recoverable: bool, recoverable_count: u32) -> bool {
-    !recoverable || recoverable_count == 1 || recoverable_count % 100 == 0
+    !recoverable || recoverable_count.is_power_of_two()
 }
 
 /// Recording statistics
@@ -424,11 +424,13 @@ mod tests {
     fn the_ui_hears_about_recoverable_errors_sparingly() {
         assert!(notifies_ui(false, 0));
         assert!(notifies_ui(true, 1));
-        assert!(!notifies_ui(true, 2));
+        assert!(notifies_ui(true, 2));
+        assert!(!notifies_ui(true, 3));
+        assert!(notifies_ui(true, 4));
         assert!(!notifies_ui(true, 99));
-        assert!(notifies_ui(true, 100));
-        assert!(!notifies_ui(true, 101));
-        assert!(notifies_ui(true, 200));
+        assert!(!notifies_ui(true, 100));
+        assert!(notifies_ui(true, 128));
+        assert!(!notifies_ui(true, 129));
     }
 
     #[test]

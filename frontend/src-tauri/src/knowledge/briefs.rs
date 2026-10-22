@@ -227,12 +227,14 @@ pub(crate) async fn get(pool: &SqlitePool, id: &str) -> Result<Option<BriefConte
     };
     let stored: Stored = serde_json::from_str(&content_json).map_err(|e| e.to_string())?;
     // The previous meeting, and the earlier ones of the same type and title that the brief was made from.
-    let meeting_ids: Vec<String> = matching_meetings(pool, &template_id, &title)
+    let mut meeting_ids: Vec<String> = matching_meetings(pool, &template_id, &title)
         .await?
         .into_iter()
-        .filter(|p| p.id == stored.content.previous_meeting_id || p.created_at <= stored.content.previous_date)
+        .filter(|p| p.created_at <= stored.content.previous_date)
         .map(|p| p.id)
         .collect();
+    // The previous meeting stays even while its summary is regenerated and it does not match right now.
+    meeting_ids.push(stored.content.previous_meeting_id.clone());
     let open = tasks::list(pool, "open").await.map_err(|e| e.to_string())?;
     let open_tasks = open
         .into_iter()
@@ -413,6 +415,29 @@ mod tests {
         // Re-extraction deletes the untouched auto task and inserts it again under a new id.
         sqlx::query("DELETE FROM tasks WHERE id = 't-old'").execute(&pool).await.unwrap();
         task(&pool, "t-new", "ivan-re_extracted", "Book the room").await;
+
+        let stored = get(&pool, &made).await.unwrap().unwrap();
+        let texts: Vec<&str> = stored.open_tasks.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, vec!["Book the room"]);
+    }
+
+    #[tokio::test]
+    async fn brief_keeps_open_tasks_while_the_previous_summary_is_regenerated() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        meeting(&pool, "ivan-regen", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        extracted(&pool, "ivan-regen", "[]", "[]").await;
+        task(&pool, "t-regen", "ivan-regen", "Book the room").await;
+        let one_on_one = template("one_on_one", "1:1", &["1:1"]);
+        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30))
+            .await
+            .unwrap()
+            .expect("a brief");
+        // While the summary is regenerated its meeting is not a completed match, though it is still the previous one.
+        sqlx::query("UPDATE summary_processes SET status = 'processing' WHERE meeting_id = 'ivan-regen'")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         let stored = get(&pool, &made).await.unwrap().unwrap();
         let texts: Vec<&str> = stored.open_tasks.iter().map(|t| t.text.as_str()).collect();

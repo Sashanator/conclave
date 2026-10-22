@@ -424,7 +424,8 @@ pub(crate) async fn ready_lists(
     }
     // Only a meeting with no extraction yet, or a queued one, runs now. A failed one waits for the user's Retry.
     let status = extract_status(pool, meeting_id).await?;
-    if extract_on && status.as_deref().is_none_or(|s| s == "pending") {
+    // A meeting held back after a failed save waits for its backoff, as the worker's does.
+    if extract_on && status.as_deref().is_none_or(|s| s == "pending") && !extract::held_back(meeting_id) {
         if let Err(e) = extract::run_one(pool, meeting_id).await {
             warn!("knowledge: digest could not extract a meeting: {e}");
         }
@@ -971,6 +972,25 @@ mod tests {
         assert!(made.is_some());
         assert_eq!(calls.get(), 1);
         assert_eq!(digest_count(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn held_back_meeting_is_not_extracted_again_by_digest() {
+        let pool = test_pool().await;
+        done_meeting(&pool, "digest_held", "2026-10-19T10:00:00Z").await;
+        sqlx::query("UPDATE meeting_extracts SET status = 'pending', extracted_at = '2026-10-01T00:00:00Z' WHERE meeting_id = 'digest_held'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // A save failed for it: no automatic run may call the model until the hold ends.
+        extract::record_outcome("digest_held", &Err("could not save".into()));
+
+        assert_eq!(ready_lists(&pool, "digest_held", true).await.unwrap(), None);
+        let status: String = sqlx::query_scalar("SELECT status FROM meeting_extracts WHERE meeting_id = 'digest_held'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "pending");
     }
 
     #[tokio::test]

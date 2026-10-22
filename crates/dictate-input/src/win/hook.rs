@@ -6,25 +6,30 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use windows::core::PCWSTR;
-use windows::Win32::Foundation::{LPARAM, LRESULT, WPARAM};
+use windows::Win32::Foundation::{HMODULE, LPARAM, LRESULT, WPARAM};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
-use windows::Win32::System::Threading::GetCurrentThreadId;
+use windows::Win32::System::Threading::{
+    GetCurrentThread, GetCurrentThreadId, SetThreadPriority, THREAD_PRIORITY_TIME_CRITICAL,
+};
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetAsyncKeyState, SendInput, INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYBD_EVENT_FLAGS,
     KEYEVENTF_KEYUP, VIRTUAL_KEY,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, GetMessageW, PeekMessageW, PostThreadMessageW, SetWindowsHookExW,
-    UnhookWindowsHookEx, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WM_APP, WM_KEYDOWN,
-    WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP,
+    CallNextHookEx, GetMessageW, PeekMessageW, PostThreadMessageW, SetTimer, SetWindowsHookExW,
+    UnhookWindowsHookEx, HHOOK, KBDLLHOOKSTRUCT, MSG, PM_NOREMOVE, WH_KEYBOARD_LL, WM_APP,
+    WM_KEYDOWN, WM_KEYUP, WM_QUIT, WM_SYSKEYDOWN, WM_SYSKEYUP, WM_TIMER,
 };
 
-use super::{is_altgr_fake_ctrl, is_injected};
+use super::{can_rehook, is_altgr_fake_ctrl, is_injected};
 use crate::hotkey::VK_MASK;
 use crate::machine::{Action, Binding, HotkeyMachine};
 
 const MSG_SET_BINDINGS: u32 = WM_APP + 1;
 const MSG_RESET: u32 = WM_APP + 2;
+/// Windows removes a low-level hook that misses its timeout without telling us, so re-install it periodically.
+const REHOOK_TIMER_ID: usize = 1;
+const REHOOK_INTERVAL_MS: u32 = 60_000;
 
 struct HookState {
     machine: HotkeyMachine,
@@ -136,15 +141,18 @@ fn run(
             return;
         }
     };
-    let hook =
-        match unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(module.into()), 0) }
-        {
-            Ok(hook) => hook,
-            Err(e) => {
-                let _ = ready.send(Err(format!("keyboard hook failed: {e}")));
-                return;
-            }
-        };
+    // A slow hook thread is what makes Windows drop the hook, so run it at the highest priority.
+    let _ = unsafe { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_TIME_CRITICAL) };
+    let mut hook = match install_hook(module) {
+        Ok(hook) => Some(hook),
+        Err(e) => {
+            let _ = ready.send(Err(format!("keyboard hook failed: {e}")));
+            return;
+        }
+    };
+    if unsafe { SetTimer(None, REHOOK_TIMER_ID, REHOOK_INTERVAL_MS, None) } == 0 {
+        log::warn!("dictate: re-hook timer not set, the keyboard hook is not re-checked");
+    }
     STATE.with(|s| {
         *s.borrow_mut() = Some(HookState {
             machine: HotkeyMachine::new(bindings, hold_threshold_ms),
@@ -171,11 +179,33 @@ fn run(
             MSG_RESET => {
                 with_state(|st| st.machine.reset());
             }
+            WM_TIMER if msg.wParam.0 == REHOOK_TIMER_ID => {
+                let idle = with_state(|st| st.machine.is_idle()).unwrap_or(false);
+                // A missing hook is replaced at once: installing does not touch keys that are held.
+                if hook.is_none() || can_rehook(idle, &key_is_down) {
+                    if let Some(old) = hook.take() {
+                        let _ = unsafe { UnhookWindowsHookEx(old) };
+                    }
+                    hook = match install_hook(module) {
+                        Ok(new) => Some(new),
+                        Err(e) => {
+                            log::warn!("dictate: keyboard hook re-install failed, will retry: {e}");
+                            None
+                        }
+                    };
+                }
+            }
             _ => {}
         }
     }
-    let _ = unsafe { UnhookWindowsHookEx(hook) };
+    if let Some(hook) = hook {
+        let _ = unsafe { UnhookWindowsHookEx(hook) };
+    }
     STATE.with(|s| s.take());
+}
+
+fn install_hook(module: HMODULE) -> windows::core::Result<HHOOK> {
+    unsafe { SetWindowsHookExW(WH_KEYBOARD_LL, Some(hook_proc), Some(module.into()), 0) }
 }
 
 fn with_state<R>(f: impl FnOnce(&mut HookState) -> R) -> Option<R> {

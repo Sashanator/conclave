@@ -21,9 +21,24 @@ pub fn is_altgr_fake_ctrl(vk: u16, scan_code: u32) -> bool {
     vk == 0xA2 && scan_code == ALTGR_FAKE_CTRL_SCAN
 }
 
+/// Windows drops a low-level hook silently, so the hook thread re-installs it while this is true.
+/// Re-hooking mid-dictation or with a key down could lose that key's up event.
+pub fn can_rehook(idle: bool, is_down: &dyn Fn(u16) -> bool) -> bool {
+    idle && !(1..=254).any(is_down)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rehook_only_when_idle_and_no_key_down() {
+        let none_down = |_: u16| false;
+        assert!(can_rehook(true, &none_down));
+        assert!(!can_rehook(false, &none_down));
+        assert!(!can_rehook(true, &|vk| vk == 0x41));
+        assert!(!can_rehook(false, &|vk| vk == 0x41));
+    }
 
     #[test]
     fn injected_flag() {

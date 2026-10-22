@@ -37,8 +37,9 @@ function BriefsContent() {
       .then((list) => {
         if (live) setItems(list);
       })
-      .catch((err) => {
-        console.error('Briefs failed to load:', err);
+      .catch(() => {
+        // The error text can echo brief content, so it is not logged
+        console.error('Briefs failed to load');
         if (live) setError('Could not load briefs.');
       });
     return () => {

@@ -51,8 +51,9 @@ export function BriefView({ id }: { id: string }) {
         setBrief(content);
         setState(content ? 'ready' : 'missing');
       })
-      .catch((err) => {
-        console.error('Brief failed to load:', err);
+      .catch(() => {
+        // The error text can echo brief content, so it is not logged
+        console.error('Brief failed to load');
         if (live) setState('error');
       });
     return () => {

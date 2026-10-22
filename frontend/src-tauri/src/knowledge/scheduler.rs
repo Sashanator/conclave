@@ -33,7 +33,14 @@ pub fn start<R: Runtime>(app: AppHandle<R>) {
         .await;
         let mut clock = Clock::default();
         loop {
-            let templates = templates::list_templates().templates;
+            // The template folder is read on a blocking thread, not on the async runtime.
+            let templates = match tauri::async_runtime::spawn_blocking(|| templates::list_templates().templates).await {
+                Ok(templates) => templates,
+                Err(e) => {
+                    error!("knowledge: templates not read: {e}");
+                    Vec::new()
+                }
+            };
             if let Err(e) = tick(&app, &pool, &mut clock, Utc::now(), &templates).await {
                 error!("knowledge: scheduler tick failed: {e}");
             }
@@ -132,12 +139,15 @@ mod tests {
         Occurrence { uid: format!("{title}-uid"), title: title.into(), start, end: start + Duration::minutes(30) }
     }
 
-    async fn previous_meeting(pool: &SqlitePool) {
-        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('old', '1:1 Ivan', '2026-10-19T10:00:00Z', 't')")
+    /// `id` is unique per test: the extraction slots are process-wide, so tests must not share a meeting.
+    async fn previous_meeting(pool: &SqlitePool, id: &str) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, '1:1 Ivan', '2026-10-19T10:00:00Z', 't')")
+            .bind(id)
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('old', 'completed', 't', 't', '{\"template_id\":\"one_on_one\",\"markdown\":\"x\"}')")
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES (?, 'completed', 't', 't', '{\"template_id\":\"one_on_one\",\"markdown\":\"x\"}')")
+            .bind(id)
             .execute(pool)
             .await
             .unwrap();
@@ -162,7 +172,7 @@ mod tests {
     async fn brief_once_per_occurrence() {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
-        previous_meeting(&pool).await;
+        previous_meeting(&pool, "brief_once_per_occurrence").await;
         let occurrences = vec![event("1:1 Ivan", at(11, 0))];
         let templates = vec![one_on_one()];
 
@@ -177,7 +187,7 @@ mod tests {
     async fn late_start_still_briefs() {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
-        previous_meeting(&pool).await;
+        previous_meeting(&pool, "late_start_still_briefs").await;
         // The app starts 20 minutes before the meeting: the brief is still made.
         let occurrences = vec![event("1:1 Ivan", at(11, 0))];
 
@@ -190,7 +200,7 @@ mod tests {
     async fn untyped_or_not_due_events_get_no_brief() {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
-        previous_meeting(&pool).await;
+        previous_meeting(&pool, "untyped_or_not_due_events_get_no_brief").await;
         let occurrences = vec![event("Standup", at(11, 0)), event("1:1 Ivan", at(14, 0))];
 
         make_due_briefs(app.handle(), &pool, at(10, 40), &occurrences, &[one_on_one()]).await.unwrap();

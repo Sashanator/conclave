@@ -13,6 +13,7 @@ use crate::whisper_engine::WhisperEngine;
 use crate::whisper_engine::dtw::{should_apply, Job};
 use crate::audio::recording_commands::is_recording_now;
 use crate::audio::import::is_import_in_progress;
+use crate::audio::incremental_saver::merge_leftover_checkpoints;
 use anyhow::{anyhow, Result};
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
@@ -188,6 +189,7 @@ async fn run_retranscription<R: Runtime>(
     provider: Option<String>,
 ) -> Result<RetranscriptionResult> {
     let folder_path = PathBuf::from(&meeting_folder_path);
+    merge_leftover_checkpoints(&folder_path).await;
     let audio_path = find_audio_file(&folder_path)?;
 
     // Determine which provider to use (default to whisper)

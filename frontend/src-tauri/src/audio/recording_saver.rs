@@ -59,6 +59,7 @@ pub struct RecordingSaver {
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
     is_saving: Arc<Mutex<bool>>,
+    accumulation: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RecordingSaver {
@@ -70,6 +71,7 @@ impl RecordingSaver {
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
             is_saving: Arc::new(Mutex::new(false)),
+            accumulation: None,
         }
     }
 
@@ -146,35 +148,17 @@ impl RecordingSaver {
         &mut self,
         auto_save: bool,
         mut receiver: mpsc::UnboundedReceiver<AudioChunk>,
-    ) {
+    ) -> Result<()> {
         if auto_save {
             info!("Initializing incremental audio saver for recording (auto-save ENABLED)");
         } else {
             info!("Starting recording without audio saving (auto-save DISABLED - transcripts only)");
         }
 
-        // Initialize meeting folder and incremental saver ONLY if auto_save is enabled
-        if auto_save {
-            if let Some(name) = self.meeting_name.clone() {
-                match self.initialize_meeting_folder(&name, true) {
-                    Ok(()) => info!("Successfully initialized meeting folder with checkpoints"),
-                    Err(e) => {
-                        error!("Failed to initialize meeting folder: {}", e);
-                        // Continue anyway - will use fallback flat structure
-                    }
-                }
-            }
-        } else {
-            // When auto_save is false, still create meeting folder for transcripts/metadata
-            // but skip .checkpoints directory
-            if let Some(name) = self.meeting_name.clone() {
-                match self.initialize_meeting_folder(&name, false) {
-                    Ok(()) => info!("Successfully initialized meeting folder (transcripts only)"),
-                    Err(e) => {
-                        error!("Failed to initialize meeting folder: {}", e);
-                    }
-                }
-            }
+        // Meeting folder and incremental saver. With auto_save off, the folder still holds the
+        // transcripts and metadata, but no .checkpoints directory.
+        if let Some(name) = self.meeting_name.clone() {
+            run_folder_setup(auto_save, || self.initialize_meeting_folder(&name, auto_save))?;
         }
 
         // Start accumulation task
@@ -182,7 +166,7 @@ impl RecordingSaver {
         let incremental_saver_arc = self.incremental_saver.clone();
         let save_audio = auto_save;
 
-        tokio::spawn(async move {
+        let accumulation = tokio::spawn(async move {
             info!("Recording saver accumulation task started (save_audio: {})", save_audio);
 
             while let Some(chunk) = receiver.recv().await {
@@ -216,10 +200,30 @@ impl RecordingSaver {
 
             info!("Recording saver accumulation task ended");
         });
+        self.accumulation = Some(accumulation);
 
         // Set saving flag
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = true;
+        }
+        Ok(())
+    }
+
+    /// Waits until the accumulation task has written every chunk the pipeline already sent,
+    /// then saves the buffered audio as a checkpoint. Call after the pipeline has stopped.
+    pub async fn checkpoint_buffered_audio(&mut self) {
+        if let Some(handle) = self.accumulation.take() {
+            if tokio::time::timeout(tokio::time::Duration::from_secs(30), handle).await.is_err() {
+                warn!("Queued audio chunks were still being written after 30 s; checkpointing what is on disk");
+            }
+        }
+        if let Some(saver) = self.incremental_saver.clone() {
+            // ffmpeg runs inside, so keep it off the async runtime (see merge_checkpoints)
+            match tokio::task::spawn_blocking(move || saver.blocking_lock().checkpoint_buffered()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => error!("Failed to checkpoint buffered audio: {}", e),
+                Err(e) => error!("Checkpointing buffered audio did not finish: {}", e),
+            }
         }
     }
 
@@ -498,6 +502,19 @@ fn finish_levels(folder: &std::path::Path) -> std::io::Result<bool> {
     Ok(true)
 }
 
+/// Runs the meeting folder setup. With auto-save on, a failure is returned so the start fails:
+/// recording without the checkpoint folder would drop the audio. Otherwise it is logged.
+fn run_folder_setup(auto_save: bool, setup: impl FnOnce() -> Result<()>) -> Result<()> {
+    match setup() {
+        Ok(()) => Ok(()),
+        Err(e) if auto_save => Err(e),
+        Err(e) => {
+            error!("Failed to initialize meeting folder: {}", e);
+            Ok(())
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::TranscriptSegment;
@@ -541,5 +558,44 @@ mod tests {
         let json = serde_json::to_value(&segment).unwrap();
         assert!(json.get("speaker_idx").is_none());
         assert!(json.get("sentences").is_none());
+    }
+
+    #[test]
+    fn a_failed_folder_setup_stops_the_start_only_when_saving_audio() {
+        use super::run_folder_setup;
+        use anyhow::anyhow;
+
+        let failing = || Err(anyhow!("disk full"));
+        assert!(run_folder_setup(true, failing).is_err());
+        assert!(run_folder_setup(false, failing).is_ok());
+        assert!(run_folder_setup(true, || Ok(())).is_ok());
+    }
+
+    #[tokio::test]
+    async fn stop_checkpoint_writes_the_buffered_audio() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let folder = temp_dir.path().join("Stop_Checkpoint");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        let mut saver = super::RecordingSaver::new();
+        let incremental = crate::audio::incremental_saver::IncrementalAudioSaver::new(folder.clone(), 48000).unwrap();
+        saver.incremental_saver = Some(super::Arc::new(super::AsyncMutex::new(incremental)));
+        saver
+            .incremental_saver
+            .as_ref()
+            .unwrap()
+            .lock()
+            .await
+            .add_chunk(crate::audio::recording_state::AudioChunk {
+                data: vec![0.5f32; 48000],
+                sample_rate: 48000,
+                timestamp: 0.0,
+                chunk_id: 0,
+                device_type: crate::audio::recording_state::DeviceType::Microphone,
+            })
+            .unwrap();
+
+        saver.checkpoint_buffered_audio().await;
+
+        assert!(folder.join(".checkpoints").join("audio_chunk_000.mp4").exists());
     }
 }

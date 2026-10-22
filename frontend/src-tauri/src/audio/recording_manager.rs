@@ -276,7 +276,13 @@ impl RecordingManager {
             return Err(RecordingStartError::TranscriptionRuntime(error));
         }
 
-        self.recording_saver.start_accumulation(auto_save, recording_receiver);
+        if let Err(error) = self.recording_saver.start_accumulation(auto_save, recording_receiver) {
+            self.state.stop_recording();
+            if let Err(e) = self.pipeline_manager.stop().await {
+                error!("Error stopping audio pipeline: {}", e);
+            }
+            return Err(RecordingStartError::Other(error));
+        }
         self.recording_saver.set_device_info(
             microphone_device.as_ref().map(|d| d.name.clone()),
             system_device.as_ref().map(|d| d.name.clone())
@@ -382,12 +388,18 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                // Don't fail the stop operation if saving fails, but tell the user the audio is missing
+                let _ = tauri::Emitter::emit(app, "recording-error", format!("Audio could not be saved: {e}"));
             }
         }
 
         debug!("Recording save operation completed");
         Ok(())
+    }
+
+    /// Puts the buffered audio on disk now, so an exit during the slow part of Stop loses nothing.
+    pub async fn checkpoint_buffered_audio(&mut self) {
+        self.recording_saver.checkpoint_buffered_audio().await;
     }
 
     /// Stop recording and save audio (legacy method)
@@ -421,7 +433,8 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                // Don't fail the stop operation if saving fails, but tell the user the audio is missing
+                let _ = tauri::Emitter::emit(app, "recording-error", format!("Audio could not be saved: {e}"));
             }
         }
 

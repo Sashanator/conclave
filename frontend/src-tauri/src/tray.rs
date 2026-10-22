@@ -66,7 +66,7 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
                 let _ = window.eval("window.location.assign('/settings')");
             }
         }
-        "quit" => app.exit(0),
+        "quit" => quit_app(app),
         _ => {}
     }
 }
@@ -140,6 +140,45 @@ fn resume_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             // The resume_recording function will call update_tray_menu, so no need to call it here
         }
     });
+}
+
+/// Overall cap for Quit: stop a running recording, then wait for the frontend to save it.
+const QUIT_CAP: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Exits once a running recording is stopped and the frontend has saved it. Capped so Quit cannot hang.
+fn quit_app<R: Runtime>(app: &AppHandle<R>) {
+    if !crate::audio::recording_commands::is_recording_now() && !crate::meeting_detector::post_processing() {
+        app.exit(0);
+        return;
+    }
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if !finish_within(QUIT_CAP, stop_and_wait_for_save(&app_clone)).await {
+            log::error!("Quit: the recording was not saved within 120 s, exiting anyway");
+        }
+        app_clone.exit(0);
+    });
+}
+
+/// Stops a running recording, then waits until the frontend clears the post-processing flag,
+/// which it does once the meeting is saved.
+async fn stop_and_wait_for_save<R: Runtime>(app: &AppHandle<R>) {
+    if crate::audio::recording_commands::is_recording_now() {
+        stop_recording_and_save(app).await;
+    }
+    wait_while(crate::meeting_detector::post_processing, std::time::Duration::from_millis(250)).await;
+}
+
+/// Checks `busy` every `step` until it returns false.
+async fn wait_while(mut busy: impl FnMut() -> bool, step: std::time::Duration) {
+    while busy() {
+        tokio::time::sleep(step).await;
+    }
+}
+
+/// Runs `stop` for at most `cap`. Returns false when it gave up.
+async fn finish_within<F: std::future::Future<Output = ()>>(cap: std::time::Duration, stop: F) -> bool {
+    tokio::time::timeout(cap, stop).await.is_ok()
 }
 
 fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
@@ -574,5 +613,23 @@ mod tests {
                 ("dictate_mode:a-mode".to_string(), "First".to_string(), false),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn wait_while_returns_once_the_flag_clears() {
+        let mut checks = 0;
+        wait_while(|| {
+            checks += 1;
+            checks < 3
+        }, std::time::Duration::from_millis(1))
+        .await;
+        assert_eq!(checks, 3);
+    }
+
+    #[tokio::test]
+    async fn finish_within_gives_up_after_the_cap() {
+        let cap = std::time::Duration::from_millis(20);
+        assert!(finish_within(cap, async {}).await);
+        assert!(!finish_within(cap, std::future::pending::<()>()).await);
     }
 }

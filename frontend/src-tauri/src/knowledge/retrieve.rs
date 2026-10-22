@@ -2,23 +2,32 @@
 //! the plan's filters, builds the excerpts and ranks them.
 
 use super::{ASK_MAX_EXCERPTS, ASK_MAX_EXCERPT_CHARS, ASK_MAX_KEYWORDS};
+use crate::database::models::DateTimeUtc;
 use crate::database::repositories::transcript::source_matches;
-use chrono::{DateTime, FixedOffset, Local, NaiveDate};
-use serde::Deserialize;
+use chrono::{DateTime, Local, NaiveDate, Utc};
+use serde::{Deserialize, Deserializer};
 use sqlx::SqlitePool;
 use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
-/// What the model asked for. Empty or missing fields mean "no filter".
+/// What the model asked for. Empty, missing or null fields mean "no filter".
 #[derive(Deserialize, Debug, PartialEq, Default)]
 pub struct SearchPlan {
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub keywords: Vec<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "null_as_empty")]
     pub types: Vec<String>,
     pub from: Option<String>, /* YYYY-MM-DD */
     pub to: Option<String>,
     pub person: Option<String>,
+}
+
+fn null_as_empty<'de, D, T>(d: D) -> Result<Vec<T>, D::Error>
+where
+    D: Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Ok(Option::<Vec<T>>::deserialize(d)?.unwrap_or_default())
 }
 
 /// One piece of meeting text for the model. `source` is "transcript", "summary" or "notes".
@@ -35,8 +44,12 @@ pub struct Excerpt {
 }
 
 const KEYWORD_MAX_CHARS: usize = 60;
-/// A summary excerpt gets an equal share of the character budget, so a full set always fits.
+/// A text excerpt gets an equal share of the character budget, so a full set always fits.
 const SUMMARY_SHARE_CHARS: usize = ASK_MAX_EXCERPT_CHARS / ASK_MAX_EXCERPTS;
+/// Transcript lines around a matched or named line, on each side.
+const CONTEXT_LINES: usize = 2;
+/// Lines of a named person taken per meeting when there are no keywords.
+const PERSON_LINES_PER_MEETING: usize = 3;
 
 /// Parses the model's plan. The JSON may sit inside a code fence or prose, so the outermost object is used.
 /// Keywords are trimmed, deduped case-insensitively, cut to 60 chars and capped; dates must be YYYY-MM-DD.
@@ -62,7 +75,7 @@ fn valid_day(raw: Option<&str>) -> Option<String> {
 
 /// Excerpts that pass the plan's filters, ranked by distinct keywords hit, then newer meeting.
 /// With keywords, each keyword's matches are excerpts. With filters only, the summaries of the matching
-/// meetings are returned, plus the lines of a named person. A plan with neither returns nothing.
+/// meetings come first, then (with `person`) that person's lines. A plan with neither returns nothing.
 pub async fn retrieve(pool: &SqlitePool, plan: &SearchPlan) -> Result<Vec<Excerpt>, sqlx::Error> {
     let mut kws: Vec<String> = plan.keywords.iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect();
     kws.sort();
@@ -83,7 +96,7 @@ pub async fn retrieve(pool: &SqlitePool, plan: &SearchPlan) -> Result<Vec<Excerp
     };
     let filters = Filters { from, to, types: plan.types.clone(), person, speakers };
     let mut col = Collector::default();
-    let mut lines: HashMap<String, Vec<Line>> = HashMap::new();
+    let mut lines: HashMap<String, Lines> = HashMap::new();
     if keywords.is_empty() {
         filter_only(pool, &meetings, &filters, &mut col, &mut lines).await?;
     } else {
@@ -97,6 +110,7 @@ pub async fn retrieve(pool: &SqlitePool, plan: &SearchPlan) -> Result<Vec<Excerp
     }
     col.scored.sort_by(|a, b| {
         b.score.cmp(&a.score)
+            .then_with(|| a.rank.cmp(&b.rank))
             .then_with(|| b.when.cmp(&a.when))
             .then_with(|| a.excerpt.meeting_id.cmp(&b.excerpt.meeting_id))
             .then_with(|| a.excerpt.audio_start.partial_cmp(&b.excerpt.audio_start).unwrap_or(Ordering::Equal))
@@ -129,7 +143,7 @@ async fn keyword_matches(
     meetings: &HashMap<String, Meta>,
     filters: &Filters,
     col: &mut Collector,
-    lines: &mut HashMap<String, Vec<Line>>,
+    lines: &mut HashMap<String, Lines>,
 ) -> Result<(), sqlx::Error> {
     let mut title_hits: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for &keyword in keywords {
@@ -145,12 +159,13 @@ async fn keyword_matches(
                     continue;
                 }
                 "transcript" => {
-                    let all = meeting_lines(pool, lines, &m.meeting_id).await?;
-                    let Some(pos) = all.iter().position(|l| Some(&l.id) == m.transcript_id.as_ref()) else { continue };
-                    if !filters.person_in_line(meta, all[pos].name.as_deref()) {
+                    let of = meeting_lines(pool, lines, &m.meeting_id).await?;
+                    let Some(&pos) = m.transcript_id.as_ref().and_then(|t| of.pos.get(t)) else { continue };
+                    if !filters.person_in_line(meta, of.all[pos].name.as_deref()) {
                         continue;
                     }
-                    col.add(transcript_excerpt(&m.meeting_id, meta, all, pos), meta.when, std::slice::from_ref(&needle));
+                    let (from, to) = context_window(of.all.len(), pos);
+                    col.add(lines_excerpt(&m.meeting_id, meta, &of.all, from, to, pos), meta.when, std::slice::from_ref(&needle));
                     continue;
                 }
                 "summary" => {
@@ -158,7 +173,7 @@ async fn keyword_matches(
                         continue;
                     }
                     match summary_section(&m.text, &needle) {
-                        Some(section) => section,
+                        Some(section) => cut_chars(&section, SUMMARY_SHARE_CHARS),
                         None => continue,
                     }
                 }
@@ -166,7 +181,7 @@ async fn keyword_matches(
                     if !filters.person_in_meeting(&m.meeting_id, meta) {
                         continue;
                     }
-                    m.text.clone()
+                    cut_chars(&m.text, SUMMARY_SHARE_CHARS)
                 }
                 _ => continue,
             };
@@ -198,7 +213,7 @@ async fn filter_only(
     meetings: &HashMap<String, Meta>,
     filters: &Filters,
     col: &mut Collector,
-    lines: &mut HashMap<String, Vec<Line>>,
+    lines: &mut HashMap<String, Lines>,
 ) -> Result<(), sqlx::Error> {
     for (meeting_id, meta) in meetings {
         let Some(md) = meta.summary.as_deref() else { continue };
@@ -212,11 +227,25 @@ async fn filter_only(
         if !filters.meeting_ok(meta) {
             continue;
         }
-        let all = meeting_lines(pool, lines, meeting_id).await?;
-        for pos in 0..all.len() {
-            if all[pos].idx.is_some_and(|i| idxs.contains(&i)) {
-                col.add(transcript_excerpt(meeting_id, meta, all, pos), meta.when, &[]);
+        let of = meeting_lines(pool, lines, meeting_id).await?;
+        let picked: Vec<usize> = of.all.iter().enumerate()
+            .filter(|(_, l)| l.idx.is_some_and(|i| idxs.contains(&i)))
+            .map(|(p, _)| p)
+            .take(PERSON_LINES_PER_MEETING)
+            .collect();
+        // Lines whose context windows share a line become one excerpt, so no line repeats
+        let mut groups: Vec<(usize, usize)> = Vec::new();
+        for p in picked {
+            match groups.last_mut() {
+                Some(g) if p <= g.1 + 2 * CONTEXT_LINES => g.1 = p,
+                _ => groups.push((p, p)),
             }
+        }
+        for (first, last) in groups {
+            let from = context_window(of.all.len(), first).0;
+            let to = context_window(of.all.len(), last).1;
+            let idx = col.add(lines_excerpt(meeting_id, meta, &of.all, from, to, first), meta.when, &[]);
+            col.scored[idx].rank = 1;
         }
     }
     Ok(())
@@ -232,7 +261,7 @@ struct Collector {
 }
 
 impl Collector {
-    fn add(&mut self, excerpt: Excerpt, when: Option<DateTime<FixedOffset>>, hits: &[String]) -> usize {
+    fn add(&mut self, excerpt: Excerpt, when: DateTime<Utc>, hits: &[String]) -> usize {
         let anchor = excerpt.transcript_id.clone().unwrap_or_else(|| excerpt.text.clone());
         let key = (excerpt.meeting_id.clone(), excerpt.source.clone(), anchor);
         let idx = match self.seen.get(&key) {
@@ -243,7 +272,7 @@ impl Collector {
                     self.summary_of.entry(excerpt.meeting_id.clone()).or_insert(idx);
                 }
                 self.seen.insert(key, idx);
-                self.scored.push(Scored { excerpt, score: 0, when, hits: BTreeSet::new() });
+                self.scored.push(Scored { excerpt, score: 0, rank: 0, when, hits: BTreeSet::new() });
                 idx
             }
         };
@@ -255,7 +284,9 @@ impl Collector {
 struct Scored {
     excerpt: Excerpt,
     score: usize,
-    when: Option<DateTime<FixedOffset>>,
+    /// 0 for keyword matches and summaries; 1 for a named person's lines (filter-only plans), which sort after summaries
+    rank: u8,
+    when: DateTime<Utc>,
     /// Keywords that led to this excerpt, lowercase
     hits: BTreeSet<String>,
 }
@@ -273,11 +304,8 @@ struct Filters {
 impl Filters {
     /// The local date range and the template type.
     fn meeting_ok(&self, meta: &Meta) -> bool {
-        if self.from.is_some() || self.to.is_some() {
-            let Some(day) = meta.day else { return false };
-            if self.from.is_some_and(|f| day < f) || self.to.is_some_and(|t| day > t) {
-                return false;
-            }
+        if self.from.is_some_and(|f| meta.day < f) || self.to.is_some_and(|t| meta.day > t) {
+            return false;
         }
         self.types.is_empty() || is_type(&self.types, meta)
     }
@@ -303,8 +331,9 @@ fn mentions(meta: &Meta, p: &str) -> bool {
 /// Meeting-level facts the filters and excerpts need.
 struct Meta {
     title: String,
-    when: Option<DateTime<FixedOffset>>,
-    day: Option<NaiveDate>,
+    when: DateTime<Utc>,
+    /// The local calendar day of `when`
+    day: NaiveDate,
     template_id: Option<String>,
     template_name: Option<String>,
     summary: Option<String>,
@@ -319,20 +348,22 @@ struct Line {
     text: String,
 }
 
-fn parse_created(created_at: &str) -> Option<DateTime<FixedOffset>> {
-    DateTime::parse_from_rfc3339(created_at).ok()
+/// A meeting's transcript lines in time order, and each line's position by transcript id.
+struct Lines {
+    all: Vec<Line>,
+    pos: HashMap<String, usize>,
 }
 
 async fn load_meetings(pool: &SqlitePool) -> Result<HashMap<String, Meta>, sqlx::Error> {
-    let rows: Vec<(String, String, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+    let rows: Vec<(String, String, DateTimeUtc, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT m.id, m.title, m.created_at, json_extract(s.result, '$.template_id'), json_extract(s.result, '$.template_name'), json_extract(s.result, '$.markdown')
          FROM meetings m LEFT JOIN summary_processes s ON s.meeting_id = m.id AND s.status = 'completed'",
     )
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(id, title, created_at, template_id, template_name, summary)| {
-        let when = parse_created(&created_at);
-        let day = when.map(|w| w.with_timezone(&Local).date_naive());
+        let when = created_at.0;
+        let day = when.with_timezone(&Local).date_naive();
         (id, Meta { title, when, day, template_id, template_name, summary })
     }).collect())
 }
@@ -360,9 +391,9 @@ fn is_type(types: &[String], meta: &Meta) -> bool {
 /// The meeting's transcript lines, loaded once per call.
 async fn meeting_lines<'a>(
     pool: &SqlitePool,
-    cache: &'a mut HashMap<String, Vec<Line>>,
+    cache: &'a mut HashMap<String, Lines>,
     meeting_id: &str,
-) -> Result<&'a [Line], sqlx::Error> {
+) -> Result<&'a Lines, sqlx::Error> {
     if !cache.contains_key(meeting_id) {
         let rows: Vec<(String, Option<f64>, Option<i64>, Option<String>, String)> = sqlx::query_as(
             "SELECT t.id, t.audio_start_time, t.speaker_idx, ms.name, t.transcript FROM transcripts t
@@ -372,8 +403,9 @@ async fn meeting_lines<'a>(
         .bind(meeting_id)
         .fetch_all(pool)
         .await?;
-        let loaded = rows.into_iter().map(|(id, start, idx, name, text)| Line { id, start, idx, name, text }).collect();
-        cache.insert(meeting_id.to_string(), loaded);
+        let all: Vec<Line> = rows.into_iter().map(|(id, start, idx, name, text)| Line { id, start, idx, name, text }).collect();
+        let pos = all.iter().enumerate().map(|(p, l)| (l.id.clone(), p)).collect();
+        cache.insert(meeting_id.to_string(), Lines { all, pos });
     }
     Ok(&cache[meeting_id])
 }
@@ -383,7 +415,7 @@ fn excerpt_of(meeting_id: &str, meta: &Meta, source: &str, text: String) -> Exce
         id: String::new(),
         meeting_id: meeting_id.to_string(),
         meeting_title: meta.title.clone(),
-        date: meta.day.map(|d| d.to_string()).unwrap_or_default(),
+        date: meta.day.to_string(),
         transcript_id: None,
         audio_start: None,
         source: source.to_string(),
@@ -391,15 +423,19 @@ fn excerpt_of(meeting_id: &str, meta: &Meta, source: &str, text: String) -> Exce
     }
 }
 
-/// The line at `pos` with up to two lines either side, in time order, and that line's id and start.
-fn transcript_excerpt(meeting_id: &str, meta: &Meta, all: &[Line], pos: usize) -> Excerpt {
-    let context = &all[pos.saturating_sub(2)..(pos + 3).min(all.len())];
-    let text = context.iter().map(format_line).collect::<Vec<_>>().join("\n");
+/// The lines `from..to` of a meeting as one excerpt. `anchor` is the line it is about, for id and start.
+fn lines_excerpt(meeting_id: &str, meta: &Meta, all: &[Line], from: usize, to: usize, anchor: usize) -> Excerpt {
+    let text = all[from..to].iter().map(format_line).collect::<Vec<_>>().join("\n");
     Excerpt {
-        transcript_id: Some(all[pos].id.clone()),
-        audio_start: all[pos].start,
+        transcript_id: Some(all[anchor].id.clone()),
+        audio_start: all[anchor].start,
         ..excerpt_of(meeting_id, meta, "transcript", text)
     }
+}
+
+/// The half-open range of lines around `pos`, clipped to the meeting.
+fn context_window(len: usize, pos: usize) -> (usize, usize) {
+    (pos.saturating_sub(CONTEXT_LINES), (pos + CONTEXT_LINES + 1).min(len))
 }
 
 /// `[mm:ss] Name: text`. Speaker 0 is "You", an unnamed speaker is "Speaker n", a NULL speaker has no label.
@@ -501,6 +537,9 @@ mod tests {
         assert_eq!(plan.to, None);
         assert_eq!(plan.person.as_deref(), Some("Иван"));
         assert!(parse_plan("not a plan").is_err());
+        // Explicit nulls mean "no value"
+        let nulls = parse_plan(r#"{"keywords": null, "types": null, "from": null, "person": null}"#).unwrap();
+        assert_eq!(nulls, SearchPlan::default());
     }
 
     #[tokio::test]
@@ -647,7 +686,8 @@ mod tests {
         // Person only: the summaries of meetings they are in, and their lines with context
         let hits = retrieve(&pool, &SearchPlan { person: Some("АННА".into()), ..Default::default() }).await.unwrap();
         let order: Vec<(&str, &str)> = hits.iter().map(|e| (e.meeting_title.as_str(), e.source.as_str())).collect();
-        assert_eq!(order, [("Call", "summary"), ("Call", "transcript"), ("Sync", "summary"), ("Sync", "transcript")]);
+        // Summaries first, newest meeting first; then the person's lines
+        assert_eq!(order, [("Call", "summary"), ("Sync", "summary"), ("Call", "transcript"), ("Sync", "transcript")]);
     }
 
     #[tokio::test]
@@ -675,5 +715,53 @@ mod tests {
         assert_eq!(hits[0].source, "summary");
         assert_eq!(hits[0].text.chars().count(), ASK_MAX_EXCERPT_CHARS / ASK_MAX_EXCERPTS);
         assert!(hits[0].text.starts_with("# Итоги"));
+    }
+
+    #[tokio::test]
+    async fn summary_section_cut_to_share() {
+        let pool = test_pool().await;
+        let id = meeting(&pool, "Sync", "2026-10-05", vec![seg("Пусто", 0.0, None)]).await;
+        summary(&pool, &id, "standard_meeting", "Standard meeting", &format!("бюджет {}", "я".repeat(3000))).await;
+        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source, "summary");
+        assert_eq!(hits[0].text.chars().count(), SUMMARY_SHARE_CHARS);
+        assert!(hits[0].text.starts_with("бюджет"));
+    }
+
+    #[tokio::test]
+    async fn legacy_created_at_keeps_its_day() {
+        let pool = test_pool().await;
+        let id = meeting(&pool, "Legacy", "2026-10-05", vec![seg("бюджет", 0.0, None)]).await;
+        sqlx::query("UPDATE meetings SET created_at = '2026-10-05 12:00:00' WHERE id = ?").bind(&id).execute(&pool).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-05".into()), to: Some("2026-10-05".into()), ..plan(&["бюджет"]) }).await.unwrap();
+        assert_eq!(titles(&hits), ["Legacy"]);
+        assert_eq!(hits[0].date, "2026-10-05");
+    }
+
+    #[tokio::test]
+    async fn person_lines_capped_and_merged() {
+        let pool = test_pool().await;
+        let old = meeting(&pool, "Old", "2026-10-01", vec![seg("Первая", 0.0, Some(1)), seg("Вторая", 5.0, Some(1))]).await;
+        name(&pool, &old, 1, "Анна").await;
+        summary(&pool, &old, "standard_meeting", "Standard meeting", "# Итоги\nКоротко").await;
+        let mid = meeting(&pool, "Mid", "2026-10-05", vec![seg("Третья", 0.0, Some(1)), seg("Четвертая", 5.0, Some(1))]).await;
+        name(&pool, &mid, 1, "Анна").await;
+        summary(&pool, &mid, "standard_meeting", "Standard meeting", "# Итоги\nКоротко").await;
+        let forty: Vec<TranscriptSegment> = (0..40).map(|i| seg(&format!("строка {i}"), i as f64, Some(1))).collect();
+        let new = meeting(&pool, "New", "2026-10-10", forty).await;
+        name(&pool, &new, 1, "Анна").await;
+        summary(&pool, &new, "standard_meeting", "Standard meeting", "# Итоги\nКоротко").await;
+
+        let hits = retrieve(&pool, &SearchPlan { person: Some("анна".into()), ..Default::default() }).await.unwrap();
+        // Every meeting is represented, and the newest contributes a few lines, not all forty
+        assert_eq!(titles(&hits), ["Mid", "New", "Old"]);
+        let new_text: String = hits.iter().filter(|e| e.meeting_title == "New" && e.source == "transcript").map(|e| e.text.as_str()).collect::<Vec<_>>().join("\n");
+        assert!(new_text.contains("строка 0"));
+        assert!(!new_text.contains("строка 39"));
+        // Overlapping context windows are merged, so no line appears twice
+        let lines: Vec<&str> = hits.iter().filter(|e| e.source == "transcript").flat_map(|e| e.text.lines()).collect();
+        let unique: HashSet<&str> = lines.iter().copied().collect();
+        assert_eq!(unique.len(), lines.len());
     }
 }

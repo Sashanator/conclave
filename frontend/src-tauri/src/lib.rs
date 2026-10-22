@@ -979,6 +979,10 @@ pub fn run() {
             // Knowledge commands
             knowledge::settings::knowledge_get_settings,
             knowledge::settings::knowledge_save_settings,
+            knowledge::feed::feed_list,
+            knowledge::feed::feed_unread_count,
+            knowledge::feed::feed_mark_read,
+            knowledge::feed::feed_mark_all_read,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

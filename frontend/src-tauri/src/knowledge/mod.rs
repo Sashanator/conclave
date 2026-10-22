@@ -2,6 +2,7 @@
 // Later knowledge tasks consume these constants and helpers; they are unused until then.
 #![allow(dead_code)]
 
+pub mod feed;
 pub mod settings;
 
 /// LLM call timeouts, in seconds.

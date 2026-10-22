@@ -8,6 +8,20 @@ use tracing::{error, info as log_info};
 pub struct SummaryProcessesRepository;
 
 impl SummaryProcessesRepository {
+    /// Run at startup: a summary still pending after a crash or quit never finishes. Marks it failed
+    /// and restores the backed-up summary, as a cancelled regeneration would. Returns the row count.
+    pub async fn fail_interrupted(pool: &SqlitePool) -> Result<u64, sqlx::Error> {
+        let now = Utc::now();
+        let done = sqlx::query(
+            "UPDATE summary_processes SET status = 'failed', error = 'Interrupted', updated_at = ?, end_time = ?, result = COALESCE(result_backup, result), result_backup = NULL, result_backup_timestamp = NULL WHERE LOWER(status) = 'pending'",
+        )
+        .bind(now)
+        .bind(now)
+        .execute(pool)
+        .await?;
+        Ok(done.rows_affected())
+    }
+
     /// Retrieves the current summary process state for a given meeting ID.
     pub async fn get_summary_data(
         pool: &SqlitePool,
@@ -359,6 +373,43 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    #[tokio::test]
+    async fn startup_fails_interrupted_summaries_and_restores_backup() {
+        let pool = test_pool().await;
+        let started = Utc::now();
+        seed_pending(&pool, "regen", started, Some("partial"), Some("old")).await;
+        seed_pending(&pool, "first", started, None, None).await;
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('done', 'completed', 't', 't', 'kept')")
+            .execute(&pool).await.unwrap();
+
+        assert_eq!(SummaryProcessesRepository::fail_interrupted(&pool).await.unwrap(), 2);
+
+        let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT meeting_id, status, error, result, result_backup FROM summary_processes ORDER BY meeting_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, vec![
+            ("done".into(), "completed".into(), None, Some("kept".into()), None),
+            ("first".into(), "failed".into(), Some("Interrupted".into()), None, None),
+            ("regen".into(), "failed".into(), Some("Interrupted".into()), Some("old".into()), None),
+        ]);
+        // The failed rows are stamped with the time of the sweep, as update_process_failed does
+        let stamps: Vec<(String, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT meeting_id, updated_at, end_time FROM summary_processes WHERE status = 'failed' ORDER BY meeting_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        for (id, updated, ended) in stamps {
+            for stamp in [updated, ended] {
+                let at = DateTime::parse_from_rfc3339(&stamp.expect("timestamp set")).unwrap().with_timezone(&Utc);
+                assert!(at >= started, "{id} stamped before the sweep");
+            }
+        }
     }
 
     #[tokio::test]

@@ -826,7 +826,9 @@ async fn delete_session_inner(pool: &SqlitePool, id: &str, base: &Path, remove: 
 
 /// Run at startup: a session left running by a crash is closed as interrupted.
 pub async fn recover_at_startup<R: Runtime>(app: AppHandle<R>) {
-    let pool = pool_of(&app.state::<AppState>());
+    // First launch has no database yet, so no session can be left running
+    let Some(state) = app.try_state::<AppState>() else { return };
+    let pool = pool_of(&state);
     match db::recover_interrupted(&pool).await {
         Ok(0) => {}
         Ok(n) => info!("practice: closed {n} interrupted session rows"),
@@ -838,6 +840,13 @@ pub async fn recover_at_startup<R: Runtime>(app: AppHandle<R>) {
 mod tests {
     use super::*;
     use crate::practice::db::{Material, MaterialMeta, SetupRow};
+
+    #[tokio::test]
+    async fn startup_recovery_skips_first_launch() {
+        // First launch: no AppState is registered yet, so recovery must return instead of panicking
+        let app = tauri::test::mock_app();
+        recover_at_startup(app.handle().clone()).await;
+    }
     use std::path::PathBuf;
     use crate::practice::report::Fluency;
     use std::sync::Mutex;

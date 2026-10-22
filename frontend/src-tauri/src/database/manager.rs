@@ -3,6 +3,9 @@ use std::fs;
 use std::path::Path;
 use tauri::Manager;
 
+/// The main database file inside the app data folder.
+pub const DB_FILE_NAME: &str = "meeting_minutes.sqlite";
+
 #[derive(Clone)]
 pub struct DatabaseManager {
     pool: SqlitePool,
@@ -50,10 +53,13 @@ impl DatabaseManager {
         if !app_data_dir.exists() {
             fs::create_dir_all(&app_data_dir).map_err(|e| sqlx::Error::Io(e))?;
         }
+        Self::open_in_data_dir(&app_data_dir).await
+    }
 
+    async fn open_in_data_dir(app_data_dir: &Path) -> Result<Self> {
         // Define database paths
         let tauri_db_path = app_data_dir
-            .join("meeting_minutes.sqlite")
+            .join(DB_FILE_NAME)
             .to_string_lossy()
             .to_string();
         // Legacy backend DB path (for auto-migration if exists)
@@ -62,57 +68,19 @@ impl DatabaseManager {
             .to_string_lossy()
             .to_string();
 
-        // WAL file paths for defensive cleanup
-        let wal_path = app_data_dir.join("meeting_minutes.sqlite-wal");
-        let shm_path = app_data_dir.join("meeting_minutes.sqlite-shm");
-
         log::info!("Tauri DB path: {}", tauri_db_path);
         log::info!("Legacy backend DB path: {}", backend_db_path);
 
-        // Try to open database with defensive WAL handling
+        // The WAL and SHM files are never deleted: the WAL can hold committed transactions. A failed
+        // open is returned to the startup error path instead of being retried on a changed file set.
         match Self::new(&tauri_db_path, &backend_db_path).await {
             Ok(db_manager) => {
                 log::info!("Database opened successfully");
                 Ok(db_manager)
             }
             Err(e) => {
-                // Check if error is due to corrupted WAL file
-                let error_msg = e.to_string();
-                if error_msg.contains("malformed") || error_msg.contains("corrupt") {
-                    log::warn!("Database appears corrupted, likely due to orphaned WAL file. Attempting recovery...");
-                    log::warn!("Error details: {}", error_msg);
-
-                    // Delete potentially corrupted WAL/SHM files
-                    if wal_path.exists() {
-                        match fs::remove_file(&wal_path) {
-                            Ok(_) => log::info!("Removed orphaned WAL file: {:?}", wal_path),
-                            Err(e) => log::warn!("Failed to remove WAL file: {}", e),
-                        }
-                    }
-                    if shm_path.exists() {
-                        match fs::remove_file(&shm_path) {
-                            Ok(_) => log::info!("Removed orphaned SHM file: {:?}", shm_path),
-                            Err(e) => log::warn!("Failed to remove SHM file: {}", e),
-                        }
-                    }
-
-                    // Retry connection without WAL files
-                    log::info!("Retrying database connection after WAL cleanup...");
-                    match Self::new(&tauri_db_path, &backend_db_path).await {
-                        Ok(db_manager) => {
-                            log::info!("Database opened successfully after WAL recovery");
-                            Ok(db_manager)
-                        }
-                        Err(retry_err) => {
-                            log::error!("Database connection failed even after WAL cleanup: {}", retry_err);
-                            Err(retry_err)
-                        }
-                    }
-                } else {
-                    // Not a WAL-related error, propagate original error
-                    log::error!("Database connection failed: {}", error_msg);
-                    Err(e)
-                }
+                log::error!("Database connection failed: {}", e);
+                Err(e)
             }
         }
     }
@@ -124,7 +92,7 @@ impl DatabaseManager {
             .app_data_dir()
             .expect("failed to get app data dir");
 
-        let tauri_db_path = app_data_dir.join("meeting_minutes.sqlite");
+        let tauri_db_path = app_data_dir.join(DB_FILE_NAME);
 
         Ok(!tauri_db_path.exists())
     }
@@ -204,5 +172,32 @@ impl DatabaseManager {
         log::info!("Database connection pool closed");
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn damaged_database_keeps_its_wal_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join(DB_FILE_NAME);
+        let wal = dir.path().join("meeting_minutes.sqlite-wal");
+        let db_str = db.to_string_lossy().to_string();
+        Sqlite::create_database(&db_str).await.unwrap();
+        let pool = SqlitePool::connect(&db_str).await.unwrap();
+        sqlx::query("CREATE TABLE t (x INTEGER)").execute(&pool).await.unwrap();
+        pool.close().await;
+        // Overwrite the schema page so the database reports "malformed" when opened
+        let mut bytes = fs::read(&db).unwrap();
+        bytes[100..4096].fill(0xFF);
+        fs::write(&db, bytes).unwrap();
+        // Stand-in for committed transactions that only the WAL holds
+        fs::write(&wal, b"committed transactions").unwrap();
+
+        let err = DatabaseManager::open_in_data_dir(dir.path()).await.err().expect("a damaged database must not open");
+        assert!(err.to_string().contains("malformed"), "unexpected error: {err}");
+        assert_eq!(fs::read(&wal).unwrap(), b"committed transactions");
     }
 }

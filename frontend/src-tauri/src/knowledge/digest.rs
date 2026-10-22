@@ -11,7 +11,7 @@ use crate::knowledge::{
     DIGEST_SUMMARY_HEAD_CHARS, DIGEST_TIMEOUT_SECS,
 };
 use crate::state::AppState;
-use crate::summary::llm_client::LLMProvider;
+use crate::summary::llm_client::{reject_truncated, LLMProvider};
 use crate::summary::llm_target::complete;
 use crate::summary::processor::language_name_from_code;
 use crate::summary::templates::{self, TemplateEntry};
@@ -377,6 +377,7 @@ where
         reply.completion.usage.as_ref(),
     )
     .await;
+    reject_truncated(&reply.completion)?;
     let markdown = reply.completion.content.trim().to_string();
     if markdown.is_empty() {
         return Err("The model returned no digest".to_string());
@@ -653,6 +654,7 @@ mod tests {
                 content: content.to_string(),
                 reasoning_stripped: false,
                 usage: None,
+                truncated: false,
             },
         }
     }

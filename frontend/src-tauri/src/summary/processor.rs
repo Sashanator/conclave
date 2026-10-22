@@ -1,4 +1,4 @@
-use crate::summary::llm_client::{generate_summary, LLMProvider, TokenUsage};
+use crate::summary::llm_client::{generate_summary, reject_truncated, LLMProvider, TokenUsage};
 use crate::summary::templates::Template;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -337,6 +337,8 @@ pub(crate) async fn generate_meeting_summary(
                 {
                     Ok(completion) => {
                         usage.extend(completion.usage);
+                        // A retry with the same prompt would be cut off the same way, so fail now.
+                        reject_truncated(&completion)?;
                         let cleaned = clean_llm_markdown_detailed(&completion.content);
                         reasoning_stripped |=
                             completion.reasoning_stripped || cleaned.reasoning_stripped;
@@ -401,6 +403,7 @@ pub(crate) async fn generate_meeting_summary(
             )
             .await?;
             usage.extend(completion.usage);
+            reject_truncated(&completion)?;
             let cleaned = clean_llm_markdown_detailed(&completion.content);
             reasoning_stripped |=
                 completion.reasoning_stripped || cleaned.reasoning_stripped;
@@ -422,6 +425,7 @@ pub(crate) async fn generate_meeting_summary(
     )
     .await?;
     usage.extend(completion.usage);
+    reject_truncated(&completion)?;
     let cleaned = clean_llm_markdown_detailed(&completion.content);
     reasoning_stripped |= completion.reasoning_stripped || cleaned.reasoning_stripped;
     require_visible_markdown("Final summary", &cleaned)?;
@@ -531,6 +535,22 @@ mod tests {
         let mut usage = Vec::new();
         assert!(run_chunked(&endpoint, &mut usage).await.is_err());
         assert_eq!(outputs(&usage), vec![Some(1)]);
+    }
+
+    #[tokio::test]
+    async fn truncated_chunk_fails_without_a_retry() {
+        let cut_off = r#"{"choices":[{"message":{"content":"Half"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":8192}}"#;
+        let endpoint = serve(vec![
+            ("200 OK", cut_off.to_string()),
+            ("200 OK", cut_off.to_string()),
+            ("200 OK", cut_off.to_string()),
+        ])
+        .await;
+        let mut usage = Vec::new();
+        let error = run_chunked(&endpoint, &mut usage).await.unwrap_err();
+        assert_eq!(error, crate::summary::llm_client::OUTPUT_LIMIT_MESSAGE);
+        // The cut-off call is billed once and not repeated with the same prompt.
+        assert_eq!(outputs(&usage), vec![Some(8192)]);
     }
 
     #[test]

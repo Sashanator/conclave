@@ -2,7 +2,7 @@ use super::{settings, ASK_TIMEOUT_SECS, MAX_CONTEXT_CHARS, MAX_QUESTION_CHARS};
 use crate::cancel_slot::{CancelSlot, Claim};
 use crate::ollama::metadata::ModelMetadataCache;
 use crate::state::AppState;
-use crate::summary::llm_client::{LLMProvider, LlmCompletion};
+use crate::summary::llm_client::{reject_truncated, LLMProvider, LlmCompletion};
 use crate::summary::llm_target::{complete, target_with_override, LlmTarget};
 use crate::summary::processor::language_name_from_code;
 use crate::usage::{self, Purpose};
@@ -247,6 +247,7 @@ async fn answer<R: Runtime>(app: AppHandle<R>, request: CopilotRequest) -> Resul
         )
         .await;
     }
+    reject_truncated(&sent.completion)?;
     let answer = sent.completion.content.trim();
     if answer.is_empty() {
         warn!(

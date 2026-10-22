@@ -161,13 +161,19 @@ pub struct ClaudeChatResponse {
     pub stop_reason: Option<String>,
 }
 
-/// Rejects a reply that stopped at the output limit: "max_tokens" (Claude) or "length" (OpenAI-style).
-fn ensure_complete(stop_reason: Option<&str>) -> Result<(), String> {
-    match stop_reason {
-        Some("max_tokens" | "length") => {
-            Err("Summary was cut off at the model's output limit".to_string())
-        }
-        _ => Ok(()),
+/// Claude reports "max_tokens" and OpenAI-style APIs report "length" when the reply hit the output limit.
+fn is_output_limit_stop(stop_reason: Option<&str>) -> bool {
+    matches!(stop_reason, Some("max_tokens" | "length"))
+}
+
+pub(crate) const OUTPUT_LIMIT_MESSAGE: &str = "Summary was cut off at the model's output limit";
+
+/// Call only after the reply's usage is recorded: a cut-off reply is still billed.
+pub(crate) fn reject_truncated(completion: &LlmCompletion) -> Result<(), String> {
+    if completion.truncated {
+        Err(OUTPUT_LIMIT_MESSAGE.to_string())
+    } else {
+        Ok(())
     }
 }
 
@@ -193,6 +199,7 @@ impl ClaudeChatResponse {
                 matches!(block.block_type.as_str(), "thinking" | "redacted_thinking")
             }),
             usage: None,
+            truncated: is_output_limit_stop(self.stop_reason.as_deref()),
         })
     }
 }
@@ -245,12 +252,13 @@ pub(crate) struct LlmCompletion {
     pub content: String,
     pub reasoning_stripped: bool,
     pub usage: Option<TokenUsage>,
+    /// The reply hit the output limit. Callers must record usage, then `reject_truncated`.
+    pub truncated: bool,
 }
 
 impl ChatResponse {
     fn completion(&self) -> Result<LlmCompletion, String> {
         let choice = self.choices.first().ok_or("No content in LLM response")?;
-        ensure_complete(choice.finish_reason.as_deref())?;
         let message = &choice.message;
         Ok(LlmCompletion {
             content: message
@@ -264,6 +272,7 @@ impl ChatResponse {
                 .flatten()
                 .any(|reasoning| !reasoning.trim().is_empty()),
             usage: None,
+            truncated: is_output_limit_stop(choice.finish_reason.as_deref()),
         })
     }
 }
@@ -407,6 +416,7 @@ pub(crate) async fn generate_summary(
             content,
             reasoning_stripped: false,
             usage: None,
+            truncated: false,
         })
         .map_err(|e| e.to_string());
     }
@@ -597,7 +607,6 @@ pub(crate) async fn generate_summary(
         .map_err(|e| format!("Failed to parse LLM response: {}", e))?;
 
         info!("🐞 LLM Response received from Claude");
-        ensure_complete(chat_response.stop_reason.as_deref())?;
 
         let usage = chat_response
             .usage
@@ -784,6 +793,7 @@ mod tests {
                     content: String::new(),
                     reasoning_stripped: true,
                     usage: None,
+                    truncated: false,
                 }
             );
         }
@@ -1070,6 +1080,7 @@ mod tests {
                 content: "Meeting summary.".to_string(),
                 reasoning_stripped: false,
                 usage: None,
+                truncated: false,
             }
         );
     }
@@ -1090,19 +1101,22 @@ mod tests {
                 content: "Meeting summary.".to_string(),
                 reasoning_stripped: true,
                 usage: None,
+                truncated: false,
             })
         );
     }
 
     #[test]
-    fn output_limit_stops_are_errors_not_summaries() {
+    fn output_limit_stops_are_flagged_and_rejected_after_usage() {
         let claude: ClaudeChatResponse = serde_json::from_value(json!({
             "content": [{"type": "text", "text": "Half a summ"}],
             "stop_reason": "max_tokens"
         }))
         .unwrap();
+        let completion = claude.completion().unwrap();
+        assert!(completion.truncated);
         assert_eq!(
-            ensure_complete(claude.stop_reason.as_deref()),
+            reject_truncated(&completion),
             Err("Summary was cut off at the model's output limit".to_string())
         );
 
@@ -1110,26 +1124,60 @@ mod tests {
             "choices": [{"message": {"content": "Half a summ"}, "finish_reason": "length"}]
         }))
         .unwrap();
-        assert_eq!(
-            chat.completion(),
-            Err("Summary was cut off at the model's output limit".to_string())
-        );
+        let completion = chat.completion().unwrap();
+        assert!(completion.truncated);
+        assert!(reject_truncated(&completion).is_err());
     }
 
     #[test]
-    fn finished_replies_pass_the_stop_check() {
+    fn finished_replies_are_not_flagged() {
         let claude: ClaudeChatResponse = serde_json::from_value(json!({
             "content": [{"type": "text", "text": "Whole summary."}],
             "stop_reason": "end_turn"
         }))
         .unwrap();
-        assert_eq!(ensure_complete(claude.stop_reason.as_deref()), Ok(()));
+        let completion = claude.completion().unwrap();
+        assert!(!completion.truncated);
+        assert_eq!(reject_truncated(&completion), Ok(()));
 
         let chat: ChatResponse = serde_json::from_value(json!({
             "choices": [{"message": {"content": "Whole summary."}, "finish_reason": "stop"}]
         }))
         .unwrap();
-        assert_eq!(chat.completion().unwrap().content, "Whole summary.");
+        let completion = chat.completion().unwrap();
+        assert_eq!(completion.content, "Whole summary.");
+        assert!(!completion.truncated);
+    }
+
+    #[tokio::test]
+    async fn truncated_reply_keeps_the_usage_it_was_billed() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let _ = read_http_request(&mut stream).await;
+            let body = br#"{"choices":[{"message":{"content":"Half a summ"},"finish_reason":"length"}],"usage":{"prompt_tokens":3,"completion_tokens":8192}}"#;
+            let headers = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            stream.write_all(headers.as_bytes()).await.unwrap();
+            stream.write_all(body).await.unwrap();
+            stream.flush().await.unwrap();
+        });
+
+        let client = Client::new();
+        let endpoint = format!("http://{address}");
+        let completion = generate_summary(
+            &client, &LLMProvider::Ollama, "model", "", "system", "user",
+            Some(&endpoint), None, None, None, None, None, None,
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+
+        assert!(completion.truncated);
+        assert_eq!(completion.usage.and_then(|usage| usage.output), Some(8192));
     }
 
     #[test]

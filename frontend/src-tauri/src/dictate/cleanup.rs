@@ -5,7 +5,7 @@ use crate::dictate::settings::{
     CustomMode, DictateSettings, ModeExample, AS_SPOKEN_ID, CLEANED_UP_ID,
 };
 use crate::dictate::CLEANUP_TIMEOUT_SECS;
-use crate::summary::llm_client::LLMProvider;
+use crate::summary::llm_client::{reject_truncated, LLMProvider};
 use crate::summary::llm_target::{complete, LlmTarget};
 use crate::usage::{self, Purpose};
 use sqlx::SqlitePool;
@@ -176,6 +176,7 @@ pub async fn clean(
                 completion.usage.as_ref(),
             )
             .await;
+            reject_truncated(&completion)?;
             completion.content
         }
     };

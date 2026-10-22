@@ -352,6 +352,10 @@ impl SummaryService {
                     usage::record(&pool, provider.as_str(), &model_name, Purpose::TemplatePick, Some(&meeting_id), None, c.usage.as_ref()).await;
                 }
                 match answer {
+                    Ok(Ok(c)) if c.truncated => {
+                        warn!("Auto-pick answer was cut off at the output limit");
+                        (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
+                    }
                     Ok(Ok(c)) => match auto_pick_answer_id(&c.content, &listing.templates) {
                         Some(id) => (id, TemplateSource::Auto),
                         None => {

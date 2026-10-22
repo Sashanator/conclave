@@ -6,7 +6,7 @@ use crate::knowledge::{
     settings, EXTRACT_MAX_ITEMS, EXTRACT_MAX_OWN_LINES_CHARS, EXTRACT_TIMEOUT_SECS, MAX_TASK_CHARS,
 };
 use crate::state::AppState;
-use crate::summary::llm_client::LLMProvider;
+use crate::summary::llm_client::{reject_truncated, LLMProvider};
 use crate::summary::llm_target::complete;
 use crate::usage::{self, Purpose};
 use log::{error, info, warn};
@@ -406,6 +406,7 @@ where
             reply.completion.usage.as_ref(),
         )
         .await;
+        reject_truncated(&reply.completion)?;
         if let Ok(ex) = parse_extraction(&reply.completion.content) {
             return Ok(ex);
         }
@@ -496,6 +497,7 @@ mod tests {
                 content: content.to_string(),
                 reasoning_stripped: false,
                 usage: None,
+                truncated: false,
             },
         }
     }

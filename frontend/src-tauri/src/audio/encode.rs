@@ -18,6 +18,10 @@ pub struct AudioInput {
 /// FFmpeg arguments for one checkpoint. `-y` lets a retry overwrite a partial file left by a failed attempt.
 fn ffmpeg_args(sample_rate: u32, channels: u16, output_path: &str) -> Vec<String> {
     [
+        "-hide_banner",
+        "-nostats",
+        "-loglevel",
+        "error",
         "-y",
         "-f",
         "f32le",
@@ -119,6 +123,10 @@ mod tests {
     fn ffmpeg_args_overwrite_a_partial_file_from_a_failed_attempt() {
         let args = ffmpeg_args(48000, 1, "checkpoint.mp4");
         assert!(args.iter().any(|a| a == "-y"));
+        // Quiet output, so the piped stderr cannot fill up while stdin is still being written.
+        for quiet in ["-hide_banner", "-nostats", "-loglevel", "error"] {
+            assert!(args.iter().any(|a| a == quiet), "missing {quiet}");
+        }
         assert_eq!(args.last().map(String::as_str), Some("checkpoint.mp4"));
     }
 }

@@ -153,6 +153,21 @@ impl AudioMixerRingBuffer {
         Some((mic_window, sys_window))
     }
 
+    /// Pads both buffers with silence up to one window, so audio shorter than a window can be mixed.
+    /// Returns false when both buffers are empty.
+    fn pad_leftover(&mut self) -> bool {
+        if self.mic_buffer.is_empty() && self.system_buffer.is_empty() {
+            return false;
+        }
+        let window = self.window_size_samples;
+        for buffer in [&mut self.mic_buffer, &mut self.system_buffer] {
+            if buffer.len() < window {
+                buffer.resize(window, 0.0);
+            }
+        }
+        true
+    }
+
 }
 
 /// Simple audio mixer without aggressive ducking
@@ -802,6 +817,7 @@ impl AudioPipeline {
         // This ensures ALL chunks are processed during shutdown, fixing premature meeting completion
         // Previous bug: Loop checked `while self.state.is_recording()` which caused early exit when
         // stop_recording() was called, losing flush signals and remaining chunks in the pipeline
+        let mut last_timestamp = 0.0;
         loop {
             // Receive audio chunks with timeout
             match tokio::time::timeout(
@@ -848,70 +864,13 @@ impl AudioPipeline {
                     // STEP 1: Add raw audio to ring buffer for mixing
                     // Microphone audio is already normalized at capture level (AudioCapture)
                     // System audio remains raw
+                    last_timestamp = chunk.timestamp;
                     self.ring_buffer.add_samples(chunk.device_type.clone(), chunk.data);
 
                     // STEP 2: Mix audio in fixed windows when both streams have sufficient data
                     while self.ring_buffer.can_mix() {
                         if let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
-                            // Level track for the You/Others label; skipped entirely unless speaker identification is on
-                            if crate::speakers::levels::live_is_active() {
-                                crate::speakers::levels::live_push(crate::speakers::levels::window_levels(&mic_window, &sys_window));
-                            }
-
-                            // Simple mixing without aggressive ducking
-                            let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
-
-                            // NO POST-GAIN NEEDED: Microphone already normalized by EBU R128 to -23 LUFS
-                            // This is broadcast-standard loudness (Netflix/YouTube/Spotify level)
-                            // System audio at natural levels
-                            // Previous 2x gain was causing excessive limiting/distortion
-                            let mixed_with_gain = mixed_clean;
-
-                            // STEP 3: Send mixed audio for transcription (VAD + Whisper)
-                            match self.vad_processor.process_audio(&mixed_with_gain) {
-                                Ok(speech_segments) => {
-                                    for segment in speech_segments {
-                                        let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
-
-                                        if segment.samples.len() >= 800 {  // Minimum 50ms at 16kHz - matches Parakeet capability
-                                            info!("📤 Sending VAD segment: {:.1}ms, {} samples",
-                                                  duration_ms, segment.samples.len());
-
-                                            let transcription_chunk = AudioChunk {
-                                                data: segment.samples,
-                                                sample_rate: 16000,
-                                                timestamp: segment.start_timestamp_ms / 1000.0,
-                                                chunk_id: self.chunk_id_counter,
-                                                device_type: DeviceType::Microphone,  // Mixed audio
-                                            };
-
-                                            if let Err(e) = self.transcription_sender.send(transcription_chunk) {
-                                                warn!("Failed to send VAD segment: {}", e);
-                                            } else {
-                                                self.chunk_id_counter += 1;
-                                            }
-                                        } else {
-                                            debug!("⏭️ Dropping short VAD segment: {:.1}ms ({} samples < 800)",
-                                                   duration_ms, segment.samples.len());
-                                        }
-                                    }
-                                }
-                                Err(e) => {
-                                    warn!("⚠️ VAD error: {}", e);
-                                }
-                            }
-
-                            // STEP 4: Send mixed audio for recording (WAV file)
-                            if let Some(ref sender) = self.recording_sender_for_mixed {
-                                let recording_chunk = AudioChunk {
-                                    data: mixed_with_gain.clone(),
-                                    sample_rate: self.sample_rate,
-                                    timestamp: chunk.timestamp,
-                                    chunk_id: self.chunk_id_counter,
-                                    device_type: DeviceType::Microphone,  // Mixed audio
-                                };
-                                let _ = sender.send(recording_chunk);
-                            }
+                            self.send_mixed_window(mic_window, sys_window, chunk.timestamp);
                         }
                     }
                 }
@@ -926,11 +885,81 @@ impl AudioPipeline {
             }
         }
 
+        // Audio shorter than one window is still in the ring buffer: mix it too
+        if self.ring_buffer.pad_leftover() {
+            while let Some((mic_window, sys_window)) = self.ring_buffer.extract_window() {
+                self.send_mixed_window(mic_window, sys_window, last_timestamp);
+            }
+        }
+
         // Flush any remaining VAD segments
         self.flush_remaining_audio()?;
 
         info!("VAD-driven audio pipeline ended");
         Ok(())
+    }
+
+    /// Mixes one window of mic and system audio, then sends it to VAD/transcription and the recording.
+    fn send_mixed_window(&mut self, mic_window: Vec<f32>, sys_window: Vec<f32>, timestamp: f64) {
+        // Level track for the You/Others label; skipped entirely unless speaker identification is on
+        if crate::speakers::levels::live_is_active() {
+            crate::speakers::levels::live_push(crate::speakers::levels::window_levels(&mic_window, &sys_window));
+        }
+
+        // Simple mixing without aggressive ducking
+        let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
+
+        // NO POST-GAIN NEEDED: Microphone already normalized by EBU R128 to -23 LUFS
+        // This is broadcast-standard loudness (Netflix/YouTube/Spotify level)
+        // System audio at natural levels
+        // Previous 2x gain was causing excessive limiting/distortion
+        let mixed_with_gain = mixed_clean;
+
+        // STEP 3: Send mixed audio for transcription (VAD + Whisper)
+        match self.vad_processor.process_audio(&mixed_with_gain) {
+            Ok(speech_segments) => {
+                for segment in speech_segments {
+                    let duration_ms = segment.end_timestamp_ms - segment.start_timestamp_ms;
+
+                    if segment.samples.len() >= 800 {  // Minimum 50ms at 16kHz - matches Parakeet capability
+                        info!("📤 Sending VAD segment: {:.1}ms, {} samples",
+                              duration_ms, segment.samples.len());
+
+                        let transcription_chunk = AudioChunk {
+                            data: segment.samples,
+                            sample_rate: 16000,
+                            timestamp: segment.start_timestamp_ms / 1000.0,
+                            chunk_id: self.chunk_id_counter,
+                            device_type: DeviceType::Microphone,  // Mixed audio
+                        };
+
+                        if let Err(e) = self.transcription_sender.send(transcription_chunk) {
+                            warn!("Failed to send VAD segment: {}", e);
+                        } else {
+                            self.chunk_id_counter += 1;
+                        }
+                    } else {
+                        debug!("⏭️ Dropping short VAD segment: {:.1}ms ({} samples < 800)",
+                               duration_ms, segment.samples.len());
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("⚠️ VAD error: {}", e);
+            }
+        }
+
+        // STEP 4: Send mixed audio for recording (WAV file)
+        if let Some(ref sender) = self.recording_sender_for_mixed {
+            let recording_chunk = AudioChunk {
+                data: mixed_with_gain.clone(),
+                sample_rate: self.sample_rate,
+                timestamp,
+                chunk_id: self.chunk_id_counter,
+                device_type: DeviceType::Microphone,  // Mixed audio
+            };
+            let _ = sender.send(recording_chunk);
+        }
     }
 
     fn flush_remaining_audio(&mut self) -> Result<()> {
@@ -1146,5 +1175,21 @@ mod tests {
         // uninterrupted speech. Batch import/retranscription use 2000ms.
         // See #679 and #756.
         assert_eq!(VAD_REDEMPTION_TIME_MS, 500);
+    }
+
+    #[test]
+    fn leftover_audio_under_one_window_is_mixed_at_the_end() {
+        let mut ring = AudioMixerRingBuffer::new(48_000);
+        ring.add_samples(DeviceType::Microphone, vec![0.5; 100]);
+        assert!(ring.extract_window().is_none());
+
+        assert!(ring.pad_leftover());
+        let (mic, sys) = ring.extract_window().expect("leftover window");
+        assert_eq!(mic.len(), ring.window_size_samples);
+        assert_eq!(&mic[..100], &[0.5f32; 100][..]);
+        assert!(mic[100..].iter().all(|&s| s == 0.0));
+        assert!(sys.iter().all(|&s| s == 0.0));
+        assert!(!ring.can_mix());
+        assert!(!ring.pad_leftover());
     }
 }

@@ -220,7 +220,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
       try {
         const config = await configService.getTranscriptConfig();
         if (config) {
-          console.log('[ConfigContext] Loaded saved transcript config:', config);
+          console.log('[ConfigContext] Loaded saved transcript config:', { provider: config.provider, model: config.model });
           setTranscriptModelConfig({
             provider: config.provider || 'localWhisper',
             model: config.model || MODEL_DEFAULTS.localWhisper,

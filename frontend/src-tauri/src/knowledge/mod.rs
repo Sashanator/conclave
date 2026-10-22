@@ -3,6 +3,7 @@
 #![allow(dead_code)]
 
 pub mod ask;
+pub mod calendar;
 pub mod extract;
 pub mod feed;
 pub mod retrieve;

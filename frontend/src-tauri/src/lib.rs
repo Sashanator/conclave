@@ -650,6 +650,7 @@ pub fn run() {
             copilot::settings::load_at_startup(_app.handle());
             usage::prices::load_at_startup(_app.handle());
             knowledge::settings::load_at_startup(_app.handle());
+            knowledge::calendar::load_at_startup(_app.handle());
             practice::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
@@ -1001,6 +1002,9 @@ pub fn run() {
             knowledge::tasks::tasks_claim,
             knowledge::tasks::tasks_add,
             knowledge::tasks::tasks_delete,
+            knowledge::calendar::calendar_connect,
+            knowledge::calendar::calendar_disconnect,
+            knowledge::calendar::calendar_status,
             usage::stats::stats_cost,
             usage::stats::meeting_cost,
             usage::stats::stats_talk_time,

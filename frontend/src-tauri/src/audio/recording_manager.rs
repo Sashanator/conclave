@@ -382,7 +382,8 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                // Don't fail the stop operation if saving fails, but tell the user the audio is missing
+                let _ = tauri::Emitter::emit(app, "recording-error", format!("Audio could not be saved: {e}"));
             }
         }
 
@@ -421,7 +422,8 @@ impl RecordingManager {
             }
             Err(e) => {
                 error!("Failed to save recording: {}", e);
-                // Don't fail the stop operation if saving fails
+                // Don't fail the stop operation if saving fails, but tell the user the audio is missing
+                let _ = tauri::Emitter::emit(app, "recording-error", format!("Audio could not be saved: {e}"));
             }
         }
 

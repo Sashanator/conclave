@@ -6,7 +6,7 @@ use super::recording_state::AudioChunk;
 use serde::{Serialize, Deserialize};
 
 use super::ffmpeg::find_ffmpeg_path;
-use super::meeting_folder::{delete_checkpoint_files, guarded_meeting_folder, is_plain_dir};
+use super::meeting_folder::{audio_files, checkpoint_files, delete_checkpoint_files, guarded_meeting_folder, is_plain_dir};
 
 /// Audio data without device type (we only store mixed audio)
 #[derive(Clone)]
@@ -253,6 +253,23 @@ pub struct AudioRecoveryStatus {
     pub estimated_duration_seconds: f64,
     pub audio_file_path: Option<String>,
     pub message: String,
+}
+
+/// True when the meeting has checkpoint chunks but no audio file, i.e. the Stop-time merge failed.
+fn needs_checkpoint_merge(folder: &Path) -> bool {
+    audio_files(folder).is_empty() && !checkpoint_files(&folder.join(".checkpoints")).is_empty()
+}
+
+/// Merges leftover checkpoint chunks before a lookup of the meeting's audio. Skipped while a
+/// recording runs, because the live saver still owns those chunks.
+pub async fn merge_leftover_checkpoints(folder: &Path) {
+    if super::recording_commands::is_recording_now() || !needs_checkpoint_merge(folder) {
+        return;
+    }
+    match recover_audio_from_checkpoints(folder.to_string_lossy().into_owned(), 48000).await {
+        Ok(status) => info!("Merged leftover checkpoints in {}: {}", folder.display(), status.message),
+        Err(e) => warn!("Could not merge leftover checkpoints in {}: {}", folder.display(), e),
+    }
 }
 
 /// Recover audio from checkpoint files
@@ -520,5 +537,21 @@ mod tests {
         // Less than a full interval since the failure: no retry, and the audio is kept.
         assert!(saver.add_chunk(chunk(10)).is_ok());
         assert_eq!(saver.checkpoint_buffer.len(), 2);
+    }
+
+    #[test]
+    fn leftover_checkpoints_without_audio_choose_the_merge() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("Failed_Merge");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        std::fs::write(folder.join(".checkpoints").join("audio_chunk_000.mp4"), b"chunk").unwrap();
+        assert!(needs_checkpoint_merge(&folder));
+
+        std::fs::write(folder.join("audio.mp4"), b"merged").unwrap();
+        assert!(!needs_checkpoint_merge(&folder));
+
+        let no_chunks = temp_dir.path().join("No_Chunks");
+        std::fs::create_dir_all(no_chunks.join(".checkpoints")).unwrap();
+        assert!(!needs_checkpoint_merge(&no_chunks));
     }
 }

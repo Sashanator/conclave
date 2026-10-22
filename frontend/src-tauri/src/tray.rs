@@ -142,19 +142,38 @@ fn resume_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// Exits, but first stops a running recording so its audio is saved. Capped so Quit cannot hang.
+/// Overall cap for Quit: stop a running recording, then wait for the frontend to save it.
+const QUIT_CAP: std::time::Duration = std::time::Duration::from_secs(120);
+
+/// Exits once a running recording is stopped and the frontend has saved it. Capped so Quit cannot hang.
 fn quit_app<R: Runtime>(app: &AppHandle<R>) {
-    if !crate::audio::recording_commands::is_recording_now() {
+    if !crate::audio::recording_commands::is_recording_now() && !crate::meeting_detector::post_processing() {
         app.exit(0);
         return;
     }
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        if !finish_within(std::time::Duration::from_secs(60), stop_recording_and_save(&app_clone)).await {
-            log::error!("Quit: the recording did not stop within 60 s, exiting anyway");
+        if !finish_within(QUIT_CAP, stop_and_wait_for_save(&app_clone)).await {
+            log::error!("Quit: the recording was not saved within 120 s, exiting anyway");
         }
         app_clone.exit(0);
     });
+}
+
+/// Stops a running recording, then waits until the frontend clears the post-processing flag,
+/// which it does once the meeting is saved.
+async fn stop_and_wait_for_save<R: Runtime>(app: &AppHandle<R>) {
+    if crate::audio::recording_commands::is_recording_now() {
+        stop_recording_and_save(app).await;
+    }
+    wait_while(crate::meeting_detector::post_processing, std::time::Duration::from_millis(250)).await;
+}
+
+/// Checks `busy` every `step` until it returns false.
+async fn wait_while(mut busy: impl FnMut() -> bool, step: std::time::Duration) {
+    while busy() {
+        tokio::time::sleep(step).await;
+    }
 }
 
 /// Runs `stop` for at most `cap`. Returns false when it gave up.
@@ -594,6 +613,17 @@ mod tests {
                 ("dictate_mode:a-mode".to_string(), "First".to_string(), false),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn wait_while_returns_once_the_flag_clears() {
+        let mut checks = 0;
+        wait_while(|| {
+            checks += 1;
+            checks < 3
+        }, std::time::Duration::from_millis(1))
+        .await;
+        assert_eq!(checks, 3);
     }
 
     #[tokio::test]

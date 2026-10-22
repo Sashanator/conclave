@@ -20,6 +20,7 @@ struct AudioData {
 pub struct IncrementalAudioSaver {
     checkpoint_buffer: Vec<AudioData>,
     checkpoint_interval_samples: usize,  // 30s at 48kHz = 1,440,000 samples
+    next_checkpoint_samples: usize,      // buffered samples that trigger the next attempt
     checkpoint_count: u32,
     checkpoints_dir: PathBuf,
     meeting_folder: PathBuf,
@@ -43,6 +44,7 @@ impl IncrementalAudioSaver {
         Ok(Self {
             checkpoint_buffer: Vec::new(),
             checkpoint_interval_samples: sample_rate as usize * 30, // 30 seconds
+            next_checkpoint_samples: sample_rate as usize * 30,
             checkpoint_count: 0,
             checkpoints_dir,
             meeting_folder,
@@ -67,9 +69,18 @@ impl IncrementalAudioSaver {
             .sum();
 
         // Save checkpoint when buffer reaches threshold (30 seconds)
-        if total_samples >= self.checkpoint_interval_samples {
-            self.save_checkpoint()?;
-            self.checkpoint_buffer.clear();
+        if total_samples >= self.next_checkpoint_samples {
+            match self.save_checkpoint() {
+                Ok(()) => {
+                    self.checkpoint_buffer.clear();
+                    self.next_checkpoint_samples = self.checkpoint_interval_samples;
+                }
+                Err(e) => {
+                    // Keep the audio, but wait for another full interval before retrying.
+                    self.next_checkpoint_samples = total_samples + self.checkpoint_interval_samples;
+                    return Err(e);
+                }
+            }
         }
 
         Ok(())
@@ -486,5 +497,28 @@ mod tests {
         assert!(result.is_err());
         assert!(!cp.join("concat_list.txt").exists());
         assert!(!outside.path().join("audio.mp4").exists());
+    }
+
+    #[test]
+    fn failed_checkpoint_is_not_retried_until_another_interval_of_audio() {
+        let temp_dir = tempdir().unwrap();
+        let meeting_folder = temp_dir.path().join("Retry_Test");
+        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+        // 100 Hz makes the 30 s interval 3000 samples.
+        let mut saver = IncrementalAudioSaver::new(meeting_folder, 100).unwrap();
+        // A missing folder makes every checkpoint encode fail.
+        saver.checkpoints_dir = temp_dir.path().join("missing");
+        let chunk = |n: usize| AudioChunk {
+            data: vec![0.5f32; n],
+            sample_rate: 100,
+            timestamp: 0.0,
+            chunk_id: 0,
+            device_type: DeviceType::Microphone,
+        };
+
+        assert!(saver.add_chunk(chunk(3000)).is_err());
+        // Less than a full interval since the failure: no retry, and the audio is kept.
+        assert!(saver.add_chunk(chunk(10)).is_ok());
+        assert_eq!(saver.checkpoint_buffer.len(), 2);
     }
 }

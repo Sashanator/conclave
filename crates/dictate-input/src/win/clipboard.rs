@@ -123,8 +123,15 @@ pub fn restore(saved: &SavedClipboard, expected_seq: u32) -> Result<bool, String
 fn write_saved(saved: &SavedClipboard) -> Result<(), String> {
     unsafe { EmptyClipboard() }.map_err(|e| format!("EmptyClipboard: {e}"))?;
     write_exclusions()?;
+    let text = u32::from(CF_UNICODETEXT.0);
     for (format, bytes) in &saved.formats {
-        best_effort(&format.to_string(), set_bytes(*format, bytes));
+        // Text comes first in the allowlist order; its failure is returned, as before.
+        // Other formats are best effort.
+        if *format == text {
+            set_bytes(*format, bytes)?;
+        } else {
+            best_effort(&format.to_string(), set_bytes(*format, bytes));
+        }
     }
     Ok(())
 }

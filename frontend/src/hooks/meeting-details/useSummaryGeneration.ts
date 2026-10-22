@@ -191,7 +191,8 @@ export function useSummaryGeneration({
         return;
       }
       const metadata = readSummaryMetadata(pollingResult.data);
-      const meetingName = metadata.meetingName || pollingResult.meetingName;
+      // The stored title: the summary renames a default title in the completion's own write.
+      const meetingName = pollingResult.meetingName;
       if (meetingName) {
         updateMeetingTitle(meetingName);
       }

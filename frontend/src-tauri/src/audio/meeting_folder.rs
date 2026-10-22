@@ -50,13 +50,13 @@ pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Opti
         fs::symlink_metadata(parent.join(name)).is_ok_and(|m| m.file_type().is_dir() && !m.file_type().is_symlink())
     });
     let (Ok(folder), Ok(base)) = (dunce::canonicalize(folder_path), dunce::canonicalize(recordings_base)) else {
-        warn!("Meeting folder guard: cannot resolve {folder_path}");
+        warn!("Meeting folder guard: cannot resolve the folder");
         return None;
     };
     if plain_dir && folder.parent() == Some(base.as_path()) {
         Some(folder)
     } else {
-        warn!("Meeting folder guard: refusing {} (not a folder directly inside {})", folder.display(), base.display());
+        warn!("Meeting folder guard: refusing a folder that is not directly inside the recordings folder");
         None
     }
 }
@@ -124,7 +124,7 @@ pub fn remove_checked(path: &Path, folder: &Path, remove: Remover) -> Result<(),
         .and_then(|p| dunce::canonicalize(p).ok())
         .is_some_and(|p| p == folder || p == folder.join(".checkpoints"));
     if !parent_ok || !is_plain_file(path) {
-        return Err(format!("Skipped {}: it is no longer a Conclave file in the meeting folder", path.display()));
+        return Err("Skipped a file: it is no longer a Conclave file in the meeting folder".to_string());
     }
     remove(&[path.to_path_buf()])
 }
@@ -168,9 +168,9 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
-        .ok_or_else(|| format!("Recording folder kept: it is outside the Conclave recordings folder ({folder_path})"))?;
+        .ok_or_else(|| "Recording folder kept: it is outside the Conclave recordings folder".to_string())?;
     let files = conclave_files(&folder)
-        .ok_or_else(|| format!("Recording folder kept: it contains other files ({})", folder.display()))?;
+        .ok_or_else(|| "Recording folder kept: it contains other files".to_string())?;
     for f in &files {
         remove_checked(f, &folder, remove)?;
     }
@@ -178,7 +178,7 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
     remove_if_empty(&folder.join(".checkpoints"), remove)?;
     ensure_still_guarded(&folder, recordings_base, "Recording folder")?;
     if !remove_if_empty(&folder, remove)? {
-        return Err(format!("Recording folder kept: new files appeared in it ({})", folder.display()));
+        return Err("Recording folder kept: new files appeared in it".to_string());
     }
     Ok(())
 }
@@ -189,7 +189,7 @@ pub(crate) fn ensure_still_guarded(folder: &Path, recordings_base: &Path, what: 
     if guarded_meeting_folder(&folder.to_string_lossy(), recordings_base).as_deref() == Some(folder) {
         Ok(())
     } else {
-        Err(format!("{what} kept: it is no longer inside the recordings folder ({})", folder.display()))
+        Err(format!("{what} kept: it is no longer inside the recordings folder"))
     }
 }
 
@@ -198,7 +198,7 @@ pub(crate) fn ensure_still_guarded(folder: &Path, recordings_base: &Path, what: 
 fn remove_permanently(paths: &[PathBuf]) -> Result<(), String> {
     for p in paths {
         let removed = if is_plain_dir(p) { fs::remove_dir(p) } else { fs::remove_file(p) };
-        removed.map_err(|e| format!("Could not delete {}: {e}", p.display()))?;
+        removed.map_err(|e| format!("Could not delete a file ({:?}): {e}", e.kind()))?;
     }
     Ok(())
 }
@@ -232,9 +232,9 @@ pub fn cleanup_checkpoints_guarded(folder_path: &str, recordings_base: &Path) ->
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
-        .ok_or_else(|| format!("Checkpoints kept: it is outside the Conclave recordings folder ({folder_path})"))?;
+        .ok_or_else(|| "Checkpoints kept: it is outside the Conclave recordings folder".to_string())?;
     if !has_merged_audio(&folder) {
-        return Err(format!("Checkpoints kept: no merged audio file in the meeting folder ({folder_path})"));
+        return Err("Checkpoints kept: no merged audio file in the meeting folder".to_string());
     }
     delete_checkpoint_files(&folder)
 }
@@ -253,8 +253,8 @@ pub fn discard_import_folder(folder: &Path, recordings_base: &Path) {
         .try_for_each(|p| remove_checked(p, &folder, &remove_permanently));
     match removed.and_then(|()| remove_if_empty(&folder, &remove_permanently)) {
         Ok(true) => {}
-        Ok(false) => warn!("Import cleanup left {}: it still holds other files", folder.display()),
-        Err(e) => warn!("Import cleanup left {}: {e}", folder.display()),
+        Ok(false) => warn!("Import cleanup left the folder: it still holds other files"),
+        Err(e) => warn!("Import cleanup left the folder: {e}"),
     }
 }
 
@@ -291,8 +291,9 @@ pub async fn delete_meeting_and_folder(
             Err(e) => Some(format!("Recording folder kept: could not check whether another meeting uses it ({p}): {e}")),
         },
     };
-    if let Some(w) = &warning {
-        warn!("Meeting {meeting_id} deleted, folder kept: {w}");
+    // The reason names the folder, so the log records only the fact; the caller gets the reason.
+    if warning.is_some() {
+        warn!("Meeting {meeting_id} deleted, recording folder kept");
     }
     Ok(Some(warning))
 }

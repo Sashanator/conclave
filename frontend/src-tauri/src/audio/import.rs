@@ -371,7 +371,7 @@ async fn run_import<R: Runtime>(
         .map_err(|e| anyhow!("Copy task join error: {}", e))?
         .map_err(|e| anyhow!("Failed to copy audio file: {}", e))?;
 
-    info!("Copied audio to: {}", dest_path.display());
+    info!("Copied audio into the meeting folder");
 
     // Check for cancellation
     if IMPORT_CANCELLED.load(Ordering::SeqCst) {
@@ -723,8 +723,8 @@ async fn create_meeting_with_transcripts(
 
     // Insert meeting
     sqlx::query(
-        "INSERT INTO meetings (id, title, created_at, updated_at, folder_path)
-         VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, title_source)
+         VALUES (?, ?, ?, ?, ?, 'default')",
     )
     .bind(&meeting_id)
     .bind(title)
@@ -936,7 +936,7 @@ fn write_import_metadata(
     std::fs::write(&temp_path, &json_string)?;
     std::fs::rename(&temp_path, &metadata_path)?;
 
-    info!("Wrote metadata.json to {}", metadata_path.display());
+    info!("Wrote metadata.json");
     Ok(())
 }
 

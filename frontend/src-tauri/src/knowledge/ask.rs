@@ -456,7 +456,7 @@ mod tests {
     async fn answer_cites_retrieved_excerpts_with_two_calls() {
         let pool = test_pool().await;
         let lines = vec![seg("We agreed the budget is 5k", 12.5)];
-        TranscriptsRepository::save_transcript(&pool, "Quarterly plan", &lines, None, &[], false).await.unwrap();
+        TranscriptsRepository::save_transcript(&pool, "Quarterly plan", &lines, None, &[], false, &crate::database::repositories::meeting::TitleOrigin::default()).await.unwrap();
         let seen = Mutex::new(Vec::new());
         let answer = run(&pool, &target(), "What is the budget?", &[], |_system, user| {
             seen.lock().unwrap().push(user);

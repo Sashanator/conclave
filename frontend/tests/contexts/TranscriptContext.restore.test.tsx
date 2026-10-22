@@ -29,11 +29,12 @@ mock.module('../../src/services/transcriptService', () => ({
     getTranscriptHistory: mock(async () => []),
   },
 }));
+let meetingNameFromBackend: string | null = null;
 mock.module('../../src/services/recordingService', () => ({
   recordingService: {
     onRecordingStarted: mock(async () => () => {}),
     onRecordingStopped: mock(async () => () => {}),
-    getRecordingMeetingName: mock(async () => null),
+    getRecordingMeetingName: mock(async () => meetingNameFromBackend),
   },
 }));
 const indexedDB = {
@@ -80,6 +81,8 @@ afterEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
   renderer = undefined;
   sessionStorage.removeItem('indexeddb_current_meeting_id');
+  sessionStorage.removeItem('recording_title_origin');
+  meetingNameFromBackend = null;
 });
 
 describe('TranscriptContext restore after a reload during a recording', () => {
@@ -111,5 +114,16 @@ describe('TranscriptContext restore after a reload during a recording', () => {
     expect(indexedDB.patchMeetingMetadata).toHaveBeenCalledWith(MEETING, expect.objectContaining({
       notes: [expect.objectContaining({ text: 'kept?' })],
     }));
+  });
+  test('a reload restores the title source and its calendar link', async () => {
+    sessionStorage.setItem('recording_title_origin', JSON.stringify({
+      source: 'calendar', calendar: { uid: 'uid-1', start: '2026-10-22T09:00:00+00:00' },
+    }));
+    meetingNameFromBackend = 'Design review';
+    await act(async () => { renderer = create(tree()); });
+    await flush();
+    expect(api.meetingTitle).toBe('Design review');
+    expect(api.titleSource).toBe('calendar');
+    expect(api.calendarLink).toEqual({ uid: 'uid-1', start: '2026-10-22T09:00:00+00:00' });
   });
 });

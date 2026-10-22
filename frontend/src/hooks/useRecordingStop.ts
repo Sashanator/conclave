@@ -57,6 +57,8 @@ export function useRecordingStop(
     flushBuffer,
     clearTranscripts,
     meetingTitle,
+    titleSource,
+    calendarLink,
     markMeetingAsSaved,
     currentMeetingId,
   } = useTranscripts();
@@ -248,7 +250,7 @@ export function useRecordingStop(
 
         console.log('💾 Saving COMPLETE transcripts to database...', {
           transcript_count: freshTranscripts.length,
-          meeting_name: savedMeetingName || meetingTitle,
+          title_chars: (savedMeetingName || meetingTitle).length,
           folder_path: folderPath,
           sample_text: freshTranscripts.length > 0 ? freshTranscripts[0].text.substring(0, 50) + '...' : 'none',
           last_transcript: freshTranscripts.length > 0 ? freshTranscripts[freshTranscripts.length - 1].text.substring(0, 30) + '...' : 'none',
@@ -260,7 +262,8 @@ export function useRecordingStop(
             freshTranscripts,
             folderPath,
             [...notesRef.current],
-            currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id')
+            currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id'),
+            { source: titleSource, uid: calendarLink?.uid, start: calendarLink?.start }
           );
 
           const meetingId = responseData.meeting_id;
@@ -300,7 +303,7 @@ export function useRecordingStop(
 
           console.log('✅ Successfully saved COMPLETE meeting with ID:', meetingId);
           console.log('   Transcripts:', freshTranscripts.length);
-          console.log('   folder_path:', folderPath);
+          console.log('   folder saved:', Boolean(folderPath));
 
           // Mark meeting as saved in IndexedDB (for recovery system)
           await markMeetingAsSaved();
@@ -310,6 +313,7 @@ export function useRecordingStop(
           sessionStorage.removeItem('last_recording_meeting_name');
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
           sessionStorage.removeItem('indexeddb_current_meeting_id');
+          sessionStorage.removeItem('recording_title_origin');
 
           // Refetch meetings and set current meeting
           await refetchMeetings();
@@ -321,7 +325,7 @@ export function useRecordingStop(
                 id: meetingId,
                 title: meetingData.title
               });
-              console.log('✅ Current meeting set:', meetingData.title);
+              console.log('✅ Current meeting set, title chars:', meetingData.title?.length ?? 0);
             }
           } catch (error) {
             console.warn('Could not fetch meeting details, using ID only:', error);
@@ -386,6 +390,8 @@ export function useRecordingStop(
     flushBuffer,
     clearTranscripts,
     meetingTitle,
+    titleSource,
+    calendarLink,
     markMeetingAsSaved,
     refetchMeetings,
     setCurrentMeeting,

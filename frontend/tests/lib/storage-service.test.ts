@@ -24,6 +24,24 @@ describe('saveMeeting', () => {
     );
   });
 
+  test('sends the title source and the calendar link', async () => {
+    invoke.mockClear();
+    await storageService.saveMeeting('Standup', [], null, [], null, { source: 'calendar', uid: 'uid-1', start: '2026-10-22T09:00:00+00:00' });
+    expect(invoke).toHaveBeenCalledWith(
+      'api_save_transcript',
+      expect.objectContaining({ titleSource: 'calendar', calendarUid: 'uid-1', calendarStart: '2026-10-22T09:00:00+00:00' }),
+    );
+  });
+
+  test('sends a default title source with no calendar link when none is given', async () => {
+    invoke.mockClear();
+    await storageService.saveMeeting('Standup', [], null);
+    expect(invoke).toHaveBeenCalledWith(
+      'api_save_transcript',
+      expect.objectContaining({ titleSource: 'default', calendarUid: null, calendarStart: null }),
+    );
+  });
+
   test('sends no recording id when none is given', async () => {
     invoke.mockClear();
     await storageService.saveMeeting('Standup', [], null);

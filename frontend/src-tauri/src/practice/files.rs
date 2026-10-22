@@ -43,15 +43,15 @@ pub fn delete_session_folder(folder_path: &str, base: &Path, remove: Remover) ->
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, base)
-        .ok_or_else(|| format!("Session folder kept: it is outside the recordings folder; nothing was deleted ({folder_path})"))?;
+        .ok_or_else(|| "Session folder kept: it is outside the recordings folder; nothing was deleted".to_string())?;
     if !folder.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("Practice ")) {
-        return Err(format!("Session folder kept: its name is not a Practice folder; nothing was deleted ({})", folder.display()));
+        return Err("Session folder kept: its name is not a Practice folder; nothing was deleted".to_string());
     }
     let only_practice_files = fs::read_dir(&folder).is_ok_and(|mut rd| {
         rd.all(|e| e.is_ok_and(|e| PRACTICE_FILES.contains(&e.file_name().to_string_lossy().as_ref()) && e.file_type().is_ok_and(|t| t.is_file())))
     });
     if !only_practice_files {
-        return Err(format!("Session folder kept: it contains other files; nothing was deleted ({})", folder.display()));
+        return Err("Session folder kept: it contains other files; nothing was deleted".to_string());
     }
     // Re-check right before the Recycle Bin call: the folder may have been swapped for a link.
     ensure_still_guarded(&folder, base, "Session folder")?;

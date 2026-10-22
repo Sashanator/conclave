@@ -490,7 +490,7 @@ mod tests {
 
     /// Saves a meeting and dates it at noon UTC, so its local day is the same day in any zone within 12 hours.
     async fn meeting(pool: &SqlitePool, title: &str, day: &str, lines: Vec<TranscriptSegment>) -> String {
-        let id = TranscriptsRepository::save_transcript(pool, title, &lines, None, &[], false).await.unwrap();
+        let id = TranscriptsRepository::save_transcript(pool, title, &lines, None, &[], false, &crate::database::repositories::meeting::TitleOrigin::default()).await.unwrap();
         sqlx::query("UPDATE meetings SET created_at = ? WHERE id = ?")
             .bind(format!("{day}T12:00:00+00:00")).bind(&id).execute(pool).await.unwrap();
         id

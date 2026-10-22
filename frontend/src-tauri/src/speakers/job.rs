@@ -497,14 +497,14 @@ fn read_levels(folder: &Path, decoded_secs: f64) -> Option<Vec<LevelPair>> {
     // One 8-byte pair per 50 ms slice, plus slack and the header. Checked before reading, so a bad file cannot fill memory.
     let limit = (decoded_secs / levels::SLICE_SECS + 1200.0) * 8.0 + 16.0;
     if meta.len() as f64 > limit {
-        warn!("speakers: {} is bigger than the recording allows, ignored", path.display());
+        warn!("speakers: the audio file is bigger than the recording allows, ignored");
         return None;
     }
     let bytes = std::fs::read(&path).ok()?;
     match levels::decode(&bytes) {
         Ok(pairs) => Some(pairs),
         Err(e) => {
-            warn!("speakers: {} is not a valid level track, ignored: {e}", path.display());
+            warn!("speakers: the audio file is not a valid level track, ignored: {e}");
             None
         }
     }

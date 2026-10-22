@@ -11,7 +11,7 @@ use crate::{
     database::{
         models::MeetingModel,
         repositories::{
-            meeting::MeetingsRepository, meeting_notes::parse_notes, setting::SettingsRepository,
+            meeting::{MeetingsRepository, TitleOrigin}, meeting_notes::parse_notes, setting::SettingsRepository,
             transcript::{search_all, SearchHit, TranscriptsRepository},
         },
     },
@@ -983,6 +983,9 @@ pub async fn api_save_transcript<R: Runtime>(
     folder_path: Option<String>,
     notes: Option<Vec<serde_json::Value>>,
     auth_token: Option<String>,
+    title_source: Option<String>,
+    calendar_uid: Option<String>,
+    calendar_start: Option<String>,
     recording_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
@@ -1021,6 +1024,7 @@ pub async fn api_save_transcript<R: Runtime>(
 
     // Speaker analysis is queued in the save's transaction only while the feature is active.
     let speakers_active = tokio::task::spawn_blocking(crate::speakers::is_active).await.unwrap_or(false);
+    let title = TitleOrigin::new(title_source.as_deref(), calendar_uid, calendar_start);
     // Now, call the repository with the correctly typed data.
     match TranscriptsRepository::save_transcript(
         pool,
@@ -1029,6 +1033,7 @@ pub async fn api_save_transcript<R: Runtime>(
         folder_path,
         &parse_notes(notes.unwrap_or_default()),
         speakers_active,
+        &title,
     )
     .await
     {
@@ -1082,13 +1087,13 @@ pub async fn open_meeting_folder<R: Runtime>(
     match meeting {
         Some(m) => {
             if let Some(folder_path) = m.folder_path {
-                log_info!("Opening meeting folder: {}", folder_path);
+                log_info!("Opening meeting folder");
 
                 // Verify folder exists
                 let path = std::path::Path::new(&folder_path);
                 if !path.exists() {
-                    log_warn!("Folder path does not exist: {}", folder_path);
-                    return Err(format!("Recording folder not found: {}", folder_path));
+                    log_warn!("Meeting folder does not exist");
+                    return Err("Recording folder not found".to_string());
                 }
 
                 // Open folder based on OS
@@ -1116,7 +1121,7 @@ pub async fn open_meeting_folder<R: Runtime>(
                         .map_err(|e| format!("Failed to open folder: {}", e))?;
                 }
 
-                log_info!("Successfully opened folder: {}", folder_path);
+                log_info!("Successfully opened meeting folder");
                 Ok(())
             } else {
                 log_warn!("Meeting {} has no folder_path set", meeting_id);
@@ -1523,7 +1528,7 @@ mod save_usage_tests {
             .await
             .unwrap();
         assert_eq!(unattached.0, 1);
-        let meeting_id = TranscriptsRepository::save_transcript(&pool, "M", &[], None, &[], false)
+        let meeting_id = TranscriptsRepository::save_transcript(&pool, "M", &[], None, &[], false, &crate::database::repositories::meeting::TitleOrigin::default())
             .await
             .unwrap();
         attach_recording_usage(&pool, Some("R"), &meeting_id).await;

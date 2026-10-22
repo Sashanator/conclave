@@ -6,6 +6,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { recordingService } from '@/services/recordingService';
 import { showRecordingNotification } from '@/lib/recordingNotification';
+import { pickStartTitle } from '@/lib/calendar-title';
 import {
   getProviderCommands,
   hasDownloadingModel,
@@ -49,7 +50,7 @@ export function useRecordingStart(
   // before any state update lands, so an async/state guard can't stop it.
   const isStartingRef = useRef(false);
 
-  const { clearTranscripts, setMeetingTitle } = useTranscripts();
+  const { clearTranscripts, setStartTitle } = useTranscripts();
   const { setIsMeetingActive } = useSidebar();
   const { selectedDevices } = useConfig();
   const { setStatus } = useRecordingState();
@@ -145,18 +146,18 @@ export function useRecordingStart(
 
       console.log('Selected transcription model ready - setting up meeting title and state');
 
-      const randomTitle = generateMeetingTitle();
-      setMeetingTitle(randomTitle);
+      const startTitle = await pickStartTitle(generateMeetingTitle());
+      setStartTitle(startTitle);
 
       // Set STARTING status before initiating backend recording
       setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
       // Start the actual backend recording
-      console.log('Starting backend recording with meeting:', randomTitle);
+      console.log('Starting backend recording, title chars:', startTitle.title.length);
       await recordingService.startRecordingWithDevices(
         selectedDevices?.micDevice || null,
         selectedDevices?.systemDevice || null,
-        randomTitle
+        startTitle.title
       );
       console.log('Backend recording started successfully');
 
@@ -198,7 +199,7 @@ export function useRecordingStart(
     } finally {
       isStartingRef.current = false;
     }
-  }, [generateMeetingTitle, setMeetingTitle, setIsRecording, clearTranscripts, setIsMeetingActive, checkModelReady, checkIfModelDownloading, selectedDevices, showModal, setStatus]);
+  }, [generateMeetingTitle, setStartTitle, setIsRecording, clearTranscripts, setIsMeetingActive, checkModelReady, checkIfModelDownloading, selectedDevices, showModal, setStatus]);
 
   // Check for autoStartRecording flag and start recording automatically
   useEffect(() => {
@@ -237,22 +238,22 @@ export function useRecordingStart(
           // Start the actual backend recording
           try {
             // Generate meeting title
-            const generatedMeetingTitle = titlePrefix ? `${titlePrefix} ${generateMeetingTitle()}` : generateMeetingTitle();
+            const startTitle = await pickStartTitle(titlePrefix ? `${titlePrefix} ${generateMeetingTitle()}` : generateMeetingTitle());
 
             // Set STARTING status before initiating backend recording
             setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
-            console.log('Auto-starting backend recording with meeting:', generatedMeetingTitle);
+            console.log('Auto-starting backend recording, title chars:', startTitle.title.length);
             const result = await recordingService.startRecordingWithDevices(
               selectedDevices?.micDevice || null,
               selectedDevices?.systemDevice || null,
-              generatedMeetingTitle
+              startTitle.title
             );
             console.log('Auto-start backend recording result:', result);
 
             // Update UI state after successful backend start
             // Note: RECORDING status will be set by RecordingStateContext event listener
-            setMeetingTitle(generatedMeetingTitle);
+            setStartTitle(startTitle);
             setIsRecording(true);
             clearTranscripts();
             setIsMeetingActive(true);
@@ -287,7 +288,7 @@ export function useRecordingStart(
     isAutoStarting,
     selectedDevices,
     generateMeetingTitle,
-    setMeetingTitle,
+    setStartTitle,
     setIsRecording,
     clearTranscripts,
     setIsMeetingActive,
@@ -331,22 +332,22 @@ export function useRecordingStart(
 
       try {
         // Generate meeting title
-        const generatedMeetingTitle = generateMeetingTitle();
+        const startTitle = await pickStartTitle(generateMeetingTitle());
 
         // Set STARTING status before initiating backend recording
         setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
-        console.log('Starting backend recording with meeting:', generatedMeetingTitle);
+        console.log('Starting backend recording, title chars:', startTitle.title.length);
         const result = await recordingService.startRecordingWithDevices(
           selectedDevices?.micDevice || null,
           selectedDevices?.systemDevice || null,
-          generatedMeetingTitle
+          startTitle.title
         );
         console.log('Backend recording result:', result);
 
         // Update UI state after successful backend start
         // Note: RECORDING status will be set by RecordingStateContext event listener
-        setMeetingTitle(generatedMeetingTitle);
+        setStartTitle(startTitle);
         setIsRecording(true);
         clearTranscripts();
         setIsMeetingActive(true);
@@ -383,7 +384,7 @@ export function useRecordingStart(
     isAutoStarting,
     selectedDevices,
     generateMeetingTitle,
-    setMeetingTitle,
+    setStartTitle,
     setIsRecording,
     clearTranscripts,
     setIsMeetingActive,

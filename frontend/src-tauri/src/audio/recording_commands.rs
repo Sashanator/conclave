@@ -567,8 +567,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 ) -> Result<(), String> {
     let _start_guard = StartInFlightGuard::claim();
     info!(
-        "Starting recording with specific devices: mic={:?}, system={:?}, meeting={:?}",
-        mic_device_name, system_device_name, meeting_name
+        "Starting recording with specific devices: mic={:?}, system={:?}, meeting title chars={:?}",
+        mic_device_name, system_device_name, meeting_name.as_ref().map(|n| n.chars().count())
     );
 
     let engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;
@@ -1062,8 +1062,8 @@ async fn stop_recording_inner<R: Runtime>(
     };
 
     info!("📤 Preparing recording metadata for frontend save");
-    info!("   folder_path: {:?}", folder_path_str);
-    info!("   meeting_name: {:?}", meeting_name_str);
+    info!("   folder saved: {}", folder_path_str.is_some());
+    info!("   meeting title chars: {:?}", meeting_name_str.as_ref().map(|n| n.chars().count()));
 
     // Database save removed - frontend will handle this after receiving all transcripts
     info!("ℹ️ Skipping database save in Rust - frontend will save after all transcripts received");

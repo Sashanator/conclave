@@ -683,7 +683,7 @@ mod tests {
     }
 
     async fn meeting(pool: &SqlitePool, feature: bool) -> String {
-        TranscriptsRepository::save_transcript(pool, "M", &[], None, &[], feature).await.unwrap()
+        TranscriptsRepository::save_transcript(pool, "M", &[], None, &[], feature, &crate::database::repositories::meeting::TitleOrigin::default()).await.unwrap()
     }
 
     async fn line(pool: &SqlitePool, meeting_id: &str, start: f64, end: f64) -> String {

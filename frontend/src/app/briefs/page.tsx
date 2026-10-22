@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { BriefView } from '@/components/Briefs/BriefView';
+import { DigestView } from '@/components/Briefs/DigestView';
 
 type Kind = 'brief' | 'digest';
 type Item = { id: string; kind: Kind; title: string; createdAt: string };
@@ -86,6 +87,7 @@ function BriefsContent() {
         )}
 
         {selected && kind === 'brief' && <BriefView key={selected} id={selected} />}
+        {selected && kind === 'digest' && <DigestView key={selected} id={selected} />}
       </div>
     </div>
   );

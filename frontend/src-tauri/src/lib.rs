@@ -994,6 +994,7 @@ pub fn run() {
             knowledge::ask::ask_cancel,
             knowledge::briefs::briefs_list,
             knowledge::briefs::brief_get,
+            knowledge::digest::digest_get,
             knowledge::feed::feed_list,
             knowledge::feed::feed_unread_count,
             knowledge::feed::feed_mark_read,

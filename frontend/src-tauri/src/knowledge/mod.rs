@@ -4,6 +4,7 @@
 
 pub mod ask;
 pub mod briefs;
+pub mod digest;
 pub mod calendar;
 pub mod extract;
 pub mod feed;

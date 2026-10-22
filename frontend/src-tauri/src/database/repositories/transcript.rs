@@ -149,7 +149,10 @@ const SEARCH_MEETINGS: usize = 50;
 const SEARCH_HITS_PER_MEETING: usize = 3;
 const SNIPPET_RADIUS: usize = 100;
 
-/// SQLite LIKE folds only ASCII case, so each Cyrillic case form needs its own pattern.
+/// Case forms SQLite LIKE can match. LIKE folds only ASCII case, so each Cyrillic form is listed:
+/// as typed, lowercase, first letter uppercased, all uppercase.
+/// shortcut: a word with mixed case inside it (ЗаДачА) misses in SQL, though the Rust check would
+/// match it; upgrade with a case-folded column when that search matters.
 pub(crate) fn query_variants(q: &str) -> Vec<String> {
     let lower = q.to_lowercase();
     let mut chars = lower.chars();
@@ -172,10 +175,18 @@ fn like_pattern(variant: &str) -> String {
     format!("%{escaped}%")
 }
 
-/// `(column LIKE ? ESCAPE '\' OR ...)` with one placeholder per variant.
-fn like_clause(column: &str, n: usize) -> String {
-    let one = format!("{column} LIKE ? ESCAPE '\\'");
-    format!("({})", vec![one; n].join(" OR "))
+/// SQL prefilter: every word of the query must match in one of its case forms. Returns the
+/// WHERE clause for `column` and the patterns to bind, in order. The Rust check confirms the phrase.
+fn like_filter(column: &str, query: &str) -> (String, Vec<String>) {
+    let mut clauses = Vec::new();
+    let mut binds = Vec::new();
+    for word in query.split_whitespace() {
+        let forms = query_variants(word);
+        let one = format!("{column} LIKE ? ESCAPE '\\'");
+        clauses.push(format!("({})", vec![one; forms.len()].join(" OR ")));
+        binds.extend(forms.iter().map(|f| like_pattern(f)));
+    }
+    (clauses.join(" AND "), binds)
 }
 
 /// Text around the first match, cut by chars so multi-byte text never splits.
@@ -222,19 +233,16 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
         return Ok(Vec::new());
     }
     let needle = query.to_lowercase();
-    let patterns: Vec<String> = query_variants(query).iter().map(|v| like_pattern(v)).collect();
-    let n = patterns.len();
     let mut out = Vec::new();
 
-    // SQL LIKE narrows the rows; the Rust check below is the real case-folded match
+    let (clause, binds) = like_filter("t.transcript", query);
     let sql = format!(
         "SELECT m.id, m.title, m.created_at, t.id, t.transcript, t.audio_start_time FROM transcripts t
          JOIN meetings m ON m.id = t.meeting_id
-         WHERE {} ORDER BY t.audio_start_time",
-        like_clause("t.transcript", n)
+         WHERE {clause} ORDER BY t.audio_start_time"
     );
     let mut q = sqlx::query_as::<_, (String, String, String, String, String, Option<f64>)>(&sql);
-    for p in &patterns {
+    for p in &binds {
         q = q.bind(p);
     }
     for (meeting_id, title, created_at, transcript_id, text, audio_start) in q.fetch_all(pool).await? {
@@ -243,9 +251,10 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
         }
     }
 
-    let sql = format!("SELECT id, title, created_at FROM meetings WHERE {}", like_clause("title", n));
+    let (clause, binds) = like_filter("title", query);
+    let sql = format!("SELECT id, title, created_at FROM meetings WHERE {clause}");
     let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
-    for p in &patterns {
+    for p in &binds {
         q = q.bind(p);
     }
     for (meeting_id, title, created_at) in q.fetch_all(pool).await? {
@@ -255,14 +264,14 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
     }
 
     let markdown = "json_extract(s.result, '$.markdown')";
+    let (clause, binds) = like_filter(markdown, query);
     let sql = format!(
         "SELECT m.id, m.title, m.created_at, {markdown} FROM summary_processes s
          JOIN meetings m ON m.id = s.meeting_id
-         WHERE s.status = 'completed' AND {}",
-        like_clause(markdown, n)
+         WHERE s.status = 'completed' AND {clause}"
     );
     let mut q = sqlx::query_as::<_, (String, String, String, Option<String>)>(&sql);
-    for p in &patterns {
+    for p in &binds {
         q = q.bind(p);
     }
     for (meeting_id, title, created_at, text) in q.fetch_all(pool).await? {
@@ -437,6 +446,12 @@ mod tests {
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source, "transcript");
         assert!(hits[0].transcript_id.is_some());
+
+        // A name capitalised after the first word matches only with each word in its own case forms
+        meeting(&pool, "Созвон", &["Встреча с Иваном"], &[], None).await;
+        let hits = search_all(&pool, "встреча с иваном").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Созвон");
     }
 
     #[tokio::test]

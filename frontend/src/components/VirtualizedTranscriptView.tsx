@@ -56,6 +56,8 @@ export interface VirtualizedTranscriptViewProps {
 const VIRTUALIZATION_THRESHOLD = 10;
 // How long a row requested by focusSegmentId stays highlighted
 const FOCUS_FLASH_MS = 2000;
+// Retry gap for loading pages toward a focus row; the loader drops calls under 100 ms apart
+const FOCUS_LOAD_RETRY_MS = 120;
 
 // Helper function to format seconds as recording-relative time [MM:SS]
 function formatRecordingTime(seconds: number | undefined): string {
@@ -295,9 +297,9 @@ export const VirtualizedTranscriptView: React.FC<VirtualizedTranscriptViewProps>
         return () => clearTimeout(timer);
     }, [focusSegmentId]);
     useEffect(() => {
-        if (focusSegmentId && focusIndex < 0 && hasMore && !isLoadingMore && !isRecording && onLoadMore) {
-            onLoadMore();
-        }
+        if (!focusSegmentId || focusIndex >= 0 || !hasMore || isLoadingMore || isRecording || !onLoadMore) return;
+        const timer = setInterval(() => onLoadMore(), FOCUS_LOAD_RETRY_MS);
+        return () => clearInterval(timer);
     }, [focusSegmentId, focusIndex, hasMore, isLoadingMore, isRecording, onLoadMore]);
     useEffect(() => {
         if (focusIndex < 0) return;

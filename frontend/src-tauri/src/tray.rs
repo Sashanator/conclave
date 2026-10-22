@@ -66,7 +66,7 @@ fn handle_menu_event<R: Runtime>(app: &AppHandle<R>, item_id: &str) {
                 let _ = window.eval("window.location.assign('/settings')");
             }
         }
-        "quit" => app.exit(0),
+        "quit" => quit_app(app),
         _ => {}
     }
 }
@@ -140,6 +140,26 @@ fn resume_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             // The resume_recording function will call update_tray_menu, so no need to call it here
         }
     });
+}
+
+/// Exits, but first stops a running recording so its audio is saved. Capped so Quit cannot hang.
+fn quit_app<R: Runtime>(app: &AppHandle<R>) {
+    if !crate::audio::recording_commands::is_recording_now() {
+        app.exit(0);
+        return;
+    }
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        if !finish_within(std::time::Duration::from_secs(60), stop_recording_and_save(&app_clone)).await {
+            log::error!("Quit: the recording did not stop within 60 s, exiting anyway");
+        }
+        app_clone.exit(0);
+    });
+}
+
+/// Runs `stop` for at most `cap`. Returns false when it gave up.
+async fn finish_within<F: std::future::Future<Output = ()>>(cap: std::time::Duration, stop: F) -> bool {
+    tokio::time::timeout(cap, stop).await.is_ok()
 }
 
 fn stop_recording_handler<R: Runtime>(app: &AppHandle<R>) {
@@ -574,5 +594,12 @@ mod tests {
                 ("dictate_mode:a-mode".to_string(), "First".to_string(), false),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn finish_within_gives_up_after_the_cap() {
+        let cap = std::time::Duration::from_millis(20);
+        assert!(finish_within(cap, async {}).await);
+        assert!(!finish_within(cap, std::future::pending::<()>()).await);
     }
 }

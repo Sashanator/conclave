@@ -14,7 +14,8 @@ type Status = 'open' | 'done';
 type Run = (command: string, args: Record<string, unknown>) => Promise<boolean>;
 
 const SAVE_FAILED = 'Could not save that change. The list has been refreshed.';
-// A deleted task stays hidden for this long; Undo within it keeps the task
+// The Undo toast stays up this long. sonner pauses it on hover and while the window is hidden,
+// so the delete waits for the toast to close (timeout or by hand), not for a fixed timer.
 const UNDO_MS = 5000;
 const undoToastId = (id: string) => `task-delete-${id}`;
 
@@ -30,7 +31,7 @@ export function TaskList() {
   const [newText, setNewText] = useState('');
   // Tasks whose delete is waiting for the undo window to pass
   const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
-  const pendingDeletes = useRef(new Map<string, ReturnType<typeof setTimeout>>());
+  const pendingDeletes = useRef(new Set<string>());
 
   // The list is reloaded after every change, so it shows what the backend holds. A reload that
   // finishes after the tab changed is dropped, so it cannot show the old tab's tasks.
@@ -86,10 +87,10 @@ export function TaskList() {
       return next;
     });
 
-  // The delete reaches the backend only after the undo window; a failure shows the task again
+  // The delete reaches the backend only once the undo toast closes. The id is removed first, so
+  // a second close of the same toast (timeout, then dismiss) does not delete again.
   const commitDelete = async (id: string) => {
-    pendingDeletes.current.delete(id);
-    toast.dismiss(undoToastId(id));
+    if (!pendingDeletes.current.delete(id)) return;
     let deleted = true;
     try {
       await invoke('tasks_delete', { id });
@@ -108,18 +109,19 @@ export function TaskList() {
 
   const scheduleDelete = (task: TaskRow) => {
     const id = task.id;
+    pendingDeletes.current.add(id);
     setHidden((prev) => new Set(prev).add(id));
-    const timer = setTimeout(() => void commitDelete(id), UNDO_MS);
-    pendingDeletes.current.set(id, timer);
+    const commit = () => void commitDelete(id);
     toast(task.source === 'manual' ? 'Task deleted' : 'Task dismissed', {
       id: undoToastId(id),
       duration: UNDO_MS,
+      onAutoClose: commit,
+      onDismiss: commit,
       action: {
         label: 'Undo',
         onClick: () => {
-          clearTimeout(timer);
-          pendingDeletes.current.delete(id);
-          unhide(id);
+          // Too late once the delete has started: the task is then not pending
+          if (pendingDeletes.current.delete(id)) unhide(id);
         },
       },
     });
@@ -129,8 +131,8 @@ export function TaskList() {
   useEffect(() => {
     const pending = pendingDeletes.current;
     return () => {
-      for (const [id, timer] of pending) {
-        clearTimeout(timer);
+      for (const id of [...pending]) {
+        toast.dismiss(undoToastId(id));
         void commitDelete(id);
       }
     };

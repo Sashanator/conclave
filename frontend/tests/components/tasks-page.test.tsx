@@ -79,12 +79,6 @@ mock.module('sonner', () => ({ toast }));
 
 const { default: TasksPage } = await import('../../src/app/tasks/page');
 
-// The undo window is 5 s. Its timers are held here so each test decides when they fire.
-const UNDO_MS = 5000;
-const realSetTimeout = globalThis.setTimeout;
-const realClearTimeout = globalThis.clearTimeout;
-let undoTimers = new Map<number, () => void>();
-let nextTimerId = 1_000_000;
 
 let renderer: ReactTestRenderer | null = null;
 
@@ -229,48 +223,45 @@ describe('Tasks page', () => {
   });
 
   describe('delete with undo', () => {
-    let timerSpies: Array<{ mockRestore: () => void }> = [];
+    // The undo toast of one task, as the component handed it to sonner
+    function undoToast(id: string) {
+      const call = toast.mock.calls.filter(([, opts]) => (opts as { id?: string } | undefined)?.id === `task-delete-${id}`).at(-1);
+      if (!call) throw new Error(`no undo toast for ${id}`);
+      return call[1] as { onAutoClose: () => void; onDismiss: () => void; action: { onClick: () => void } };
+    }
+
+    // The toast closes by its timer (onAutoClose) or by the user (onDismiss)
+    async function closeToast(id: string, how: 'onAutoClose' | 'onDismiss') {
+      await act(async () => {
+        undoToast(id)[how]();
+      });
+      await flush();
+    }
+
+    async function pressUndo(id: string) {
+      await act(async () => {
+        undoToast(id).action.onClick();
+      });
+      await flush();
+    }
+
+    const deletes = () => invoke.mock.calls.filter(([command]) => command === 'tasks_delete').map(([, args]) => (args as { id: string }).id);
 
     beforeEach(() => {
-      undoTimers = new Map();
       toast.mockClear();
       toast.error.mockClear();
       toast.dismiss.mockClear();
-      timerSpies = [
-      spyOn(globalThis, 'setTimeout').mockImplementation(((cb: () => void, ms?: number, ...rest: unknown[]) => {
-        if (ms !== UNDO_MS) return realSetTimeout(cb, ms, ...rest);
-        const id = nextTimerId++;
-        undoTimers.set(id, cb);
-        return id;
-      }) as typeof setTimeout),
-      spyOn(globalThis, 'clearTimeout').mockImplementation(((id?: number) => {
-        if (id !== undefined && undoTimers.delete(id)) return;
-        realClearTimeout(id as never);
-      }) as typeof clearTimeout),
-      ];
     });
 
+    // Unmount here, before the next test resets the rows: a pending delete runs on unmount
     afterEach(async () => {
-      // Unmount here, before the next test resets the rows: a pending delete runs on unmount
       if (renderer) {
         await act(async () => {
           renderer!.unmount();
         });
         renderer = null;
       }
-      timerSpies.forEach((spy) => spy.mockRestore());
     });
-
-    // Runs every held undo timer, as if the 5 s had passed without Undo
-    async function fireUndoTimers() {
-      const callbacks = [...undoTimers.values()];
-      undoTimers.clear();
-      await act(async () => {
-        callbacks.forEach((cb) => cb());
-        await new Promise((resolve) => realSetTimeout(resolve, 0));
-      });
-      await flush();
-    }
 
     function deleteButton(index: number): ReactTestInstance {
       return renderer!.root.findAll((n) => n.props['aria-label'] === 'Delete task')[index];
@@ -280,38 +271,67 @@ describe('Tasks page', () => {
       return renderer!.root.findAll((n) => n.type === 'button' && textOf(n) === text);
     }
 
-    function undoAction(): () => void {
-      const [, opts] = toast.mock.calls.at(-1) as [string, { action: { onClick: () => void } }];
-      return opts.action.onClick;
-    }
-
     test('a click hides the task at once and shows an undo toast, with no delete yet', async () => {
       await mount();
       await click(deleteButton(0));
       expect(taskButton('Send the deck')).toHaveLength(0);
       expect(toast).toHaveBeenCalledWith('Task dismissed', expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) }));
-      expect(invoke.mock.calls.some(([command]) => command === 'tasks_delete')).toBe(false);
+      expect(deletes()).toEqual([]);
     });
 
-    test('Undo shows the task again and never calls tasks_delete', async () => {
+    test('Undo shows the task again, and the toast closing afterwards does not delete it', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await pressUndo('t1');
+      expect(taskButton('Send the deck')).toHaveLength(1);
+      await closeToast('t1', 'onAutoClose');
+      await closeToast('t1', 'onDismiss');
+      expect(deletes()).toEqual([]);
+      expect(taskButton('Send the deck')).toHaveLength(1);
+    });
+
+    test('when the toast times out without Undo, tasks_delete is called once', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await closeToast('t1', 'onAutoClose');
+      expect(deletes()).toEqual(['t1']);
+      expect(taskButton('Send the deck')).toHaveLength(0);
+    });
+
+    test('closing the toast by hand (close button or swipe) also deletes', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await closeToast('t1', 'onDismiss');
+      expect(deletes()).toEqual(['t1']);
+    });
+
+    test('Undo after the delete has started does nothing', async () => {
       await mount();
       await click(deleteButton(0));
       await act(async () => {
-        undoAction()();
+        undoToast('t1').onAutoClose();
+        undoToast('t1').action.onClick();
       });
       await flush();
-      expect(taskButton('Send the deck')).toHaveLength(1);
-      await fireUndoTimers();
-      expect(invoke.mock.calls.some(([command]) => command === 'tasks_delete')).toBe(false);
-      expect(taskButton('Send the deck')).toHaveLength(1);
+      expect(deletes()).toEqual(['t1']);
+      expect(taskButton('Send the deck')).toHaveLength(0);
     });
 
-    test('when the time passes without Undo, tasks_delete is called once', async () => {
+    test('a delete never commits twice, whatever order the toast fires in', async () => {
       await mount();
       await click(deleteButton(0));
-      await fireUndoTimers();
-      expect(invoke.mock.calls.filter(([command]) => command === 'tasks_delete')).toEqual([['tasks_delete', { id: 't1' }]]);
-      expect(taskButton('Send the deck')).toHaveLength(0);
+      await closeToast('t1', 'onAutoClose');
+      await closeToast('t1', 'onDismiss');
+      await closeToast('t1', 'onAutoClose');
+      expect(deletes()).toEqual(['t1']);
+    });
+
+    test('the dismiss that follows an Undo does not delete', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await pressUndo('t1');
+      await closeToast('t1', 'onDismiss');
+      expect(deletes()).toEqual([]);
     });
 
     test('a manual task says "deleted", not "dismissed"', async () => {
@@ -328,34 +348,36 @@ describe('Tasks page', () => {
         throw new Error('db locked');
       });
       const logged = spyOn(console, 'error').mockImplementation(() => {});
-      await fireUndoTimers();
+      await closeToast('t1', 'onAutoClose');
       logged.mockRestore();
       expect(toast.error).toHaveBeenCalledTimes(1);
       expect(taskButton('Send the deck')).toHaveLength(1);
     });
 
-    test('several quick deletes each run on their own timer', async () => {
+    test('several quick deletes each commit on their own toast', async () => {
       await mount();
       await click(deleteButton(0));
       await click(deleteButton(0));
       expect(taskButton('Send the deck')).toHaveLength(0);
       expect(taskButton('<img src=x>')).toHaveLength(0);
-      await fireUndoTimers();
-      const deleted = invoke.mock.calls.filter(([command]) => command === 'tasks_delete').map(([, args]) => (args as { id: string }).id);
-      expect(deleted.sort()).toEqual(['t1', 't2']);
+      await closeToast('t2', 'onAutoClose');
+      await closeToast('t1', 'onDismiss');
+      expect(deletes().sort()).toEqual(['t1', 't2']);
     });
 
-    test('unmounting runs a pending delete now instead of dropping it', async () => {
+    test('unmounting commits a pending delete once, and a later toast close does not repeat it', async () => {
       await mount();
       await click(deleteButton(0));
+      const toastOpts = undoToast('t1');
       await act(async () => {
         renderer!.unmount();
       });
       renderer = null;
       await flush();
-      expect(invoke).toHaveBeenCalledWith('tasks_delete', { id: 't1' });
-      expect(invoke.mock.calls.filter(([command]) => command === 'tasks_delete')).toHaveLength(1);
-      expect(undoTimers.size).toBe(0);
+      toastOpts.onAutoClose();
+      toastOpts.onDismiss();
+      await flush();
+      expect(deletes()).toEqual(['t1']);
     });
   });
 });

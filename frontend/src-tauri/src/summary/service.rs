@@ -291,17 +291,13 @@ impl SummaryService {
 
             match model {
                 Ok(model_def) => {
-                    // Reserve 300 tokens for prompt overhead
-                    let optimal = model_def.context_size.saturating_sub(300) as usize;
-                    info!(
-                        "✓ Using BuiltInAI context size: {} tokens (chunk size: {})",
-                        model_def.context_size, optimal
-                    );
-                    optimal
+                    // Bare context: the processor reserves 300 tokens for prompt overhead when it chunks
+                    info!("✓ Using BuiltInAI context size: {} tokens", model_def.context_size);
+                    model_def.context_size as usize
                 }
                 Err(e) => {
                     warn!("{}, using default 2048", e);
-                    1748  // 2048 - 300 for overhead
+                    2048
                 }
             }
         } else {

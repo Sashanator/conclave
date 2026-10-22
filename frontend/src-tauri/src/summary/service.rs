@@ -472,6 +472,9 @@ impl SummaryService {
                                 error!("Failed to update meeting name for {}: {}", meeting_id, error);
                             }
                         }
+                        if crate::knowledge::settings::current().extract_enabled {
+                            crate::knowledge::extract::enqueue(&pool, &meeting_id).await;
+                        }
                         info!("Summary saved successfully for meeting_id: {}", meeting_id);
                     }
                     Ok(false) => warn!("Skipped stale summary completion for meeting_id: {}", meeting_id),

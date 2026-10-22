@@ -2,8 +2,10 @@
 // Later knowledge tasks consume these constants and helpers; they are unused until then.
 #![allow(dead_code)]
 
+pub mod extract;
 pub mod feed;
 pub mod settings;
+pub mod tasks;
 
 /// LLM call timeouts, in seconds.
 pub const EXTRACT_TIMEOUT_SECS: u64 = 90;

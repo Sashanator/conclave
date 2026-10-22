@@ -234,6 +234,7 @@ pub(crate) fn digest_line(start: DateTime<Local>, end: DateTime<Local>) -> Strin
 }
 
 /// The scheduler's digest step. Makes the due digest when digests are on and today's attempts are not used up.
+/// The first tick with digests on and no start stored only stores the start: nothing is caught up before it.
 pub(crate) async fn digest_step<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
@@ -241,7 +242,14 @@ pub(crate) async fn digest_step<R: Runtime>(
     enabled: bool,
     tries: &mut Tries,
 ) {
-    digest_step_with(app, pool, now, enabled, tries, |system, user| call_model(pool.clone(), system, user)).await;
+    let since = settings::digest_since();
+    if enabled && since.is_none() {
+        if let Err(e) = settings::start_digest_feature(app, now) {
+            error!("knowledge: digest start not saved: {e}");
+        }
+        return;
+    }
+    digest_step_with(app, pool, now, enabled, since, tries, |system, user| call_model(pool.clone(), system, user)).await;
 }
 
 /// The body of `digest_step`, with the model call injected so tests can count calls.
@@ -250,6 +258,7 @@ pub(crate) async fn digest_step_with<R: Runtime, F, Fut>(
     pool: &SqlitePool,
     now: DateTime<Utc>,
     enabled: bool,
+    since: Option<DateTime<Utc>>,
     tries: &mut Tries,
     call: F,
 ) where
@@ -259,6 +268,9 @@ pub(crate) async fn digest_step_with<R: Runtime, F, Fut>(
     if !enabled {
         return;
     }
+    let Some(since) = since else {
+        return;
+    };
     let local = now.with_timezone(&Local);
     if !tries.may_try(local.date_naive()) {
         return;
@@ -273,6 +285,10 @@ pub(crate) async fn digest_step_with<R: Runtime, F, Fut>(
     let Some((start, end)) = due_period(local, last_end) else {
         return;
     };
+    // A period that ended before the feature started is not caught up.
+    if end.with_timezone(&Utc) <= since {
+        return;
+    }
     let extract_on = settings::current().extract_enabled;
     if let Err(e) = make_digest_with(app, pool, start, end, extract_on, call).await {
         tries.failed();
@@ -296,17 +312,7 @@ fn parse_local(text: &str) -> Result<DateTime<Local>, String> {
 
 /// Builds and stores the digest for [start, end) and pushes its feed item. Ok(None) = nothing made: no meetings in
 /// the period, a meeting's extraction still running or queued, or the digest already exists.
-pub(crate) async fn make_digest<R: Runtime>(
-    app: &AppHandle<R>,
-    pool: &SqlitePool,
-    start: DateTime<Local>,
-    end: DateTime<Local>,
-) -> Result<Option<String>, String> {
-    let extract_on = settings::current().extract_enabled;
-    make_digest_with(app, pool, start, end, extract_on, |system, user| call_model(pool.clone(), system, user)).await
-}
-
-/// The body of `make_digest`, with the model call injected so tests can count calls and return canned replies.
+/// The model call is injected so tests can count calls and return canned replies.
 pub(crate) async fn make_digest_with<R: Runtime, F, Fut>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
@@ -836,14 +842,53 @@ mod tests {
             async { Ok(reply(CANNED)) }
         };
         let mut tries = Tries::default();
+        let started = Some(at(22, 9, 0).with_timezone(&Utc));
 
-        digest_step_with(app.handle(), &pool, now, false, &mut tries, call).await;
+        digest_step_with(app.handle(), &pool, now, false, started, &mut tries, call).await;
         assert_eq!(calls.get(), 0);
         assert_eq!(digest_count(&pool).await, 0);
 
-        digest_step_with(app.handle(), &pool, now, true, &mut tries, call).await;
+        digest_step_with(app.handle(), &pool, now, true, started, &mut tries, call).await;
         assert_eq!(calls.get(), 1);
         assert_eq!(digest_count(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn no_digest_before_the_feature_started() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        done_meeting(&pool, "digest_no_start", "2026-10-19T10:00:00Z").await;
+        let now = at(23, 10, 0).with_timezone(&Utc);
+        let calls = Cell::new(0);
+        let call = |_s: String, _u: String| {
+            calls.set(calls.get() + 1);
+            async { Ok(reply(CANNED)) }
+        };
+        let mut tries = Tries::default();
+
+        digest_step_with(app.handle(), &pool, now, true, None, &mut tries, call).await;
+        assert_eq!(calls.get(), 0);
+        assert_eq!(digest_count(&pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn period_ending_before_the_start_is_not_made() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        done_meeting(&pool, "digest_before_start", "2026-10-19T10:00:00Z").await;
+        let now = at(23, 10, 0).with_timezone(&Utc);
+        // The period [16 Oct 09:00, 23 Oct 09:00) ends before the feature started at 09:30.
+        let started = Some(at(23, 9, 30).with_timezone(&Utc));
+        let calls = Cell::new(0);
+        let call = |_s: String, _u: String| {
+            calls.set(calls.get() + 1);
+            async { Ok(reply(CANNED)) }
+        };
+        let mut tries = Tries::default();
+
+        digest_step_with(app.handle(), &pool, now, true, started, &mut tries, call).await;
+        assert_eq!(calls.get(), 0);
+        assert_eq!(digest_count(&pool).await, 0);
     }
 
     #[tokio::test]

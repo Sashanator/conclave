@@ -6,6 +6,7 @@ use super::{MAX_NAMES, MAX_NAME_CHARS};
 use crate::copilot;
 use crate::copilot::settings::PROVIDERS;
 use crate::summary::llm_target::{target_with_override, LlmTarget};
+use chrono::{DateTime, Utc};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -14,6 +15,7 @@ use std::collections::HashSet;
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{LazyLock, Mutex, PoisonError, RwLock};
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager, Runtime};
@@ -32,6 +34,9 @@ pub struct KnowledgeSettings {
     pub my_names: Vec<String>,
     pub extract_enabled: bool,
     pub digest_enabled: bool,
+    /// When the digest feature started (RFC 3339). Periods that ended before it are never caught up.
+    #[serde(default)]
+    pub digest_since: Option<String>,
     /// A credential. It is kept in calendar.json, never in the plugin store or the frontend.
     #[serde(skip)]
     pub calendar_url: Option<String>,
@@ -69,6 +74,7 @@ impl Default for KnowledgeSettings {
             my_names: Vec::new(),
             extract_enabled: true,
             digest_enabled: true,
+            digest_since: None,
             calendar_url: None,
             names_seeded: false,
         }
@@ -99,6 +105,8 @@ static CACHE: LazyLock<RwLock<KnowledgeSettings>> =
     LazyLock::new(|| RwLock::new(KnowledgeSettings::default()));
 /// Held across validate, store write and cache update, so concurrent saves cannot interleave.
 static SAVE_LOCK: Mutex<()> = Mutex::new(());
+/// Set by startup when the settings file was read (or is missing). An unreadable file is never written automatically.
+static FILE_LOADED: AtomicBool = AtomicBool::new(false);
 
 /// Startup read. Never fails: a broken entry is dropped and logged, the rest is kept.
 pub fn sanitize(raw: Option<Value>) -> KnowledgeSettings {
@@ -116,6 +124,7 @@ pub fn sanitize(raw: Option<Value>) -> KnowledgeSettings {
         my_names: names(&obj),
         extract_enabled: flag(&obj, "extract_enabled", true),
         digest_enabled: flag(&obj, "digest_enabled", true),
+        digest_since: text_field(&obj, "digest_since"),
         calendar_url: None,
         names_seeded: flag(&obj, "names_seeded", false),
     };
@@ -207,6 +216,7 @@ fn normalise(s: KnowledgeSettings, strict: bool) -> Result<KnowledgeSettings, St
         my_names,
         extract_enabled: s.extract_enabled,
         digest_enabled: s.digest_enabled,
+        digest_since: s.digest_since.filter(|t| DateTime::parse_from_rfc3339(t).is_ok()),
         calendar_url: s.calendar_url,
         names_seeded: s.names_seeded,
     })
@@ -234,9 +244,58 @@ fn apply_input(stored: &KnowledgeSettings, input: KnowledgeSettingsInput) -> Kno
         my_names: input.my_names,
         extract_enabled: input.extract_enabled,
         digest_enabled: input.digest_enabled,
+        digest_since: stored.digest_since.clone(),
         calendar_url: stored.calendar_url.clone(),
         names_seeded: stored.names_seeded,
     }
+}
+
+fn stamped(s: KnowledgeSettings, now: DateTime<Utc>) -> KnowledgeSettings {
+    KnowledgeSettings {
+        digest_since: Some(now.to_rfc3339()),
+        ..s
+    }
+}
+
+/// A save that turns digests on starts them at `now`, so the first digest is the next Friday 09:00.
+fn with_digest_start(prev: &KnowledgeSettings, next: KnowledgeSettings, now: DateTime<Utc>) -> KnowledgeSettings {
+    if next.digest_enabled && !prev.digest_enabled {
+        stamped(next, now)
+    } else {
+        next
+    }
+}
+
+/// When the digest feature started, if it has.
+pub(crate) fn digest_since() -> Option<DateTime<Utc>> {
+    current()
+        .digest_since
+        .and_then(|t| DateTime::parse_from_rfc3339(&t).ok())
+        .map(|t| t.with_timezone(&Utc))
+}
+
+/// The first digest tick with no start stored: the feature starts at `now`. A start saved meanwhile is kept.
+pub(crate) fn start_digest_feature<R: Runtime>(app: &AppHandle<R>, now: DateTime<Utc>) -> Result<(), String> {
+    let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    let (s, saved) = start_digest_in(current(), now, FILE_LOADED.load(Ordering::SeqCst), |s| persist(app, s));
+    set_cache(s);
+    saved
+}
+
+/// The start is always kept in memory, so a failed save does not make every tick retry. The file is written
+/// only when startup read it, so an unreadable file is not overwritten with defaults.
+fn start_digest_in(
+    s: KnowledgeSettings,
+    now: DateTime<Utc>,
+    file_loaded: bool,
+    save: impl FnOnce(&KnowledgeSettings) -> Result<(), String>,
+) -> (KnowledgeSettings, Result<(), String>) {
+    if s.digest_since.is_some() {
+        return (s, Ok(()));
+    }
+    let s = stamped(s, now);
+    let saved = if file_loaded { save(&s) } else { Ok(()) };
+    (s, saved)
 }
 
 /// Fills the names from Copilot's alert words, once. After that, the user's list is never touched.
@@ -286,7 +345,7 @@ pub fn current() -> KnowledgeSettings {
     CACHE.read().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
-fn set_cache(s: KnowledgeSettings) {
+pub(crate) fn set_cache(s: KnowledgeSettings) {
     *CACHE.write().unwrap_or_else(PoisonError::into_inner) = s;
 }
 
@@ -399,6 +458,7 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
             (None, false)
         }
     };
+    FILE_LOADED.store(loaded, Ordering::SeqCst);
     let (mut s, save) = startup_plan(raw, loaded, copilot::settings::current().alert_words);
     s.calendar_url = match calendar_path(app).and_then(|path| read_calendar_at(&path)) {
         Ok(url) => url,
@@ -427,7 +487,8 @@ pub async fn knowledge_save_settings<R: Runtime>(
     input: KnowledgeSettingsInput,
 ) -> Result<KnowledgeSettingsView, String> {
     let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let valid = normalise(apply_input(&current(), input), true)?;
+    let prev = current();
+    let valid = normalise(with_digest_start(&prev, apply_input(&prev, input), Utc::now()), true)?;
     persist(&app, &valid)?;
     set_cache(valid.clone());
     Ok(view(&valid))
@@ -436,7 +497,9 @@ pub async fn knowledge_save_settings<R: Runtime>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::TimeZone;
     use serde_json::json;
+    use std::cell::Cell;
 
     fn with_names(names: &[&str]) -> KnowledgeSettings {
         KnowledgeSettings {
@@ -470,6 +533,59 @@ mod tests {
         assert!(!d.names_seeded);
         assert_eq!(sanitize(None), d);
         assert_eq!(sanitize(Some(json!("junk"))), d);
+    }
+
+    #[test]
+    fn sanitize_keeps_only_a_valid_digest_start() {
+        let good = sanitize(Some(json!({"digest_since": "2026-10-22T08:00:00Z"})));
+        assert_eq!(good.digest_since.as_deref(), Some("2026-10-22T08:00:00Z"));
+        let bad = sanitize(Some(json!({"digest_since": "soon"})));
+        assert_eq!(bad.digest_since, None);
+    }
+
+    #[test]
+    fn failed_save_keeps_the_start_in_memory() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 22, 8, 0, 0).unwrap();
+        let (s, saved) = start_digest_in(KnowledgeSettings::default(), now, true, |_| Err("disk full".to_string()));
+        assert_eq!(s.digest_since.as_deref(), Some("2026-10-22T08:00:00+00:00"));
+        assert!(saved.is_err());
+    }
+
+    #[test]
+    fn unreadable_file_is_not_written_by_the_stamp() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 22, 8, 0, 0).unwrap();
+        let writes = Cell::new(0);
+        let (s, saved) = start_digest_in(KnowledgeSettings::default(), now, false, |_| {
+            writes.set(writes.get() + 1);
+            Ok(())
+        });
+        assert_eq!(writes.get(), 0);
+        assert!(s.digest_since.is_some());
+        assert!(saved.is_ok());
+    }
+
+    #[test]
+    fn digest_start_is_stamped() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 22, 8, 0, 0).unwrap();
+        let s = stamped(KnowledgeSettings::default(), now);
+        assert_eq!(s.digest_since.as_deref(), Some("2026-10-22T08:00:00+00:00"));
+    }
+
+    #[test]
+    fn enabling_digests_restarts_their_start() {
+        let now = Utc.with_ymd_and_hms(2026, 10, 22, 8, 0, 0).unwrap();
+        let off = KnowledgeSettings { digest_enabled: false, ..Default::default() };
+        let on = KnowledgeSettings { digest_enabled: true, ..Default::default() };
+
+        let turned_on = with_digest_start(&off, on.clone(), now);
+        assert_eq!(turned_on.digest_since.as_deref(), Some("2026-10-22T08:00:00+00:00"));
+
+        let kept = KnowledgeSettings { digest_since: Some("2026-01-05T09:00:00+00:00".into()), ..on.clone() };
+        let unchanged = with_digest_start(&kept, kept.clone(), now);
+        assert_eq!(unchanged.digest_since, kept.digest_since);
+
+        let still_off = with_digest_start(&off, KnowledgeSettings { digest_enabled: false, ..Default::default() }, now);
+        assert_eq!(still_off.digest_since, None);
     }
 
     #[test]

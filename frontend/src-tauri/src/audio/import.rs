@@ -262,6 +262,7 @@ pub async fn start_import<R: Runtime>(
     app: AppHandle<R>,
     source_path: String,
     title: String,
+    title_source: &'static str,
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
@@ -277,6 +278,7 @@ pub async fn start_import<R: Runtime>(
         app.clone(),
         source_path,
         title,
+        title_source,
         language,
         model,
         provider,
@@ -322,6 +324,7 @@ async fn run_import<R: Runtime>(
     app: AppHandle<R>,
     source_path: String,
     title: String,
+    title_source: &'static str,
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
@@ -653,6 +656,7 @@ async fn run_import<R: Runtime>(
     let meeting_id = create_meeting_with_transcripts(
         app_state.db_manager.pool(),
         &title,
+        title_source,
         &segments,
         meeting_folder.to_string_lossy().to_string(),
         speakers_active,
@@ -708,6 +712,7 @@ fn emit_progress<R: Runtime>(app: &AppHandle<R>, stage: &str, progress: u32, mes
 async fn create_meeting_with_transcripts(
     pool: &sqlx::SqlitePool,
     title: &str,
+    title_source: &str,
     segments: &[TranscriptSegment],
     folder_path: String,
     enqueue_speakers: bool,
@@ -724,13 +729,14 @@ async fn create_meeting_with_transcripts(
     // Insert meeting
     sqlx::query(
         "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, title_source)
-         VALUES (?, ?, ?, ?, ?, 'default')",
+         VALUES (?, ?, ?, ?, ?, ?)",
     )
     .bind(&meeting_id)
     .bind(title)
     .bind(now)
     .bind(now)
     .bind(&folder_path)
+    .bind(title_source)
     .execute(&mut *tx)
     .await
     .map_err(|e| anyhow!("Failed to create meeting: {}", e))?;
@@ -996,6 +1002,7 @@ pub async fn start_import_audio_command<R: Runtime>(
     app: AppHandle<R>,
     source_path: String,
     title: String,
+    title_source: Option<String>,
     language: Option<String>,
     model: Option<String>,
     provider: Option<String>,
@@ -1005,9 +1012,12 @@ pub async fn start_import_audio_command<R: Runtime>(
         return Err("Import already in progress".to_string());
     }
 
+    // Only a title the user typed is kept; anything else stays replaceable by the summary.
+    let title_source: &'static str = if title_source.as_deref() == Some("user") { "user" } else { "default" };
+
     // Spawn import in background
     tauri::async_runtime::spawn(async move {
-        let result = start_import(app, source_path, title, language, model, provider).await;
+        let result = start_import(app, source_path, title, title_source, language, model, provider).await;
 
         if let Err(e) = result {
             error!("Import failed: {}", e);
@@ -1038,6 +1048,25 @@ pub async fn is_import_in_progress_command() -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn imported_meeting_keeps_title_source() {
+        let pool = crate::database::repositories::test_pool().await;
+        let user = create_meeting_with_transcripts(&pool, "Typed", "user", &[], "f".into(), false).await.unwrap();
+        let default = create_meeting_with_transcripts(&pool, "File", "default", &[], "f".into(), false).await.unwrap();
+        let source = |id: String| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_scalar::<_, String>("SELECT title_source FROM meetings WHERE id = ?")
+                    .bind(id)
+                    .fetch_one(&pool)
+                    .await
+                    .unwrap()
+            }
+        };
+        assert_eq!(source(user).await, "user");
+        assert_eq!(source(default).await, "default");
+    }
 
     #[test]
     fn test_audio_extensions() {

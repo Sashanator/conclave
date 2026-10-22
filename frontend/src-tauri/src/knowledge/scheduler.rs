@@ -9,7 +9,7 @@ use crate::knowledge::settings;
 use crate::knowledge::CALENDAR_REFRESH_MINS;
 use crate::state::AppState;
 use crate::summary::templates::{self, TemplateEntry};
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, Utc};
 use log::{error, info, warn};
 use sqlx::SqlitePool;
 use std::time::Duration as StdDuration;
@@ -126,7 +126,7 @@ async fn brief_made(pool: &SqlitePool, occ: &Occurrence) -> Result<bool, String>
 mod tests {
     use super::*;
     use crate::database::repositories::test_pool;
-    use chrono::TimeZone;
+    use chrono::{SecondsFormat, TimeZone};
     use uuid::Uuid;
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {
@@ -217,6 +217,12 @@ mod tests {
     async fn feed_is_pruned_once_a_day() {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
+        // The digest feature has started. Otherwise the tick would store the start, and mock apps have no store.
+        let started = crate::knowledge::settings::KnowledgeSettings {
+            digest_since: Some(at(0, 0).to_rfc3339()),
+            ..crate::knowledge::settings::current()
+        };
+        crate::knowledge::settings::set_cache(started);
         let mut clock = Clock::default();
         let templates: Vec<TemplateEntry> = Vec::new();
         let old_item = |created: DateTime<Utc>| {

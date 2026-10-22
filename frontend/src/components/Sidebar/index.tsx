@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap, BarChart3 } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -448,6 +448,7 @@ const Sidebar: React.FC = () => {
     const isSettingsPage = pathname === '/settings';
     const isDictatePage = pathname === '/dictate';
     const isPracticePage = pathname === '/practice';
+    const isStatsPage = pathname === '/stats';
 
     return (
       <TooltipProvider>
@@ -498,6 +499,22 @@ const Sidebar: React.FC = () => {
             </TooltipTrigger>
             <TooltipContent side="right">
               <p>Practice</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => go('/stats')}
+                aria-label="Stats"
+                className={`p-2 rounded-lg transition-colors duration-150 ${isStatsPage ? 'bg-muted' : 'hover:bg-accent'
+                  }`}
+              >
+                <BarChart3 className="w-5 h-5 text-muted-foreground" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Stats</p>
             </TooltipContent>
           </Tooltip>
 
@@ -800,6 +817,23 @@ const Sidebar: React.FC = () => {
               >
                 <GraduationCap className="w-4 h-4 mr-2" />
                 <span>Practice</span>
+              </div>
+            )}
+            {!isCollapsed && (
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => go('/stats')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    go('/stats');
+                  }
+                }}
+                className="p-3 text-lg font-semibold items-center hover:bg-accent h-10 flex mx-3 rounded-lg cursor-pointer"
+              >
+                <BarChart3 className="w-4 h-4 mr-2" />
+                <span>Stats</span>
               </div>
             )}
           </div>

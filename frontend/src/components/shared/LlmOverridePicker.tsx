@@ -6,7 +6,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { CLAUDE_FALLBACK_MODELS, GROQ_FALLBACK_MODELS, OPENAI_FALLBACK_MODELS } from '@/components/ModelSettingsModal';
 
 // Built-in "builtin-ai" is left out: the backend rejects it as a cleanup provider
-const PROVIDERS = [
+export const PROVIDERS = [
   { id: 'claude', label: 'Claude' },
   { id: 'openai', label: 'OpenAI' },
   { id: 'groq', label: 'Groq' },
@@ -22,7 +22,7 @@ const MODEL_SUGGESTIONS: Record<string, string[]> = {
 const SAME_AS_SUMMARIES = 'same';
 
 // Providers with a key, plus ollama or a custom server when configured. A provider already chosen always stays listed.
-async function configuredProviders(): Promise<Set<string>> {
+export async function configuredProviders(): Promise<Set<string>> {
   const found = new Set<string>();
   for (const provider of ['claude', 'openai', 'groq', 'openrouter']) {
     try {

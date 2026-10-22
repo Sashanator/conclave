@@ -241,6 +241,11 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
         // Meetings whose save failed: the failure count and the earliest time to try again.
         let mut held_back: HashMap<String, (u32, Instant)> = HashMap::new();
         loop {
+            // Turning extraction off stops the queue. Retry still runs a meeting directly, so it keeps working.
+            if !settings::current().extract_enabled {
+                let _ = tokio::time::timeout(Duration::from_secs(30), WAKE.notified()).await;
+                continue;
+            }
             match next_pending(&pool, &held_back).await {
                 Ok(Some(id)) => match run_one(&pool, &id).await {
                     Ok(()) => {

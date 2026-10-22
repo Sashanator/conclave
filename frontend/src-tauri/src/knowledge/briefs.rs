@@ -577,8 +577,11 @@ mod tests {
         let one_on_one = template("one_on_one", "1:1", &["1:1"]);
         let occ = occurrence("u1", "1:1 Ivan", at(11, 0));
 
-        // With extraction off nothing runs it: a queued row is "not ready", not "no lists".
-        assert_eq!(digest::ready_lists(&pool, "ivan-queued", false).await.unwrap(), None);
+        // With extraction off nothing runs it, so the lists are empty rather than blocking the brief.
+        assert_eq!(
+            digest::ready_lists(&pool, "ivan-queued", false).await.unwrap(),
+            Some((Vec::new(), Vec::new()))
+        );
         // With it on, hold the slot so the run inside ready_lists is a no-op and the row stays pending.
         let _flight = extract::hold_in_flight("ivan-queued");
         assert_eq!(make_brief(app.handle(), &pool, &occ, &one_on_one, &|| at(10, 30)).await.unwrap(), None);

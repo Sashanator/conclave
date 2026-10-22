@@ -432,7 +432,11 @@ pub(crate) async fn ready_lists(
             return Ok(Some(lists));
         }
     }
-    if extract::extraction_running(meeting_id) || extract_status(pool, meeting_id).await?.as_deref() == Some("pending") {
+    // With extraction off, nothing finishes a queued meeting, so waiting for it would block the digest for good.
+    if extract_on
+        && (extract::extraction_running(meeting_id)
+            || extract_status(pool, meeting_id).await?.as_deref() == Some("pending"))
+    {
         return Ok(None);
     }
     Ok(Some((Vec::new(), Vec::new())))
@@ -946,11 +950,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn digest_waits_for_a_queued_extraction() {
+    async fn digest_does_not_wait_for_a_queued_extraction_when_extraction_is_off() {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
         done_meeting(&pool, "digest_queued", "2026-10-19T10:00:00Z").await;
-        // A regenerated summary queues a new extraction: the old lists are not the current ones.
+        // A queued extraction that nothing will run while extraction is off must not block the digest.
         sqlx::query("UPDATE meeting_extracts SET status = 'pending' WHERE meeting_id = 'digest_queued'")
             .execute(&pool)
             .await
@@ -961,12 +965,12 @@ mod tests {
             async { Ok(reply(CANNED)) }
         };
 
-        // Extraction is off here, so nothing runs it: the digest must wait rather than store empty lists.
         let made = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), false, call).await.unwrap();
 
-        assert_eq!(made, None);
-        assert_eq!(calls.get(), 0);
-        assert_eq!(digest_count(&pool).await, 0);
+        // One call: the digest's own. The queued extraction was not run.
+        assert!(made.is_some());
+        assert_eq!(calls.get(), 1);
+        assert_eq!(digest_count(&pool).await, 1);
     }
 
     #[tokio::test]

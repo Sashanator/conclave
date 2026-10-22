@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap, BarChart3 } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap, BarChart3, MessageCircleQuestion } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -449,6 +449,7 @@ const Sidebar: React.FC = () => {
     const isDictatePage = pathname === '/dictate';
     const isPracticePage = pathname === '/practice';
     const isStatsPage = pathname === '/stats';
+    const isAskPage = pathname === '/ask';
 
     return (
       <TooltipProvider>
@@ -467,6 +468,22 @@ const Sidebar: React.FC = () => {
             </TooltipTrigger>
             <TooltipContent side="right">
               <p>Home</p>
+            </TooltipContent>
+          </Tooltip>
+
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                onClick={() => go('/ask')}
+                aria-label="Ask"
+                className={`p-2 rounded-lg transition-colors duration-150 ${isAskPage ? 'bg-muted' : 'hover:bg-accent'
+                  }`}
+              >
+                <MessageCircleQuestion className="w-5 h-5 text-muted-foreground" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="right">
+              <p>Ask</p>
             </TooltipContent>
           </Tooltip>
 
@@ -783,6 +800,23 @@ const Sidebar: React.FC = () => {
               >
                 <Home className="w-4 h-4 mr-2" />
                 <span>Home</span>
+              </div>
+            )}
+            {!isCollapsed && (
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => go('/ask')}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    go('/ask');
+                  }
+                }}
+                className="p-3 text-lg font-semibold items-center hover:bg-accent h-10 flex mx-3 rounded-lg cursor-pointer"
+              >
+                <MessageCircleQuestion className="w-4 h-4 mr-2" />
+                <span>Ask</span>
               </div>
             )}
             {!isCollapsed && (

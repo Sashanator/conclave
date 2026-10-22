@@ -490,15 +490,38 @@ fn at(p: &Property<'_>, text: &str, unknown_tz_warned: &mut bool) -> Option<Date
     }
 }
 
-/// The zone for a TZID name, or None if the zone database does not know it.
+/// Outlook writes Windows zone names. Each maps to its IANA zone (CLDR windowsZones, default territory).
+const WINDOWS_ZONES: &[(&str, &str)] = &[
+    ("UTC", "Etc/UTC"),
+    ("GMT Standard Time", "Europe/London"),
+    ("W. Europe Standard Time", "Europe/Berlin"),
+    ("Central Europe Standard Time", "Europe/Budapest"),
+    ("FLE Standard Time", "Europe/Kyiv"),
+    ("E. Europe Standard Time", "Europe/Chisinau"),
+    ("Russian Standard Time", "Europe/Moscow"),
+    ("Turkey Standard Time", "Europe/Istanbul"),
+    ("Israel Standard Time", "Asia/Jerusalem"),
+    ("India Standard Time", "Asia/Kolkata"),
+    ("China Standard Time", "Asia/Shanghai"),
+    ("Tokyo Standard Time", "Asia/Tokyo"),
+    ("AUS Eastern Standard Time", "Australia/Sydney"),
+    ("Eastern Standard Time", "America/New_York"),
+    ("Central Standard Time", "America/Chicago"),
+    ("Mountain Standard Time", "America/Denver"),
+    ("Pacific Standard Time", "America/Los_Angeles"),
+];
+
+/// The zone for a TZID name, or None if neither the zone database nor the Windows table knows it.
 fn tzid_zone(name: &str) -> Option<Tz> {
-    name.trim_matches('"')
-        .parse::<chrono_tz::Tz>()
-        .ok()
-        .map(Tz::from)
+    let name = name.trim_matches('"');
+    let iana = WINDOWS_ZONES
+        .iter()
+        .find(|(windows, _)| windows.eq_ignore_ascii_case(name))
+        .map_or(name, |(_, iana)| iana);
+    iana.parse::<chrono_tz::Tz>().ok().map(Tz::from)
 }
 
-/// The TZID zone. An unknown name (a Windows zone, say) is local time; it is logged once, without the name.
+/// The TZID zone. An unknown name is local time; it is logged once, without the name.
 fn zone(p: &Property<'_>, unknown_tz_warned: &mut bool) -> Tz {
     let Some(name) = p
         .params
@@ -986,12 +1009,12 @@ mod tests {
 
     #[test]
     fn unknown_tzid_treated_as_local() {
-        // A Windows zone name is not in the zone database, so the zone is local, whatever this machine's zone is.
-        assert!(tzid_zone("W. Europe Standard Time").is_none());
+        // A name in neither table is local, whatever this machine's zone is.
+        assert!(tzid_zone("Mars Standard Time").is_none());
         assert!(tzid_zone("Europe/Berlin").is_some_and(|z| !z.is_local()));
         let mut p = Property::new_ref("DTSTART", "20261020T100000");
         p.params
-            .push(Parameter::new_ref("TZID", Some("W. Europe Standard Time")));
+            .push(Parameter::new_ref("TZID", Some("Mars Standard Time")));
         let mut warned = false;
         assert!(zone(&p, &mut warned).is_local());
 
@@ -999,9 +1022,9 @@ mod tests {
             "BEGIN:VCALENDAR",
             "BEGIN:VEVENT",
             "UID:win-5",
-            "DTSTART;TZID=W. Europe Standard Time:20261020T100000",
-            "DTEND;TZID=W. Europe Standard Time:20261020T110000",
-            "SUMMARY:Windows zone",
+            "DTSTART;TZID=Mars Standard Time:20261020T100000",
+            "DTEND;TZID=Mars Standard Time:20261020T110000",
+            "SUMMARY:Unknown zone",
             "END:VEVENT",
             "END:VCALENDAR",
         ]);
@@ -1012,6 +1035,28 @@ mod tests {
             .with_timezone(&Utc);
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].start, local_start);
+    }
+
+    #[test]
+    fn windows_zone_names_map_to_iana_not_local() {
+        for (windows, iana) in WINDOWS_ZONES {
+            assert!(iana.parse::<chrono_tz::Tz>().is_ok(), "{iana}");
+            assert!(tzid_zone(windows).is_some_and(|z| !z.is_local()), "{windows}");
+        }
+        // Moscow is UTC+3 all year, so 10:00 Moscow is 07:00 UTC on any machine.
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:win-6",
+            "DTSTART;TZID=Russian Standard Time:20261020T100000",
+            "DTEND;TZID=Russian Standard Time:20261020T110000",
+            "SUMMARY:Moscow",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].start, utc(2026, 10, 20, 7, 0));
     }
     #[test]
     fn title_sanitised_and_capped() {

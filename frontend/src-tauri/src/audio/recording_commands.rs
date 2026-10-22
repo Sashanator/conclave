@@ -370,8 +370,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 ) -> Result<(), String> {
     let _start_guard = StartInFlightGuard::claim();
     info!(
-        "Starting recording with default devices, meeting: {:?}",
-        meeting_name
+        "Starting recording with default devices, meeting chars: {:?}",
+        meeting_name.as_ref().map(|n| n.chars().count())
     );
 
     let engine_lifecycle_guard = super::common::acquire_engine_lifecycle_lock().await;

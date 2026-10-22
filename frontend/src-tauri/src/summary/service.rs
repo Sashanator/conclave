@@ -350,7 +350,7 @@ impl SummaryService {
                     Ok(Ok(c)) => match auto_pick_answer_id(&c.content, &listing.templates) {
                         Some(id) => (id, TemplateSource::Auto),
                         None => {
-                            warn!("Auto-pick answer is not a template id: {:?}", c.content);
+                            warn!("Auto-pick answer is not a template id: {} chars", c.content.chars().count());
                             (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
                         }
                     },

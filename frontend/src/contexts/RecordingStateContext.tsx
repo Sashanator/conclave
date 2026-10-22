@@ -168,8 +168,8 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         unsubscribers.push(unlistenStarting);
 
         // Recording stopped
-        const unlistenStopped = await recordingService.onRecordingStopped((payload) => {
-          console.log('[RecordingStateContext] Recording stopped event:', payload);
+        const unlistenStopped = await recordingService.onRecordingStopped(() => {
+          console.log('[RecordingStateContext] Recording stopped event');
           setState(prev => {
             // Set status to STOPPING if not already in stop flow
             // This ensures smooth UI transition for tray/keyboard stops

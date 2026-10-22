@@ -29,9 +29,15 @@ pub fn recycle(paths: &[PathBuf]) -> Result<(), String> {
         return Ok(());
     }
     let owned = paths.to_vec();
-    std::thread::spawn(move || trash::delete_all(&owned).map_err(|e| format!("Could not move to the Recycle Bin: {e}")))
+    std::thread::spawn(move || trash::delete_all(&owned).map_err(|e| format!("Could not move to the Recycle Bin: {}", trash_error_name(&e))))
         .join()
         .map_err(|_| "The Recycle Bin call failed unexpectedly".to_string())?
+}
+
+/// The variant name of a `trash` error. Its Display prints the Debug form, which carries the paths.
+fn trash_error_name(e: &trash::Error) -> String {
+    // The derived Debug starts with the variant name, and the fields follow after `{`, `(` or a space.
+    format!("{e:?}").split(['{', '(', ' ']).next().unwrap_or_default().to_string()
 }
 
 /// Canonical path of a meeting folder that is a direct child of the recordings base, or `None`.
@@ -341,6 +347,14 @@ mod tests {
     use std::sync::Mutex;
 
     fn base() -> tempfile::TempDir { tempfile::tempdir().unwrap() }
+
+    #[test]
+    fn a_recycle_error_names_its_variant_without_the_path() {
+        let path = "C:\\Users\\someone\\Recordings\\Standup with Anna Ivanova";
+        let err = trash::Error::FileSystem { path: PathBuf::from(path), source: std::io::Error::other("denied") };
+        assert_eq!(trash_error_name(&err), "FileSystem");
+        assert_eq!(trash_error_name(&trash::Error::TargetedRoot), "TargetedRoot");
+    }
 
     /// Stand-in for the Recycle Bin. Removes files, and directories only when empty
     /// (`remove_dir` fails otherwise), so a non-empty folder ever reaching it fails the test.

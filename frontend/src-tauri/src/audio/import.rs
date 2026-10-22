@@ -334,8 +334,8 @@ async fn run_import<R: Runtime>(
     }
 
     info!(
-        "Starting import for '{}' from {} with language {:?}, model {:?}, provider {:?}",
-        title, source_path, language, model, provider
+        "Starting import for a meeting titled {} chars from {} with language {:?}, model {:?}, provider {:?}",
+        title.chars().count(), source_path, language, model, provider
     );
 
     // Determine which provider to use (default to whisper)

@@ -989,20 +989,12 @@ pub async fn api_save_transcript<R: Runtime>(
     recording_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
-        "api_save_transcript called for meeting: {}, transcripts: {}, folder_path: {:?}, auth_token: {}",
-        meeting_title,
+        "api_save_transcript called, title chars: {}, transcripts: {}, folder_path set: {}, auth_token: {}",
+        meeting_title.chars().count(),
         transcripts.len(),
-        folder_path,
+        folder_path.is_some(),
         auth_token.is_some()
     );
-
-    // Log first transcript for debugging
-    if let Some(first) = transcripts.first() {
-        log_debug!(
-            "First transcript data: {}",
-            serde_json::to_string_pretty(first).unwrap_or_default()
-        );
-    }
 
     // Convert serde_json::Value to TranscriptSegment
     let transcripts_to_save: Vec<TranscriptSegment> = parse_transcript_segments(transcripts)
@@ -1013,8 +1005,8 @@ pub async fn api_save_transcript<R: Runtime>(
 
     // Log parsed segments count and first segment details
     if let Some(first_seg) = transcripts_to_save.first() {
-        log_debug!("First parsed segment: text='{}', audio_start_time={:?}, audio_end_time={:?}, duration={:?}",
-                   first_seg.text.chars().take(50).collect::<String>(),
+        log_debug!("First parsed segment: text chars={}, audio_start_time={:?}, audio_end_time={:?}, duration={:?}",
+                   first_seg.text.chars().count(),
                    first_seg.audio_start_time,
                    first_seg.audio_end_time,
                    first_seg.duration);
@@ -1054,11 +1046,7 @@ pub async fn api_save_transcript<R: Runtime>(
             }))
         }
         Err(e) => {
-            log_error!(
-                "Error saving transcript for meeting '{}': {}",
-                meeting_title,
-                e
-            );
+            log_error!("Error saving transcript: {}", e);
             Err(format!("Failed to save transcript: {}", e))
         }
     }

@@ -174,7 +174,8 @@ fn find_audio_file(folder: &Path) -> Result<PathBuf> {
         }
     }
 
-    Err(anyhow!("No audio file found in: {}", folder.display()))
+    // No path here: the caller logs this error, and the folder is a meeting folder.
+    Err(anyhow!("No audio file found in the meeting folder"))
 }
 
 /// Internal function to run retranscription

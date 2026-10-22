@@ -205,7 +205,7 @@ impl IncrementalAudioSaver {
 
             // Use absolute path for FFmpeg (required for safe mode)
             let abs_path = checkpoint_path.canonicalize()?;
-            list_content.push_str(&format!("file '{}'\n", abs_path.display()));
+            list_content.push_str(&concat_line(&abs_path));
         }
 
         std::fs::write(&list_file, list_content)?;
@@ -277,6 +277,12 @@ pub struct AudioRecoveryStatus {
     pub estimated_duration_seconds: f64,
     pub audio_file_path: Option<String>,
     pub message: String,
+}
+
+/// One line of an ffmpeg concat list. A single quote in the path is escaped as `'\''`, so a folder
+/// such as "John's 1-1" still parses.
+fn concat_line(path: &Path) -> String {
+    format!("file '{}'\n", path.display().to_string().replace('\'', r"'\''"))
 }
 
 /// ffmpeg concat with stream copy. Chunks are checked with `verify_chunk` first: `-xerror` here
@@ -391,10 +397,15 @@ pub async fn recover_audio_from_checkpoints(
     recover_checkpoints_in(&folder_path)
 }
 
-/// Removes temporary files, ignoring any that are already gone.
-fn remove_temp_files(files: &[PathBuf]) {
-    for file in files {
-        let _ = std::fs::remove_file(file);
+/// Temporary files, removed when the guard is dropped, so every return path cleans up.
+#[derive(Default)]
+struct TempFiles(Vec<PathBuf>);
+
+impl Drop for TempFiles {
+    fn drop(&mut self) {
+        for file in &self.0 {
+            let _ = std::fs::remove_file(file);
+        }
     }
 }
 
@@ -480,7 +491,7 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
     // after it keeps its place on the timeline. A corrupt last chunk has nothing after it: dropped.
     let last = checkpoint_files.len() - 1;
     let mut concat_list: Vec<PathBuf> = Vec::new();
-    let mut silence_files: Vec<PathBuf> = Vec::new();
+    let mut silence_files = TempFiles::default();
     for (i, (entry, verdict)) in checkpoint_files.iter().zip(&bad).enumerate() {
         if verdict.is_none() {
             concat_list.push(entry.path());
@@ -488,11 +499,10 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
             let silence = checkpoints_dir.join(format!("silence_{:03}.part", i));
             let zeros = vec![0u8; CHECKPOINT_SECONDS as usize * 48000 * 4];
             if let Err(e) = encode_single_audio(&zeros, 48000, 1, &silence) {
-                silence_files.push(silence);
-                remove_temp_files(&silence_files);
+                silence_files.0.push(silence);
                 return Err(format!("Could not make silence for a corrupt chunk: {}", e));
             }
-            silence_files.push(silence.clone());
+            silence_files.0.push(silence.clone());
             concat_list.push(silence);
         }
     }
@@ -504,7 +514,7 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
     for path in &concat_list {
         let path = path.canonicalize()
             .map_err(|e| format!("Failed to canonicalize path: {}", e))?;
-        concat_content.push_str(&format!("file '{}'\n", path.display()));
+        concat_content.push_str(&concat_line(&path));
     }
 
     std::fs::write(&concat_file_path, concat_content)
@@ -529,7 +539,6 @@ fn recover_checkpoints_in(folder_path: &Path) -> Result<AudioRecoveryStatus, Str
     }
 
     let ffmpeg_result = command.output();
-    remove_temp_files(&silence_files);
 
     match ffmpeg_result {
         Ok(output) if output.status.success() => {
@@ -855,6 +864,47 @@ mod tests {
             .stdout;
         let seconds = raw.len() as f64 / 4.0 / 48000.0;
         assert!((seconds - 90.0).abs() < 1.0, "output is {seconds} s");
+    }
+
+    #[test]
+    fn a_failed_recovery_leaves_no_silence_files() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("Failed_Recovery");
+        let checkpoints = folder.join(".checkpoints");
+        std::fs::create_dir_all(&checkpoints).unwrap();
+        let pcm: Vec<u8> = bytemuck::cast_slice(&vec![0.5f32; 48000 * 30]).to_vec();
+        for i in 0..3 {
+            encode_single_audio(&pcm, 48000, 1, &checkpoints.join(format!("audio_chunk_{:03}.mp4", i))).unwrap();
+        }
+        let middle = checkpoints.join("audio_chunk_001.mp4");
+        let bytes = std::fs::read(&middle).unwrap();
+        std::fs::write(&middle, &bytes[..bytes.len() / 2]).unwrap();
+        // A directory where the concat list goes makes the write fail after the silence is made.
+        std::fs::create_dir_all(checkpoints.join("concat_list.txt")).unwrap();
+
+        assert!(recover_checkpoints_in(&folder).is_err());
+        assert!(!checkpoints.join("silence_001.part").exists());
+    }
+
+    #[tokio::test]
+    async fn merges_work_in_a_folder_whose_name_has_a_quote() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("John's 1-1");
+        let checkpoints = folder.join(".checkpoints");
+        std::fs::create_dir_all(&checkpoints).unwrap();
+        let pcm: Vec<u8> = bytemuck::cast_slice(&vec![0.5f32; 48000]).to_vec();
+        for i in 0..2 {
+            encode_single_audio(&pcm, 48000, 1, &checkpoints.join(format!("audio_chunk_{:03}.mp4", i))).unwrap();
+        }
+
+        let mut saver = IncrementalAudioSaver::new(folder.clone(), 48000).unwrap();
+        saver.checkpoint_count = 2;
+        saver.merge_checkpoints(&folder.join("merged.mp4")).await.unwrap();
+        assert!(folder.join("merged.mp4").exists());
+
+        let status = recover_checkpoints_in(&folder).unwrap();
+        assert_eq!(status.status, "success", "{}", status.message);
+        assert!(folder.join("audio.mp4").exists());
     }
 
     #[test]

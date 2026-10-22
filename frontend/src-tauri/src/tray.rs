@@ -165,20 +165,32 @@ fn quit_app<R: Runtime>(app: &AppHandle<R>) {
     }
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        if !finish_within(QUIT_CAP, stop_and_wait_for_save(&app_clone)).await {
+        let finished = finish_within(QUIT_CAP, async {
+            if let Err(e) = run_isolated(stop_and_wait_for_save(app_clone.clone())).await {
+                log::error!("Quit: stopping the recording failed: {}", e);
+            }
+        })
+        .await;
+        if !finished {
             log::error!("Quit: the recording was not saved within 120 s, exiting anyway");
         }
+        // Exit even after a failed stop: the user asked to quit.
         app_clone.exit(0);
     });
 }
 
 /// Stops a running recording, then waits until the frontend clears the post-processing flag,
 /// which it does once the meeting is saved.
-async fn stop_and_wait_for_save<R: Runtime>(app: &AppHandle<R>) {
+async fn stop_and_wait_for_save<R: Runtime>(app: AppHandle<R>) {
     if crate::audio::recording_commands::is_recording_now() {
-        stop_recording_and_save(app).await;
+        stop_recording_and_save(&app).await;
     }
     wait_while(crate::meeting_detector::post_processing, std::time::Duration::from_millis(250)).await;
+}
+
+/// Runs `work` on its own task, so a panic in it comes back as an error instead of ending the caller.
+async fn run_isolated(work: impl std::future::Future<Output = ()> + Send + 'static) -> Result<(), String> {
+    tokio::spawn(work).await.map_err(|e| e.to_string())
 }
 
 /// Checks `busy` every `step` until it returns false.
@@ -643,6 +655,12 @@ mod tests {
         }, std::time::Duration::from_millis(1))
         .await;
         assert_eq!(checks, 3);
+    }
+
+    #[tokio::test]
+    async fn a_panicking_stop_comes_back_as_an_error() {
+        assert!(run_isolated(async {}).await.is_ok());
+        assert!(run_isolated(async { panic!("boom") }).await.is_err());
     }
 
     #[tokio::test]

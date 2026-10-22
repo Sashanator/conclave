@@ -156,7 +156,16 @@ impl IncrementalAudioSaver {
         let final_audio_path = self.meeting_folder.join("audio.mp4");
         self.merge_checkpoints(&final_audio_path).await?;
 
-        self.remove_merged_checkpoints(&crate::audio::recording_preferences::get_default_recordings_folder());
+        // ffmpeg can exit 0 after skipping a corrupt chunk, so keep the chunks unless the output is complete.
+        let merged = std::fs::metadata(&final_audio_path)?.len();
+        let chunks = (0..self.checkpoint_count)
+            .map(|i| std::fs::metadata(self.checkpoints_dir.join(format!("audio_chunk_{:03}.mp4", i))).map(|m| m.len()))
+            .sum::<std::io::Result<u64>>()?;
+        if merged_is_complete(merged, chunks) {
+            self.remove_merged_checkpoints(&crate::audio::recording_preferences::get_default_recordings_folder());
+        } else {
+            error!("Merged audio is {} bytes but the checkpoints total {} bytes: keeping the checkpoints", merged, chunks);
+        }
 
         info!("Finalized recording");
 
@@ -265,6 +274,11 @@ pub struct AudioRecoveryStatus {
     pub estimated_duration_seconds: f64,
     pub audio_file_path: Option<String>,
     pub message: String,
+}
+
+/// Stream copy keeps the size about the same, so a merged file under 90% of the chunks means lost audio.
+fn merged_is_complete(merged_bytes: u64, chunk_bytes: u64) -> bool {
+    u128::from(merged_bytes) * 10 >= u128::from(chunk_bytes) * 9
 }
 
 /// True when the meeting has checkpoint chunks but no audio file, i.e. the Stop-time merge failed.
@@ -667,6 +681,13 @@ mod tests {
         }).await;
 
         assert!(folder.join("audio.mp4").exists());
+    }
+
+    #[test]
+    fn a_merge_that_lost_a_chunk_is_not_complete() {
+        assert!(merged_is_complete(900, 1000));
+        assert!(!merged_is_complete(899, 1000));
+        assert!(merged_is_complete(0, 0));
     }
 
     #[tokio::test]

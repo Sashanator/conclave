@@ -124,7 +124,7 @@ pub fn remove_checked(path: &Path, folder: &Path, remove: Remover) -> Result<(),
         .and_then(|p| dunce::canonicalize(p).ok())
         .is_some_and(|p| p == folder || p == folder.join(".checkpoints"));
     if !parent_ok || !is_plain_file(path) {
-        return Err(format!("Skipped {}: it is no longer a Conclave file in the meeting folder", path.display()));
+        return Err("Skipped a file: it is no longer a Conclave file in the meeting folder".to_string());
     }
     remove(&[path.to_path_buf()])
 }
@@ -198,7 +198,7 @@ pub(crate) fn ensure_still_guarded(folder: &Path, recordings_base: &Path, what: 
 fn remove_permanently(paths: &[PathBuf]) -> Result<(), String> {
     for p in paths {
         let removed = if is_plain_dir(p) { fs::remove_dir(p) } else { fs::remove_file(p) };
-        removed.map_err(|e| format!("Could not delete {}: {e}", p.display()))?;
+        removed.map_err(|e| format!("Could not delete a file ({:?}): {e}", e.kind()))?;
     }
     Ok(())
 }

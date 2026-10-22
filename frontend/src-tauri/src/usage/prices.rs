@@ -167,7 +167,10 @@ fn merged() -> Vec<PriceRow> {
     let mut rows: Vec<PriceRow> = built
         .iter()
         .map(|b| match overrides.iter().find(|o| same_key(o, b)) {
-            Some(o) => o.clone(),
+            Some(o) => PriceRow {
+                built_in: true,
+                ..o.clone()
+            },
             None => b.clone(),
         })
         .collect();
@@ -428,7 +431,7 @@ mod tests {
             .find(|r| r.model == "claude-sonnet-5-5")
             .unwrap();
         assert_eq!(sonnet.input, 3.0);
-        assert!(!sonnet.built_in);
+        assert!(sonnet.built_in);
         let haiku = listed
             .iter()
             .find(|r| r.model == "claude-haiku-5-5")

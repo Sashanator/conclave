@@ -35,8 +35,10 @@ interface NewRow {
 const EMPTY_NEW: NewRow = { provider: '', model: '', prices: { input: '', output: '', cache_read: '', cache_write: '' } };
 
 const NEW = 'new';
+// Errors are keyed like drafts: one per price field, plus one for the row itself (a failed delete)
+const ROW = 'row';
 const rowKey = (r: Pick<PriceRow, 'provider' | 'model'>) => JSON.stringify([r.provider, r.model]);
-const draftKey = (key: string, field: Field) => `${key}|${field}`;
+const draftKey = (key: string, field: Field | typeof ROW) => `${key}|${field}`;
 const providerLabel = (id: string) => PROVIDERS.find((p) => p.id === id)?.label ?? id;
 
 function parsePrice(text: string): number | null {
@@ -63,6 +65,8 @@ export function CostsSettings() {
   // time, each built from the latest list, so quick successive blurs cannot overwrite each other.
   const latest = useRef<PriceRow[] | null>(null);
   const queue = useRef<Promise<unknown>>(Promise.resolve());
+  // Set synchronously, so a second blur while the first add is saving cannot append the row twice
+  const addInFlight = useRef(false);
 
   useEffect(() => {
     invoke<PriceRow[]>('costs_get_prices')
@@ -75,17 +79,18 @@ export function CostsSettings() {
     setRows(list);
   }
 
-  function commit(key: string, change: (current: PriceRow[]) => PriceRow[]): Promise<boolean> {
+  // errorKey is where a rejection is shown; a success clears only that error, so other edits keep theirs
+  function commit(errorKey: string, change: (current: PriceRow[]) => PriceRow[]): Promise<boolean> {
     const run = queue.current.then(async () => {
       // Never saved before the list loaded: a save would replace every saved price with this one change
       if (!latest.current) return false;
       try {
         const saved = await invoke<PriceRow[]>('costs_save_prices', { rows: change(latest.current) });
         apply(saved);
-        setErrors((e) => without(e, key));
+        setErrors((e) => without(e, errorKey));
         return true;
       } catch (err) {
-        setErrors((e) => ({ ...e, [key]: String(err) }));
+        setErrors((e) => ({ ...e, [errorKey]: String(err) }));
         return false;
       }
     });
@@ -100,24 +105,26 @@ export function CostsSettings() {
     if (text === undefined) return;
     const value = parsePrice(text);
     if (value === null) {
-      setErrors((e) => ({ ...e, [key]: 'Enter a number' }));
+      setErrors((e) => ({ ...e, [dk]: 'Enter a number' }));
       return;
     }
     if (value === row[field]) {
       setDrafts((d) => without(d, dk));
+      setErrors((e) => without(e, dk));
       return;
     }
-    void commit(key, (current) => current.map((r) => (rowKey(r) === key ? { ...r, [field]: value } : r))).then((ok) => {
+    void commit(dk, (current) => current.map((r) => (rowKey(r) === key ? { ...r, [field]: value } : r))).then((ok) => {
       if (ok) setDrafts((d) => without(d, dk));
     });
   }
 
   function remove(row: PriceRow) {
     const key = rowKey(row);
-    void commit(key, (current) => current.filter((r) => rowKey(r) !== key));
+    void commit(draftKey(key, ROW), (current) => current.filter((r) => rowKey(r) !== key));
   }
 
   function openAdd() {
+    setErrors((e) => without(e, NEW));
     setDraft(EMPTY_NEW);
     configuredProviders().then((found) => setProviders(PROVIDERS.filter((p) => found.has(p.id))));
   }
@@ -125,18 +132,23 @@ export function CostsSettings() {
   // Saves once the provider, model and all four prices are filled in; until then it waits silently
   function tryAdd(next: NewRow) {
     const prices = FIELDS.map(({ field }) => parsePrice(next.prices[field]));
-    if (!next.provider || !next.model.trim() || prices.some((p) => p === null)) return;
+    if (addInFlight.current || !next.provider || !next.model.trim() || prices.some((p) => p === null)) return;
     const [input, output, cache_read, cache_write] = prices as number[];
     const row: PriceRow = { provider: next.provider, model: next.model.trim(), input, output, cache_read, cache_write, built_in: false };
+    addInFlight.current = true;
     void commit(NEW, (current) => [...current, row]).then((ok) => {
+      addInFlight.current = false;
       if (ok) setDraft(null);
     });
   }
 
   function cancelAdd() {
     setDraft(null);
-    setErrors((e) => without(e, NEW));
   }
+
+  // Each error sits under its own row, so an error for one field does not hide another field's error
+  const messagesFor = (key: string) =>
+    [...FIELDS.map(({ field }) => errors[draftKey(key, field)]), errors[draftKey(key, ROW)]].filter((m): m is string => Boolean(m));
 
   if (loadError) return <p role="alert" className="text-red-600">{`Could not load model prices: ${loadError}`}</p>;
   if (!rows) return <p className="text-muted-foreground">Loading…</p>;
@@ -191,11 +203,11 @@ export function CostsSettings() {
                     )}
                   </td>
                 </tr>
-                {errors[key] && (
-                  <tr>
-                    <td colSpan={FIELDS.length + 3} className="pb-2 text-red-600">{errors[key]}</td>
+                {messagesFor(key).map((message, i) => (
+                  <tr key={i}>
+                    <td colSpan={FIELDS.length + 3} className="pb-2 text-red-600">{message}</td>
                   </tr>
-                )}
+                ))}
               </Fragment>
             );
           })}

@@ -95,6 +95,56 @@ async function editPrice(label: string, value: string) {
   await flush();
 }
 
+function findButton(text: string): ReactTestInstance {
+  const found = renderer!.root.findAll((n) => n.type === 'button' && labelOf(n) === text);
+  if (found.length !== 1) throw new Error(`expected one button "${text}", found ${found.length}`);
+  return found[0];
+}
+
+function typeInto(label: string, value: string) {
+  act(() => {
+    byLabel(label).props.onChange({ target: { value } });
+  });
+}
+
+async function openAdd() {
+  await act(async () => {
+    findButton('Add a model').props.onClick();
+  });
+  await flush();
+}
+
+// The Select mock renders no host element, so the provider is picked through its onValueChange prop
+async function pickProvider(provider: string) {
+  await act(async () => {
+    renderer!.root.findAll((n) => typeof n.props.onValueChange === 'function')[0].props.onValueChange(provider);
+  });
+}
+
+async function fillNewRow({ provider, model, prices: values }: { provider: string; model: string; prices: string[] }) {
+  await pickProvider(provider);
+  typeInto('New model id', model);
+  await act(async () => {
+    byLabel('New model id').props.onBlur();
+  });
+  const labels = ['Input', 'Output', 'Cache read', 'Cache write'];
+  for (let i = 0; i < labels.length; i++) {
+    typeInto(`${labels[i]} price for new model`, values[i]);
+    await act(async () => {
+      byLabel(`${labels[i]} price for new model`).props.onBlur();
+    });
+  }
+  await flush();
+}
+
+async function remount() {
+  renderer?.unmount();
+  await act(async () => {
+    renderer = create(<CostsSettings />);
+  });
+  await flush();
+}
+
 beforeEach(async () => {
   prices = structuredClone([...BUILT_IN, USER_ROW]);
   loadFails = false;
@@ -153,5 +203,54 @@ describe('costs settings', () => {
     expect(labelOf(renderer!.root)).toContain('Could not load model prices');
     expect(renderer!.root.findAll((n) => n.props['aria-label'] === 'Input price for claude claude-haiku-5-5' && typeof n.type === 'string')).toHaveLength(0);
     expect(invoke.mock.calls.some(([command]) => command === 'costs_save_prices')).toBe(false);
+  });
+
+  test('an edited built-in row has no delete button', async () => {
+    // Overrides of built-in rows come back from the backend flagged built_in
+    prices = structuredClone([BUILT_IN[0], { ...BUILT_IN[1], input: 3, built_in: true }, USER_ROW]);
+    await remount();
+
+    expect(renderer!.root.findAll((n) => n.props['aria-label'] === 'Delete claude claude-sonnet-5-5' && typeof n.type === 'string')).toHaveLength(0);
+  });
+
+  test('a rejected edit keeps its error when another field of the row saves', async () => {
+    await editPrice('Input price for claude claude-haiku-5-5', '-1');
+    await editPrice('Output price for claude claude-haiku-5-5', '0.6');
+
+    expect(labelOf(renderer!.root)).toContain(MAX_MESSAGE);
+    expect(byLabel('Input price for claude claude-haiku-5-5').props.value).toBe('-1');
+    expect(prices[0].output).toBe(0.6);
+  });
+
+  test('an add rejected earlier does not show its error when Add is opened again', async () => {
+    await openAdd();
+    await fillNewRow({ provider: 'claude', model: 'claude-x', prices: ['1', '2', '3', '-1'] });
+
+    expect(labelOf(renderer!.root)).toContain(MAX_MESSAGE);
+    await act(async () => {
+      findButton('Cancel').props.onClick();
+    });
+    await openAdd();
+
+    expect(labelOf(renderer!.root)).not.toContain(MAX_MESSAGE);
+  });
+
+  test('a second blur while the add is saving does not append the row twice', async () => {
+    await openAdd();
+    await pickProvider('claude');
+    typeInto('New model id', 'claude-x');
+    for (const label of ['Input', 'Output', 'Cache read', 'Cache write']) {
+      typeInto(`${label} price for new model`, '1');
+    }
+    await act(async () => {
+      const blur = byLabel('Cache write price for new model').props.onBlur;
+      blur();
+      blur();
+    });
+    await flush();
+
+    const saves = invoke.mock.calls.filter(([command]) => command === 'costs_save_prices');
+    expect(saves).toHaveLength(1);
+    expect(prices.filter((r) => r.model === 'claude-x')).toHaveLength(1);
   });
 });

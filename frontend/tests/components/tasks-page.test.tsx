@@ -27,12 +27,19 @@ const BASE: TaskRow = {
 };
 
 let rows: TaskRow[] = [];
+// When set, the next tasks_set_status waits for this before it applies, so a test can change tab meanwhile
+let gateStatus: Promise<void> | null = null;
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   const id = args?.id as string | undefined;
   const find = () => rows.find((r) => r.id === id);
   if (command === 'tasks_list') return structuredClone(rows.filter((r) => r.status === args?.status));
   if (command === 'tasks_set_status') {
+    if (gateStatus) {
+      const wait = gateStatus;
+      gateStatus = null;
+      await wait;
+    }
     const r = find();
     if (r) r.status = args?.status as TaskRow['status'];
     return null;
@@ -111,6 +118,7 @@ async function click(node: ReactTestInstance) {
 }
 
 beforeEach(() => {
+  gateStatus = null;
   rows = [structuredClone(BASE), { ...structuredClone(BASE), id: 't2', text: '<img src=x>', owner: 'unassigned' }];
   invoke.mockClear();
 });
@@ -166,5 +174,41 @@ describe('Tasks page', () => {
     logged.mockRestore();
     expect(renderer!.root.findAll((n) => n.props.role === 'alert' && textOf(n).length > 0).length).toBeGreaterThan(0);
     expect(renderer!.root.findAll((n) => textOf(n) === 'Send the deck').length).toBeGreaterThan(0);
+  });
+
+  test('Enter on a blank edit ends the edit without calling tasks_edit', async () => {
+    await mount();
+    await click(buttonNamed('Send the deck'));
+    await act(async () => {
+      byLabel('Edit task text').props.onChange({ target: { value: '   ' } });
+    });
+    await act(async () => {
+      await byLabel('Edit task text').props.onKeyDown({ key: 'Enter', preventDefault() {} });
+    });
+    await flush();
+    expect(invoke.mock.calls.some(([command]) => command === 'tasks_edit')).toBe(false);
+    expect(renderer!.root.findAll((n) => n.props['aria-label'] === 'Edit task text').length).toBe(0);
+    expect(buttonNamed('Send the deck')).toBeDefined();
+  });
+
+  test('a reload from the old tab cannot replace the list of the tab now open', async () => {
+    await mount();
+    let release!: () => void;
+    gateStatus = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let inFlight!: Promise<unknown>;
+    await act(async () => {
+      inFlight = byLabel('Mark done: Send the deck').props.onChange({ target: { checked: true } });
+    });
+    // The user moves to Done while the tick is still saving
+    await click(buttonNamed('Done'));
+    await act(async () => {
+      release();
+      await inFlight;
+    });
+    await flush();
+    // The open-tab reload finished last, but the Done tab is showing: it must not list the open task
+    expect(renderer!.root.findAll((n) => textOf(n) === '<img src=x>').length).toBe(0);
   });
 });

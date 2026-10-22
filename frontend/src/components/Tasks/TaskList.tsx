@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { invoke } from '@tauri-apps/api/core';
 import { Clock, Trash2 } from 'lucide-react';
@@ -25,9 +25,17 @@ export function TaskList() {
   const [error, setError] = useState<string | null>(null);
   const [newText, setNewText] = useState('');
 
-  // The list is reloaded after every change, so it shows what the backend holds
-  const reload = async (next: Status) => {
-    setRows(await invoke<TaskRow[]>('tasks_list', { status: next }));
+  // The list is reloaded after every change, so it shows what the backend holds. A reload that
+  // finishes after the tab changed is dropped, so it cannot show the old tab's tasks.
+  const tabRef = useRef<Status>('open');
+  const reload = async () => {
+    const tab = tabRef.current;
+    const list = await invoke<TaskRow[]>('tasks_list', { status: tab });
+    if (tab === tabRef.current) setRows(list);
+  };
+  const choose = (next: Status) => {
+    tabRef.current = next;
+    setStatus(next);
   };
 
   useEffect(() => {
@@ -57,7 +65,7 @@ export function TaskList() {
       setError(SAVE_FAILED);
     }
     try {
-      await reload(status);
+      await reload();
     } catch {
       setError('Could not load tasks.');
     }
@@ -75,10 +83,10 @@ export function TaskList() {
   return (
     <div className="space-y-6">
       <div className="flex items-center gap-2">
-        <Button variant={status === 'open' ? 'secondary' : 'ghost'} aria-pressed={status === 'open'} onClick={() => setStatus('open')}>
+        <Button variant={status === 'open' ? 'secondary' : 'ghost'} aria-pressed={status === 'open'} onClick={() => choose('open')}>
           Open
         </Button>
-        <Button variant={status === 'done' ? 'secondary' : 'ghost'} aria-pressed={status === 'done'} onClick={() => setStatus('done')}>
+        <Button variant={status === 'done' ? 'secondary' : 'ghost'} aria-pressed={status === 'done'} onClick={() => choose('done')}>
           Done
         </Button>
       </div>
@@ -138,9 +146,11 @@ function TaskItem({ task, run }: { task: TaskRow; run: Run }) {
   const [draft, setDraft] = useState(task.text);
   const done = task.status === 'done';
 
+  // A blank edit only ends the edit: the backend rejects an empty task
   const save = () => {
     setEditing(false);
-    if (draft.trim() !== task.text) run('tasks_edit', { id: task.id, text: draft.trim() });
+    const text = draft.trim();
+    if (text && text !== task.text) run('tasks_edit', { id: task.id, text });
   };
 
   return (

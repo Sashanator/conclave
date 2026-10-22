@@ -8,9 +8,19 @@ import { Button } from '@/components/ui/button';
 const PENDING_RECHECK_MS = 3000;
 
 /** Task extraction after a summary. refreshKey (the summary status) rechecks it. */
-export function ExtractionStatusLine({ meetingId, refreshKey }: { meetingId: string; refreshKey?: string }) {
+export function ExtractionStatusLine({
+  meetingId,
+  refreshKey,
+  recheckMs = PENDING_RECHECK_MS,
+}: {
+  meetingId: string;
+  refreshKey?: string;
+  recheckMs?: number;
+}) {
   const [status, setStatus] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  // Bumped after a retry, so the check runs again even when the status was already pending
+  const [checkKey, setCheckKey] = useState(0);
 
   useEffect(() => {
     let live = true;
@@ -20,7 +30,7 @@ export function ExtractionStatusLine({ meetingId, refreshKey }: { meetingId: str
         .then((s) => {
           if (!live) return;
           setStatus(s);
-          if (s === 'pending') timer = setTimeout(check, PENDING_RECHECK_MS);
+          if (s === 'pending') timer = setTimeout(check, recheckMs);
         })
         .catch((err) => console.error('Extraction status failed to load:', err));
     };
@@ -29,7 +39,7 @@ export function ExtractionStatusLine({ meetingId, refreshKey }: { meetingId: str
       live = false;
       clearTimeout(timer);
     };
-  }, [meetingId, refreshKey]);
+  }, [meetingId, refreshKey, checkKey, recheckMs]);
 
   const retry = async () => {
     setRetrying(true);
@@ -40,7 +50,7 @@ export function ExtractionStatusLine({ meetingId, refreshKey }: { meetingId: str
       console.error('Extraction retry failed:', err);
     }
     setRetrying(false);
-    setStatus(await invoke<string | null>('extraction_status', { meetingId }).catch(() => 'failed'));
+    setCheckKey((k) => k + 1);
   };
 
   if (status === 'pending') return <p className="mt-2 text-sm text-muted-foreground">Extracting tasks…</p>;

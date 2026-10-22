@@ -28,6 +28,8 @@ type CalendarStatus = {
   upcoming: number;
 };
 
+const NO_CALENDAR: CalendarStatus = { connected: false, host: null, last_ok_at: null, last_error: null, upcoming: 0 };
+
 // Same limits as the backend (knowledge/mod.rs)
 const MAX_NAMES = 20;
 const MAX_NAME_CHARS = 40;
@@ -56,7 +58,7 @@ export function KnowledgeSettings() {
   // The feed URL lives only in this input, and is cleared once a connect succeeds
   const [feedUrl, setFeedUrl] = useState('');
   const [feedBusy, setFeedBusy] = useState(false);
-  const [feedMessage, setFeedMessage] = useState<string | null>(null);
+  const [feedMessage, setFeedMessage] = useState<{ text: string; error: boolean } | null>(null);
 
   const show = (v: KnowledgeView) => {
     latest.current = v;
@@ -76,6 +78,8 @@ export function KnowledgeSettings() {
       setCalendar(await invoke<CalendarStatus>('calendar_status'));
     } catch (err) {
       toast.error('Could not load calendar status', { description: String(err) });
+      // The connect form stays usable when the status cannot be read
+      setCalendar(NO_CALENDAR);
     }
   };
 
@@ -88,9 +92,9 @@ export function KnowledgeSettings() {
       const status = await invoke<CalendarStatus>('calendar_connect', { url });
       setFeedUrl('');
       setCalendar(status);
-      setFeedMessage(`Found ${status.upcoming} upcoming events`);
+      setFeedMessage({ text: `Found ${status.upcoming} upcoming ${status.upcoming === 1 ? 'event' : 'events'}`, error: false });
     } catch (err) {
-      setFeedMessage(String(err));
+      setFeedMessage({ text: String(err), error: true });
     } finally {
       setFeedBusy(false);
     }
@@ -101,7 +105,7 @@ export function KnowledgeSettings() {
       setCalendar(await invoke<CalendarStatus>('calendar_disconnect'));
       setFeedMessage(null);
     } catch (err) {
-      setFeedMessage(String(err));
+      setFeedMessage({ text: String(err), error: true });
     }
   };
 
@@ -254,7 +258,7 @@ export function KnowledgeSettings() {
             </div>
           )}
 
-          {feedMessage && <p className="text-sm text-muted-foreground">{feedMessage}</p>}
+          {feedMessage && <p className={`text-sm ${feedMessage.error ? 'text-red-600' : 'text-muted-foreground'}`}>{feedMessage.text}</p>}
         </section>
       )}
     </div>

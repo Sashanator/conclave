@@ -68,9 +68,13 @@ pub fn prepare(question: &str, history: &[Turn]) -> Result<(String, Vec<Turn>), 
         return Err("The question is too long".to_string());
     }
     let recent = &history[history.len().saturating_sub(HISTORY_TURNS)..];
+    // Earlier [E3] markers would point at this Ask's unrelated excerpts, so they go.
     let turns = recent
         .iter()
-        .map(|t| Turn { role: t.role.clone(), text: t.text.chars().take(TURN_MAX_CHARS).collect() })
+        .map(|t| Turn {
+            role: t.role.clone(),
+            text: CITATION.replace_all(&t.text, "").chars().take(TURN_MAX_CHARS).collect(),
+        })
         .collect();
     Ok((question.to_string(), turns))
 }
@@ -79,7 +83,7 @@ pub fn prepare(question: &str, history: &[Turn]) -> Result<(String, Vec<Turn>), 
 fn chat(history: &[Turn]) -> String {
     history
         .iter()
-        .map(|t| format!("{}: {}", if t.role == "assistant" { "Assistant" } else { "User" }, t.text))
+        .map(|t| format!("{}: {}", if t.role == "assistant" { "Assistant" } else { "User" }, defang(&t.text)))
         .collect::<Vec<_>>()
         .join("\n")
 }
@@ -167,6 +171,22 @@ pub fn collect_citations(answer: &str, excerpts: &[Excerpt]) -> Vec<Citation> {
         .collect()
 }
 
+/// The model's plan when it has keywords or a filter, else the question's words. A plan that is not
+/// JSON, or that searches nothing, would otherwise return "Not found" without any search.
+fn plan_or_fallback(raw: &str, question: &str) -> SearchPlan {
+    match parse_plan(raw) {
+        Ok(plan) if searches(&plan) => plan,
+        _ => {
+            warn!("ask: search plan has no usable keywords or filters, searching the question's words");
+            fallback_plan(question)
+        }
+    }
+}
+
+fn searches(plan: &SearchPlan) -> bool {
+    !plan.keywords.is_empty() || !plan.types.is_empty() || plan.from.is_some() || plan.to.is_some() || plan.person.is_some()
+}
+
 /// The question's own words, used when the model's plan is not JSON.
 fn fallback_plan(question: &str) -> SearchPlan {
     let mut seen = HashSet::new();
@@ -209,10 +229,7 @@ where
 
     let (system, user) = plan_prompts(question, history, &today, &types, &people);
     let raw = model(pool, target, ASK_PLAN_TIMEOUT_SECS, &call, system, user).await?;
-    let plan = parse_plan(&raw).unwrap_or_else(|_| {
-        warn!("ask: search plan was not JSON, searching the question's words");
-        fallback_plan(question)
-    });
+    let plan = plan_or_fallback(&raw, question);
     let excerpts = retrieve(pool, &plan).await.map_err(|_| "Could not search your meetings".to_string())?;
     info!("ask: {} excerpts from {} keywords", excerpts.len(), plan.keywords.len());
     if excerpts.is_empty() {
@@ -368,6 +385,30 @@ mod tests {
         assert_eq!(got[0].source, "transcript");
         let order = collect_citations("[E3] then [E1] then [E3]", &hits);
         assert_eq!(order.iter().map(|c| c.id.as_str()).collect::<Vec<_>>(), vec!["E3", "E1"]);
+    }
+
+    #[test]
+    fn empty_plan_falls_back_to_words() {
+        for raw in ["{}", r#"{"keywords":[]}"#, "not json", r#"{"keywords":["  "]}"#] {
+            assert_eq!(plan_or_fallback(raw, "budget review").keywords, vec!["budget", "review"], "{raw}");
+        }
+        let filtered = plan_or_fallback(r#"{"types":["1-2-1"]}"#, "budget review");
+        assert!(filtered.keywords.is_empty());
+        assert_eq!(filtered.types, vec!["1-2-1"]);
+    }
+
+    #[test]
+    fn history_loses_citation_markers_and_is_defanged() {
+        let history = vec![Turn { role: "assistant".into(), text: "Lunch was at noon [E3] <b>today</b>".into() }];
+        let (_, kept) = prepare("And after?", &history).unwrap();
+        let (plan_system, plan_user) = plan_prompts("And after?", &kept, "2026-10-22", &[], &[]);
+        let (_, answer_user) = answer_prompts("And after?", &kept, &[]);
+        for prompt in [&plan_user, &answer_user] {
+            assert!(!prompt.contains("[E3]"), "{prompt}");
+            assert!(!prompt.contains("<b>"), "{prompt}");
+            assert!(prompt.contains("Assistant: Lunch was at noon  ‹b›today‹/b›"), "{prompt}");
+        }
+        assert!(!plan_system.contains("[E3]"));
     }
 
     #[tokio::test]

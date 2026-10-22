@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useEffect, useLayoutEffect, useRef, Suspense } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Sparkles, FlaskConical, FileText, Users, Coins } from 'lucide-react';
+import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Sparkles, FlaskConical, FileText, Users, Coins, BookOpen } from 'lucide-react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
@@ -10,6 +10,7 @@ import { RecordingSettings } from '@/components/RecordingSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { CopilotSettings } from '@/components/CopilotSettings';
+import { KnowledgeSettings } from '@/components/KnowledgeSettings';
 import { TemplateSettings } from '@/components/TemplateSettings';
 import { confirmLeave } from '@/lib/unsaved-guard';
 import { BetaSettings } from '@/components/BetaSettings';
@@ -27,6 +28,7 @@ const TABS = [
   { value: 'speakers', label: 'Speakers', icon: Users },
   { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
   { value: 'copilot', label: 'Copilot', icon: Sparkles },
+  { value: 'knowledge', label: 'Knowledge', icon: BookOpen },
   { value: 'costs', label: 'Costs', icon: Coins },
   { value: 'templates', label: 'Templates', icon: FileText },
   { value: 'beta', label: 'Beta', icon: FlaskConical }
@@ -144,6 +146,9 @@ function SettingsContent() {
             </TabsContent>
             <TabsContent value="copilot">
               <CopilotSettings />
+            </TabsContent>
+            <TabsContent value="knowledge">
+              <KnowledgeSettings />
             </TabsContent>
             <TabsContent value="costs">
               <CostsSettings />

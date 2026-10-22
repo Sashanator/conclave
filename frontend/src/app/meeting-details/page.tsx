@@ -9,6 +9,7 @@ import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
+import { parseMeetingTarget } from "@/lib/meeting-target";
 
 interface MeetingDetailsResponse {
   id: string;
@@ -23,6 +24,7 @@ function MeetingDetailsContent() {
   const searchParams = useSearchParams();
   const meetingId = searchParams.get('id');
   const source = searchParams.get('source'); // Check if navigated from recording
+  const target = parseMeetingTarget(searchParams); // Search hits: a line to scroll to, or a tab to open
   const { setCurrentMeeting, refetchMeetings } = useSidebar();
   const { isAutoSummary } = useConfig(); // Get auto-summary toggle state
   const router = useRouter();
@@ -293,6 +295,8 @@ function MeetingDetailsContent() {
     onLoadMore={loadMore}
     onSetTranscriptMark={setTranscriptMark}
     onSetTranscriptSpeaker={setTranscriptSpeaker}
+    focusSegmentId={target?.line ?? null}
+    requestedTab={target?.tab ?? null}
   />;
 }
 

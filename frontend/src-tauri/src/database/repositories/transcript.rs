@@ -1,10 +1,12 @@
-use crate::api::{TranscriptSearchResult, TranscriptSegment};
+use crate::api::TranscriptSegment;
 use crate::database::repositories::speakers::SpeakersRepository;
 use crate::speakers::sentences::{is_valid, Sentence};
 use crate::database::repositories::meeting_notes::{
-    sanitize_mark, sanitize_notes, MeetingNote, MeetingNotesRepository,
+    parse_notes, sanitize_mark, sanitize_notes, MeetingNote, MeetingNotesRepository,
 };
 use chrono::Utc;
+use serde::Serialize;
+use std::collections::HashMap;
 use sqlx::{Connection, Error as SqlxError, SqlitePool};
 use tracing::{error, info};
 use uuid::Uuid;
@@ -129,68 +131,205 @@ impl TranscriptsRepository {
             .await?;
         Ok(r.rows_affected() > 0)
     }
+}
 
-    /// Searches for a query string within the transcripts.
-    /// It returns a list of matching transcripts with context.
-    pub async fn search_transcripts(
-        pool: &SqlitePool,
-        query: &str,
-    ) -> Result<Vec<TranscriptSearchResult>, SqlxError> {
-        if query.trim().is_empty() {
-            return Ok(Vec::new());
+/// One search result. `source` is "title", "transcript", "summary" or "notes".
+#[derive(Serialize, Debug, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchHit {
+    pub meeting_id: String,
+    pub title: String,
+    pub source: String,
+    pub snippet: String,
+    pub transcript_id: Option<String>,
+    pub audio_start: Option<f64>,
+}
+
+const SEARCH_MEETINGS: usize = 50;
+const SEARCH_HITS_PER_MEETING: usize = 3;
+const SNIPPET_RADIUS: usize = 100;
+
+/// Case forms SQLite LIKE can match. LIKE folds only ASCII case, so each Cyrillic form is listed:
+/// as typed, lowercase, first letter uppercased, all uppercase.
+/// shortcut: a word with mixed case inside it (ЗаДачА) misses in SQL, though the Rust check would
+/// match it; upgrade with a case-folded column when that search matters.
+pub(crate) fn query_variants(q: &str) -> Vec<String> {
+    let lower = q.to_lowercase();
+    let mut chars = lower.chars();
+    let mut first_upper = String::new();
+    if let Some(c) = chars.next() {
+        first_upper.extend(c.to_uppercase());
+        first_upper.push_str(chars.as_str());
+    }
+    let mut out: Vec<String> = Vec::new();
+    for v in [q.to_string(), lower, first_upper, q.to_uppercase()] {
+        if !out.contains(&v) {
+            out.push(v);
         }
+    }
+    out
+}
 
-        let search_query = format!("%{}%", query.to_lowercase());
+fn like_pattern(variant: &str) -> String {
+    let escaped = variant.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_");
+    format!("%{escaped}%")
+}
 
-        let rows = sqlx::query_as::<_, (String, String, String, String)>(
-            "SELECT m.id, m.title, t.transcript, t.timestamp
-             FROM meetings m
-             JOIN transcripts t ON m.id = t.meeting_id
-             WHERE LOWER(t.transcript) LIKE ?",
-        )
-        .bind(&search_query)
-        .fetch_all(pool)
-        .await?;
+/// SQL prefilter: every word of the query must match in one of its case forms. Returns the
+/// WHERE clause for `column` and the patterns to bind, in order. The Rust check confirms the phrase.
+fn like_filter(column: &str, query: &str) -> (String, Vec<String>) {
+    let mut clauses = Vec::new();
+    let mut binds = Vec::new();
+    for word in query.split_whitespace() {
+        let forms = query_variants(word);
+        let one = format!("{column} LIKE ? ESCAPE '\\'");
+        clauses.push(format!("({})", vec![one; forms.len()].join(" OR ")));
+        binds.extend(forms.iter().map(|f| like_pattern(f)));
+    }
+    (clauses.join(" AND "), binds)
+}
 
-        let results = rows
-            .into_iter()
-            .map(|(id, title, transcript, timestamp)| {
-                let match_context = Self::get_match_context(&transcript, query);
-                TranscriptSearchResult {
-                    id,
-                    title,
-                    match_context,
-                    timestamp,
-                }
-            })
-            .collect();
+/// Text around the first match, cut by chars so multi-byte text never splits.
+/// `needle_lower` must already be lowercase.
+pub(crate) fn snippet_around(text: &str, needle_lower: &str, radius_chars: usize) -> Option<String> {
+    let lower = text.to_lowercase();
+    let byte = lower.find(needle_lower)?;
+    let chars: Vec<char> = text.chars().collect();
+    let total = chars.len();
+    // Lowercasing can change the char count; clamping keeps the slice in range
+    let centre = lower[..byte].chars().count().min(total);
+    let needle_len = needle_lower.chars().count();
+    let start = centre.saturating_sub(radius_chars);
+    let end = (centre + needle_len + radius_chars).min(total);
+    let mut out = String::new();
+    if start > 0 {
+        out.push('…');
+    }
+    out.extend(&chars[start..end]);
+    if end < total {
+        out.push('…');
+    }
+    Some(out)
+}
 
-        Ok(results)
+/// One matching source item, before capping and snippeting. `source` is "title", "transcript", "summary" or "notes".
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct SourceMatch {
+    pub meeting_id: String,
+    pub title: String,
+    pub created_at: String,
+    pub source: &'static str,
+    /// The full matched text: a transcript line, the title, the summary markdown or one note.
+    pub text: String,
+    pub transcript_id: Option<String>,
+    pub audio_start: Option<f64>,
+}
+
+/// Every title, summary, note and transcript line that contains the query. Uncapped and unsnipped.
+/// Order: transcript lines by time, then title, summary and notes.
+pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec<SourceMatch>, SqlxError> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let needle = query.to_lowercase();
+    let mut out = Vec::new();
+
+    let (clause, binds) = like_filter("t.transcript", query);
+    let sql = format!(
+        "SELECT m.id, m.title, m.created_at, t.id, t.transcript, t.audio_start_time FROM transcripts t
+         JOIN meetings m ON m.id = t.meeting_id
+         WHERE {clause} ORDER BY t.audio_start_time"
+    );
+    let mut q = sqlx::query_as::<_, (String, String, String, String, String, Option<f64>)>(&sql);
+    for p in &binds {
+        q = q.bind(p);
+    }
+    for (meeting_id, title, created_at, transcript_id, text, audio_start) in q.fetch_all(pool).await? {
+        if text.to_lowercase().contains(&needle) {
+            out.push(SourceMatch { meeting_id, title, created_at, source: "transcript", text, transcript_id: Some(transcript_id), audio_start });
+        }
     }
 
-    /// Helper function to extract a snippet of text around the first match of a query.
-    fn get_match_context(transcript: &str, query: &str) -> String {
-        let transcript_lower = transcript.to_lowercase();
-        let query_lower = query.to_lowercase();
+    let (clause, binds) = like_filter("title", query);
+    let sql = format!("SELECT id, title, created_at FROM meetings WHERE {clause}");
+    let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
+    for p in &binds {
+        q = q.bind(p);
+    }
+    for (meeting_id, title, created_at) in q.fetch_all(pool).await? {
+        if title.to_lowercase().contains(&needle) {
+            out.push(SourceMatch { meeting_id, title: title.clone(), created_at, source: "title", text: title, transcript_id: None, audio_start: None });
+        }
+    }
 
-        match transcript_lower.find(&query_lower) {
-            Some(match_index) => {
-                let start_index = match_index.saturating_sub(100);
-                let end_index = (match_index + query.len() + 100).min(transcript.len());
+    let markdown = "json_extract(s.result, '$.markdown')";
+    let (clause, binds) = like_filter(markdown, query);
+    let sql = format!(
+        "SELECT m.id, m.title, m.created_at, {markdown} FROM summary_processes s
+         JOIN meetings m ON m.id = s.meeting_id
+         WHERE s.status = 'completed' AND {clause}"
+    );
+    let mut q = sqlx::query_as::<_, (String, String, String, Option<String>)>(&sql);
+    for p in &binds {
+        q = q.bind(p);
+    }
+    for (meeting_id, title, created_at, text) in q.fetch_all(pool).await? {
+        if let Some(text) = text.filter(|t| t.to_lowercase().contains(&needle)) {
+            out.push(SourceMatch { meeting_id, title, created_at, source: "summary", text, transcript_id: None, audio_start: None });
+        }
+    }
 
-                let mut context = String::new();
-                if start_index > 0 {
-                    context.push_str("...");
-                }
-                context.push_str(&transcript[start_index..end_index]);
-                if end_index < transcript.len() {
-                    context.push_str("...");
-                }
-                context
+    // Notes are checked in Rust: the JSON text escapes quotes and control characters, so LIKE on it would miss matches
+    let rows: Vec<(String, String, String, String)> = sqlx::query_as(
+        "SELECT m.id, m.title, m.created_at, n.notes_json FROM meeting_notes n JOIN meetings m ON m.id = n.meeting_id",
+    )
+    .fetch_all(pool)
+    .await?;
+    for (meeting_id, title, created_at, json) in rows {
+        let Ok(values) = serde_json::from_str::<Vec<serde_json::Value>>(&json) else { continue };
+        for note in parse_notes(values) {
+            if note.text.to_lowercase().contains(&needle) {
+                out.push(SourceMatch {
+                    meeting_id: meeting_id.clone(), title: title.clone(), created_at: created_at.clone(),
+                    source: "notes", text: note.text, transcript_id: None, audio_start: None,
+                });
             }
-            None => transcript.chars().take(200).collect(), // Fallback to the start of the transcript
         }
     }
+    Ok(out)
+}
+
+/// Searches titles, summaries, notes and transcripts for the newest 50 meetings, at most 3 hits each.
+pub async fn search_all(pool: &SqlitePool, query: &str) -> Result<Vec<SearchHit>, SqlxError> {
+    let needle = query.trim().to_lowercase();
+
+    let mut created: HashMap<String, String> = HashMap::new();
+    let mut by_meeting: HashMap<String, Vec<SourceMatch>> = HashMap::new();
+    for m in source_matches(pool, query).await? {
+        created.entry(m.meeting_id.clone()).or_insert_with(|| m.created_at.clone());
+        by_meeting.entry(m.meeting_id.clone()).or_default().push(m);
+    }
+
+    // Newest meetings first; ties broken by id so the order is stable
+    let mut ordered: Vec<(String, String)> = created.into_iter().collect();
+    ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    ordered.truncate(SEARCH_MEETINGS);
+
+    let mut out = Vec::new();
+    for (meeting_id, _) in ordered {
+        // Each meeting's matches arrive transcripts first (by time), then title, summary, notes
+        let Some(list) = by_meeting.remove(&meeting_id) else { continue };
+        let hits = list.into_iter().filter_map(|m| {
+            let snippet = snippet_around(&m.text, &needle, SNIPPET_RADIUS)?;
+            Some(SearchHit {
+                meeting_id: m.meeting_id, title: m.title, source: m.source.into(), snippet,
+                transcript_id: m.transcript_id, audio_start: m.audio_start,
+            })
+        });
+        out.extend(hits.take(SEARCH_HITS_PER_MEETING));
+    }
+    Ok(out)
 }
 
 #[cfg(test)]
@@ -284,5 +423,92 @@ mod tests {
         assert!(crate::database::repositories::meeting::MeetingsRepository::delete_meeting(&pool, &id).await.unwrap());
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_notes").fetch_one(&pool).await.unwrap();
         assert_eq!(n, 0);
+    }
+
+    async fn meeting(pool: &SqlitePool, title: &str, lines: &[&str], notes: &[&str], summary: Option<&str>) -> String {
+        let segs: Vec<TranscriptSegment> = lines.iter().enumerate().map(|(i, t)| seg(t, i as f64, None)).collect();
+        let notes: Vec<MeetingNote> = notes.iter().enumerate()
+            .map(|(i, t)| MeetingNote { id: format!("note-{i}"), at: None, text: t.to_string() }).collect();
+        let id = TranscriptsRepository::save_transcript(pool, title, &segs, None, &notes, false).await.unwrap();
+        if let Some(md) = summary {
+            let result = serde_json::json!({ "markdown": md }).to_string();
+            sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES (?, 'completed', '2026-10-22T00:00:00Z', '2026-10-22T00:00:00Z', ?)")
+                .bind(&id).bind(result).execute(pool).await.unwrap();
+        }
+        id
+    }
+
+    #[tokio::test]
+    async fn search_folds_cyrillic_case() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "Standup", &["Задача на неделю"], &[], None).await;
+        let hits = search_all(&pool, "задача").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].source, "transcript");
+        assert!(hits[0].transcript_id.is_some());
+
+        // A name capitalised after the first word matches only with each word in its own case forms
+        meeting(&pool, "Созвон", &["Встреча с Иваном"], &[], None).await;
+        let hits = search_all(&pool, "встреча с иваном").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].title, "Созвон");
+    }
+
+    #[tokio::test]
+    async fn search_finds_summary_and_notes() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "Квартал", &["Обсуждали план"], &["проверить бюджет"], Some("Главное: бюджет на квартал")).await;
+        let hits = search_all(&pool, "бюджет").await.unwrap();
+        let sources: Vec<&str> = hits.iter().map(|h| h.source.as_str()).collect();
+        assert_eq!(sources, vec!["summary", "notes"]);
+    }
+
+    #[test]
+    fn snippet_is_char_safe() {
+        let at_start = format!("Задача {}", "я".repeat(494));
+        let at_end = format!("{}Задача", "я".repeat(494));
+        for line in [&at_start, &at_end] {
+            let snippet = snippet_around(line, "задача", 100).unwrap();
+            assert!(snippet.to_lowercase().contains("задача"));
+        }
+        assert_eq!(snippet_around("без совпадений", "задача", 100), None);
+    }
+
+    #[tokio::test]
+    async fn like_wildcards_escaped() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "A", &["Цена 500 рублей"], &[], None).await;
+        let m2 = meeting(&pool, "B", &["Скидка 50% сегодня"], &[], None).await;
+        let hits = search_all(&pool, "50%").await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].meeting_id, m2);
+    }
+
+    #[tokio::test]
+    async fn three_hits_per_meeting_max() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "бюджет", &["бюджет один", "бюджет два", "бюджет три", "бюджет четыре"], &["бюджет"], Some("бюджет")).await;
+        let hits = search_all(&pool, "бюджет").await.unwrap();
+        // Transcripts come first, by time, then title, summary and notes; the cap keeps three
+        let sources: Vec<&str> = hits.iter().map(|h| h.source.as_str()).collect();
+        assert_eq!(sources, vec!["transcript", "transcript", "transcript"]);
+        let times: Vec<Option<f64>> = hits.iter().map(|h| h.audio_start).collect();
+        assert_eq!(times, vec![Some(0.0), Some(1.0), Some(2.0)]);
+    }
+
+    #[tokio::test]
+    async fn source_matches_is_uncapped() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "бюджет", &["бюджет один", "бюджет два", "бюджет три", "бюджет четыре"], &["бюджет"], Some("бюджет")).await;
+        let found = source_matches(&pool, "бюджет").await.unwrap();
+        let sources: Vec<&str> = found.iter().map(|m| m.source).collect();
+        assert_eq!(sources, vec!["transcript", "transcript", "transcript", "transcript", "title", "summary", "notes"]);
+    }
+
+    #[tokio::test]
+    async fn empty_query_returns_nothing() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "M", &["что-то"], &[], None).await;
+        assert!(search_all(&pool, "   ").await.unwrap().is_empty());
     }
 }

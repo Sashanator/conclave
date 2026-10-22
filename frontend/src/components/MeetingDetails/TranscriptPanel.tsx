@@ -39,6 +39,7 @@ interface TranscriptPanelProps {
   onMarkChange?: (segmentId: string, mark: TranscriptMark | null) => void;
   onPlayFrom?: (seconds: number) => void;
   playheadSeconds?: number | null;
+  focusSegmentId?: string | null;
   footer?: ReactNode;
   // The page owns the speaker state so the summary can wait on it and show the names-changed hint
   speakers: MeetingSpeakersState;
@@ -66,6 +67,7 @@ export function TranscriptPanel({
   onMarkChange,
   onPlayFrom,
   playheadSeconds,
+  focusSegmentId,
   footer,
   speakers,
 }: TranscriptPanelProps) {
@@ -159,6 +161,7 @@ export function TranscriptPanel({
           onMarkChange={onMarkChange}
           onPlayFrom={onPlayFrom}
           playheadSeconds={playheadSeconds}
+          focusSegmentId={focusSegmentId}
           renderSpeakerLabel={renderSpeakerLabel}
         />
       </div>

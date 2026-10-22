@@ -197,7 +197,7 @@ async fn next_pending(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> 
         .find(|id| !InFlight::is_busy(id)))
 }
 
-async fn wait_for_pool(database: impl Fn() -> Option<SqlitePool>) -> SqlitePool {
+pub(crate) async fn wait_for_pool(database: impl Fn() -> Option<SqlitePool>) -> SqlitePool {
     loop {
         if let Some(pool) = database() {
             return pool;

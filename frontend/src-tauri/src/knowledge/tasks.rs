@@ -4,13 +4,13 @@ use crate::knowledge::extract::Extraction;
 use crate::knowledge::MAX_TASK_CHARS;
 use crate::state::AppState;
 use chrono::{SecondsFormat, Utc};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
 use tauri::State;
 use uuid::Uuid;
 
-#[derive(Serialize, Clone, Debug, sqlx::FromRow)]
+#[derive(Serialize, Deserialize, Clone, Debug, PartialEq, sqlx::FromRow)]
 #[serde(rename_all = "camelCase")]
 pub struct TaskRow {
     pub id: String,

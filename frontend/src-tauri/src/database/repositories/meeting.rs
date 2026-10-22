@@ -1,5 +1,6 @@
 use crate::api::{MeetingDetails, MeetingTranscript};
 use crate::database::models::{MeetingModel, Transcript};
+use crate::knowledge::feed;
 use chrono::Utc;
 use sqlx::{Connection, Error as SqlxError, SqliteConnection, SqlitePool};
 use tracing::{error, info};
@@ -317,6 +318,19 @@ async fn delete_meeting_with_transaction(
         .execute(&mut *transaction)
         .await?;
 
+    // Explicit: a brief's feed item goes with it, in this transaction (spec 6.2). The brief goes with its previous meeting.
+    let brief_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM briefs WHERE previous_meeting_id = ?")
+        .bind(meeting_id)
+        .fetch_all(&mut *transaction)
+        .await?;
+    for (brief_id,) in &brief_ids {
+        feed::delete_for_target(&mut *transaction, "brief", brief_id).await?;
+    }
+    sqlx::query("DELETE FROM briefs WHERE previous_meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
     // 4. Finally, delete the meeting
     let result = sqlx::query("DELETE FROM meetings WHERE id = ?")
         .bind(meeting_id)
@@ -484,6 +498,35 @@ mod migration_tests {
             .unwrap();
         assert_eq!(left_tasks, vec![("t4".to_string(),), ("t5".to_string(),)]);
         assert_eq!(left_extracts, vec![("N".to_string(),)]);
+    }
+
+    #[tokio::test]
+    async fn delete_meeting_deletes_briefs_and_feed_items() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        insert_meeting(&pool, "N").await;
+        sqlx::query(
+            "INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) VALUES \
+             ('b1', 'u1', 's1', 'One', 'one_on_one', 'M', '{}', 't'), ('b2', 'u2', 's2', 'Two', 'one_on_one', 'N', '{}', 't')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO feed_items (id, kind, title, target_id, created_at) VALUES \
+             ('f1', 'brief', 'Brief: One', 'b1', 't'), ('f2', 'brief', 'Brief: Two', 'b2', 't'), ('f3', 'digest', 'Digest', 'b1', 't')",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
+
+        let briefs: Vec<(String,)> = sqlx::query_as("SELECT id FROM briefs ORDER BY id").fetch_all(&pool).await.unwrap();
+        let feed_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM feed_items ORDER BY id").fetch_all(&pool).await.unwrap();
+        assert_eq!(briefs, vec![("b2".to_string(),)]);
+        // The brief's feed item goes; a digest item that points at the same id stays.
+        assert_eq!(feed_ids, vec![("f2".to_string(),), ("f3".to_string(),)]);
     }
 
     #[tokio::test]

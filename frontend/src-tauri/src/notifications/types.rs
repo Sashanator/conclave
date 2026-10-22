@@ -1,3 +1,4 @@
+use crate::knowledge::BRIEF_LEAD_MINS;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -172,6 +173,13 @@ impl Notification {
         };
 
         Notification::new("Conclave", body, NotificationType::MeetingReminder(minutes_until))
+            .with_priority(NotificationPriority::High)
+            .with_timeout(NotificationTimeout::Seconds(10))
+    }
+
+    /// The brief toast. It is a meeting reminder, so the meeting reminder setting covers it.
+    pub fn brief_ready(line: impl Into<String>) -> Self {
+        Notification::new("Conclave", line, NotificationType::MeetingReminder(BRIEF_LEAD_MINS as u64))
             .with_priority(NotificationPriority::High)
             .with_timeout(NotificationTimeout::Seconds(10))
     }

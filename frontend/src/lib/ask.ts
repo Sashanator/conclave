@@ -22,7 +22,7 @@ export type Part = { kind: 'text'; text: string } | { kind: 'cite'; citation: Ci
 const MARKER = /\[E(\d+)\]/g;
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
-let lastRequestId = 0;
+let lastRequestId = Date.now(); // distinct across reloads, so a stale early cancel never matches a new request
 
 /** A new id for each question, so a stale answer or cancel never reaches the wrong turn. */
 export function nextAskRequestId(): number {

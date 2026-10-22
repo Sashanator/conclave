@@ -6,26 +6,35 @@ use super::{
     CALENDAR_AHEAD_DAYS, CALENDAR_BEHIND_DAYS, CALENDAR_FETCH_TIMEOUT_SECS, CALENDAR_MAX_BYTES,
     MAX_EVENT_TITLE_CHARS,
 };
-use chrono::{DateTime, Duration, NaiveDateTime, TimeZone, Utc};
+use chrono::{DateTime, Duration, LocalResult, NaiveDateTime, Offset, TimeZone, Utc};
 use icalendar::parser::{read_calendar, unfold, Component, Property};
 use log::{info, warn};
-use rrule::{Frequency, RRule, RRuleSet, Tz, Unvalidated};
+use rrule::{RRule, RRuleSet, Tz, Unvalidated};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, PoisonError, RwLock};
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager, Runtime};
 
 const CACHE_FILE: &str = "calendar-cache.json";
-/// Per series, per fetch. The window is at most a few weeks, so no real series comes close.
-const MAX_INSTANCES: u16 = 1000;
+const UNREADABLE: &str = "Calendar could not be read";
+const NOT_CONNECTED: &str = "Calendar is not connected";
+const CHANGED: &str = "Calendar changed during the sync";
 /// A redirect chain longer than this is refused.
 const MAX_REDIRECTS: usize = 5;
 /// The parser recurses once per nested BEGIN, so a deeper feed could overflow the stack. Real calendars nest 3.
 const MAX_NESTING: usize = 16;
+/// Work limits per expansion, in estimated rrule steps (about 1.5 us each): per series (about 0.15 s),
+/// for the whole feed (about 0.3 s), and the occurrences kept.
+const MAX_SERIES_WORK: f64 = 100_000.0;
+const MAX_FEED_WORK: f64 = 200_000.0;
+const MAX_FEED_OCCURRENCES: usize = 5_000;
+/// A longer UID is skipped; it is copied into every occurrence of its series.
+const MAX_UID_CHARS: usize = 256;
 
 /// One meeting instance on the calendar.
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
@@ -73,19 +82,18 @@ struct Event {
     exdates: Vec<DateTime<Tz>>,
 }
 
-/// Pure: parse an iCal body and expand occurrences in [from, to). Skips all-day, cancelled and EXDATE'd instances; applies RECURRENCE-ID overrides.
+/// Pure: parse an iCal body and expand occurrences in [from, to). Skips all-day, cancelled and EXDATE'd instances; applies RECURRENCE-ID overrides. Bounded by the work and occurrence limits above.
 pub fn expand(
     ics: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Vec<Occurrence>, String> {
-    // The parser's error quotes the input, so only this fixed message leaves the function.
+    // The parser's error quotes the input, so only fixed messages leave the function.
     let unfolded = unfold(ics);
     if nesting_too_deep(&unfolded) {
-        return Err("Calendar could not be read".to_string());
+        return Err(UNREADABLE.to_string());
     }
-    let calendar =
-        read_calendar(&unfolded).map_err(|_| "Calendar could not be read".to_string())?;
+    let calendar = read_calendar(&unfolded).map_err(|_| UNREADABLE.to_string())?;
     let mut unknown_tz_warned = false;
     let events: Vec<Event> = calendar
         .components
@@ -107,8 +115,18 @@ pub fn expand(
         .collect();
 
     let mut out = Vec::new();
-    for master in masters.iter().filter(|m| !m.cancelled) {
+    let mut spent = 0.0;
+    'series: for master in masters.iter().filter(|m| !m.cancelled) {
+        let cost = work(master, to);
+        if cost > MAX_SERIES_WORK || spent + cost > MAX_FEED_WORK {
+            warn!("calendar: skipped a series too large to expand");
+            continue;
+        }
+        spent += cost;
         for start in starts(master, from, to) {
+            if out.len() >= MAX_FEED_OCCURRENCES {
+                break 'series;
+            }
             let utc = start.with_timezone(&Utc);
             match overrides.remove(&(master.uid.clone(), utc)) {
                 Some(moved) if !moved.cancelled => out.push(occurrence(&moved)),
@@ -124,24 +142,37 @@ pub fn expand(
     }
     // An override whose instance this feed does not generate (a moved one, or a single edit) stands alone.
     for ((uid, _), moved) in overrides {
+        if out.len() >= MAX_FEED_OCCURRENCES {
+            break;
+        }
         if !moved.cancelled && !cancelled_series.contains(&uid) {
             out.push(occurrence(&moved));
         }
+    }
+    if out.len() >= MAX_FEED_OCCURRENCES {
+        warn!("calendar: occurrence limit reached, the feed is cut short");
     }
     out.retain(|o| o.start >= from && o.start < to);
     out.sort_by_key(|o| o.start);
     Ok(out)
 }
 
+/// The parser matches tags case-insensitively, so the depth count must too.
 fn nesting_too_deep(unfolded: &str) -> bool {
     let mut depth = 0usize;
     for line in unfolded.lines() {
-        if line.starts_with("BEGIN:") {
+        if line
+            .get(..6)
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("BEGIN:"))
+        {
             depth += 1;
             if depth > MAX_NESTING {
                 return true;
             }
-        } else if line.starts_with("END:") {
+        } else if line
+            .get(..4)
+            .is_some_and(|tag| tag.eq_ignore_ascii_case("END:"))
+        {
             depth = depth.saturating_sub(1);
         }
     }
@@ -161,6 +192,50 @@ fn duration(e: &Event) -> Duration {
     e.end.map_or(Duration::zero(), |end| end - e.start)
 }
 
+/// Estimated rrule steps from DTSTART to `to`: the span over the period, times the BY* fan-out.
+/// shortcut: an upper estimate, not a count; rrule's real cost per step varies by rule.
+fn work(e: &Event, to: DateTime<Utc>) -> f64 {
+    let Some(text) = &e.rrule else {
+        return 1.0;
+    };
+    let span = (to - e.start.with_timezone(&Utc)).num_seconds().max(0) as f64;
+    let (mut period, mut interval, mut fanout) = (0.0, 1.0, 1.0);
+    for part in text.split(';') {
+        let Some((key, value)) = part.split_once('=') else {
+            continue;
+        };
+        let value = value.trim();
+        match key.trim().to_ascii_uppercase().as_str() {
+            "FREQ" => {
+                period = match value.to_ascii_uppercase().as_str() {
+                    "SECONDLY" => 1.0,
+                    "MINUTELY" => 60.0,
+                    "HOURLY" => 3_600.0,
+                    "DAILY" => 86_400.0,
+                    "WEEKLY" => 604_800.0,
+                    // Monthly and yearly rules are walked day by day when they have BY* parts.
+                    "MONTHLY" | "YEARLY" => 86_400.0,
+                    _ => 0.0,
+                }
+            }
+            "INTERVAL" => {
+                interval = value
+                    .parse::<f64>()
+                    .ok()
+                    .filter(|i| *i >= 1.0)
+                    .unwrap_or(1.0)
+            }
+            k if k.starts_with("BY") => fanout *= value.split(',').count() as f64,
+            _ => {}
+        }
+    }
+    if period == 0.0 {
+        // No usable FREQ: rrule rejects the rule, so it costs nothing.
+        return 1.0;
+    }
+    span / (period * interval) * fanout
+}
+
 /// The instance starts of one event within [from, to). A non-recurring event is its DTSTART.
 fn starts(e: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Tz>> {
     let Some(text) = &e.rrule else {
@@ -174,21 +249,20 @@ fn starts(e: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Tz>
         warn!("calendar: skipped a recurrence rule that does not validate");
         return Vec::new();
     };
-    // Sub-hourly series would make rrule walk every instance since DTSTART; no calendar needs them.
-    if matches!(rule.get_freq(), Frequency::Secondly | Frequency::Minutely) {
-        warn!("calendar: skipped a series that repeats more often than hourly");
-        return Vec::new();
-    }
     RRuleSet::new(e.start)
         .rrule(rule)
         .set_exdates(e.exdates.clone())
         .after(from.with_timezone(&Tz::UTC))
         .before(to.with_timezone(&Tz::UTC))
-        .all(MAX_INSTANCES)
+        .all(u16::MAX)
         .dates
 }
 
 fn event<'a>(c: &'a Component<'a>, unknown_tz_warned: &mut bool) -> Option<Event> {
+    let uid = prop(c, "UID")?.val.as_str().trim().to_string();
+    if uid.chars().count() > MAX_UID_CHARS {
+        return None;
+    }
     let start = when(prop(c, "DTSTART")?, unknown_tz_warned)?;
     let mut exdates = Vec::new();
     for p in props(c, "EXDATE") {
@@ -201,7 +275,7 @@ fn event<'a>(c: &'a Component<'a>, unknown_tz_warned: &mut bool) -> Option<Event
         None => None,
     };
     Some(Event {
-        uid: prop(c, "UID")?.val.as_str().trim().to_string(),
+        uid,
         title: clean_title(prop(c, "SUMMARY").map_or("", |p| p.val.as_str())),
         recurrence_id,
         cancelled: prop(c, "STATUS")
@@ -237,7 +311,28 @@ fn at(p: &Property<'_>, text: &str, unknown_tz_warned: &mut bool) -> Option<Date
         None => (text, zone(p, unknown_tz_warned)),
     };
     let naive = NaiveDateTime::parse_from_str(digits, "%Y%m%dT%H%M%S").ok()?;
-    zone.from_local_datetime(&naive).earliest()
+    match zone.from_local_datetime(&naive) {
+        LocalResult::Single(t) => Some(t),
+        // A repeated hour (clocks go back): the first pass.
+        LocalResult::Ambiguous(first, _) => Some(first),
+        // A skipped hour (clocks go forward): RFC 5545 3.3.5 reads the time with the offset from before the gap.
+        LocalResult::None => {
+            let before = zone
+                .offset_from_utc_datetime(&naive.checked_sub_signed(Duration::days(1))?)
+                .fix();
+            let utc =
+                naive.checked_sub_signed(Duration::seconds(i64::from(before.local_minus_utc())))?;
+            Some(zone.from_utc_datetime(&utc))
+        }
+    }
+}
+
+/// The zone for a TZID name, or None if the zone database does not know it.
+fn tzid_zone(name: &str) -> Option<Tz> {
+    name.trim_matches('"')
+        .parse::<chrono_tz::Tz>()
+        .ok()
+        .map(Tz::from)
 }
 
 /// The TZID zone. An unknown name (a Windows zone, say) is local time; it is logged once, without the name.
@@ -250,9 +345,9 @@ fn zone(p: &Property<'_>, unknown_tz_warned: &mut bool) -> Tz {
     else {
         return Tz::LOCAL;
     };
-    match name.as_str().trim_matches('"').parse::<chrono_tz::Tz>() {
-        Ok(tz) => tz.into(),
-        Err(_) => {
+    match tzid_zone(name.as_str()) {
+        Some(zone) => zone,
+        None => {
             if !*unknown_tz_warned {
                 warn!("calendar: unknown TZID, treated as local time");
                 *unknown_tz_warned = true;
@@ -291,10 +386,11 @@ pub(crate) async fn fetch(url: &str) -> Result<String, String> {
     get_body(validate_url(url)?.as_str()).await
 }
 
-/// Timeout, size cap and status check. The URL is not checked here, so tests can use a local server.
-async fn get_body(url: &str) -> Result<String, String> {
-    let client = reqwest::Client::builder()
+/// No Referer: a redirect must not carry the secret address (path and query) to the next host.
+fn client() -> reqwest::Result<reqwest::Client> {
+    reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(CALENDAR_FETCH_TIMEOUT_SECS))
+        .referer(false)
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.url().scheme() == "https" && attempt.previous().len() < MAX_REDIRECTS {
                 attempt.follow()
@@ -303,7 +399,11 @@ async fn get_body(url: &str) -> Result<String, String> {
             }
         }))
         .build()
-        .map_err(|_| "Calendar client could not start".to_string())?;
+}
+
+/// Timeout, size cap and status check. The URL is not checked here, so tests can use a local server.
+async fn get_body(url: &str) -> Result<String, String> {
+    let client = client().map_err(|_| "Calendar client could not start".to_string())?;
     let mut response = client.get(url).send().await.map_err(|e| fetch_error(&e))?;
     let status = response.status();
     if !status.is_success() {
@@ -354,21 +454,12 @@ pub fn upcoming() -> Vec<Occurrence> {
 /// Fetch, expand, cache and persist. A failure keeps the last good cache and sets the error.
 pub(crate) async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
     let Some(url) = settings::current().calendar_url else {
-        return Err("Calendar is not connected".to_string());
+        return Err(NOT_CONNECTED.to_string());
     };
     match fetch_and_expand(&url).await {
-        Ok(occurrences) => {
-            // A disconnect during the fetch must not bring the calendar back.
-            if settings::current().calendar_url.is_none() {
-                return Err("Calendar is not connected".to_string());
-            }
-            Ok(store(app, occurrences))
-        }
+        Ok(occurrences) => store(app, &url, occurrences).ok_or_else(|| CHANGED.to_string()),
         Err(problem) => {
-            STATE
-                .write()
-                .unwrap_or_else(PoisonError::into_inner)
-                .last_error = Some(problem.clone());
+            record_error(&url, problem.clone());
             Err(problem)
         }
     }
@@ -377,11 +468,12 @@ pub(crate) async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<usize, Str
 async fn fetch_and_expand(url: &str) -> Result<Vec<Occurrence>, String> {
     let ics = fetch(url).await?;
     let now = Utc::now();
-    let occurrences = expand(
-        &ics,
-        now - Duration::days(CALENDAR_BEHIND_DAYS),
-        now + Duration::days(CALENDAR_AHEAD_DAYS),
-    )?;
+    let from = now - Duration::days(CALENDAR_BEHIND_DAYS);
+    let to = now + Duration::days(CALENDAR_AHEAD_DAYS);
+    // Expansion is CPU work; it runs off the async runtime.
+    let occurrences = tokio::task::spawn_blocking(move || expand(&ics, from, to))
+        .await
+        .map_err(|_| UNREADABLE.to_string())??;
     info!(
         "calendar: fetched, {} occurrences in the window",
         occurrences.len()
@@ -389,8 +481,19 @@ async fn fetch_and_expand(url: &str) -> Result<Vec<Occurrence>, String> {
     Ok(occurrences)
 }
 
-/// Makes the expansion the cache, and saves it. A save that fails keeps the cache in memory.
-fn store<R: Runtime>(app: &AppHandle<R>, occurrences: Vec<Occurrence>) -> usize {
+/// Whether `url` is still the connected calendar.
+/// Lock order: the calendar state, then the settings cache. Settings never takes the calendar lock.
+fn still_connected(url: &str) -> bool {
+    settings::current().calendar_url.as_deref() == Some(url)
+}
+
+/// Makes the expansion the cache and saves it, only while `url` is still connected. Otherwise
+/// nothing is written. The state lock is held across the check and the write.
+fn store<R: Runtime>(app: &AppHandle<R>, url: &str, occurrences: Vec<Occurrence>) -> Option<usize> {
+    let mut state = STATE.write().unwrap_or_else(PoisonError::into_inner);
+    if !still_connected(url) {
+        return None;
+    }
     let cache = Cache {
         last_ok_at: Some(Utc::now().to_rfc3339()),
         occurrences,
@@ -399,10 +502,17 @@ fn store<R: Runtime>(app: &AppHandle<R>, occurrences: Vec<Occurrence>) -> usize 
     if let Err(problem) = save(app, &cache) {
         warn!("calendar: cache not saved: {problem}");
     }
-    let mut state = STATE.write().unwrap_or_else(PoisonError::into_inner);
     state.cache = cache;
     state.last_error = None;
-    count
+    Some(count)
+}
+
+/// Records a failed sync, only for the calendar that failed.
+fn record_error(url: &str, problem: String) {
+    let mut state = STATE.write().unwrap_or_else(PoisonError::into_inner);
+    if still_connected(url) {
+        state.last_error = Some(problem);
+    }
 }
 
 fn cache_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
@@ -411,16 +521,26 @@ fn cache_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
         .map_err(|e| e.to_string())
 }
 
-/// Writes to a temp file and renames it over the old one, so a crash cannot leave half a file.
 fn save<R: Runtime>(app: &AppHandle<R>, cache: &Cache) -> Result<(), String> {
-    let path = cache_path(app)?;
     let bytes = serde_json::to_vec(cache).map_err(|e| e.to_string())?;
+    write_atomic(&cache_path(app)?, &bytes)
+}
+
+static WRITE_COUNT: AtomicU64 = AtomicU64::new(0);
+
+/// Writes to a temp file whose name no other write uses, then renames it over the old one, so a
+/// crash cannot leave half a file and two writes cannot share a temp file.
+fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let tmp = path.with_extension("tmp");
-    fs::write(&tmp, &bytes).map_err(|e| e.to_string())?;
-    fs::rename(&tmp, &path).map_err(|e| e.to_string())
+    let n = WRITE_COUNT.fetch_add(1, Ordering::Relaxed);
+    let tmp = path.with_file_name(format!("{CACHE_FILE}.{}.{n}.tmp", std::process::id()));
+    let written = fs::write(&tmp, bytes).and_then(|()| fs::rename(&tmp, path));
+    written.map_err(|e| {
+        let _ = fs::remove_file(&tmp);
+        e.to_string()
+    })
 }
 
 /// Reads the persisted cache. A broken file gives None; its content is never logged.
@@ -473,8 +593,8 @@ pub async fn calendar_connect<R: Runtime>(
     let url = url.trim().to_string();
     validate_url(&url)?;
     let occurrences = fetch_and_expand(&url).await?;
-    settings::set_calendar_url(&app, Some(url))?;
-    let count = store(&app, occurrences);
+    settings::set_calendar_url(&app, Some(url.clone()))?;
+    let count = store(&app, &url, occurrences).ok_or_else(|| CHANGED.to_string())?;
     info!("calendar: connected, {count} occurrences in the window");
     Ok(status())
 }
@@ -482,10 +602,13 @@ pub async fn calendar_connect<R: Runtime>(
 #[tauri::command]
 pub async fn calendar_disconnect<R: Runtime>(app: AppHandle<R>) -> Result<CalendarStatus, String> {
     settings::set_calendar_url(&app, None)?;
-    if let Err(problem) = save(&app, &Cache::default()) {
-        warn!("calendar: cleared cache not saved: {problem}");
+    {
+        let mut state = STATE.write().unwrap_or_else(PoisonError::into_inner);
+        if let Err(problem) = save(&app, &Cache::default()) {
+            warn!("calendar: cleared cache not saved: {problem}");
+        }
+        *state = State::default();
     }
-    *STATE.write().unwrap_or_else(PoisonError::into_inner) = State::default();
     info!("calendar: disconnected");
     Ok(status())
 }
@@ -499,6 +622,7 @@ pub async fn calendar_status() -> CalendarStatus {
 mod tests {
     use super::*;
     use chrono::{Local, TimeZone};
+    use icalendar::parser::Parameter;
     use std::net::SocketAddr;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
@@ -673,6 +797,15 @@ mod tests {
 
     #[test]
     fn unknown_tzid_treated_as_local() {
+        // A Windows zone name is not in the zone database, so the zone is local, whatever this machine's zone is.
+        assert!(tzid_zone("W. Europe Standard Time").is_none());
+        assert!(tzid_zone("Europe/Berlin").is_some_and(|z| !z.is_local()));
+        let mut p = Property::new_ref("DTSTART", "20261020T100000");
+        p.params
+            .push(Parameter::new_ref("TZID", Some("W. Europe Standard Time")));
+        let mut warned = false;
+        assert!(zone(&p, &mut warned).is_local());
+
         let body = ics(&[
             "BEGIN:VCALENDAR",
             "BEGIN:VEVENT",
@@ -691,7 +824,6 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].start, local_start);
     }
-
     #[test]
     fn title_sanitised_and_capped() {
         let summary = format!("SUMMARY:  Team\\, sync\\nops{}", "x".repeat(300));
@@ -767,18 +899,103 @@ mod tests {
         let err = get_body(&format!("http://{addr}/start.ics"))
             .await
             .unwrap_err();
-        assert!(!err.contains("127.0.0.1"), "{err}");
-        assert!(!err.contains("plain.ics"), "{err}");
+        assert_eq!(err, "Calendar redirected to an address that is not https");
     }
 
     #[test]
     fn deep_nesting_refused() {
-        let mut body = String::new();
-        for _ in 0..10_000 {
-            body.push_str("BEGIN:VEVENT\r\n");
+        // The parser matches BEGIN case-insensitively, so the guard must count lower case too.
+        for tag in ["BEGIN:VEVENT\r\n", "begin:vevent\r\n"] {
+            let err = expand(
+                &tag.repeat(10_000),
+                utc(2026, 10, 19, 0, 0),
+                utc(2026, 10, 22, 0, 0),
+            )
+            .unwrap_err();
+            assert_eq!(err, "Calendar could not be read");
         }
-        let err = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap_err();
-        assert_eq!(err, "Calendar could not be read");
+    }
+    #[test]
+    fn ancient_hourly_series_skipped_fast() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:ancient-8",
+            "DTSTART:10000101T000000Z",
+            "DTEND:10000101T000100Z",
+            "RRULE:FREQ=HOURLY",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let started = std::time::Instant::now();
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert!(got.is_empty());
+        assert!(started.elapsed() < std::time::Duration::from_secs(1));
+    }
+
+    #[test]
+    fn feed_wide_occurrence_cap_holds() {
+        let mut body = String::from("BEGIN:VCALENDAR\r\n");
+        for i in 0..MAX_FEED_OCCURRENCES + 1000 {
+            body.push_str(&format!(
+                "BEGIN:VEVENT\r\nUID:many-{i}\r\nDTSTART:20261020T120000Z\r\nDTEND:20261020T130000Z\r\nEND:VEVENT\r\n"
+            ));
+        }
+        body.push_str("END:VCALENDAR\r\n");
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert_eq!(got.len(), MAX_FEED_OCCURRENCES);
+    }
+
+    #[test]
+    fn long_uid_skipped() {
+        let ok = "u".repeat(MAX_UID_CHARS);
+        let long = "u".repeat(MAX_UID_CHARS + 1);
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            &format!("UID:{ok}"),
+            "DTSTART:20261020T120000Z",
+            "DTEND:20261020T130000Z",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            &format!("UID:{long}"),
+            "DTSTART:20261020T140000Z",
+            "DTEND:20261020T150000Z",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].uid, ok);
+    }
+
+    #[test]
+    fn dst_gap_start_shifted_forward() {
+        // Berlin's clocks go from 02:00 to 03:00 on 2026-03-29. 02:30 reads with the offset from before the gap (+01:00).
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:gap-9",
+            "DTSTART;TZID=Europe/Berlin:20260329T023000",
+            "DTEND;TZID=Europe/Berlin:20260329T040000",
+            "SUMMARY:Early",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 3, 28, 0, 0), utc(2026, 3, 30, 0, 0)).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].start, utc(2026, 3, 29, 1, 30));
+        assert_eq!(got[0].end, utc(2026, 3, 29, 2, 0));
+    }
+
+    #[test]
+    fn cache_write_leaves_one_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(CACHE_FILE);
+        write_atomic(&path, b"first").unwrap();
+        write_atomic(&path, b"second").unwrap();
+        assert_eq!(std::fs::read(&path).unwrap(), b"second");
+        assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
     }
 
     #[test]

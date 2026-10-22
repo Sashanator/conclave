@@ -12,10 +12,10 @@ use crate::usage::{self, Purpose};
 use log::{error, info, warn};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::future::Future;
 use std::sync::{LazyLock, Mutex, PoisonError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime, State};
 use tokio::sync::{Notify, Semaphore};
 
@@ -198,17 +198,21 @@ pub async fn enqueue(pool: &SqlitePool, meeting_id: &str) {
     }
 }
 
-/// The oldest queued meeting that no call is running for. Busy ones are skipped, so the worker never spins on them.
-async fn next_pending(pool: &SqlitePool) -> Result<Option<String>, sqlx::Error> {
+/// The oldest queued meeting that no call is running for and that is not held back after a failed save.
+/// Skipped ones are not picked again, so the worker never spins on them.
+async fn next_pending(
+    pool: &SqlitePool,
+    held_back: &HashMap<String, (u32, Instant)>,
+) -> Result<Option<String>, sqlx::Error> {
     let ids: Vec<(String,)> = sqlx::query_as(
         "SELECT meeting_id FROM meeting_extracts WHERE status = 'pending' ORDER BY extracted_at, meeting_id",
     )
     .fetch_all(pool)
     .await?;
-    Ok(ids
-        .into_iter()
-        .map(|(id,)| id)
-        .find(|id| !InFlight::is_busy(id)))
+    let now = Instant::now();
+    Ok(ids.into_iter().map(|(id,)| id).find(|id| {
+        !InFlight::is_busy(id) && !held_back.get(id).is_some_and(|(_, retry_at)| *retry_at > now)
+    }))
 }
 
 pub(crate) async fn wait_for_pool(database: impl Fn() -> Option<SqlitePool>) -> SqlitePool {
@@ -220,6 +224,12 @@ pub(crate) async fn wait_for_pool(database: impl Fn() -> Option<SqlitePool>) -> 
     }
 }
 
+/// How long the worker leaves a meeting alone after its save failed: 10 min, doubling, at most 2 h.
+pub(crate) fn retry_backoff(failures: u32) -> Duration {
+    let minutes = (10u64 << failures.saturating_sub(1).min(8)).min(120);
+    Duration::from_secs(minutes * 60)
+}
+
 /// The worker: one queued meeting at a time. It waits for the database, then runs whatever is still pending.
 pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
@@ -228,14 +238,23 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
                 .map(|s| s.db_manager.pool().clone())
         })
         .await;
+        // Meetings whose save failed: the failure count and the earliest time to try again.
+        let mut held_back: HashMap<String, (u32, Instant)> = HashMap::new();
         loop {
-            match next_pending(&pool).await {
-                Ok(Some(id)) => {
-                    if let Err(e) = run_one(&pool, &id).await {
-                        error!("knowledge: extraction of {id} could not be saved: {e}");
+            match next_pending(&pool, &held_back).await {
+                Ok(Some(id)) => match run_one(&pool, &id).await {
+                    Ok(()) => {
+                        held_back.remove(&id);
+                    }
+                    Err(e) => {
+                        // Left pending, so without this every 5 s loop would make another paid model call.
+                        let failures = held_back.get(&id).map_or(0, |(n, _)| *n) + 1;
+                        let retry_at = Instant::now() + retry_backoff(failures);
+                        held_back.insert(id.clone(), (failures, retry_at));
+                        error!("knowledge: extraction of {id} could not be saved, retrying later: {e}");
                         tokio::time::sleep(Duration::from_secs(5)).await;
                     }
-                }
+                },
                 // Woken by enqueue; the timeout re-checks a meeting that was busy when last looked at.
                 Ok(None) => {
                     let _ = tokio::time::timeout(Duration::from_secs(30), WAKE.notified()).await;
@@ -485,6 +504,17 @@ mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Arc;
     use tokio::sync::Notify;
+
+    #[test]
+    fn retry_backoff_doubles_from_ten_minutes_and_caps_at_two_hours() {
+        let minutes = |failures| retry_backoff(failures).as_secs() / 60;
+        assert_eq!(minutes(1), 10);
+        assert_eq!(minutes(2), 20);
+        assert_eq!(minutes(3), 40);
+        assert_eq!(minutes(4), 80);
+        assert_eq!(minutes(5), 120);
+        assert_eq!(minutes(u32::MAX), 120);
+    }
 
     const VALID: &str = r#"{"tasks":[{"text":"Send the deck","owner":"me","at":62.5}],"decisions":["Ship"],"requests":[]}"#;
 
@@ -790,7 +820,7 @@ mod tests {
         );
         assert_eq!(status_of(&pool, "N").await.as_deref(), Some("pending"));
 
-        let queued = next_pending(&pool).await.unwrap();
+        let queued = next_pending(&pool, &HashMap::new()).await.unwrap();
         assert_eq!(queued.as_deref(), Some("M"));
     }
 }

@@ -19,6 +19,25 @@ pub(crate) struct LlmTarget {
     pub top_p: Option<f32>,
 }
 
+/// The provider and model for a feature: its own override when both are set, else the summary model.
+pub(crate) async fn target_with_override(
+    pool: &SqlitePool,
+    provider: Option<String>,
+    model: Option<String>,
+) -> Result<LlmTarget, String> {
+    let (provider, model) = match (provider, model) {
+        (Some(p), Some(m)) => (p, m),
+        _ => {
+            let config = SettingsRepository::get_model_config(pool)
+                .await
+                .map_err(|e| e.to_string())?
+                .ok_or("no summary provider set")?;
+            (config.provider, config.model)
+        }
+    };
+    resolve_llm_target(pool, &provider, &model).await
+}
+
 /// Reads the saved provider settings. The error strings are user-facing and stay as summaries had them.
 pub(crate) async fn resolve_llm_target(
     pool: &SqlitePool,

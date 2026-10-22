@@ -1,9 +1,8 @@
 use super::{settings, ASK_TIMEOUT_SECS, MAX_CONTEXT_CHARS, MAX_QUESTION_CHARS};
-use crate::database::repositories::setting::SettingsRepository;
 use crate::ollama::metadata::ModelMetadataCache;
 use crate::state::AppState;
 use crate::summary::llm_client::LLMProvider;
-use crate::summary::llm_target::{complete, resolve_llm_target, LlmTarget};
+use crate::summary::llm_target::{complete, target_with_override, LlmTarget};
 use crate::summary::processor::language_name_from_code;
 use log::{info, warn};
 use serde::Deserialize;
@@ -207,19 +206,8 @@ pub fn abort_in_flight() {
 /// The copilot model, falling back to the summary model as Dictate cleanup does.
 async fn copilot_target<R: Runtime>(app: &AppHandle<R>) -> Result<LlmTarget, String> {
     let state = app.try_state::<AppState>().ok_or("no database")?;
-    let pool = state.db_manager.pool();
     let s = settings::current();
-    let (provider, model) = match (s.provider, s.model) {
-        (Some(p), Some(m)) => (p, m),
-        _ => {
-            let config = SettingsRepository::get_model_config(pool)
-                .await
-                .map_err(|e| e.to_string())?
-                .ok_or("no summary provider set")?;
-            (config.provider, config.model)
-        }
-    };
-    resolve_llm_target(pool, &provider, &model).await
+    target_with_override(state.db_manager.pool(), s.provider, s.model).await
 }
 
 /// The context budget in characters. Errors are not logged: the reason is only the model's size.

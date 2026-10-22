@@ -56,6 +56,7 @@ pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
 mod copilot;
+mod knowledge;
 mod dictate;
 mod speakers;
 mod practice;
@@ -647,6 +648,7 @@ pub fn run() {
             dictate::settings::load_at_startup(_app.handle());
             copilot::settings::load_at_startup(_app.handle());
             usage::prices::load_at_startup(_app.handle());
+            knowledge::settings::load_at_startup(_app.handle());
             practice::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
@@ -979,6 +981,9 @@ pub fn run() {
             // Usage and cost commands
             usage::prices::costs_get_prices,
             usage::prices::costs_save_prices,
+            // Knowledge commands
+            knowledge::settings::knowledge_get_settings,
+            knowledge::settings::knowledge_save_settings,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

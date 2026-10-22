@@ -14,7 +14,7 @@ use tauri_plugin_store::StoreExt;
 
 const STORE_FILE: &str = "copilot.json";
 const KEY: &str = "settings";
-const PROVIDERS: [&str; 6] = [
+pub(crate) const PROVIDERS: [&str; 6] = [
     "claude",
     "openai",
     "groq",

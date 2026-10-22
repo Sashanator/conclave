@@ -43,6 +43,12 @@ static CANCELLATION_REGISTRY: LazyLock<Arc<Mutex<HashMap<String, RegisteredCance
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
 /// Strips the first `#` heading line; returns "" if no `#` is found.
+/// Chunk size for Ollama. Ollama's default runtime context is 4096 tokens and requests never send num_ctx to raise it.
+/// shortcut: a fixed 4096 cap, not the server's OLLAMA_CONTEXT_LENGTH or per-request num_ctx; upgrade if those become configurable.
+fn ollama_chunk_tokens(context_size: usize) -> usize {
+    context_size.min(4096).saturating_sub(300)
+}
+
 fn strip_leading_title(markdown: &str) -> String {
     if let Some(hash_pos) = markdown.find('#') {
         let body_start = markdown[hash_pos..]
@@ -267,8 +273,7 @@ impl SummaryService {
         let token_threshold = if provider == LLMProvider::Ollama {
             match METADATA_CACHE.get_or_fetch(&model_name, ollama_endpoint.as_deref()).await {
                 Ok(metadata) => {
-                    // Reserve 300 tokens for prompt overhead
-                    let optimal = metadata.context_size.saturating_sub(300);
+                    let optimal = ollama_chunk_tokens(metadata.context_size);
                     info!(
                         "✓ Using dynamic context for {}: {} tokens (chunk size: {})",
                         model_name, metadata.context_size, optimal
@@ -544,6 +549,14 @@ mod tests {
     use super::*;
     use crate::database::repositories::{test_pool, transcript::TranscriptsRepository};
     use crate::summary::llm_client::TokenUsage;
+
+    #[test]
+    fn ollama_chunks_fit_the_default_runtime_context() {
+        // 300 tokens are reserved for the prompt; a larger trained context is not used.
+        assert_eq!(ollama_chunk_tokens(131_072), 3_796);
+        assert_eq!(ollama_chunk_tokens(2_048), 1_748);
+        assert_eq!(ollama_chunk_tokens(200), 0);
+    }
 
     #[tokio::test]
     async fn summary_usage_is_recorded_for_each_call() {

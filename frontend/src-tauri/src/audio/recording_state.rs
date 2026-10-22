@@ -83,6 +83,12 @@ impl AudioError {
     }
 }
 
+/// The UI hears about every non-recoverable error, the first recoverable one, then every 100th,
+/// so a device that keeps failing does not flood the UI with toasts.
+fn notifies_ui(recoverable: bool, recoverable_count: u32) -> bool {
+    !recoverable || recoverable_count == 1 || recoverable_count % 100 == 0
+}
+
 /// Recording statistics
 #[derive(Debug, Default)]
 pub struct RecordingStats {
@@ -267,23 +273,26 @@ impl RecordingState {
         self.error_count.fetch_add(1, Ordering::SeqCst);
 
         // Track recoverable vs non-recoverable errors separately
-        if error.is_recoverable() {
+        let notify = if error.is_recoverable() {
             let recoverable_count = self.recoverable_error_count.fetch_add(1, Ordering::SeqCst) + 1;
             // Never stop here: a stop clears the pipeline sender while the UI still shows "Recording".
             log::warn!("Recoverable audio error ({}): {:?}", recoverable_count, error);
+            notifies_ui(true, recoverable_count)
         } else {
             log::error!("Non-recoverable audio error: {:?}", error);
             // Stop immediately for non-recoverable errors
             self.stop_recording();
-        }
+            notifies_ui(false, 0)
+        };
 
         *self.last_error.lock().unwrap() = Some(error.clone());
 
         // Call error callback if set
-        if let Some(callback) = self.error_callback.lock().unwrap().as_ref() {
-            callback(&error);
+        if notify {
+            if let Some(callback) = self.error_callback.lock().unwrap().as_ref() {
+                callback(&error);
+            }
         }
-
     }
 
     pub fn get_error_count(&self) -> u32 {
@@ -410,6 +419,17 @@ impl Clone for RecordingStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_ui_hears_about_recoverable_errors_sparingly() {
+        assert!(notifies_ui(false, 0));
+        assert!(notifies_ui(true, 1));
+        assert!(!notifies_ui(true, 2));
+        assert!(!notifies_ui(true, 99));
+        assert!(notifies_ui(true, 100));
+        assert!(!notifies_ui(true, 101));
+        assert!(notifies_ui(true, 200));
+    }
 
     #[test]
     fn many_recoverable_errors_do_not_stop_recording() {

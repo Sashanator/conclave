@@ -1,15 +1,17 @@
-import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { TaskRow } from '../../src/lib/tasks';
 
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
+  sonner: { ...await import('sonner') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
+  mock.module('sonner', () => originals.sonner);
 });
 
 const BASE: TaskRow = {
@@ -66,9 +68,23 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   throw new Error(`Unexpected command: ${command}`);
 });
 
+// sonner's toast is a function with helpers; the mock keeps the same shape
+const toast = Object.assign(mock((_what: string, _opts?: unknown) => {}), {
+  error: mock((_what: string, _opts?: unknown) => {}),
+  dismiss: mock((_id?: unknown) => {}),
+});
+
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
+mock.module('sonner', () => ({ toast }));
 
 const { default: TasksPage } = await import('../../src/app/tasks/page');
+
+// The undo window is 5 s. Its timers are held here so each test decides when they fire.
+const UNDO_MS = 5000;
+const realSetTimeout = globalThis.setTimeout;
+const realClearTimeout = globalThis.clearTimeout;
+let undoTimers = new Map<number, () => void>();
+let nextTimerId = 1_000_000;
 
 let renderer: ReactTestRenderer | null = null;
 
@@ -210,5 +226,136 @@ describe('Tasks page', () => {
     await flush();
     // The open-tab reload finished last, but the Done tab is showing: it must not list the open task
     expect(renderer!.root.findAll((n) => textOf(n) === '<img src=x>').length).toBe(0);
+  });
+
+  describe('delete with undo', () => {
+    let timerSpies: Array<{ mockRestore: () => void }> = [];
+
+    beforeEach(() => {
+      undoTimers = new Map();
+      toast.mockClear();
+      toast.error.mockClear();
+      toast.dismiss.mockClear();
+      timerSpies = [
+      spyOn(globalThis, 'setTimeout').mockImplementation(((cb: () => void, ms?: number, ...rest: unknown[]) => {
+        if (ms !== UNDO_MS) return realSetTimeout(cb, ms, ...rest);
+        const id = nextTimerId++;
+        undoTimers.set(id, cb);
+        return id;
+      }) as typeof setTimeout),
+      spyOn(globalThis, 'clearTimeout').mockImplementation(((id?: number) => {
+        if (id !== undefined && undoTimers.delete(id)) return;
+        realClearTimeout(id as never);
+      }) as typeof clearTimeout),
+      ];
+    });
+
+    afterEach(async () => {
+      // Unmount here, before the next test resets the rows: a pending delete runs on unmount
+      if (renderer) {
+        await act(async () => {
+          renderer!.unmount();
+        });
+        renderer = null;
+      }
+      timerSpies.forEach((spy) => spy.mockRestore());
+    });
+
+    // Runs every held undo timer, as if the 5 s had passed without Undo
+    async function fireUndoTimers() {
+      const callbacks = [...undoTimers.values()];
+      undoTimers.clear();
+      await act(async () => {
+        callbacks.forEach((cb) => cb());
+        await new Promise((resolve) => realSetTimeout(resolve, 0));
+      });
+      await flush();
+    }
+
+    function deleteButton(index: number): ReactTestInstance {
+      return renderer!.root.findAll((n) => n.props['aria-label'] === 'Delete task')[index];
+    }
+
+    function taskButton(text: string): ReactTestInstance[] {
+      return renderer!.root.findAll((n) => n.type === 'button' && textOf(n) === text);
+    }
+
+    function undoAction(): () => void {
+      const [, opts] = toast.mock.calls.at(-1) as [string, { action: { onClick: () => void } }];
+      return opts.action.onClick;
+    }
+
+    test('a click hides the task at once and shows an undo toast, with no delete yet', async () => {
+      await mount();
+      await click(deleteButton(0));
+      expect(taskButton('Send the deck')).toHaveLength(0);
+      expect(toast).toHaveBeenCalledWith('Task dismissed', expect.objectContaining({ action: expect.objectContaining({ label: 'Undo' }) }));
+      expect(invoke.mock.calls.some(([command]) => command === 'tasks_delete')).toBe(false);
+    });
+
+    test('Undo shows the task again and never calls tasks_delete', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await act(async () => {
+        undoAction()();
+      });
+      await flush();
+      expect(taskButton('Send the deck')).toHaveLength(1);
+      await fireUndoTimers();
+      expect(invoke.mock.calls.some(([command]) => command === 'tasks_delete')).toBe(false);
+      expect(taskButton('Send the deck')).toHaveLength(1);
+    });
+
+    test('when the time passes without Undo, tasks_delete is called once', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await fireUndoTimers();
+      expect(invoke.mock.calls.filter(([command]) => command === 'tasks_delete')).toEqual([['tasks_delete', { id: 't1' }]]);
+      expect(taskButton('Send the deck')).toHaveLength(0);
+    });
+
+    test('a manual task says "deleted", not "dismissed"', async () => {
+      rows[0] = { ...rows[0], source: 'manual' };
+      await mount();
+      await click(deleteButton(0));
+      expect(toast).toHaveBeenCalledWith('Task deleted', expect.anything());
+    });
+
+    test('a failed tasks_delete shows the task again and an error toast', async () => {
+      await mount();
+      await click(deleteButton(0));
+      invoke.mockImplementationOnce(async () => {
+        throw new Error('db locked');
+      });
+      const logged = spyOn(console, 'error').mockImplementation(() => {});
+      await fireUndoTimers();
+      logged.mockRestore();
+      expect(toast.error).toHaveBeenCalledTimes(1);
+      expect(taskButton('Send the deck')).toHaveLength(1);
+    });
+
+    test('several quick deletes each run on their own timer', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await click(deleteButton(0));
+      expect(taskButton('Send the deck')).toHaveLength(0);
+      expect(taskButton('<img src=x>')).toHaveLength(0);
+      await fireUndoTimers();
+      const deleted = invoke.mock.calls.filter(([command]) => command === 'tasks_delete').map(([, args]) => (args as { id: string }).id);
+      expect(deleted.sort()).toEqual(['t1', 't2']);
+    });
+
+    test('unmounting runs a pending delete now instead of dropping it', async () => {
+      await mount();
+      await click(deleteButton(0));
+      await act(async () => {
+        renderer!.unmount();
+      });
+      renderer = null;
+      await flush();
+      expect(invoke).toHaveBeenCalledWith('tasks_delete', { id: 't1' });
+      expect(invoke.mock.calls.filter(([command]) => command === 'tasks_delete')).toHaveLength(1);
+      expect(undoTimers.size).toBe(0);
+    });
   });
 });

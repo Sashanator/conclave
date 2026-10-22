@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { invoke } from '@tauri-apps/api/core';
 import { Clock, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { meetingHref } from '@/lib/meeting-target';
@@ -13,6 +14,9 @@ type Status = 'open' | 'done';
 type Run = (command: string, args: Record<string, unknown>) => Promise<boolean>;
 
 const SAVE_FAILED = 'Could not save that change. The list has been refreshed.';
+// A deleted task stays hidden for this long; Undo within it keeps the task
+const UNDO_MS = 5000;
+const undoToastId = (id: string) => `task-delete-${id}`;
 
 function formatDate(date: string): string {
   const d = new Date(date);
@@ -24,6 +28,9 @@ export function TaskList() {
   const [rows, setRows] = useState<TaskRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [newText, setNewText] = useState('');
+  // Tasks whose delete is waiting for the undo window to pass
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+  const pendingDeletes = useRef(new Map<string, ReturnType<typeof setTimeout>>());
 
   // The list is reloaded after every change, so it shows what the backend holds. A reload that
   // finishes after the tab changed is dropped, so it cannot show the old tab's tasks.
@@ -72,13 +79,70 @@ export function TaskList() {
     return ok;
   };
 
+  const unhide = (id: string) =>
+    setHidden((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+
+  // The delete reaches the backend only after the undo window; a failure shows the task again
+  const commitDelete = async (id: string) => {
+    pendingDeletes.current.delete(id);
+    toast.dismiss(undoToastId(id));
+    let deleted = true;
+    try {
+      await invoke('tasks_delete', { id });
+    } catch {
+      console.error('tasks_delete failed');
+      deleted = false;
+    }
+    try {
+      await reload();
+    } catch {
+      setError('Could not load tasks.');
+    }
+    unhide(id);
+    if (!deleted) toast.error('Could not delete that task. It is back in the list.');
+  };
+
+  const scheduleDelete = (task: TaskRow) => {
+    const id = task.id;
+    setHidden((prev) => new Set(prev).add(id));
+    const timer = setTimeout(() => void commitDelete(id), UNDO_MS);
+    pendingDeletes.current.set(id, timer);
+    toast(task.source === 'manual' ? 'Task deleted' : 'Task dismissed', {
+      id: undoToastId(id),
+      duration: UNDO_MS,
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          clearTimeout(timer);
+          pendingDeletes.current.delete(id);
+          unhide(id);
+        },
+      },
+    });
+  };
+
+  // Leaving the page must not drop a pending delete, so it runs now
+  useEffect(() => {
+    const pending = pendingDeletes.current;
+    return () => {
+      for (const [id, timer] of pending) {
+        clearTimeout(timer);
+        void commitDelete(id);
+      }
+    };
+  }, []);
+
   const add = async () => {
     const text = newText.trim();
     if (!text) return;
     if (await run('tasks_add', { text })) setNewText('');
   };
 
-  const groups = groupByMeeting(rows);
+  const groups = groupByMeeting(rows.filter((row) => !hidden.has(row.id)));
 
   return (
     <div className="space-y-6">
@@ -132,7 +196,7 @@ export function TaskList() {
           </header>
           <ul className="divide-y divide-border rounded-lg border border-border bg-card">
             {group.tasks.map((task) => (
-              <TaskItem key={task.id} task={task} run={run} />
+              <TaskItem key={task.id} task={task} run={run} scheduleDelete={scheduleDelete} />
             ))}
           </ul>
         </section>
@@ -141,7 +205,7 @@ export function TaskList() {
   );
 }
 
-function TaskItem({ task, run }: { task: TaskRow; run: Run }) {
+function TaskItem({ task, run, scheduleDelete }: { task: TaskRow; run: Run; scheduleDelete: (task: TaskRow) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.text);
   const done = task.status === 'done';
@@ -215,7 +279,7 @@ function TaskItem({ task, run }: { task: TaskRow; run: Run }) {
         </Link>
       )}
 
-      <Button variant="ghost" size="icon" aria-label="Delete task" onClick={() => run('tasks_delete', { id: task.id })}>
+      <Button variant="ghost" size="icon" aria-label="Delete task" onClick={() => scheduleDelete(task)}>
         <Trash2 className="h-4 w-4" />
       </Button>
     </li>

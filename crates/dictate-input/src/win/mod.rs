@@ -21,12 +21,27 @@ pub fn is_altgr_fake_ctrl(vk: u16, scan_code: u32) -> bool {
     vk == 0xA2 && scan_code == ALTGR_FAKE_CTRL_SCAN
 }
 
-/// Clipboard formats whose handle is not global memory (bitmaps, metafiles, palettes, owner-draw
-/// and GDI objects). They cannot be copied byte for byte, so the clipboard save leaves them out.
-pub fn is_skipped_format(format: u32) -> bool {
-    // CF_BITMAP, CF_METAFILEPICT, CF_PALETTE, CF_ENHMETAFILE, CF_OWNERDISPLAY, CF_DSPTEXT..CF_DSPENHMETAFILE,
-    // CF_PRIVATEFIRST..LAST, CF_GDIOBJFIRST..LAST
-    matches!(format, 2 | 3 | 9 | 14 | 0x80..=0x83 | 0x8E | 0x200..=0x2FF | 0x300..=0x3FF)
+/// Standard clipboard formats the save keeps: CF_UNICODETEXT, CF_TEXT, CF_DIB, CF_DIBV5, CF_HDROP.
+/// Only these and the registered ones below are read: other formats (OLE data, private, GDI) do not restore.
+pub const STANDARD_FORMATS: [u32; 5] = [13, 1, 8, 17, 15];
+
+/// Registered clipboard formats the save keeps, looked up by name.
+pub const REGISTERED_FORMATS: [&str; 7] = [
+    "PNG",
+    "HTML Format",
+    "Rich Text Format",
+    "Preferred DropEffect",
+    "FileNameW",
+    "FileName",
+    "Shell IDList Array",
+];
+
+/// What a clipboard over the size cap keeps from the allowlist: CF_UNICODETEXT, CF_DIB, CF_DIBV5 (and PNG by name).
+pub const TEXT_AND_IMAGE_FORMATS: [u32; 3] = [13, 8, 17];
+
+/// The allowed formats that are on the clipboard, in allowlist order.
+pub fn formats_to_save(allowed: &[u32], is_available: impl Fn(u32) -> bool) -> Vec<u32> {
+    allowed.iter().copied().filter(|&f| is_available(f)).collect()
 }
 
 /// Largest total of saved clipboard bytes; a bigger clipboard keeps only text and images.
@@ -56,13 +71,33 @@ mod tests {
     }
 
     #[test]
-    fn skips_formats_that_are_not_global_memory() {
-        for format in [2, 3, 9, 14, 0x80, 0x81, 0x82, 0x83, 0x8E, 0x200, 0x2FF, 0x300, 0x3FF] {
-            assert!(is_skipped_format(format), "format {format:#x}");
+    fn allowlist_keeps_text_images_and_files_only() {
+        for format in [13, 1, 8, 17, 15] {
+            assert!(STANDARD_FORMATS.contains(&format), "format {format}");
         }
-        // Text, DIB, DIBV5 and registered formats such as PNG are copied.
-        for format in [1, 8, 13, 17, 0xC000] {
-            assert!(!is_skipped_format(format), "format {format:#x}");
+        assert!(REGISTERED_FORMATS.contains(&"PNG"));
+        assert!(REGISTERED_FORMATS.contains(&"Shell IDList Array"));
+        // OLE data, private and GDI formats are not on the list.
+        for name in ["DataObject", "Ole Private Data", "Native"] {
+            assert!(!REGISTERED_FORMATS.contains(&name), "{name}");
+        }
+        for format in [2, 3, 9, 14, 0x80, 0x200, 0x300] {
+            assert!(!STANDARD_FORMATS.contains(&format), "format {format:#x}");
+        }
+    }
+
+    #[test]
+    fn saves_only_the_allowed_formats_that_are_available_in_order() {
+        let allowed = [13, 1, 8, 17, 15];
+        assert_eq!(formats_to_save(&allowed, |f| f != 1 && f != 15), vec![13, 8, 17]);
+        assert_eq!(formats_to_save(&allowed, |_| false), Vec::<u32>::new());
+        assert_eq!(formats_to_save(&allowed, |_| true), allowed.to_vec());
+    }
+
+    #[test]
+    fn over_cap_keeps_text_and_images_from_the_allowlist() {
+        for format in TEXT_AND_IMAGE_FORMATS {
+            assert!(STANDARD_FORMATS.contains(&format), "format {format}");
         }
     }
 

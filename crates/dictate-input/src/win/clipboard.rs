@@ -4,18 +4,21 @@
 use std::thread;
 use std::time::Duration;
 
-use windows::core::{w, PCWSTR};
+use windows::core::PCWSTR;
 use windows::Win32::Foundation::{GlobalFree, HANDLE, HGLOBAL};
 use windows::Win32::System::DataExchange::{
-    CloseClipboard, EmptyClipboard, EnumClipboardFormats, GetClipboardData,
-    GetClipboardSequenceNumber, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
+    CloseClipboard, EmptyClipboard, GetClipboardData, GetClipboardSequenceNumber,
+    IsClipboardFormatAvailable, OpenClipboard, RegisterClipboardFormatW, SetClipboardData,
 };
 use windows::Win32::System::Memory::{
     GlobalAlloc, GlobalLock, GlobalSize, GlobalUnlock, GMEM_MOVEABLE,
 };
-use windows::Win32::System::Ole::{CF_DIB, CF_DIBV5, CF_UNICODETEXT};
+use windows::Win32::System::Ole::CF_UNICODETEXT;
 
-use super::{is_skipped_format, within_clipboard_cap};
+use super::{
+    formats_to_save, within_clipboard_cap, REGISTERED_FORMATS, STANDARD_FORMATS,
+    TEXT_AND_IMAGE_FORMATS,
+};
 
 /// What `save` read from the clipboard: each copyable format's id and bytes, in clipboard order.
 pub struct SavedClipboard {
@@ -42,16 +45,21 @@ fn open() -> Result<OpenGuard, String> {
     Err("clipboard busy".into())
 }
 
-// shortcut: over 64 MB only text and images are kept (the old behaviour), so a huge copy is never read into memory
+// shortcut: over 64 MB only text and images are kept. Sizes are checked before anything is copied, so a clipboard
+// over the cap is never copied in full (the size check still renders delayed-render formats).
 pub fn save() -> Result<SavedClipboard, String> {
     let _open = open()?;
-    let mut formats = enumerate_formats();
+    let allowed: Vec<u32> = STANDARD_FORMATS
+        .into_iter()
+        .chain(REGISTERED_FORMATS.iter().filter_map(|name| register(name).ok()))
+        .collect();
+    let mut formats =
+        formats_to_save(&allowed, |f| unsafe { IsClipboardFormatAvailable(f) }.is_ok());
     let total: usize = formats.iter().map(|&f| format_size(f)).sum();
     if !within_clipboard_cap(total) {
         log::warn!("dictate: clipboard over the size cap, keeping only text and images");
-        let png = register(w!("PNG")).ok();
-        let text_or_image = [CF_UNICODETEXT, CF_DIB, CF_DIBV5].map(|f| u32::from(f.0));
-        formats.retain(|f| text_or_image.contains(f) || Some(*f) == png);
+        let png = register("PNG").ok();
+        formats.retain(|f| TEXT_AND_IMAGE_FORMATS.contains(f) || Some(*f) == png);
     }
     let formats = formats
         .into_iter()
@@ -62,21 +70,6 @@ pub fn save() -> Result<SavedClipboard, String> {
         })
         .collect();
     Ok(SavedClipboard { formats })
-}
-
-/// Ids of the formats on the open clipboard that can be copied, in clipboard order.
-fn enumerate_formats() -> Vec<u32> {
-    let mut formats = Vec::new();
-    let mut format = 0;
-    loop {
-        format = unsafe { EnumClipboardFormats(format) };
-        if format == 0 {
-            return formats;
-        }
-        if !is_skipped_format(format) {
-            formats.push(format);
-        }
-    }
 }
 
 /// Bytes a clipboard item holds, 0 when absent. The clipboard must be open.
@@ -143,21 +136,22 @@ pub fn sequence_number() -> u32 {
 /// The three exclusion formats of spec §10; the clipboard must be open.
 fn write_exclusions() -> Result<(), String> {
     set_bytes(
-        register(w!("ExcludeClipboardContentFromMonitorProcessing"))?,
+        register("ExcludeClipboardContentFromMonitorProcessing")?,
         &[0],
     )?;
     set_bytes(
-        register(w!("CanIncludeInClipboardHistory"))?,
+        register("CanIncludeInClipboardHistory")?,
         &0u32.to_le_bytes(),
     )?;
     set_bytes(
-        register(w!("CanUploadToCloudClipboard"))?,
+        register("CanUploadToCloudClipboard")?,
         &0u32.to_le_bytes(),
     )
 }
 
-fn register(name: PCWSTR) -> Result<u32, String> {
-    match unsafe { RegisterClipboardFormatW(name) } {
+fn register(name: &str) -> Result<u32, String> {
+    let wide: Vec<u16> = name.encode_utf16().chain(std::iter::once(0)).collect();
+    match unsafe { RegisterClipboardFormatW(PCWSTR(wide.as_ptr())) } {
         0 => Err("RegisterClipboardFormatW failed".into()),
         id => Ok(id),
     }

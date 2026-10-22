@@ -267,7 +267,7 @@ fn with_calendar_url(s: KnowledgeSettings, url: Option<String>) -> KnowledgeSett
 }
 
 /// Only the host is shown. A URL that does not parse has no host to show.
-fn host_of(url: &str) -> Option<String> {
+pub(crate) fn host_of(url: &str) -> Option<String> {
     url::Url::parse(url).ok()?.host_str().map(str::to_string)
 }
 

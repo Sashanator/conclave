@@ -2,6 +2,7 @@
 // Later knowledge tasks consume these constants and helpers; they are unused until then.
 #![allow(dead_code)]
 
+pub mod calendar;
 pub mod feed;
 pub mod settings;
 

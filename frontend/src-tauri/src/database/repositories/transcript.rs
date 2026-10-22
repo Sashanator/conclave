@@ -533,6 +533,16 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn transcripts_are_indexed_by_meeting() {
+        // Every meeting page, search and delete reads transcripts by meeting_id
+        let pool = crate::database::repositories::test_pool().await;
+        let cols: Vec<(String,)> = sqlx::query_as("SELECT name FROM pragma_index_info('idx_transcripts_meeting') ORDER BY seqno")
+            .fetch_all(&pool).await.unwrap();
+        let cols: Vec<String> = cols.into_iter().map(|c| c.0).collect();
+        assert_eq!(cols, vec!["meeting_id", "audio_start_time", "id"]);
+    }
+
+    #[tokio::test]
     async fn search_caps_words_in_prefilter() {
         let pool = crate::database::repositories::test_pool().await;
         let long = vec!["слово"; 2000].join(" ");

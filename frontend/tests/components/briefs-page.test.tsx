@@ -143,6 +143,17 @@ describe('Briefs & digests page', () => {
     expect(JSON.stringify(renderer!.toJSON())).toContain('[M9]');
   });
 
+  test('switching tabs clears the selection', async () => {
+    await mount('id=d1&kind=digest');
+    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(1);
+
+    await click(buttonNamed('Briefs'));
+    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(0);
+
+    await click(buttonNamed('Digests'));
+    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(0);
+  });
+
   test('digest markdown is sanitised', async () => {
     await mount('id=d1&kind=digest');
     expect(renderer!.root.findAll((n) => n.type === 'script' || n.type === 'img')).toHaveLength(0);

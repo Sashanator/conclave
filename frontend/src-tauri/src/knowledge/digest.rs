@@ -6,7 +6,10 @@ use crate::knowledge::extract::{self, Reply, UNTRUSTED};
 use crate::knowledge::feed;
 use crate::knowledge::settings;
 use crate::knowledge::tasks::stamp;
-use crate::knowledge::{DIGEST_SUMMARY_HEAD_CHARS, DIGEST_TIMEOUT_SECS};
+use crate::knowledge::{
+    DIGEST_MAX_ITEMS, DIGEST_MAX_ITEM_CHARS, DIGEST_MAX_MEETINGS, DIGEST_MAX_TASKS, DIGEST_MAX_TITLE_CHARS,
+    DIGEST_SUMMARY_HEAD_CHARS, DIGEST_TIMEOUT_SECS,
+};
 use crate::state::AppState;
 use crate::summary::llm_client::LLMProvider;
 use crate::summary::llm_target::complete;
@@ -43,7 +46,7 @@ pub struct DigestMeeting {
 }
 
 /// A task line. `tag` names its meeting when it has one; manual tasks have none.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Debug, PartialEq)]
 pub struct DigestTask {
     pub text: String,
     pub tag: Option<String>,
@@ -97,34 +100,35 @@ impl Tries {
 }
 
 /// The Friday 09:00 local at or before `now`.
-pub fn last_friday_nine(now: DateTime<Local>) -> DateTime<Local> {
+pub fn last_friday_nine<Tz: TimeZone>(now: DateTime<Tz>) -> DateTime<Tz> {
     let back = (i64::from(now.weekday().num_days_from_monday()) - 4).rem_euclid(7);
     let friday = now.date_naive() - Duration::days(back);
-    let at = nine_on(friday);
+    let at = nine_on(now.timezone(), friday);
     if at <= now {
         at
     } else {
-        nine_on(friday - Duration::days(7))
+        nine_on(now.timezone(), friday - Duration::days(7))
     }
 }
 
-fn nine_on(day: NaiveDate) -> DateTime<Local> {
+/// 09:00 on `day` in `tz`.
+fn nine_on<Tz: TimeZone>(tz: Tz, day: NaiveDate) -> DateTime<Tz> {
     let naive = day.and_hms_opt(9, 0, 0).expect("09:00 is a valid time");
     // A local day skipped by a clock change has no 09:00: read it as UTC rather than fail the digest step.
-    Local
-        .from_local_datetime(&naive)
+    tz.from_local_datetime(&naive)
         .earliest()
-        .unwrap_or_else(|| Local.from_utc_datetime(&naive))
+        .unwrap_or_else(|| tz.from_utc_datetime(&naive))
 }
 
 /// The digest period due at `now`, if none exists for it yet: (start, end) with end = last_friday_nine(now),
-/// start = previous digest's end if newer than end-7d, else end-7d.
-pub fn due_period(now: DateTime<Local>, last_end: Option<DateTime<Local>>) -> Option<(DateTime<Local>, DateTime<Local>)> {
+/// start = previous digest's end if newer than the 09:00 of the week before, else that 09:00.
+pub fn due_period<Tz: TimeZone>(now: DateTime<Tz>, last_end: Option<DateTime<Tz>>) -> Option<(DateTime<Tz>, DateTime<Tz>)> {
     let end = last_friday_nine(now);
-    if last_end.is_some_and(|at| at >= end) {
+    if last_end.as_ref().is_some_and(|at| *at >= end) {
         return None;
     }
-    let week_ago = end - Duration::days(7);
+    // The 09:00 of the date a week before, not end minus 168 hours: a clock change in between must not move it.
+    let week_ago = nine_on(end.timezone(), end.date_naive() - Duration::days(7));
     let start = match last_end {
         Some(at) if at > week_ago => at,
         _ => week_ago,
@@ -147,9 +151,9 @@ pub fn build_prompts(meetings: &[DigestMeeting], tasks: &DigestTasks, language: 
         user.push_str(&format!(
             "\n[{}] {} ({}, {})\nSummary:\n{}\nDecisions:\n{}\nRequests:\n{}\n",
             m.tag,
-            m.title,
+            clip(&m.title, DIGEST_MAX_TITLE_CHARS),
             m.date,
-            m.kind,
+            clip(&m.kind, DIGEST_MAX_TITLE_CHARS),
             m.summary_head,
             bullets(&m.decisions),
             bullets(&m.requests)
@@ -164,11 +168,22 @@ pub fn build_prompts(meetings: &[DigestMeeting], tasks: &DigestTasks, language: 
     (system, user)
 }
 
+/// The first `max` characters, never splitting one.
+fn clip(text: &str, max: usize) -> String {
+    text.chars().take(max).collect()
+}
+
+/// At most DIGEST_MAX_ITEMS items, each clipped.
 fn bullets(items: &[String]) -> String {
     if items.is_empty() {
         return "(none)".to_string();
     }
-    items.iter().map(|item| format!("- {item}")).collect::<Vec<_>>().join("\n")
+    items
+        .iter()
+        .take(DIGEST_MAX_ITEMS)
+        .map(|item| format!("- {}", clip(item, DIGEST_MAX_ITEM_CHARS)))
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 fn task_lines(tasks: &[DigestTask]) -> String {
@@ -177,9 +192,12 @@ fn task_lines(tasks: &[DigestTask]) -> String {
     }
     tasks
         .iter()
-        .map(|t| match &t.tag {
-            Some(tag) => format!("- [{tag}] {}", t.text),
-            None => format!("- {}", t.text),
+        .map(|t| {
+            let text = clip(&t.text, DIGEST_MAX_ITEM_CHARS);
+            match &t.tag {
+                Some(tag) => format!("- [{tag}] {text}"),
+                None => format!("- {text}"),
+            }
         })
         .collect::<Vec<_>>()
         .join("\n")
@@ -255,7 +273,8 @@ pub(crate) async fn digest_step_with<R: Runtime, F, Fut>(
     let Some((start, end)) = due_period(local, last_end) else {
         return;
     };
-    if let Err(e) = make_digest_with(app, pool, start, end, call).await {
+    let extract_on = settings::current().extract_enabled;
+    if let Err(e) = make_digest_with(app, pool, start, end, extract_on, call).await {
         tries.failed();
         error!("knowledge: digest not made: {e}");
     }
@@ -276,14 +295,15 @@ fn parse_local(text: &str) -> Result<DateTime<Local>, String> {
 }
 
 /// Builds and stores the digest for [start, end) and pushes its feed item. Ok(None) = nothing made: no meetings in
-/// the period, a meeting still extracting, or the digest already exists.
+/// the period, a meeting's extraction still running or queued, or the digest already exists.
 pub(crate) async fn make_digest<R: Runtime>(
     app: &AppHandle<R>,
     pool: &SqlitePool,
     start: DateTime<Local>,
     end: DateTime<Local>,
 ) -> Result<Option<String>, String> {
-    make_digest_with(app, pool, start, end, |system, user| call_model(pool.clone(), system, user)).await
+    let extract_on = settings::current().extract_enabled;
+    make_digest_with(app, pool, start, end, extract_on, |system, user| call_model(pool.clone(), system, user)).await
 }
 
 /// The body of `make_digest`, with the model call injected so tests can count calls and return canned replies.
@@ -292,6 +312,7 @@ pub(crate) async fn make_digest_with<R: Runtime, F, Fut>(
     pool: &SqlitePool,
     start: DateTime<Local>,
     end: DateTime<Local>,
+    extract_on: bool,
     call: F,
 ) -> Result<Option<String>, String>
 where
@@ -299,7 +320,8 @@ where
     Fut: Future<Output = Result<Reply, String>>,
 {
     let (from, to) = (start.with_timezone(&Utc), end.with_timezone(&Utc));
-    let meetings = period_meetings(pool, from, to).await?;
+    // The newest meetings, oldest first: the first is tag M1.
+    let meetings = newest(period_meetings(pool, from, to).await?, DIGEST_MAX_MEETINGS);
     if meetings.is_empty() {
         return Ok(None);
     }
@@ -308,23 +330,14 @@ where
         return Ok(None);
     }
 
-    let extract_on = settings::current().extract_enabled;
     let templates = tauri::async_runtime::spawn_blocking(|| templates::list_templates().templates)
         .await
         .unwrap_or_default();
     let mut tag_ids: Vec<String> = meetings.iter().map(|m| m.id.clone()).collect();
     let mut digest_meetings = Vec::with_capacity(meetings.len());
     for (i, m) in meetings.iter().enumerate() {
-        let (decisions, requests) = match briefs::read_lists(pool, &m.id).await? {
-            Some(lists) => lists,
-            None => {
-                if extract_on && may_extract(pool, &m.id).await? {
-                    if let Err(e) = extract::run_one(pool, &m.id).await {
-                        warn!("knowledge: digest could not extract a meeting: {e}");
-                    }
-                }
-                briefs::read_lists(pool, &m.id).await?.unwrap_or_default()
-            }
+        let Some((decisions, requests)) = ready_lists(pool, &m.id, extract_on).await? else {
+            return Ok(None);
         };
         let (markdown, template_id) = summary_of(pool, &m.id).await?;
         digest_meetings.push(DigestMeeting {
@@ -393,14 +406,39 @@ where
     Ok(Some(id))
 }
 
-/// Whether the digest may run this meeting's extraction now. A failed one waits for the user's Retry, as the worker's does.
-async fn may_extract(pool: &SqlitePool, meeting_id: &str) -> Result<bool, String> {
-    let status: Option<(String,)> = sqlx::query_as("SELECT status FROM meeting_extracts WHERE meeting_id = ?")
+/// The meeting's decisions and requests for the digest. None when they are not ready yet: its extraction is running,
+/// or queued and not yet done. A failed extraction has no lists and is not waited for; the user's Retry handles it.
+async fn ready_lists(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    extract_on: bool,
+) -> Result<Option<(Vec<String>, Vec<String>)>, String> {
+    if let Some(lists) = briefs::read_lists(pool, meeting_id).await? {
+        return Ok(Some(lists));
+    }
+    // Only a meeting with no extraction yet, or a queued one, runs now. A failed one waits for the user's Retry.
+    let status = extract_status(pool, meeting_id).await?;
+    if extract_on && status.as_deref().is_none_or(|s| s == "pending") {
+        if let Err(e) = extract::run_one(pool, meeting_id).await {
+            warn!("knowledge: digest could not extract a meeting: {e}");
+        }
+        if let Some(lists) = briefs::read_lists(pool, meeting_id).await? {
+            return Ok(Some(lists));
+        }
+    }
+    if extract::extraction_running(meeting_id) || extract_status(pool, meeting_id).await?.as_deref() == Some("pending") {
+        return Ok(None);
+    }
+    Ok(Some((Vec::new(), Vec::new())))
+}
+
+async fn extract_status(pool: &SqlitePool, meeting_id: &str) -> Result<Option<String>, String> {
+    let row: Option<(String,)> = sqlx::query_as("SELECT status FROM meeting_extracts WHERE meeting_id = ?")
         .bind(meeting_id)
         .fetch_optional(pool)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(status.is_none_or(|(s,)| s == "pending"))
+    Ok(row.map(|(status,)| status))
 }
 
 /// The meeting's type name, or "no type" when it has no summary template that still exists.
@@ -433,12 +471,16 @@ struct PeriodMeeting {
     created_at: DateTime<Utc>,
 }
 
-/// The meetings created in [from, to), oldest first. The first one is tag M1.
+/// The meetings created in [from, to), oldest first. The SQL test is loose by a day either side, because the stored
+/// text's fraction digits can move a boundary; the exact test is then made in Rust.
 async fn period_meetings(pool: &SqlitePool, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<PeriodMeeting>, String> {
-    let rows: Vec<(String, String, DateTime<Utc>)> = sqlx::query_as("SELECT id, title, created_at FROM meetings")
-        .fetch_all(pool)
-        .await
-        .map_err(|e| e.to_string())?;
+    let rows: Vec<(String, String, DateTime<Utc>)> =
+        sqlx::query_as("SELECT id, title, created_at FROM meetings WHERE created_at >= ? AND created_at < ?")
+            .bind(start_key(from - Duration::days(1)))
+            .bind(start_key(to + Duration::days(1)))
+            .fetch_all(pool)
+            .await
+            .map_err(|e| e.to_string())?;
     let mut meetings: Vec<PeriodMeeting> = rows
         .into_iter()
         .filter(|(_, _, at)| from <= *at && *at < to)
@@ -446,6 +488,13 @@ async fn period_meetings(pool: &SqlitePool, from: DateTime<Utc>, to: DateTime<Ut
         .collect();
     meetings.sort_by_key(|m| m.created_at);
     Ok(meetings)
+}
+
+/// The last `n` items of a list in time order.
+fn newest<T>(mut items: Vec<T>, n: usize) -> Vec<T> {
+    let skip = items.len().saturating_sub(n);
+    items.drain(..skip);
+    items
 }
 
 /// The meeting's completed summary markdown and its template id. Both are empty when there is no summary.
@@ -483,6 +532,17 @@ fn tag_for(tag_ids: &mut Vec<String>, meeting_id: String) -> String {
     format!("M{}", index + 1)
 }
 
+/// Turns the newest tasks of one list into lines. A tag is assigned only to a task that is kept.
+fn tagged(items: Vec<(Option<String>, String)>, tag_ids: &mut Vec<String>) -> Vec<DigestTask> {
+    newest(items, DIGEST_MAX_TASKS)
+        .into_iter()
+        .map(|(meeting_id, text)| DigestTask {
+            text,
+            tag: meeting_id.map(|id| tag_for(tag_ids, id)),
+        })
+        .collect()
+}
+
 /// The tasks in three lists: opened in the period, done in it, and still open from before it. Dismissed tasks are left out.
 async fn task_buckets(
     pool: &SqlitePool,
@@ -497,20 +557,22 @@ async fn task_buckets(
     .await
     .map_err(|e| e.to_string())?;
     let within = |at: &DateTime<Utc>| from <= *at && *at < to;
-    let mut out = DigestTasks::default();
+    let (mut opened, mut done, mut open) = (Vec::new(), Vec::new(), Vec::new());
     for (meeting_id, text, status, created_at, done_at) in rows {
-        let tag = meeting_id.map(|id| tag_for(tag_ids, id));
-        let task = DigestTask { text, tag };
-        if status == "done" && done_at.as_ref().is_some_and(within) {
-            out.done.push(task.clone());
-        }
         if within(&created_at) {
-            out.opened.push(task);
+            opened.push((meeting_id.clone(), text.clone()));
         } else if status == "open" {
-            out.open.push(task);
+            open.push((meeting_id.clone(), text.clone()));
+        }
+        if status == "done" && done_at.as_ref().is_some_and(within) {
+            done.push((meeting_id, text));
         }
     }
-    Ok(out)
+    Ok(DigestTasks {
+        opened: tagged(opened, tag_ids),
+        done: tagged(done, tag_ids),
+        open: tagged(open, tag_ids),
+    })
 }
 
 /// The digest with its meeting links looked up now. A meeting that is gone is shown as "meeting deleted".
@@ -643,6 +705,16 @@ mod tests {
     }
 
     #[test]
+    fn due_period_keeps_nine_across_clock_change() {
+        // Berlin turns its clocks back on 25 Oct 2026. The 30 Oct period must still start at 09:00 on 23 Oct.
+        let berlin = |d: u32, h: u32| chrono_tz::Europe::Berlin.with_ymd_and_hms(2026, 10, d, h, 0, 0).unwrap();
+        let now = berlin(30, 10);
+
+        assert_eq!(due_period(now, None), Some((berlin(23, 9), berlin(30, 9))));
+        assert_eq!(due_period(now, Some(berlin(23, 9))), Some((berlin(23, 9), berlin(30, 9))));
+    }
+
+    #[test]
     fn prompt_has_sections_tags_language_safety() {
         let meetings = vec![DigestMeeting {
             tag: "M1".into(),
@@ -672,11 +744,46 @@ mod tests {
     }
 
     #[test]
+    fn prompt_clips_long_text_and_long_lists() {
+        let meetings = vec![DigestMeeting {
+            tag: "M1".into(),
+            title: "t".repeat(500),
+            date: "2026-10-19".into(),
+            kind: "1:1".into(),
+            summary_head: String::new(),
+            decisions: (0..50).map(|_| "d".repeat(5000)).collect(),
+            requests: vec![],
+        }];
+
+        let (_, user) = build_prompts(&meetings, &DigestTasks::default(), "Russian");
+
+        assert!(user.contains(&format!("[M1] {} (", "t".repeat(DIGEST_MAX_TITLE_CHARS))));
+        assert!(!user.contains(&"t".repeat(DIGEST_MAX_TITLE_CHARS + 1)));
+        assert_eq!(user.matches("- ddd").count(), DIGEST_MAX_ITEMS);
+        assert!(!user.contains(&"d".repeat(DIGEST_MAX_ITEM_CHARS + 1)));
+    }
+
+    #[test]
     fn language_resolves_as_copilot() {
         assert_eq!(resolve_language(None, None), "Russian");
         assert_eq!(resolve_language(None, Some("de")), "German");
         assert_eq!(resolve_language(None, Some("auto")), "Russian");
         assert_eq!(resolve_language(Some("fr"), Some("de")), "French");
+    }
+
+    #[test]
+    fn copilot_codes_match_language_options() {
+        let ts = include_str!("../../../src/lib/summary-languages.ts");
+        let options: Vec<&str> = ts
+            .lines()
+            .filter_map(|line| line.split("{ code: '").nth(1))
+            .filter_map(|rest| rest.split('\'').next())
+            .collect();
+
+        assert_eq!(options, COPILOT_LANGUAGE_CODES);
+        for code in COPILOT_LANGUAGE_CODES {
+            assert!(language_name_from_code(code).is_some(), "{code} has no language name");
+        }
     }
 
     #[test]
@@ -709,7 +816,7 @@ mod tests {
             async { Ok(reply(CANNED)) }
         };
 
-        let made = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), call).await.unwrap();
+        let made = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), true, call).await.unwrap();
 
         assert_eq!(made, None);
         assert_eq!(calls.get(), 0);
@@ -754,7 +861,7 @@ mod tests {
             async { Ok(reply(CANNED)) }
         };
 
-        let id = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), call)
+        let id = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), true, call)
             .await
             .unwrap()
             .unwrap();
@@ -786,7 +893,31 @@ mod tests {
             async { Ok(reply(CANNED)) }
         };
 
-        let made = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), call).await.unwrap();
+        let made = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), true, call).await.unwrap();
+
+        assert_eq!(made, None);
+        assert_eq!(calls.get(), 0);
+        assert_eq!(digest_count(&pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn digest_waits_for_a_queued_extraction() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        done_meeting(&pool, "digest_queued", "2026-10-19T10:00:00Z").await;
+        // A regenerated summary queues a new extraction: the old lists are not the current ones.
+        sqlx::query("UPDATE meeting_extracts SET status = 'pending' WHERE meeting_id = 'digest_queued'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let calls = Cell::new(0);
+        let call = |_s: String, _u: String| {
+            calls.set(calls.get() + 1);
+            async { Ok(reply(CANNED)) }
+        };
+
+        // Extraction is off here, so nothing runs it: the digest must wait rather than store empty lists.
+        let made = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), false, call).await.unwrap();
 
         assert_eq!(made, None);
         assert_eq!(calls.get(), 0);
@@ -804,13 +935,83 @@ mod tests {
             .unwrap();
         let call = |_s: String, _u: String| async { Ok(reply(CANNED)) };
 
-        make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), call).await.unwrap();
+        make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), true, call).await.unwrap();
 
         let error: Option<String> = sqlx::query_scalar("SELECT error FROM meeting_extracts WHERE meeting_id = 'digest_failed'")
             .fetch_one(&pool)
             .await
             .unwrap();
         assert_eq!(error.as_deref(), Some("kept"));
+    }
+
+    #[tokio::test]
+    async fn task_tags_only_for_kept_tasks() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        done_meeting(&pool, "tag_in_period", "2026-10-19T10:00:00Z").await;
+        done_meeting(&pool, "tag_outside", "2026-10-01T10:00:00Z").await;
+        sqlx::query("INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES ('dismissed', 'tag_outside', 'Old', 'me', 'dismissed', 'auto', 0, '2026-10-02T11:00:00Z')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let call = |_s: String, _u: String| async { Ok(reply(CANNED)) };
+
+        let id = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), true, call)
+            .await
+            .unwrap()
+            .unwrap();
+
+        let ids: String = sqlx::query_scalar("SELECT meeting_ids_json FROM digests WHERE id = ?")
+            .bind(&id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(ids, r#"["tag_in_period"]"#);
+    }
+
+    #[tokio::test]
+    async fn huge_period_stays_within_the_prompt_caps() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        let decisions = serde_json::to_string(&(0..20).map(|_| "d".repeat(1000)).collect::<Vec<_>>()).unwrap();
+        for n in 0..40 {
+            let id = format!("huge_{n:02}");
+            done_meeting(&pool, &id, &format!("2026-10-19T{:02}:00:00Z", n % 24)).await;
+            sqlx::query("UPDATE meeting_extracts SET decisions_json = ? WHERE meeting_id = ?")
+                .bind(&decisions)
+                .bind(&id)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for n in 0..40 {
+            sqlx::query("INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES (?, 'huge_00', ?, 'me', 'open', 'auto', 0, ?)")
+                .bind(format!("task{n:02}"))
+                .bind(format!("Task {n:02} {}", "x".repeat(1000)))
+                .bind(format!("2026-09-{:02}T11:00:00Z", 1 + n / 2))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let sent = RefCell::new(String::new());
+        let call = |_s: String, u: String| {
+            sent.borrow_mut().push_str(&u);
+            async { Ok(reply(CANNED)) }
+        };
+
+        make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), true, call).await.unwrap();
+
+        let prompt = sent.borrow();
+        // Newest 30 meetings and 30 tasks, each text clipped: the prompt has a fixed upper bound.
+        // Only the newest 30 meetings have a block. A task of a meeting outside them still gets its tag.
+        assert_eq!(prompt.matches("] Sync Ivan (").count(), DIGEST_MAX_MEETINGS);
+        assert!(prompt.contains("[M30] Sync Ivan ("));
+        assert!(prompt.contains("Task 39"));
+        assert!(!prompt.contains("Task 00"));
+        let bound = DIGEST_MAX_MEETINGS * (DIGEST_MAX_TITLE_CHARS + DIGEST_SUMMARY_HEAD_CHARS + DIGEST_MAX_ITEMS * DIGEST_MAX_ITEM_CHARS * 2 + 200)
+            + 3 * DIGEST_MAX_TASKS * (DIGEST_MAX_ITEM_CHARS + 40)
+            + 2000;
+        assert!(prompt.chars().count() <= bound, "prompt is {} chars", prompt.chars().count());
     }
 
     #[tokio::test]

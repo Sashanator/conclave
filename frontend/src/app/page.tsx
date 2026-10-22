@@ -19,6 +19,7 @@ import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
 import { indexedDBService } from '@/services/indexedDBService';
 import { toast } from 'sonner';
+import { recoveredDescription } from '@/lib/recovery-toast';
 import { useRouter } from 'next/navigation';
 
 // Module-level so the CUDA warning is shown once per app session, not on every remount of Home.
@@ -141,9 +142,7 @@ export default function Home() {
 
       if (result.success) {
         toast.success('Meeting recovered successfully!', {
-          description: result.audioRecoveryStatus?.status === 'success'
-            ? 'Transcripts and audio recovered'
-            : 'Transcripts recovered (no audio available)',
+          description: recoveredDescription(result.audioRecoveryStatus?.status),
           action: result.meetingId ? {
             label: 'View Meeting',
             onClick: () => {

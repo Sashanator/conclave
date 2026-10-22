@@ -110,7 +110,11 @@ fn expand_here(
     to: DateTime<Utc>,
 ) -> Result<Vec<Occurrence>, String> {
     // The parser's error quotes the input, so only fixed messages leave the function.
-    let unfolded = unfold(ics);
+    // The guard splits lines by str::lines and the parser by CRLF, so one line ending must be used for both.
+    let unfolded = unfold(ics)
+        .replace("\r\n", "\n")
+        .replace('\r', "\n")
+        .replace('\n', "\r\n");
     if nesting_refused(&unfolded) {
         return Err(UNREADABLE.to_string());
     }
@@ -292,7 +296,8 @@ fn work(e: &Event, to: DateTime<Utc>) -> f64 {
         // No usable FREQ: rrule rejects the rule, so it costs nothing.
         _ => return 1.0,
     };
-    span / (period * interval) * fanout
+    // A series costs at least one period: a walk inside one period still generates the whole BY* fan-out.
+    (span / (period * interval)).max(1.0) * fanout
 }
 
 /// The instance starts of one event within [from, to). A non-recurring event is its DTSTART.
@@ -1119,6 +1124,85 @@ mod tests {
             "{:?}",
             started.elapsed()
         );
+    }
+
+    #[test]
+    fn bare_lf_cannot_hide_nesting() {
+        // A bare LF hides END from the guard's line split but not from the parser, which would nest 100k deep.
+        // Real nesting written with mixed endings must still be refused.
+        let flat = format!(
+            "BEGIN:VCALENDAR\r\n{}",
+            "BEGIN:A\nX:v\nEND:A\r\n".repeat(100_000)
+        );
+        for body in [
+            &flat,
+            &format!(
+                "BEGIN:VCALENDAR\r\n{}",
+                "BEGIN:A\nBEGIN:A\r\n".repeat(100_000)
+            ),
+        ] {
+            let err = expand(body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap_err();
+            assert_eq!(err, "Calendar could not be read");
+        }
+    }
+
+    #[test]
+    fn lf_only_feed_parses_in_linear_time() {
+        let mut body = String::from("BEGIN:VCALENDAR\n");
+        let mut i = 0;
+        while body.len() < 1_000_000 {
+            body.push_str(&format!(
+                "BEGIN:VEVENT\nUID:lf-{i}\nDTSTART:20261020T120000Z\nDTEND:20261020T130000Z\nEND:VEVENT\n"
+            ));
+            i += 1;
+        }
+        body.push_str("END:VCALENDAR\n");
+        let started = std::time::Instant::now();
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert!(!got.is_empty());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(5),
+            "{:?}",
+            started.elapsed()
+        );
+    }
+
+    #[test]
+    fn short_span_dense_yearly_series_skipped() {
+        // One second of span is one period's fraction, but the yearly walk generates every BY* combination
+        // of the year. The series must cost a whole period, so it is skipped and the standup still shows.
+        let list = |lo: u32, hi: u32| {
+            (lo..=hi)
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join(",")
+        };
+        let rrule = format!(
+            "RRULE:FREQ=YEARLY;BYMONTH={};BYMONTHDAY={};BYHOUR={};BYMINUTE={};BYSECOND={}",
+            list(1, 12),
+            list(1, 31),
+            list(0, 23),
+            list(0, 59),
+            list(0, 59)
+        );
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:dense",
+            "DTSTART:20261021T235959Z",
+            "DTEND:20261022T000000Z",
+            &rrule,
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "UID:standup",
+            "DTSTART:20261020T120000Z",
+            "DTEND:20261020T130000Z",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        let uids: Vec<&str> = got.iter().map(|o| o.uid.as_str()).collect();
+        assert_eq!(uids, vec!["standup"]);
     }
 
     #[test]

@@ -20,6 +20,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::audio::recording_commands::is_recording_now;
 use crate::dictate;
+use crate::summary::llm_client::TokenUsage;
 use crate::audio::vad::{ContinuousVadProcessor, SpeechSegment};
 use crate::whisper_engine::WhisperEngine;
 
@@ -764,7 +765,8 @@ async fn chat_reply(
     };
     let mut splitter = SentenceSplitter::new();
     let mut seq = 0u32;
-    let result = claude::stream(&client, &key, &body, &cancel, |delta| {
+    let mut usage = TokenUsage::default();
+    let result = claude::stream(&client, &key, &body, &cancel, &mut usage, |delta| {
         got_text.notify_one();
         let _ = first_token.set(Instant::now());
         for text in splitter.push(delta) {
@@ -774,14 +776,12 @@ async fn chat_reply(
     })
     .await;
     watchdog.abort();
+    // Recorded whatever the outcome: a reply cut at the token cap or cancelled mid-stream was billed.
+    claude::record_usage(&pool, &body, &usage).await;
+    // Hitting the CHAT_MAX_TOKENS cap ends the reply normally: the text so far is spoken.
     let result = match result {
-        Ok(streamed) => {
-            claude::record_usage(&pool, &body, &streamed.usage).await;
-            Ok(streamed.text)
-        }
-        // Hitting the CHAT_MAX_TOKENS cap ends the reply normally: the text so far is spoken.
         Err(e) if is_token_cap(&e) => Ok(String::new()),
-        Err(e) => Err(e),
+        other => other,
     };
     match result {
         Ok(_) => {

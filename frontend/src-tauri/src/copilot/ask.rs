@@ -2,7 +2,7 @@ use super::{settings, ASK_TIMEOUT_SECS, MAX_CONTEXT_CHARS, MAX_QUESTION_CHARS};
 use crate::database::repositories::setting::SettingsRepository;
 use crate::ollama::metadata::ModelMetadataCache;
 use crate::state::AppState;
-use crate::summary::llm_client::LLMProvider;
+use crate::summary::llm_client::{LLMProvider, LlmCompletion};
 use crate::summary::llm_target::{complete, resolve_llm_target, LlmTarget};
 use crate::summary::processor::language_name_from_code;
 use crate::usage::{self, Purpose};
@@ -151,7 +151,15 @@ pub fn build_prompts(req: &CopilotRequest, max_chars: usize) -> Result<(String, 
 }
 
 /// Resolves the model, sizes the context, and makes the call. Returns the user prompt and the reply.
-async fn send<R: Runtime>(app: &AppHandle<R>, request: &CopilotRequest) -> Result<(String, String), String> {
+/// One answered call: the prompt, the completion, and the provider and model its usage row needs.
+struct Sent {
+    user: String,
+    completion: LlmCompletion,
+    provider: &'static str,
+    model: String,
+}
+
+async fn send<R: Runtime>(app: &AppHandle<R>, request: &CopilotRequest) -> Result<Sent, String> {
     let target = copilot_target(app).await?;
     // The local sidecar cannot be cancelled, so a timed-out call would leave it busy.
     if target.provider == LLMProvider::BuiltInAI {
@@ -161,19 +169,7 @@ async fn send<R: Runtime>(app: &AppHandle<R>, request: &CopilotRequest) -> Resul
     let completion = complete(&target, &system, &user, Some(0.3), None)
         .await
         .map_err(shorten_error)?;
-    if let Some(state) = app.try_state::<AppState>() {
-        usage::record(
-            state.db_manager.pool(),
-            target.provider.as_str(),
-            &target.model,
-            Purpose::Copilot,
-            None,
-            request.recording_id.as_deref(),
-            completion.usage.as_ref(),
-        )
-        .await;
-    }
-    Ok((user, completion.content))
+    Ok(Sent { user, completion, provider: target.provider.as_str(), model: target.model })
 }
 
 /// Holds the single in-flight answer: its request id and how to abort it.
@@ -265,7 +261,7 @@ async fn answer<R: Runtime>(app: AppHandle<R>, request: CopilotRequest) -> Resul
     )
     .await;
     let ms = started.elapsed().as_millis();
-    let (user, content) = match reply {
+    let sent = match reply {
         Err(_) => {
             warn!("copilot: {:?} timed out after {ms} ms", request.action);
             return Err("Timed out".to_string());
@@ -276,7 +272,20 @@ async fn answer<R: Runtime>(app: AppHandle<R>, request: CopilotRequest) -> Resul
         }
         Ok(Ok(sent)) => sent,
     };
-    let answer = content.trim();
+    // After the timeout, so a slow write cannot turn an answer into "Timed out".
+    if let Some(state) = app.try_state::<AppState>() {
+        usage::record(
+            state.db_manager.pool(),
+            sent.provider,
+            &sent.model,
+            Purpose::Copilot,
+            None,
+            request.recording_id.as_deref(),
+            sent.completion.usage.as_ref(),
+        )
+        .await;
+    }
+    let answer = sent.completion.content.trim();
     if answer.is_empty() {
         warn!(
             "copilot: {:?} returned an empty answer after {ms} ms",
@@ -287,7 +296,7 @@ async fn answer<R: Runtime>(app: AppHandle<R>, request: CopilotRequest) -> Resul
     info!(
         "copilot: {:?} answered, {} chars sent, {} chars back, {ms} ms",
         request.action,
-        user.chars().count(),
+        sent.user.chars().count(),
         answer.chars().count()
     );
     Ok(answer.to_string())

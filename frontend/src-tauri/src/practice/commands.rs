@@ -23,6 +23,7 @@ use crate::audio::recording_preferences::{get_default_recordings_folder, load_re
 use crate::audio::retranscription::is_retranscription_in_progress;
 use crate::audio::transcription::engine::get_or_init_whisper;
 use crate::dictate;
+use crate::summary::llm_client::TokenUsage;
 use crate::state::AppState;
 
 use super::audio::{Player, TurnMic, TurnRecorder};
@@ -490,9 +491,10 @@ async fn plan_text(
     let (system, user) = plan_prompts(&setup.character, &setup.situation);
     let models = settings::current();
     let body = claude::plan_body(&models.plan_model, &models.plan_effort, &system, &user, materials);
-    let streamed = claude::stream(&claude::http_client(), &key, &body, token, |_| {}).await?;
-    claude::record_usage(pool, &body, &streamed.usage).await;
-    Ok(streamed.text)
+    let mut usage = TokenUsage::default();
+    let result = claude::stream(&claude::http_client(), &key, &body, token, &mut usage, |_| {}).await;
+    claude::record_usage(pool, &body, &usage).await;
+    result
 }
 
 /// Loads the engine, voices, microphone, speaker and session folder. On error, what was created is undone

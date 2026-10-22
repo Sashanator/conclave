@@ -100,8 +100,10 @@ fn merge_usage(total: &mut TokenUsage, part: TokenUsage) {
     total.cache_write = part.cache_write.or(total.cache_write);
 }
 
-/// Records one Speaking Practice call. The model is the request body's.
+/// Records one Speaking Practice call, whatever it returned. The model is the request body's.
+/// Nothing is written when no usage arrived (a refused or failed request before message_start).
 pub(crate) async fn record_usage(pool: &sqlx::SqlitePool, body: &Value, usage: &TokenUsage) {
+    let known = (*usage != TokenUsage::default()).then_some(usage);
     crate::usage::record(
         pool,
         "claude",
@@ -109,7 +111,7 @@ pub(crate) async fn record_usage(pool: &sqlx::SqlitePool, body: &Value, usage: &
         crate::usage::Purpose::Practice,
         None,
         None,
-        Some(usage),
+        known,
     )
     .await;
 }
@@ -214,22 +216,17 @@ impl ClaudeError {
     }
 }
 
-/// A finished reply and the tokens the call used.
-#[derive(Debug, PartialEq)]
-pub struct Streamed {
-    pub text: String,
-    pub usage: TokenUsage,
-}
-
+/// `usage` is filled as the events arrive, so it holds the tokens even when the call returns an error.
 pub async fn stream(
     client: &reqwest::Client,
     key: &str,
     body: &Value,
     cancel: &CancellationToken,
+    usage: &mut TokenUsage,
     on_text: impl FnMut(&str),
-) -> Result<Streamed, ClaudeError> {
+) -> Result<String, ClaudeError> {
     let idle = Duration::from_secs(STREAM_IDLE_SECS);
-    stream_with_idle(client, MESSAGES_URL, key, body, cancel, idle, on_text).await
+    stream_with_idle(client, MESSAGES_URL, key, body, cancel, idle, usage, on_text).await
 }
 
 async fn stream_with_idle(
@@ -239,8 +236,9 @@ async fn stream_with_idle(
     body: &Value,
     cancel: &CancellationToken,
     idle: Duration,
+    usage: &mut TokenUsage,
     mut on_text: impl FnMut(&str),
-) -> Result<Streamed, ClaudeError> {
+) -> Result<String, ClaudeError> {
     let request = client
         .post(url)
         .header("x-api-key", key)
@@ -265,7 +263,6 @@ async fn stream_with_idle(
     let mut parser = SseParser::default();
     let mut pending = Vec::new();
     let mut text = String::new();
-    let mut usage = TokenUsage::default();
     let mut stop_reason: Option<String> = None;
     let mut chunks = resp.bytes_stream();
     loop {
@@ -290,7 +287,7 @@ async fn stream_with_idle(
                     on_text(&t);
                     text.push_str(&t);
                 }
-                SseEvent::Usage(part) => merge_usage(&mut usage, part),
+                SseEvent::Usage(part) => merge_usage(usage, part),
                 SseEvent::StopReason(reason) => stop_reason = Some(reason),
                 SseEvent::Stop => {
                     return match stop_reason.as_deref() {
@@ -300,7 +297,7 @@ async fn stream_with_idle(
                         }
                         _ => {
                             log::debug!("practice: Claude reply of {} chars", text.len());
-                            Ok(Streamed { text, usage })
+                            Ok(text)
                         }
                     };
                 }
@@ -780,10 +777,61 @@ mod tests {
             &body,
             &CancellationToken::new(),
             idle,
+            &mut TokenUsage::default(),
             |_| {},
         )
         .await
-        .map(|streamed| streamed.text)
+    }
+
+    #[tokio::test]
+    async fn max_tokens_reply_keeps_its_usage_and_records_a_row() {
+        // A reply cut at the token cap is an Err, but it was billed: its usage must still be recorded.
+        let body = format!(
+            "event: message_start\ndata: {{\"type\":\"message_start\",\"message\":{{\"usage\":{{\"input_tokens\":12,\"cache_read_input_tokens\":3,\"output_tokens\":1}}}}}}\n\n{}event: message_delta\ndata: {{\"type\":\"message_delta\",\"usage\":{{\"output_tokens\":40}},\"delta\":{{\"stop_reason\":\"max_tokens\"}}}}\n\nevent: message_stop\ndata: {{\"type\":\"message_stop\"}}\n\n",
+            delta("Hi")
+        );
+        let url = serve_once(sse(&body), Duration::ZERO).await;
+        let client = reqwest::Client::builder().no_proxy().build().unwrap();
+        let request = chat_body("claude-haiku-5-5", "s", &[]);
+        let mut usage = TokenUsage::default();
+        let result = stream_with_idle(
+            &client,
+            &url,
+            SAMPLE_KEY,
+            &request,
+            &CancellationToken::new(),
+            Duration::from_secs(5),
+            &mut usage,
+            |_| {},
+        )
+        .await;
+        assert_eq!(result, Err(ClaudeError::Stream("max_tokens".into())));
+        assert_eq!(
+            usage,
+            TokenUsage {
+                input: Some(12),
+                output: Some(40),
+                cache_read: Some(3),
+                cache_write: None,
+                reported_cost_usd: None,
+            }
+        );
+
+        let _guard = crate::usage::prices::CACHE_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        crate::usage::prices::set_cache_for_test(Vec::new());
+        let pool = crate::database::repositories::test_pool().await;
+        record_usage(&pool, &request, &usage).await;
+        // A call that failed before any usage arrived writes nothing.
+        record_usage(&pool, &request, &TokenUsage::default()).await;
+        let rows: Vec<(i64, Option<i64>)> = sqlx::query_as(
+            "SELECT COUNT(*), MAX(output_tokens) FROM llm_usage WHERE purpose = 'practice' AND provider = 'claude' AND model = 'claude-haiku-5-5'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(rows, vec![(1, Some(40))]);
     }
 
     #[tokio::test]
@@ -875,7 +923,7 @@ mod tests {
         let cancel = CancellationToken::new();
         cancel.cancel();
         let body = chat_body("claude-haiku-5-5", "s", &[]);
-        let r = stream(&http_client(), SAMPLE_KEY, &body, &cancel, |_| {}).await;
+        let r = stream(&http_client(), SAMPLE_KEY, &body, &cancel, &mut TokenUsage::default(), |_| {}).await;
         assert_eq!(r, Err(ClaudeError::Cancelled));
     }
 

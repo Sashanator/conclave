@@ -19,6 +19,7 @@ use crate::audio::recording_commands::is_recording_now;
 use crate::audio::transcription::engine::get_or_init_whisper;
 use crate::audio::vad::get_speech_chunks;
 use crate::dictate;
+use crate::summary::llm_client::TokenUsage;
 use crate::state::AppState;
 
 use super::audio::read_span;
@@ -217,11 +218,11 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     let (system, user) = report_prompts(&rows, &recent);
     let models = settings::current();
     let body = claude::report_body(&models.plan_model, &models.plan_effort, &system, &user, &schema());
-    let streamed = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), |_| {})
-        .await
-        .map_err(|e| report_copy(&e).to_string())?;
-    claude::record_usage(&pool, &body, &streamed.usage).await;
-    parse_report(&streamed.text, fluency, &learner).map(|report| with_pronunciation(report, pron))
+    let mut usage = TokenUsage::default();
+    let result = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), &mut usage, |_| {}).await;
+    claude::record_usage(&pool, &body, &usage).await;
+    let text = result.map_err(|e| report_copy(&e).to_string())?;
+    parse_report(&text, fluency, &learner).map(|report| with_pronunciation(report, pron))
 }
 
 /// Re-transcribes each learner turn that has audio, word for word, and stores it. Other turns keep their live text.

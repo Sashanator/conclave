@@ -1087,13 +1087,13 @@ pub async fn open_meeting_folder<R: Runtime>(
     match meeting {
         Some(m) => {
             if let Some(folder_path) = m.folder_path {
-                log_info!("Opening meeting folder: {}", folder_path);
+                log_info!("Opening meeting folder");
 
                 // Verify folder exists
                 let path = std::path::Path::new(&folder_path);
                 if !path.exists() {
-                    log_warn!("Folder path does not exist: {}", folder_path);
-                    return Err(format!("Recording folder not found: {}", folder_path));
+                    log_warn!("Meeting folder does not exist");
+                    return Err("Recording folder not found".to_string());
                 }
 
                 // Open folder based on OS
@@ -1121,7 +1121,7 @@ pub async fn open_meeting_folder<R: Runtime>(
                         .map_err(|e| format!("Failed to open folder: {}", e))?;
                 }
 
-                log_info!("Successfully opened folder: {}", folder_path);
+                log_info!("Successfully opened meeting folder");
                 Ok(())
             } else {
                 log_warn!("Meeting {} has no folder_path set", meeting_id);

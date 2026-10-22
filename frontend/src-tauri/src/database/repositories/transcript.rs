@@ -50,7 +50,7 @@ impl TranscriptsRepository {
         .await;
 
         if let Err(e) = result {
-            error!("Failed to create meeting '{}': {}", meeting_title, e);
+            error!("Failed to create meeting: {}", e);
             transaction.rollback().await?;
             return Err(e);
         }

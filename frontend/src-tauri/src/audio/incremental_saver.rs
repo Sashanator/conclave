@@ -169,7 +169,7 @@ impl IncrementalAudioSaver {
 
             // Verify checkpoint exists
             if !checkpoint_path.exists() {
-                return Err(anyhow!("Checkpoint file missing"));
+                return Err(anyhow!("Checkpoint file missing: {}", checkpoint_path.file_name().and_then(|n| n.to_str()).unwrap_or("?")));
             }
 
             // Use absolute path for FFmpeg (required for safe mode)

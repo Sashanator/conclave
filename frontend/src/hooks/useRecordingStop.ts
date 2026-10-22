@@ -303,7 +303,7 @@ export function useRecordingStop(
 
           console.log('✅ Successfully saved COMPLETE meeting with ID:', meetingId);
           console.log('   Transcripts:', freshTranscripts.length);
-          console.log('   folder_path:', folderPath);
+          console.log('   folder saved:', Boolean(folderPath));
 
           // Mark meeting as saved in IndexedDB (for recovery system)
           await markMeetingAsSaved();
@@ -325,7 +325,7 @@ export function useRecordingStop(
                 id: meetingId,
                 title: meetingData.title
               });
-              console.log('✅ Current meeting set:', meetingData.title);
+              console.log('✅ Current meeting set, title chars:', meetingData.title?.length ?? 0);
             }
           } catch (error) {
             console.warn('Could not fetch meeting details, using ID only:', error);

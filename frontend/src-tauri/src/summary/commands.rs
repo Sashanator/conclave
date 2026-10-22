@@ -421,11 +421,11 @@ pub async fn api_get_summary<R: Runtime>(
             };
 
             log_info!(
-                "Summary status for {}: {}, has_data: {}, meeting_name: {:?}",
+                "Summary status for {}: {}, has_data: {}, title chars: {:?}",
                 meeting_id,
                 status,
                 response.data.is_some(),
-                response.meeting_name
+                response.meeting_name.as_ref().map(|n| n.chars().count())
             );
             Ok(response)
         }

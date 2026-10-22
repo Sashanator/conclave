@@ -288,7 +288,7 @@ pub async fn show_recording_started_notification<R: Runtime>(
     manager_state: &NotificationManagerState<R>,
     meeting_name: Option<String>,
 ) -> Result<()> {
-    log_info!("Attempting to show recording started notification for meeting: {:?}", meeting_name);
+    log_info!("Attempting to show recording started notification, title chars: {:?}", meeting_name.as_ref().map(|n| n.chars().count()));
 
     // Check if manager is initialized
     let manager_lock = manager_state.read().await;
@@ -338,7 +338,7 @@ pub async fn show_recording_started_notification<R: Runtime>(
                     None => "Recording has started. Please inform others in the meeting that you are recording.".to_string(),
                 };
 
-                log_info!("Using direct Tauri notification fallback: {} - {}", title, body);
+                log_info!("Using direct Tauri notification fallback for the recording start");
 
                 match app_handle.notification().builder()
                     .title(title)

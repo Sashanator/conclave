@@ -238,19 +238,6 @@ impl MeetingsRepository {
         Ok(true)
     }
 
-    /// The summary's rename. Only a meeting still on its default title is renamed; a calendar or user
-    /// title is kept. Returns false when nothing was renamed.
-    pub async fn update_meeting_name_if_default(
-        pool: &SqlitePool,
-        meeting_id: &str,
-        new_title: &str,
-    ) -> Result<bool, SqlxError> {
-        let mut transaction = pool.begin().await?;
-        let renamed = Self::rename_if_default(&mut *transaction, meeting_id, new_title).await?;
-        transaction.commit().await?;
-        Ok(renamed)
-    }
-
     /// The rename on a caller's connection or transaction, so a summary's completion and its name commit together.
     pub async fn rename_if_default(
         conn: &mut SqliteConnection,
@@ -559,11 +546,13 @@ mod migration_tests {
             .await
             .unwrap();
 
-        assert!(MeetingsRepository::update_meeting_name_if_default(&pool, "D", "Summary name").await.unwrap());
-        assert!(!MeetingsRepository::update_meeting_name_if_default(&pool, "C", "Summary name").await.unwrap());
-        assert!(!MeetingsRepository::update_meeting_name_if_default(&pool, "U", "Summary name").await.unwrap());
+        let mut conn = pool.acquire().await.unwrap();
+        assert!(MeetingsRepository::rename_if_default(&mut conn, "D", "Summary name").await.unwrap());
+        assert!(!MeetingsRepository::rename_if_default(&mut conn, "C", "Summary name").await.unwrap());
+        assert!(!MeetingsRepository::rename_if_default(&mut conn, "U", "Summary name").await.unwrap());
         // Once renamed by a summary, a later summary does not rename again.
-        assert!(!MeetingsRepository::update_meeting_name_if_default(&pool, "D", "Second").await.unwrap());
+        assert!(!MeetingsRepository::rename_if_default(&mut conn, "D", "Second").await.unwrap());
+        drop(conn); // the in-memory test pool has one connection
 
         assert_eq!(title_source(&pool, "D").await.0, "summary");
         assert_eq!(title_source(&pool, "C").await.0, "calendar");

@@ -333,7 +333,7 @@ fn get_transcription_status() -> TranscriptionStatus {
 
 #[tauri::command]
 async fn save_transcript(file_path: String, content: String) -> Result<(), String> {
-    log_info!("Saving transcript to: {}", file_path);
+    log_info!("Saving transcript file");
 
     // Ensure parent directory exists
     if let Some(parent) = std::path::Path::new(&file_path).parent() {

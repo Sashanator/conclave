@@ -246,6 +246,17 @@ impl MeetingsRepository {
         new_title: &str,
     ) -> Result<bool, SqlxError> {
         let mut transaction = pool.begin().await?;
+        let renamed = Self::rename_if_default(&mut *transaction, meeting_id, new_title).await?;
+        transaction.commit().await?;
+        Ok(renamed)
+    }
+
+    /// The rename on a caller's connection or transaction, so a summary's completion and its name commit together.
+    pub async fn rename_if_default(
+        conn: &mut SqliteConnection,
+        meeting_id: &str,
+        new_title: &str,
+    ) -> Result<bool, SqlxError> {
         let now = Utc::now();
 
         // Update meetings table
@@ -255,11 +266,10 @@ impl MeetingsRepository {
         .bind(new_title)
         .bind(now)
         .bind(meeting_id)
-        .execute(&mut *transaction)
+        .execute(&mut *conn)
         .await?;
 
         if meeting_update.rows_affected() == 0 {
-            transaction.rollback().await?;
             return Ok(false); // Not found, or not a default title
         }
 
@@ -267,10 +277,8 @@ impl MeetingsRepository {
         sqlx::query("UPDATE transcript_chunks SET meeting_name = ? WHERE meeting_id = ?")
             .bind(new_title)
             .bind(meeting_id)
-            .execute(&mut *transaction)
+            .execute(&mut *conn)
             .await?;
-
-        transaction.commit().await?;
         Ok(true)
     }
 }

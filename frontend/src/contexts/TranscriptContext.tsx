@@ -8,7 +8,7 @@ import { transcriptService } from '@/services/transcriptService';
 import { recordingService } from '@/services/recordingService';
 import { indexedDBService } from '@/services/indexedDBService';
 import { applyMarks, marksToPersist, mergeNotes, newNote } from '@/lib/meeting-notes';
-import type { StartTitle } from '@/lib/calendar-title';
+import { parseStoredTitle, type StartTitle } from '@/lib/calendar-title';
 
 interface TranscriptContextType {
   transcripts: Transcript[];
@@ -430,8 +430,13 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           // Fetch meeting name from backend
           const meetingName = await recordingService.getRecordingMeetingName();
           if (meetingName) {
-            console.log('[Reload Sync] Retrieved meeting name:', meetingName);
+            console.log('[Reload Sync] Retrieved meeting name, chars:', meetingName.length);
             setMeetingTitle(meetingName);
+            const stored = parseStoredTitle(sessionStorage.getItem('recording_title_origin'));
+            if (stored) {
+              setTitleSource(stored.source);
+              setCalendarLink(stored.calendar);
+            }
             console.log('[Reload Sync] ✅ Meeting title synced successfully');
           }
         } catch (error) {
@@ -469,7 +474,10 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const setStartTitle = useCallback((start: StartTitle) => {
     setMeetingTitle(start.title);
     setTitleSource(start.source);
-    setCalendarLink(start.source === 'calendar' && start.uid && start.start ? { uid: start.uid, start: start.start } : null);
+    const calendar = start.source === 'calendar' && start.uid && start.start ? { uid: start.uid, start: start.start } : null;
+    setCalendarLink(calendar);
+    // A reload during the recording restores the source; the recording's end clears it.
+    sessionStorage.setItem('recording_title_origin', JSON.stringify({ source: start.source, calendar }));
   }, []);
 
   // Manual transcript update handler (for RecordingControls component)

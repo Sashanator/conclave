@@ -239,7 +239,7 @@ impl RecordingSaver {
         if create_checkpoints {
             let incremental_saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000)?;
             self.incremental_saver = Some(Arc::new(AsyncMutex::new(incremental_saver)));
-            info!("✅ Incremental audio saver initialized for meeting: {}", meeting_name);
+            info!("✅ Incremental audio saver initialized (title chars: {})", meeting_name.chars().count());
         } else {
             info!("⚠️  Skipped incremental audio saver (auto-save disabled)");
         }

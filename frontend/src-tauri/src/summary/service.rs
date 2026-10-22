@@ -450,6 +450,9 @@ impl SummaryService {
                     }
                 };
 
+                // The name renames the meeting in the completion's transaction: see update_process_completed.
+                let summary_name = extract_meeting_name_from_markdown(&generated.final_markdown)
+                    .filter(|name| !name.is_empty());
                 match SummaryProcessesRepository::update_process_completed(
                     &pool,
                     &meeting_id,
@@ -457,21 +460,11 @@ impl SummaryService {
                     result_json,
                     generated.successful_chunk_count,
                     duration,
+                    summary_name.as_deref(),
                 )
                 .await
                 {
                     Ok(true) => {
-                        if let Some(name) =
-                            extract_meeting_name_from_markdown(&generated.final_markdown)
-                                .filter(|name| !name.is_empty())
-                        {
-                            if let Err(error) =
-                                MeetingsRepository::update_meeting_name_if_default(&pool, &meeting_id, &name)
-                                    .await
-                            {
-                                error!("Failed to update meeting name for {}: {}", meeting_id, error);
-                            }
-                        }
                         if crate::knowledge::settings::current().extract_enabled {
                             crate::knowledge::extract::enqueue(&pool, &meeting_id).await;
                         }

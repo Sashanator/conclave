@@ -199,7 +199,7 @@ async fn start_recording<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("🔥 CALLED start_recording with meeting: {:?}", meeting_name);
+    log_info!("🔥 CALLED start_recording with meeting chars: {:?}", meeting_name.as_ref().map(|n| n.chars().count()));
     log_info!(
         "📋 Backend received parameters - mic: {:?}, system: {:?}, meeting: {:?}",
         mic_device_name,
@@ -412,8 +412,8 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     system_device_name: Option<String>,
     meeting_name: Option<String>,
 ) -> Result<(), String> {
-    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting: {:?}",
-             mic_device_name, system_device_name, meeting_name);
+    log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting chars: {:?}",
+             mic_device_name, system_device_name, meeting_name.as_ref().map(|n| n.chars().count()));
 
     // Clone meeting_name for notification use later
     let meeting_name_for_notification = meeting_name.clone();

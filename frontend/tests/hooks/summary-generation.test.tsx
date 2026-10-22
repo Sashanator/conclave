@@ -152,6 +152,19 @@ describe('summary state restored when returning to a meeting', () => {
     expect(timers.size).toBe(0);
   });
 
+  test('completion shows the stored title, not the name the summary proposed', async () => {
+    await show(response());
+    getSummary = async () => response({
+      status: 'completed', data: { markdown: 'Finished summary', MeetingName: 'Summary name' }, meetingName: 'Calendar title',
+    });
+    await tick();
+    // Output children: status, ':', error, ':', title, ':', summary JSON. Only the title child is checked.
+    const children = (renderer.toJSON() as { children: string[] }).children;
+    expect(children).toContain('completed');
+    expect(children).toContain('Calendar title');
+    expect(children).not.toContain('Summary name');
+  });
+
   test('keeps regeneration loading with old content and restores content on failure', async () => {
     await show(response({ data: { markdown: 'Previous summary' } }));
     expect(text()).toContain('processing');

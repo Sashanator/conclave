@@ -1,4 +1,5 @@
 use crate::database::models::SummaryProcess;
+use crate::database::repositories::meeting::MeetingsRepository;
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -128,6 +129,9 @@ impl SummaryProcessesRepository {
         Ok(())
     }
 
+    /// Marks the process completed. A summary's `name` renames a default-titled meeting in the same
+    /// transaction, so a poll that sees `completed` also sees the final title. Nothing is renamed
+    /// when the completion is stale.
     pub async fn update_process_completed(
         pool: &SqlitePool,
         meeting_id: &str,
@@ -135,11 +139,13 @@ impl SummaryProcessesRepository {
         result: Value,
         chunk_count: i64,
         processing_time: f64,
+        name: Option<&str>,
     ) -> Result<bool, sqlx::Error> {
         let now = Utc::now();
         let result_str = serde_json::to_string(&result)
             .map_err(|e| sqlx::Error::Protocol(format!("Failed to serialize result: {}", e)))?;
 
+        let mut transaction = pool.begin().await?;
         let update = sqlx::query(
             r#"
             UPDATE summary_processes
@@ -154,9 +160,14 @@ impl SummaryProcessesRepository {
         .bind(processing_time)
         .bind(meeting_id)
         .bind(started_at)
-        .execute(pool)
+        .execute(&mut *transaction)
         .await?;
-        Ok(update.rows_affected() == 1)
+        let completed = update.rows_affected() == 1;
+        if let (true, Some(name)) = (completed, name) {
+            MeetingsRepository::rename_if_default(&mut *transaction, meeting_id, name).await?;
+        }
+        transaction.commit().await?;
+        Ok(completed)
     }
 
     pub async fn update_process_failed(
@@ -351,6 +362,47 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn completion_renames_only_a_default_title_in_the_same_write() {
+        // The migrated schema: this test needs the meetings table too.
+        let pool = crate::database::repositories::test_pool().await;
+        for (id, source) in [("default-m", "default"), ("calendar-m", "calendar"), ("stale-m", "default")] {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, title_source) VALUES (?, 'Original', '2026-10-22 09:00:00', '2026-10-22 09:00:00', ?)")
+                .bind(id)
+                .bind(source)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let started = Utc::now();
+        seed_pending(&pool, "default-m", started, None, None).await;
+        seed_pending(&pool, "calendar-m", started, None, None).await;
+
+        assert!(SummaryProcessesRepository::update_process_completed(
+            &pool, "default-m", started, json!({"markdown": "x"}), 1, 1.0, Some("Summary name"),
+        ).await.unwrap());
+        assert!(SummaryProcessesRepository::update_process_completed(
+            &pool, "calendar-m", started, json!({"markdown": "x"}), 1, 1.0, Some("Summary name"),
+        ).await.unwrap());
+        // No pending row for stale-m: the completion is stale, so nothing is renamed.
+        assert!(!SummaryProcessesRepository::update_process_completed(
+            &pool, "stale-m", started, json!({"markdown": "x"}), 1, 1.0, Some("Summary name"),
+        ).await.unwrap());
+
+        let titles: Vec<(String, String)> = sqlx::query_as("SELECT id, title FROM meetings ORDER BY id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            titles,
+            vec![
+                ("calendar-m".to_string(), "Original".to_string()),
+                ("default-m".to_string(), "Summary name".to_string()),
+                ("stale-m".to_string(), "Original".to_string()),
+            ]
+        );
+    }
+
+    #[tokio::test]
     async fn terminal_compare_and_set_preserves_first_writer() {
         let pool = test_pool().await;
         let completed_start = Utc::now();
@@ -363,6 +415,7 @@ mod tests {
                 json!({"markdown": "completed"}),
                 1,
                 1.0,
+                None,
             )
             .await
             .unwrap()
@@ -411,6 +464,7 @@ mod tests {
                 json!({"markdown": "completed"}),
                 1,
                 1.0,
+                None,
             )
             .await
             .unwrap()

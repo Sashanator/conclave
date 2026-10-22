@@ -250,7 +250,7 @@ export function useRecordingStop(
 
         console.log('💾 Saving COMPLETE transcripts to database...', {
           transcript_count: freshTranscripts.length,
-          meeting_name: savedMeetingName || meetingTitle,
+          title_chars: (savedMeetingName || meetingTitle).length,
           folder_path: folderPath,
           sample_text: freshTranscripts.length > 0 ? freshTranscripts[0].text.substring(0, 50) + '...' : 'none',
           last_transcript: freshTranscripts.length > 0 ? freshTranscripts[freshTranscripts.length - 1].text.substring(0, 30) + '...' : 'none',
@@ -313,6 +313,7 @@ export function useRecordingStop(
           sessionStorage.removeItem('last_recording_meeting_name');
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
           sessionStorage.removeItem('indexeddb_current_meeting_id');
+          sessionStorage.removeItem('recording_title_origin');
 
           // Refetch meetings and set current meeting
           await refetchMeetings();

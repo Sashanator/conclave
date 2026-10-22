@@ -11,7 +11,7 @@ use crate::summary::metadata::{
 };
 use crate::summary::processor::{
     clean_llm_markdown_detailed, extract_meeting_name_from_markdown, generate_meeting_summary,
-    require_visible_markdown,
+    chunk_prompt_overhead_tokens, require_visible_markdown,
 };
 use crate::summary::template_choice::{
     auto_pick_answer_id, auto_pick_prompts, choice_to_store, choose_without_model, Choice,
@@ -42,10 +42,15 @@ struct RegisteredCancellation {
 static CANCELLATION_REGISTRY: LazyLock<Arc<Mutex<HashMap<String, RegisteredCancellation>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
+/// Output tokens kept free in Ollama's context so a chunk's summary is not cut off.
+const OLLAMA_REPLY_TOKENS: usize = 1024;
+
 /// Chunk size for Ollama. Ollama's default runtime context is 4096 tokens and requests never send num_ctx to raise it.
 /// shortcut: a fixed 4096 cap, not the server's OLLAMA_CONTEXT_LENGTH or per-request num_ctx; upgrade if those become configurable.
 fn ollama_chunk_tokens(context_size: usize) -> usize {
-    context_size.min(4096).saturating_sub(300)
+    context_size
+        .min(4096)
+        .saturating_sub(chunk_prompt_overhead_tokens() + OLLAMA_REPLY_TOKENS)
 }
 
 /// Strips the first `#` heading line; returns "" if no `#` is found.
@@ -555,10 +560,12 @@ mod tests {
     use crate::summary::llm_client::TokenUsage;
 
     #[test]
-    fn ollama_chunks_fit_the_default_runtime_context() {
-        // 300 tokens are reserved for the prompt; a larger trained context is not used.
-        assert_eq!(ollama_chunk_tokens(131_072), 3_796);
-        assert_eq!(ollama_chunk_tokens(2_048), 1_748);
+    fn ollama_chunks_leave_room_for_the_reply_in_the_default_context() {
+        // Prompt and reply share the context: chunk + instructions + 1024 reply tokens must fit in 4096.
+        for context in [2_048, 4_096, 131_072] {
+            let chunk = ollama_chunk_tokens(context);
+            assert!(chunk + chunk_prompt_overhead_tokens() + 1024 <= context.min(4096));
+        }
         assert_eq!(ollama_chunk_tokens(200), 0);
     }
 

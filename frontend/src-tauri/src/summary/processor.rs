@@ -129,6 +129,15 @@ fn build_chunk_summary_user_prompt(chunk: &str, language_name: &str) -> String {
     )
 }
 
+/// System prompt of the per-chunk call.
+pub(crate) const CHUNK_SYSTEM_PROMPT: &str = "You are an expert meeting summarizer.";
+
+/// Rough tokens the per-chunk call spends on instructions before the transcript, with the longest language name.
+pub(crate) fn chunk_prompt_overhead_tokens() -> usize {
+    rough_token_count(CHUNK_SYSTEM_PROMPT)
+        + rough_token_count(&build_chunk_summary_user_prompt("", "Traditional Chinese"))
+}
+
 fn build_combine_summary_user_prompt(combined_text: &str, language_name: &str) -> String {
     format!(
         "Write in {language_name}.\n\nThe following are consecutive summaries of a meeting. Combine them into a single, coherent, and detailed narrative summary that retains all important details, organized logically. Do not include reasoning, self-correction, or meta-commentary — output only the summary content.\n\n<summaries>\n{combined_text}\n</summaries>"
@@ -329,7 +338,7 @@ pub(crate) async fn generate_meeting_summary(
             let prompt = build_chunk_summary_user_prompt(chunk, language_name);
             for attempt in 1..=MAX_CHUNK_ATTEMPTS {
                 let result = match generate_summary(
-                    client, provider, model_name, api_key, "You are an expert meeting summarizer.",
+                    client, provider, model_name, api_key, CHUNK_SYSTEM_PROMPT,
                     &prompt, ollama_endpoint, custom_openai_endpoint, max_tokens, temperature,
                     top_p, app_data_dir, cancellation_token,
                 )

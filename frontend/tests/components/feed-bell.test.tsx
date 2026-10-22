@@ -29,9 +29,16 @@ interface Item {
 let items: Item[] = [];
 let unread = 0;
 let listener: (() => void) | null = null;
+// While gated, feed_unread_count answers only when the test releases it, in call order.
+let gated = false;
+let releases: Array<() => void> = [];
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'feed_unread_count') return unread;
+  if (command === 'feed_unread_count') {
+    const count = unread;
+    if (!gated) return count;
+    return new Promise((resolve) => releases.push(() => resolve(count)));
+  }
   if (command === 'feed_list') return structuredClone(items);
   if (command === 'feed_mark_read' || command === 'feed_mark_all_read') return undefined;
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args ?? {})}`);
@@ -97,6 +104,8 @@ beforeEach(() => {
   items = [];
   unread = 0;
   listener = null;
+  gated = false;
+  releases = [];
   invoke.mockClear();
   push.mockClear();
   listen.mockClear();
@@ -132,6 +141,29 @@ describe('FeedBell badge', () => {
     });
     await flush();
     expect(text(bell())).toBe('1');
+  });
+});
+
+describe('FeedBell refresh order', () => {
+  test('an older refresh that finishes late does not overwrite the newer count', async () => {
+    unread = 1;
+    items = [brief];
+    gated = true;
+    await mount();
+    unread = 0;
+    items = [];
+    await act(async () => {
+      listener?.();
+    });
+    await act(async () => {
+      releases[1]();
+    });
+    await flush();
+    await act(async () => {
+      releases[0]();
+    });
+    await flush();
+    expect(text(bell())).toBe('');
   });
 });
 

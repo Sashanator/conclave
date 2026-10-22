@@ -1,6 +1,4 @@
 //! Knowledge layer: tasks, calendar briefs, the feed, digests and Ask. Settings come first.
-// Later knowledge tasks consume these constants and helpers; they are unused until then.
-#![allow(dead_code)]
 
 pub mod ask;
 pub mod briefs;

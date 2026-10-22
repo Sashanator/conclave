@@ -45,18 +45,6 @@ pub(crate) fn announce<R: Runtime>(app: &AppHandle<R>) {
     let _ = app.emit("feed-updated", ());
 }
 
-pub(crate) async fn push<R: Runtime>(
-    app: &AppHandle<R>,
-    pool: &SqlitePool,
-    kind: &str,
-    title: &str,
-    target_id: &str,
-) -> Result<(), sqlx::Error> {
-    insert(pool, kind, title, target_id).await?;
-    announce(app);
-    Ok(())
-}
-
 /// Inserts a feed item in the caller's transaction, for a brief written with it.
 pub(crate) async fn insert_in(conn: &mut SqliteConnection, kind: &str, title: &str, target_id: &str) -> Result<(), sqlx::Error> {
     insert(conn, kind, title, target_id).await

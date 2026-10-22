@@ -296,17 +296,7 @@ fn parse_local(text: &str) -> Result<DateTime<Local>, String> {
 
 /// Builds and stores the digest for [start, end) and pushes its feed item. Ok(None) = nothing made: no meetings in
 /// the period, a meeting's extraction still running or queued, or the digest already exists.
-pub(crate) async fn make_digest<R: Runtime>(
-    app: &AppHandle<R>,
-    pool: &SqlitePool,
-    start: DateTime<Local>,
-    end: DateTime<Local>,
-) -> Result<Option<String>, String> {
-    let extract_on = settings::current().extract_enabled;
-    make_digest_with(app, pool, start, end, extract_on, |system, user| call_model(pool.clone(), system, user)).await
-}
-
-/// The body of `make_digest`, with the model call injected so tests can count calls and return canned replies.
+/// The model call is injected so tests can count calls and return canned replies.
 pub(crate) async fn make_digest_with<R: Runtime, F, Fut>(
     app: &AppHandle<R>,
     pool: &SqlitePool,

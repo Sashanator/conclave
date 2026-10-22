@@ -9,7 +9,7 @@ use crate::knowledge::settings;
 use crate::knowledge::CALENDAR_REFRESH_MINS;
 use crate::state::AppState;
 use crate::summary::templates::{self, TemplateEntry};
-use chrono::{DateTime, Duration, SecondsFormat, Utc};
+use chrono::{DateTime, Duration, Utc};
 use log::{error, info, warn};
 use sqlx::SqlitePool;
 use std::time::Duration as StdDuration;
@@ -126,7 +126,7 @@ async fn brief_made(pool: &SqlitePool, occ: &Occurrence) -> Result<bool, String>
 mod tests {
     use super::*;
     use crate::database::repositories::test_pool;
-    use chrono::TimeZone;
+    use chrono::{SecondsFormat, TimeZone};
     use uuid::Uuid;
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {

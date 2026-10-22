@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { Bell } from 'lucide-react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
@@ -22,13 +22,17 @@ export function FeedBell({ side = 'top' }: { side?: 'top' | 'right' }) {
   const [open, setOpen] = useState(false);
   const [unread, setUnread] = useState(0);
   const [items, setItems] = useState<FeedItem[]>([]);
+  // Refreshes can overlap; only the newest one may set state.
+  const latest = useRef(0);
 
   const refresh = useCallback(async () => {
+    const seq = ++latest.current;
     try {
       const [count, list] = await Promise.all([
         invoke<number>('feed_unread_count'),
         invoke<FeedItem[]>('feed_list'),
       ]);
+      if (seq !== latest.current) return;
       setUnread(count);
       setItems(list);
     } catch (error) {

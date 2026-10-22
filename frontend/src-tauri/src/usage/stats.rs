@@ -79,7 +79,7 @@ pub struct MeetingShare {
 
 #[derive(sqlx::FromRow)]
 struct LlmRow {
-    at: DateTime<Utc>,
+    at: String, // RFC 3339 as written; read through `when` so one bad value cannot fail the query
     provider: String,
     purpose: String,
     input: i64,
@@ -90,6 +90,11 @@ struct LlmRow {
 }
 
 impl LlmRow {
+    /// None when `at` does not parse; such rows are left out of the stats.
+    fn when(&self) -> Option<DateTime<Utc>> {
+        DateTime::parse_from_rfc3339(&self.at).ok().map(|t| t.with_timezone(&Utc))
+    }
+
     fn tokens(&self) -> u64 {
         (self.input + self.output + self.cache_read + self.cache_write) as u64
     }
@@ -143,16 +148,18 @@ fn bucket<Tz: TimeZone>(period: Period, now: &DateTime<Tz>, at: &DateTime<Tz>, c
 }
 
 /// Groups rows by the period of their `when` instant. Index 0 is the current period.
+/// Rows without a time, or older than `count` periods, are left out.
 fn bucket_rows<'a, Tz: TimeZone, T>(
     period: Period,
     now: &DateTime<Tz>,
     count: u32,
     rows: &'a [T],
-    when: impl Fn(&T) -> DateTime<Utc>,
+    when: impl Fn(&T) -> Option<DateTime<Utc>>,
 ) -> Vec<Vec<&'a T>> {
     let mut out: Vec<Vec<&T>> = (0..count).map(|_| Vec::new()).collect();
     for row in rows {
-        let at = when(row).with_timezone(&now.timezone());
+        let Some(at) = when(row) else { continue };
+        let at = at.with_timezone(&now.timezone());
         if let Some(b) = bucket(period, now, &at, count) {
             out[b as usize].push(row);
         }
@@ -196,7 +203,7 @@ pub(crate) async fn cost_periods<Tz: TimeZone>(
         .bind(since)
         .fetch_all(pool)
         .await?;
-    let buckets = bucket_rows(period, &now, count, rows.as_slice(), |r| r.at);
+    let buckets = bucket_rows(period, &now, count, rows.as_slice(), LlmRow::when);
     Ok(buckets
         .iter()
         .enumerate()
@@ -233,10 +240,11 @@ fn meeting_summary(rows: &[LlmRow]) -> Option<MeetingCost> {
 }
 
 pub(crate) async fn meeting_cost_for(pool: &SqlitePool, meeting_id: &str) -> sqlx::Result<Option<MeetingCost>> {
-    let rows = sqlx::query_as::<_, LlmRow>(&format!("{LLM_SELECT} WHERE meeting_id = ?"))
+    let mut rows = sqlx::query_as::<_, LlmRow>(&format!("{LLM_SELECT} WHERE meeting_id = ?"))
         .bind(meeting_id)
         .fetch_all(pool)
         .await?;
+    rows.retain(|r| r.when().is_some());
     Ok(meeting_summary(&rows))
 }
 
@@ -285,7 +293,7 @@ pub(crate) async fn talk_time_for<Tz: TimeZone>(
     now: &DateTime<Tz>,
 ) -> sqlx::Result<TalkTime> {
     let rows = talk_rows(pool).await?;
-    let buckets = bucket_rows(period, now, 2, rows.as_slice(), |r| r.created_at);
+    let buckets = bucket_rows(period, now, 2, rows.as_slice(), |r| Some(r.created_at));
     Ok(TalkTime {
         current: type_shares(&buckets[0]),
         previous: type_shares(&buckets[1]),
@@ -496,6 +504,21 @@ mod tests {
         assert_eq!(periods[1].providers[0].output_tokens, 500);
         assert_eq!(periods[1].providers[0].cost_usd, 2.0);
         assert_eq!(periods[1].providers[0].unpriced_calls, 1);
+    }
+
+    #[tokio::test]
+    async fn unreadable_timestamp_row_is_skipped() {
+        let pool = test_pool().await;
+        insert_usage(&pool, "2026-10-20T10:00:00+00:00", "claude", Some("m1"), (100, 10, 0), Some(1.0)).await;
+        insert_usage(&pool, "not a time", "claude", Some("m1"), (100, 10, 0), Some(5.0)).await;
+
+        let periods = cost_periods(&pool, Period::Week, wed_afternoon(), 1).await.unwrap();
+        assert_eq!(periods[0].total_usd, 1.0);
+        assert_eq!(periods[0].providers[0].unpriced_calls, 0);
+
+        let m1 = meeting_cost_for(&pool, "m1").await.unwrap().unwrap();
+        assert_eq!(m1.total_usd, Some(1.0));
+        assert_eq!(m1.tokens, 110);
     }
 
     #[tokio::test]

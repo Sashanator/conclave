@@ -145,8 +145,20 @@ fn resume_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 /// Overall cap for Quit: stop a running recording, then wait for the frontend to save it.
 const QUIT_CAP: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Set by the first Quit click: a second click must not start a second stop and save.
+static QUITTING: AtomicBool = AtomicBool::new(false);
+
+/// True only for the first caller that sets `flag`.
+fn first_click(flag: &AtomicBool) -> bool {
+    !flag.swap(true, Ordering::SeqCst)
+}
+
 /// Exits once a running recording is stopped and the frontend has saved it. Capped so Quit cannot hang.
 fn quit_app<R: Runtime>(app: &AppHandle<R>) {
+    if !first_click(&QUITTING) {
+        log::info!("Quit: already quitting");
+        return;
+    }
     if !crate::audio::recording_commands::is_recording_now() && !crate::meeting_detector::post_processing() {
         app.exit(0);
         return;
@@ -613,6 +625,13 @@ mod tests {
                 ("dictate_mode:a-mode".to_string(), "First".to_string(), false),
             ]
         );
+    }
+
+    #[test]
+    fn only_the_first_quit_click_claims_the_quit() {
+        let flag = AtomicBool::new(false);
+        assert!(first_click(&flag));
+        assert!(!first_click(&flag));
     }
 
     #[tokio::test]

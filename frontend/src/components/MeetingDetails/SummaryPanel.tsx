@@ -98,6 +98,8 @@ export function SummaryPanel({
   namesChanged = false,
 }: SummaryPanelProps) {
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
+  // Bumped when task extraction finishes: its usage changes the meeting's cost line
+  const [costRefresh, setCostRefresh] = useState(0);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
   const [langPickerOpen, setLangPickerOpen] = useState(false);
   // The picker stays disabled until the stored language has loaded, so a change is compared with the real value.
@@ -318,8 +320,8 @@ export function SummaryPanel({
             </div>
           )}
         </div>
-        <MeetingCostLine meetingId={meeting.id} refreshKey={summaryStatus} />
-        <ExtractionStatusLine meetingId={meeting.id} refreshKey={summaryStatus} />
+        <MeetingCostLine meetingId={meeting.id} refreshKey={`${summaryStatus}/${costRefresh}`} />
+        <ExtractionStatusLine meetingId={meeting.id} refreshKey={summaryStatus} onSettled={() => setCostRefresh((n) => n + 1)} />
       </div>
 
       {/* Names changed after a summary: it only uses them once regenerated, and the user decides */}

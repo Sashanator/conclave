@@ -1,26 +1,30 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 
 // Pending is re-checked on a timer, since the extraction worker emits no event
 const PENDING_RECHECK_MS = 3000;
 
-/** Task extraction after a summary. refreshKey (the summary status) rechecks it. */
+/** Task extraction after a summary. refreshKey (the summary status) rechecks it. onSettled runs when a pending extraction finishes. */
 export function ExtractionStatusLine({
   meetingId,
   refreshKey,
   recheckMs = PENDING_RECHECK_MS,
+  onSettled,
 }: {
   meetingId: string;
   refreshKey?: string;
   recheckMs?: number;
+  onSettled?: () => void;
 }) {
   const [status, setStatus] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
   // Bumped after a retry, so the check runs again even when the status was already pending
   const [checkKey, setCheckKey] = useState(0);
+  // A ref, so a recheck that starts while pending still reports the finish
+  const wasPending = useRef(false);
 
   useEffect(() => {
     let live = true;
@@ -30,7 +34,13 @@ export function ExtractionStatusLine({
         .then((s) => {
           if (!live) return;
           setStatus(s);
-          if (s === 'pending') timer = setTimeout(check, recheckMs);
+          if (s === 'pending') {
+            wasPending.current = true;
+            timer = setTimeout(check, recheckMs);
+          } else if (wasPending.current) {
+            wasPending.current = false;
+            onSettled?.();
+          }
         })
         .catch((err) => console.error('Extraction status failed to load:', err));
     };

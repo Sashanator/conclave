@@ -77,7 +77,7 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
         const settings = await invoke<CopilotSettings>('copilot_get_settings');
         if (inFlightRef.current !== f) return;
         const language = resolveAnswerLanguage(settings.answer_language, readPinnedSummaryLanguageDefault());
-        const { request, range } = buildCopilotRequest(action, transcriptsRef.current, notesRef.current, language, question, currentMeetingId);
+        const { request, range } = buildCopilotRequest(action, transcriptsRef.current, notesRef.current, language, question, currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id'));
         setCards((prev) => prev.map((c) => (c.id === cardId ? { ...c, range } : c)));
         const answer = await invoke<string>('copilot_ask', { requestId: f.requestId, request });
         finish({ status: 'done', answer });

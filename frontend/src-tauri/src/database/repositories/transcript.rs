@@ -148,6 +148,7 @@ pub struct SearchHit {
 const SEARCH_MEETINGS: usize = 50;
 const SEARCH_HITS_PER_MEETING: usize = 3;
 const SNIPPET_RADIUS: usize = 100;
+const SEARCH_MAX_WORDS: usize = 50;
 
 /// Case forms SQLite LIKE can match. LIKE folds only ASCII case, so each Cyrillic form is listed:
 /// as typed, lowercase, first letter uppercased, all uppercase.
@@ -175,12 +176,19 @@ fn like_pattern(variant: &str) -> String {
     format!("%{escaped}%")
 }
 
+/// Words joined by single spaces, so the Rust phrase check ignores extra spaces the user typed.
+fn normalize_query(query: &str) -> String {
+    query.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// SQL prefilter: every word of the query must match in one of its case forms. Returns the
 /// WHERE clause for `column` and the patterns to bind, in order. The Rust check confirms the phrase.
+/// Only the first 50 words are filtered: more clauses overflow SQLite's expression depth limit,
+/// and the phrase check still sees the whole query.
 fn like_filter(column: &str, query: &str) -> (String, Vec<String>) {
     let mut clauses = Vec::new();
     let mut binds = Vec::new();
-    for word in query.split_whitespace() {
+    for word in query.split_whitespace().take(SEARCH_MAX_WORDS) {
         let forms = query_variants(word);
         let one = format!("{column} LIKE ? ESCAPE '\\'");
         clauses.push(format!("({})", vec![one; forms.len()].join(" OR ")));
@@ -228,14 +236,14 @@ pub(crate) struct SourceMatch {
 /// Every title, summary, note and transcript line that contains the query. Uncapped and unsnipped.
 /// Order: transcript lines by time, then title, summary and notes.
 pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec<SourceMatch>, SqlxError> {
-    let query = query.trim();
+    let query = normalize_query(query);
     if query.is_empty() {
         return Ok(Vec::new());
     }
     let needle = query.to_lowercase();
     let mut out = Vec::new();
 
-    let (clause, binds) = like_filter("t.transcript", query);
+    let (clause, binds) = like_filter("t.transcript", &query);
     let sql = format!(
         "SELECT m.id, m.title, m.created_at, t.id, t.transcript, t.audio_start_time FROM transcripts t
          JOIN meetings m ON m.id = t.meeting_id
@@ -251,7 +259,7 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
         }
     }
 
-    let (clause, binds) = like_filter("title", query);
+    let (clause, binds) = like_filter("title", &query);
     let sql = format!("SELECT id, title, created_at FROM meetings WHERE {clause}");
     let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
     for p in &binds {
@@ -264,7 +272,7 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
     }
 
     let markdown = "json_extract(s.result, '$.markdown')";
-    let (clause, binds) = like_filter(markdown, query);
+    let (clause, binds) = like_filter(markdown, &query);
     let sql = format!(
         "SELECT m.id, m.title, m.created_at, {markdown} FROM summary_processes s
          JOIN meetings m ON m.id = s.meeting_id
@@ -302,7 +310,7 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
 
 /// Searches titles, summaries, notes and transcripts for the newest 50 meetings, at most 3 hits each.
 pub async fn search_all(pool: &SqlitePool, query: &str) -> Result<Vec<SearchHit>, SqlxError> {
-    let needle = query.trim().to_lowercase();
+    let needle = normalize_query(query).to_lowercase();
 
     let mut created: HashMap<String, String> = HashMap::new();
     let mut by_meeting: HashMap<String, Vec<SourceMatch>> = HashMap::new();
@@ -510,5 +518,19 @@ mod tests {
         let pool = crate::database::repositories::test_pool().await;
         meeting(&pool, "M", &["что-то"], &[], None).await;
         assert!(search_all(&pool, "   ").await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn search_ignores_extra_spaces_in_query() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "План", &["Обсуждаем проект план на квартал"], &[], None).await;
+        assert_eq!(search_all(&pool, "проект  план").await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn search_caps_words_in_prefilter() {
+        let pool = crate::database::repositories::test_pool().await;
+        let long = vec!["слово"; 2000].join(" ");
+        assert!(search_all(&pool, &long).await.is_ok());
     }
 }

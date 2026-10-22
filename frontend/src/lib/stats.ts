@@ -63,6 +63,23 @@ export function formatTokens(n: number): string {
   return `${(n / 1_000_000).toFixed(2)}M`;
 }
 
+// Plain labels for the purpose ids the usage recording writes. A Map, so ids like "constructor" stay unknown.
+const PURPOSE_LABELS = new Map<string, string>([
+  ['summary', 'Summary'],
+  ['template_pick', 'Template choice'],
+  ['extraction', 'Task extraction'],
+  ['copilot', 'Copilot'],
+  ['dictate', 'Dictation'],
+  ['practice', 'Speaking practice'],
+  ['ask', 'Ask'],
+  ['digest', 'Weekly digest'],
+  ['connection_test', 'Connection test'],
+]);
+
+export function purposeLabel(purpose: string): string {
+  return PURPOSE_LABELS.get(purpose) ?? purpose;
+}
+
 export function sharePct(self: number, total: number): string {
   return total === 0 ? '—' : `${Math.round((self / total) * 100)}%`;
 }

@@ -31,7 +31,10 @@ const invoke = mock(async (command: string): Promise<unknown> => {
   if (command === 'stop_recording') return stopInvoke();
   throw new Error(`Unexpected command: ${command}`);
 });
+// Set to hold listen() until the test releases it, as a slow Tauri registration can be
+let gate: Promise<void> | null = null;
 const listen = mock(async (event: string, handler: Handler) => {
+  if (gate) await gate;
   handlers.set(event, handler);
   return () => { if (handlers.get(event) === handler) handlers.delete(event); };
 });
@@ -52,14 +55,15 @@ let renderer: ReactTestRenderer | undefined;
 let onRecordingStop: ReturnType<typeof mock>;
 let onTranscriptionError: ReturnType<typeof mock>;
 
+// New arrow functions on every call, as app/page.tsx passes them on every render
 function props() {
   return {
     isRecording: true,
     barHeights: [] as string[],
-    onRecordingStop,
+    onRecordingStop: (callApi?: boolean) => onRecordingStop(callApi),
     onRecordingStart: async () => {},
     onTranscriptReceived: () => {},
-    onTranscriptionError,
+    onTranscriptionError: (message: string) => onTranscriptionError(message),
     isRecordingDisabled: false,
     isParentProcessing: false,
   };
@@ -77,6 +81,8 @@ function stopButton(): ReactTestInstance {
 
 beforeEach(() => {
   handlers.clear();
+  gate = null;
+  listen.mockClear();
   onRecordingStop = mock((_callApi?: boolean) => {});
   onTranscriptionError = mock((_message: string) => {});
   stopInvoke = async () => undefined;
@@ -121,5 +127,29 @@ describe('stop failures', () => {
     await flush();
     expect(invoke.mock.calls.filter(([command]) => command === 'stop_recording')).toHaveLength(2);
     expect(onRecordingStop).toHaveBeenCalledWith(true);
+  });
+});
+
+describe('recording listeners', () => {
+  test('re-rendering with new callbacks does not register the listeners again', async () => {
+    await act(async () => { renderer = create(<RecordingControls {...props()} />); });
+    await flush();
+    const registered = listen.mock.calls.length;
+    expect(registered).toBeGreaterThan(0);
+
+    await act(async () => { renderer!.update(<RecordingControls {...props()} />); });
+    await flush();
+    expect(listen.mock.calls.length).toBe(registered);
+  });
+
+  test('listeners that resolve after unmount are removed', async () => {
+    let release!: () => void;
+    gate = new Promise<void>((resolve) => { release = resolve; });
+    await act(async () => { renderer = create(<RecordingControls {...props()} />); });
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    release();
+    await flush();
+    expect(handlers.size).toBe(0);
   });
 });

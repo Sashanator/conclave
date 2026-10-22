@@ -244,9 +244,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     };
   }, []);
 
+  // The page passes new callbacks on every render (it re-renders for the bar heights); keep the listeners stable.
+  const onTranscriptionErrorRef = useRef(onTranscriptionError);
+  onTranscriptionErrorRef.current = onTranscriptionError;
+
   useEffect(() => {
     console.log('Setting up recording event listeners');
     let unsubscribes: (() => void)[] = [];
+    let cancelled = false;
 
     const setupListeners = async () => {
       try {
@@ -262,9 +267,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             return newCount;
           });
           setIsProcessing(false);
-          if (onTranscriptionError) {
-            onTranscriptionError(errorMessage);
-          }
+          onTranscriptionErrorRef.current?.(errorMessage);
         });
 
         // Transcription error listener - handles structured error objects with actionable flag
@@ -293,11 +296,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           setSpeechDetected(true);
         });
 
-        unsubscribes = [
+        const registered = [
           transcriptErrorUnsubscribe,
           transcriptionErrorUnsubscribe,
           speechDetectedUnsubscribe
         ];
+        // Unmounted while listen() was pending: drop what was just registered
+        if (cancelled) {
+          registered.forEach(unsubscribe => unsubscribe());
+          return;
+        }
+        unsubscribes = registered;
         console.log('Recording event listeners set up successfully');
       } catch (error) {
         console.error('Failed to set up recording event listeners:', error);
@@ -308,13 +317,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     return () => {
       console.log('Cleaning up recording event listeners');
+      cancelled = true;
       unsubscribes.forEach(unsubscribe => {
         if (unsubscribe && typeof unsubscribe === 'function') {
           unsubscribe();
         }
       });
     };
-  }, [onRecordingStop, onTranscriptionError]);
+  }, []);
 
   return (
     <TooltipProvider>

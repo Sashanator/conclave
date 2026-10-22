@@ -168,9 +168,9 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
-        .ok_or_else(|| format!("Recording folder kept: it is outside the Conclave recordings folder ({folder_path})"))?;
+        .ok_or_else(|| "Recording folder kept: it is outside the Conclave recordings folder".to_string())?;
     let files = conclave_files(&folder)
-        .ok_or_else(|| format!("Recording folder kept: it contains other files ({})", folder.display()))?;
+        .ok_or_else(|| "Recording folder kept: it contains other files".to_string())?;
     for f in &files {
         remove_checked(f, &folder, remove)?;
     }
@@ -178,7 +178,7 @@ pub fn delete_meeting_folder(folder_path: &str, recordings_base: &Path, remove: 
     remove_if_empty(&folder.join(".checkpoints"), remove)?;
     ensure_still_guarded(&folder, recordings_base, "Recording folder")?;
     if !remove_if_empty(&folder, remove)? {
-        return Err(format!("Recording folder kept: new files appeared in it ({})", folder.display()));
+        return Err("Recording folder kept: new files appeared in it".to_string());
     }
     Ok(())
 }
@@ -189,7 +189,7 @@ pub(crate) fn ensure_still_guarded(folder: &Path, recordings_base: &Path, what: 
     if guarded_meeting_folder(&folder.to_string_lossy(), recordings_base).as_deref() == Some(folder) {
         Ok(())
     } else {
-        Err(format!("{what} kept: it is no longer inside the recordings folder ({})", folder.display()))
+        Err(format!("{what} kept: it is no longer inside the recordings folder"))
     }
 }
 
@@ -232,9 +232,9 @@ pub fn cleanup_checkpoints_guarded(folder_path: &str, recordings_base: &Path) ->
         return Ok(());
     }
     let folder = guarded_meeting_folder(folder_path, recordings_base)
-        .ok_or_else(|| format!("Checkpoints kept: it is outside the Conclave recordings folder ({folder_path})"))?;
+        .ok_or_else(|| "Checkpoints kept: it is outside the Conclave recordings folder".to_string())?;
     if !has_merged_audio(&folder) {
-        return Err(format!("Checkpoints kept: no merged audio file in the meeting folder ({folder_path})"));
+        return Err("Checkpoints kept: no merged audio file in the meeting folder".to_string());
     }
     delete_checkpoint_files(&folder)
 }

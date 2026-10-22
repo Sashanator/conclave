@@ -988,6 +988,10 @@ pub fn run() {
             knowledge::feed::feed_unread_count,
             knowledge::feed::feed_mark_read,
             knowledge::feed::feed_mark_all_read,
+            usage::stats::stats_cost,
+            usage::stats::meeting_cost,
+            usage::stats::stats_talk_time,
+            usage::stats::stats_talk_time_meetings,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

@@ -31,12 +31,11 @@ pub struct BriefContent {
     pub open_tasks: Vec<TaskRow>,
 }
 
-/// content_json: the brief, with the ids of its open tasks in place of the tasks, which are looked up at read time.
+/// content_json: the brief. Its open tasks are looked up at read time, from the meetings it was made from.
 #[derive(Serialize, Deserialize)]
 struct Stored {
     #[serde(flatten)]
     content: BriefContent,
-    open_task_ids: Vec<String>,
 }
 
 /// A row in the Briefs & digests list.
@@ -99,16 +98,6 @@ async fn matching_meetings(pool: &SqlitePool, template_id: &str, title: &str) ->
         .collect())
 }
 
-/// The open tasks of these meetings, in the order the task list shows them.
-async fn open_task_ids(pool: &SqlitePool, meeting_ids: &[String]) -> Result<Vec<String>, String> {
-    let open = tasks::list(pool, "open").await.map_err(|e| e.to_string())?;
-    Ok(open
-        .into_iter()
-        .filter(|t| t.meeting_id.as_ref().is_some_and(|m| meeting_ids.contains(m)))
-        .map(|t| t.id)
-        .collect())
-}
-
 /// The decisions and requests the extraction stored for a meeting, if it is done.
 pub(crate) async fn read_lists(pool: &SqlitePool, meeting_id: &str) -> Result<Option<(Vec<String>, Vec<String>)>, String> {
     let row: Option<(String, String, String)> = sqlx::query_as(
@@ -154,7 +143,6 @@ pub(crate) async fn make_brief<R: Runtime>(
     if !due(occ, now()) {
         return Ok(None);
     }
-    let ids: Vec<String> = past.iter().map(|p| p.id.clone()).collect();
     let stored = Stored {
         content: BriefContent {
             event_title: occ.title.clone(),
@@ -167,9 +155,8 @@ pub(crate) async fn make_brief<R: Runtime>(
             decisions,
             open_tasks: Vec::new(),
         },
-        open_task_ids: open_task_ids(pool, &ids).await?,
     };
-    let (decisions, requests, open) = (stored.content.decisions.len(), stored.content.requests.len(), stored.open_task_ids.len());
+    let (decisions, requests) = (stored.content.decisions.len(), stored.content.requests.len());
     let line = brief_line(occ);
     let Some(id) = store(pool, occ, template, &previous.id, &stored, &line).await? else {
         return Ok(None);
@@ -181,7 +168,7 @@ pub(crate) async fn make_brief<R: Runtime>(
             warn!("knowledge: brief toast not shown: {e}");
         }
     }
-    info!("knowledge: brief made, {decisions} decisions, {requests} requests, {open} open tasks");
+    info!("knowledge: brief made, {decisions} decisions, {requests} requests");
     Ok(Some(id))
 }
 
@@ -227,21 +214,29 @@ async fn store(
 }
 
 /// The brief with its open tasks looked up now. A task that is deleted, done or dismissed is left out.
+/// Found from the meetings, not stored task ids: re-extracting a summary gives its tasks new ids.
 pub(crate) async fn get(pool: &SqlitePool, id: &str) -> Result<Option<BriefContent>, String> {
-    let row: Option<(String,)> = sqlx::query_as("SELECT content_json FROM briefs WHERE id = ?")
-        .bind(id)
-        .fetch_optional(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    let Some((content_json,)) = row else {
+    let row: Option<(String, String, String)> =
+        sqlx::query_as("SELECT content_json, template_id, title FROM briefs WHERE id = ?")
+            .bind(id)
+            .fetch_optional(pool)
+            .await
+            .map_err(|e| e.to_string())?;
+    let Some((content_json, template_id, title)) = row else {
         return Ok(None);
     };
     let stored: Stored = serde_json::from_str(&content_json).map_err(|e| e.to_string())?;
+    // The previous meeting, and the earlier ones of the same type and title that the brief was made from.
+    let meeting_ids: Vec<String> = matching_meetings(pool, &template_id, &title)
+        .await?
+        .into_iter()
+        .filter(|p| p.id == stored.content.previous_meeting_id || p.created_at <= stored.content.previous_date)
+        .map(|p| p.id)
+        .collect();
     let open = tasks::list(pool, "open").await.map_err(|e| e.to_string())?;
-    let open_tasks = stored
-        .open_task_ids
-        .iter()
-        .filter_map(|task_id| open.iter().find(|t| &t.id == task_id).cloned())
+    let open_tasks = open
+        .into_iter()
+        .filter(|t| t.meeting_id.as_ref().is_some_and(|m| meeting_ids.contains(m)))
         .collect();
     Ok(Some(BriefContent { open_tasks, ..stored.content }))
 }
@@ -404,6 +399,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn brief_keeps_open_tasks_after_the_previous_summary_is_re_extracted() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        meeting(&pool, "ivan-re_extracted", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        extracted(&pool, "ivan-re_extracted", "[]", "[]").await;
+        task(&pool, "t-old", "ivan-re_extracted", "Book the room").await;
+        let one_on_one = template("one_on_one", "1:1", &["1:1"]);
+        let made = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30))
+            .await
+            .unwrap()
+            .expect("a brief");
+        // Re-extraction deletes the untouched auto task and inserts it again under a new id.
+        sqlx::query("DELETE FROM tasks WHERE id = 't-old'").execute(&pool).await.unwrap();
+        task(&pool, "t-new", "ivan-re_extracted", "Book the room").await;
+
+        let stored = get(&pool, &made).await.unwrap().unwrap();
+        let texts: Vec<&str> = stored.open_tasks.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, vec!["Book the room"]);
+    }
+
+    #[tokio::test]
     async fn plain_text_summary_does_not_stop_the_brief() {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
@@ -536,7 +552,6 @@ mod tests {
                 decisions: Vec::new(),
                 open_tasks: Vec::new(),
             },
-            open_task_ids: Vec::new(),
         };
 
         // The meeting is deleted after the lookup, while the extraction was being waited for.

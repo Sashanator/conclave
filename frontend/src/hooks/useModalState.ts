@@ -164,6 +164,29 @@ export function useModalState(transcriptModelConfig?: TranscriptModelProps): Use
     };
   }, [showModal]);
 
+  // Recording errors from Rust (e.g. the audio stream dropped) would otherwise be silent
+  useEffect(() => {
+    let unlistenFn: (() => void) | undefined;
+
+    const setupRecordingErrorListener = async () => {
+      try {
+        unlistenFn = await listen<string>('recording-error', (event) => {
+          toast.error(event.payload, { duration: 8000 });
+        });
+      } catch (error) {
+        console.error('Failed to setup recording error listener:', error);
+      }
+    };
+
+    setupRecordingErrorListener();
+
+    return () => {
+      if (unlistenFn) {
+        unlistenFn();
+      }
+    };
+  }, []);
+
   // Listen for model download completion to auto-close modal
   useEffect(() => {
     const setupDownloadListeners = async () => {

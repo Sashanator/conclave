@@ -1,4 +1,4 @@
-# Conclave Knowledge layer, cost meter, talk-time stats (v0.10.0) — Implementation Plan
+# Conclave Knowledge layer, cost meter, talk-time stats (v1.0.0) — Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
@@ -68,7 +68,7 @@
   - extraction failure: "Task extraction failed" plus "Retry"
   - Ask page: placeholder "Ask about your meetings…", button "New chat", not-found answer "Not found in your meetings."
   - Settings tabs: "Knowledge" (icon `BookOpen`) and "Costs" (icon `Coins`), after `copilot`
-- **Version:** v0.10.0.
+- **Version:** v1.0.0.
 - **Codex pass** on tasks marked **[Codex]**.
 
 ## Review Focus
@@ -966,7 +966,7 @@ export function splitAnswer(text: string, citations: Citation[]): Part[]; // [E3
 **Files:**
 - Modify:
   - `docs/network-calls.md`: rows saying extraction, digest and Ask send summaries, the user's own lines and excerpts to the Knowledge model's provider; Practice/OpenRouter usage parsing adds no host;
-  - the spec's Status and Target lines ("Implemented in v0.10.0");
+  - the spec's Status and Target lines ("Implemented in v1.0.0");
   - the release notes, in the place and format v0.9.0 used (`git log --oneline -- '*release*' '*RELEASE*'`). Mention the Claude temperature fix.
 
 - [ ] **Step 1:** Make the edits.
@@ -980,9 +980,9 @@ export function splitAnswer(text: string, citations: Citation[]): Part[]; // [E3
 - [ ] **Step 2:** `gh workflow run ci.yml --ref knowledge -f full=true`.
 - [ ] **Step 3:** Expected: all jobs green. Fix and re-run only the failed jobs.
 
-### Task 21: Release v0.10.0 and the user's checks
+### Task 21: Release v1.0.0 and the user's checks
 
-- [ ] **Step 1:** With the user's OK, merge to `main` and tag `v0.10.0`. The release run must pass the delay-load and no-CUDA checks before publishing.
+- [ ] **Step 1:** With the user's OK, merge to `main` and tag `v1.0.0`. The release run must pass the delay-load and no-CUDA checks before publishing.
 - [ ] **Step 2:** Give the user this checklist and record the results in memory:
   1. **Search:** a Russian word in a different case finds the meeting. Summary and notes hits show their labels. A transcript hit jumps to the line.
   2. **Costs:** after a summary, the meeting shows "LLM cost". Stats shows the week's Claude total, which roughly matches the Anthropic console.

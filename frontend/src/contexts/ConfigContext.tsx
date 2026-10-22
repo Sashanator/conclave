@@ -361,7 +361,7 @@ export function ConfigProvider({ children }: { children: ReactNode }) {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
-        console.log('[ConfigContext] Received model-config-updated event:', event.payload);
+        console.log('[ConfigContext] Received model-config-updated event:', { provider: event.payload.provider, model: event.payload.model });
         setModelConfig(event.payload);
 
         // Update provider-specific key when config changes

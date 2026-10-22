@@ -15,9 +15,17 @@ afterAll(() => {
 });
 
 const SECRET = 'transcription-key-secret';
+const MODEL_SECRET = 'model-config-key-secret';
 const invoke = mock(async (_command: string): Promise<unknown> => undefined);
+type Handler = (event: { payload: unknown }) => void;
+const handlers = new Map<string, Handler>();
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
-mock.module('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
+mock.module('@tauri-apps/api/event', () => ({
+  listen: async (event: string, handler: Handler) => {
+    handlers.set(event, handler);
+    return () => { handlers.delete(event); };
+  },
+}));
 // Every service read resolves to nothing, except the saved transcript config that carries a key.
 mock.module('../../src/services/configService', () => ({
   configService: new Proxy({}, {
@@ -40,6 +48,7 @@ afterEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
   renderer = undefined;
   spies.forEach((spy) => spy.mockRestore());
+  handlers.clear();
 });
 
 describe('loading the saved transcript config', () => {
@@ -48,5 +57,17 @@ describe('loading the saved transcript config', () => {
     await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
     expect(logs.some((args) => args.some((arg) => String(arg).includes('Loaded saved transcript config')))).toBe(true);
     expect(JSON.stringify(logs)).not.toContain(SECRET);
+  });
+});
+
+describe('model-config-updated events', () => {
+  test('the event payload, which carries the API key, is not logged whole', async () => {
+    await act(async () => { renderer = create(<ConfigProvider><div /></ConfigProvider>); });
+    await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+    await act(async () => {
+      handlers.get('model-config-updated')!({ payload: { provider: 'claude', model: 'sonnet', apiKey: MODEL_SECRET } });
+    });
+    expect(logs.some((args) => args.some((arg) => String(arg).includes('model-config-updated event')))).toBe(true);
+    expect(JSON.stringify(logs)).not.toContain(MODEL_SECRET);
   });
 });

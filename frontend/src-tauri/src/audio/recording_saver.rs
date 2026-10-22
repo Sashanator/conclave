@@ -329,8 +329,7 @@ impl RecordingSaver {
         // Atomic rename
         std::fs::rename(&temp_path, &transcript_path)
             .map_err(|e| {
-                error!("Failed to rename transcript file from {} to {}: {}",
-                       temp_path.display(), transcript_path.display(), e);
+                error!("Failed to rename transcript file: {}", e);
                 anyhow::anyhow!("Failed to rename transcript file: {}", e)
             })?;
 

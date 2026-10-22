@@ -323,7 +323,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
           const now = Date.now();
           console.log('🎯 MAIN LISTENER: Received transcript update:', {
             sequence_id: update.sequence_id,
-            text: update.text.substring(0, 50) + '...',
+            text_chars: update.text.length,
             timestamp: update.timestamp,
             is_partial: update.is_partial,
             received_at: new Date(now).toISOString(),
@@ -484,7 +484,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   const addTranscript = useCallback((update: TranscriptUpdate) => {
     console.log('🎯 addTranscript called with:', {
       sequence_id: update.sequence_id,
-      text: update.text.substring(0, 50) + '...',
+      text_chars: update.text.length,
       timestamp: update.timestamp,
       is_partial: update.is_partial
     });
@@ -512,7 +512,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         t => t.text === update.text && t.timestamp === update.timestamp
       );
       if (exists) {
-        console.log('🚫 Duplicate transcript detected, skipping:', update.text.substring(0, 30) + '...');
+        console.log('🚫 Duplicate transcript detected, skipping, chars:', update.text.length);
         return prev;
       }
 
@@ -523,7 +523,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
       console.log('✅ Added new transcript. New count:', sorted.length);
       console.log('📝 Latest transcript:', {
         id: newTranscript.id,
-        text: newTranscript.text.substring(0, 30) + '...',
+        text_chars: newTranscript.text.length,
         sequence_id: newTranscript.sequence_id
       });
 

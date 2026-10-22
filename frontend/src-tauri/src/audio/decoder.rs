@@ -294,13 +294,11 @@ fn convert_to_wav_with_ffmpeg(
     let temp_path = temp_file.into_temp_path();
 
     info!(
-        "Converting .{} to temporary WAV via ffmpeg: {} -> {}",
+        "Converting .{} to temporary WAV via ffmpeg",
         input_path
             .extension()
             .and_then(|e| e.to_str())
             .unwrap_or("unknown"),
-        input_path.display(),
-        temp_path.display()
     );
 
     if let Some(cb) = progress_callback {
@@ -347,12 +345,14 @@ fn convert_to_wav_with_ffmpeg(
         .map_err(|e| anyhow!("Failed to wait for ffmpeg process: {}", e))?;
 
     let stderr_text = String::from_utf8_lossy(&output.stderr);
-    debug!("FFmpeg stderr: {}", stderr_text);
+    // ffmpeg echoes the input path (meeting folder, title) in stderr, so only its size is logged.
+    debug!("FFmpeg stderr: {} bytes", stderr_text.len());
 
     if !output.status.success() {
         error!(
-            "FFmpeg conversion failed (exit code: {}): {}",
-            output.status, stderr_text
+            "FFmpeg conversion failed (exit code: {}, stderr: {} bytes)",
+            output.status,
+            stderr_text.len()
         );
         return Err(anyhow!(
             "FFmpeg conversion failed with exit code: {}. \

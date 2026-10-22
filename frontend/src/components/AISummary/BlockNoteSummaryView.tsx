@@ -173,7 +173,6 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
       try {
         console.log('🔍 getMarkdown called, format:', format);
         console.log('🔍 currentBlocks length:', currentBlocks.length);
-        console.log('🔍 data:', data);
 
         // For markdown format - use the main editor
         if (format === 'markdown' && editor) {

@@ -115,7 +115,7 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
         apiKey: configToSave.apiKey ?? null,
         ollamaEndpoint: configToSave.ollamaEndpoint ?? null
       };
-      console.log('Saving model config with payload:', payload);
+      console.log('Saving model config:', { provider: payload.provider, model: payload.model });
 
       await invokeTauri('api_save_model_config', {
         provider: payload.provider,

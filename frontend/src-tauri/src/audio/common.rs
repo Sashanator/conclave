@@ -100,11 +100,7 @@ pub(crate) fn write_transcripts_json(folder: &Path, segments: &[TranscriptSegmen
     std::fs::write(&temp_path, &json_string)?;
     std::fs::rename(&temp_path, &transcript_path)?;
 
-    info!(
-        "Wrote transcripts.json with {} segments to {}",
-        segments.len(),
-        transcript_path.display()
-    );
+    info!("Wrote transcripts.json with {} segments", segments.len());
     Ok(())
 }
 

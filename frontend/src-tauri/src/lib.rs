@@ -201,10 +201,10 @@ async fn start_recording<R: Runtime>(
 ) -> Result<(), String> {
     log_info!("🔥 CALLED start_recording with meeting chars: {:?}", meeting_name.as_ref().map(|n| n.chars().count()));
     log_info!(
-        "📋 Backend received parameters - mic: {:?}, system: {:?}, meeting: {:?}",
+        "📋 Backend received parameters - mic: {:?}, system: {:?}, meeting chars: {:?}",
         mic_device_name,
         system_device_name,
-        meeting_name
+        meeting_name.as_ref().map(|n| n.chars().count())
     );
 
     if is_recording().await {
@@ -279,7 +279,7 @@ async fn stop_recording<R: Runtime>(app: AppHandle<R>, args: RecordingArgs) -> R
             // Create the save directory if it doesn't exist
             if let Some(parent) = std::path::Path::new(&args.save_path).parent() {
                 if !parent.exists() {
-                    log_info!("Creating directory: {:?}", parent);
+                    log_info!("Creating save directory");
                     if let Err(e) = std::fs::create_dir_all(parent) {
                         let err_msg = format!("Failed to create save directory: {}", e);
                         log_error!("{}", err_msg);
@@ -422,18 +422,18 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     let recording_result = match (mic_device_name.clone(), system_device_name.clone()) {
         (None, None) => {
             log_info!(
-                "No devices specified, starting with defaults and meeting: {:?}",
-                meeting_name
+                "No devices specified, starting with defaults and meeting chars: {:?}",
+                meeting_name.as_ref().map(|n| n.chars().count())
             );
             audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name)
                 .await
         }
         _ => {
             log_info!(
-                "Starting with specified devices: mic={:?}, system={:?}, meeting={:?}",
+                "Starting with specified devices: mic={:?}, system={:?}, meeting chars={:?}",
                 mic_device_name,
                 system_device_name,
-                meeting_name
+                meeting_name.as_ref().map(|n| n.chars().count())
             );
             audio::recording_commands::start_recording_with_devices_and_meeting(
                 app.clone(),

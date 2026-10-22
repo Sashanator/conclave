@@ -223,7 +223,7 @@ export const AISummary = ({ summary, status, error, onSummaryChange, onRegenerat
         title: newTitle
       }
     };
-    console.log('Updated summary:', updatedSummary);
+    console.log('Updated summary received');
     onSummaryChange(updatedSummary);
   };
 

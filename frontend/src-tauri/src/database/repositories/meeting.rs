@@ -294,6 +294,12 @@ async fn delete_meeting_with_transaction(
         .execute(&mut *transaction)
         .await?;
 
+    // Explicit: llm_usage has no FK, so its rows are deleted here only.
+    sqlx::query("DELETE FROM llm_usage WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *transaction)
+        .await?;
+
     // 3. Delete from transcripts
     sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
         .bind(meeting_id)
@@ -408,6 +414,29 @@ mod migration_tests {
             .await
             .unwrap();
         assert_eq!((speakers, jobs, source), (0, 0, None));
+    }
+
+    #[tokio::test]
+    async fn delete_meeting_deletes_usage() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        insert_meeting(&pool, "N").await;
+        sqlx::query("INSERT INTO llm_usage (at, provider, model, purpose, meeting_id) VALUES ('t','claude','m','ask','M'), ('t','claude','m','ask','N'), ('t','claude','m','ask',NULL)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
+
+        let (for_m,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM llm_usage WHERE meeting_id = 'M'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        let (left,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM llm_usage")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!((for_m, left), (0, 2));
     }
 
     #[tokio::test]

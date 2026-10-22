@@ -59,6 +59,7 @@ mod copilot;
 mod dictate;
 mod speakers;
 mod practice;
+mod usage;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
@@ -645,6 +646,7 @@ pub fn run() {
             speakers::settings::load_at_startup(_app.handle());
             dictate::settings::load_at_startup(_app.handle());
             copilot::settings::load_at_startup(_app.handle());
+            usage::prices::load_at_startup(_app.handle());
             practice::settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
@@ -974,6 +976,9 @@ pub fn run() {
             copilot::settings::copilot_save_settings,
             copilot::ask::copilot_ask,
             copilot::ask::copilot_cancel,
+            // Usage and cost commands
+            usage::prices::costs_get_prices,
+            usage::prices::costs_save_prices,
             // Speaker identification commands
             speakers::commands::speakers_get_settings,
             speakers::commands::speakers_set_enabled,

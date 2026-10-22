@@ -351,8 +351,8 @@ mod tests {
     #[test]
     fn a_recycle_error_names_its_variant_without_the_path() {
         let path = "C:\\Users\\someone\\Recordings\\Standup with Anna Ivanova";
-        let err = trash::Error::FileSystem { path: PathBuf::from(path), source: std::io::Error::other("denied") };
-        assert_eq!(trash_error_name(&err), "FileSystem");
+        let err = trash::Error::CanonicalizePath { original: PathBuf::from(path) };
+        assert_eq!(trash_error_name(&err), "CanonicalizePath");
         assert_eq!(trash_error_name(&trash::Error::TargetedRoot), "TargetedRoot");
     }
 

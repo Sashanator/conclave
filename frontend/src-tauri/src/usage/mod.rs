@@ -2,6 +2,7 @@
 // (meeting_id) or per recording until the recording is saved (recording_id).
 
 pub mod prices;
+pub mod stats;
 
 use crate::summary::llm_client::TokenUsage;
 use chrono::Utc;

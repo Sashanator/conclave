@@ -9,7 +9,7 @@ import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
-import { parseMeetingTarget } from "@/lib/meeting-target";
+import { lineAtTime, parseMeetingTarget } from "@/lib/meeting-target";
 
 interface MeetingDetailsResponse {
   id: string;
@@ -52,6 +52,16 @@ function MeetingDetailsContent() {
     setTranscriptMark,
     setTranscriptSpeaker,
   } = usePaginatedTranscripts({ meetingId: meetingId || '' });
+
+  // A task's time (t) opens the transcript row at or before it. Pages load until that row is known.
+  const targetTime = target?.t;
+  const targetLine = target?.line;
+  const timeLine = targetTime !== undefined && !targetLine ? lineAtTime(segments, targetTime, hasMore) : null;
+  useEffect(() => {
+    if (targetTime === undefined || targetLine || !hasMore || isLoadingMore) return;
+    const last = segments[segments.length - 1];
+    if (!last || last.timestamp <= targetTime) loadMore();
+  }, [targetTime, targetLine, hasMore, isLoadingMore, segments, loadMore]);
 
   // Check if gemma3:1b model is available in Ollama
   const checkForGemmaModel = useCallback(async (): Promise<boolean> => {
@@ -295,7 +305,7 @@ function MeetingDetailsContent() {
     onLoadMore={loadMore}
     onSetTranscriptMark={setTranscriptMark}
     onSetTranscriptSpeaker={setTranscriptSpeaker}
-    focusSegmentId={target?.line ?? null}
+    focusSegmentId={targetLine ?? timeLine}
     requestedTab={target?.tab ?? null}
   />;
 }

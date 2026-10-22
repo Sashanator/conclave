@@ -294,12 +294,10 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
 /// Extracts one meeting with the knowledge model. A call already running for the meeting makes this a no-op.
 /// Retry calls this directly, so it ignores the hold; the worker and the digest check `held_back` first.
 pub(crate) async fn run_one(pool: &SqlitePool, meeting_id: &str) -> Result<(), String> {
-    let result = run_with(pool, meeting_id, |system, user| {
+    run_with(pool, meeting_id, |system, user| {
         call_model(pool.clone(), system, user)
     })
-    .await;
-    record_outcome(meeting_id, &result);
-    result
+    .await
 }
 
 /// Resolves the knowledge model and makes one completion. Target errors are user-facing; call errors are not shown.
@@ -339,6 +337,8 @@ where
     // Taken before the summary is read, so a pending mark set after it belongs to a newer summary.
     let started = stamp();
     let superseded = extract_once(pool, meeting_id, &started, &call).await;
+    // Recorded here, not in run_one: a call that found the slot busy returns above and must not touch the hold.
+    record_outcome(meeting_id, &superseded.as_ref().map(|_| ()).map_err(|e| e.clone()));
     // Released before the wake, so the woken worker does not find the meeting still busy.
     drop(flight);
     if superseded? {
@@ -848,6 +848,17 @@ mod tests {
 
         let queued = next_pending(&pool).await.unwrap();
         assert_eq!(queued.as_deref(), Some("M"));
+    }
+
+    #[tokio::test]
+    async fn run_that_finds_the_meeting_busy_keeps_its_hold() {
+        let pool = test_pool().await;
+        record_outcome("busy-hold", &Err("could not save".into()));
+        // Another run holds the slot. This call returns at once and must not clear the hold.
+        let _busy = hold_in_flight("busy-hold");
+
+        assert_eq!(run_one(&pool, "busy-hold").await, Ok(()));
+        assert!(held_back("busy-hold"));
     }
 
     #[tokio::test]

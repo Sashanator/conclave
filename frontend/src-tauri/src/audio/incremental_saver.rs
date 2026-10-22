@@ -275,12 +275,35 @@ fn needs_checkpoint_merge(folder: &Path) -> bool {
 /// Merges leftover checkpoint chunks before a lookup of the meeting's audio. Skipped while a
 /// recording runs, because the live saver still owns those chunks.
 pub async fn merge_leftover_checkpoints(folder: &Path) {
+    merge_leftover_checkpoints_with(folder, |dir| async move {
+        recover_audio_from_checkpoints(dir.to_string_lossy().into_owned(), 48000).await
+    })
+    .await;
+}
+
+/// `merge` does the actual merge. It is a parameter so the cleanup after a failed merge can be
+/// tested without ffmpeg.
+async fn merge_leftover_checkpoints_with<F, Fut>(folder: &Path, merge: F)
+where
+    F: FnOnce(PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<AudioRecoveryStatus, String>>,
+{
     if super::recording_commands::is_recording_now() || !needs_checkpoint_merge(folder) {
         return;
     }
-    match recover_audio_from_checkpoints(folder.to_string_lossy().into_owned(), 48000).await {
-        Ok(status) => info!("Merged leftover checkpoints in {}: {}", folder.display(), status.message),
-        Err(e) => warn!("Could not merge leftover checkpoints in {}: {}", folder.display(), e),
+    match merge(folder.to_path_buf()).await {
+        Ok(status) if status.status == "success" => {
+            info!("Merged leftover checkpoints in {}: {}", folder.display(), status.message);
+        }
+        outcome => {
+            let reason = match outcome {
+                Ok(status) => status.message,
+                Err(e) => e,
+            };
+            warn!("Merging leftover checkpoints in {} failed: {}", folder.display(), reason);
+            // No audio file existed before (checked above), so this partial output is ours. The chunks stay.
+            let _ = std::fs::remove_file(folder.join("audio.mp4"));
+        }
     }
 }
 
@@ -595,5 +618,46 @@ mod tests {
 
         saver.finalize().await.unwrap();
         assert!(!checkpoints.join("audio_chunk_001.mp4").exists());
+    }
+
+    fn recovery_status(status: &str) -> AudioRecoveryStatus {
+        AudioRecoveryStatus {
+            status: status.to_string(),
+            chunk_count: 1,
+            estimated_duration_seconds: 30.0,
+            audio_file_path: None,
+            message: status.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn a_failed_merge_removes_its_partial_audio_and_keeps_the_chunks() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("Failed_Merge");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        std::fs::write(folder.join(".checkpoints").join("audio_chunk_000.mp4"), b"chunk").unwrap();
+
+        merge_leftover_checkpoints_with(&folder, |dir| async move {
+            std::fs::write(dir.join("audio.mp4"), b"partial").unwrap();
+            Ok(recovery_status("failed"))
+        }).await;
+
+        assert!(!folder.join("audio.mp4").exists());
+        assert!(folder.join(".checkpoints").join("audio_chunk_000.mp4").exists());
+    }
+
+    #[tokio::test]
+    async fn a_successful_merge_keeps_its_audio() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("Good_Merge");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        std::fs::write(folder.join(".checkpoints").join("audio_chunk_000.mp4"), b"chunk").unwrap();
+
+        merge_leftover_checkpoints_with(&folder, |dir| async move {
+            std::fs::write(dir.join("audio.mp4"), b"merged").unwrap();
+            Ok(recovery_status("success"))
+        }).await;
+
+        assert!(folder.join("audio.mp4").exists());
     }
 }

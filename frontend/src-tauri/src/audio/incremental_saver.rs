@@ -215,37 +215,44 @@ impl IncrementalAudioSaver {
             .ok_or_else(|| anyhow!("FFmpeg not found next to Conclave.exe — reinstall Conclave."))?;
         info!("Using FFmpeg at: {:?}", ffmpeg_path);
 
-        for i in 0..self.checkpoint_count {
-            verify_chunk(&ffmpeg_path, &self.checkpoints_dir.join(format!("audio_chunk_{:03}.mp4", i)))?;
-        }
-
-        // Run FFmpeg concat command
+        let chunks: Vec<PathBuf> = (0..self.checkpoint_count)
+            .map(|i| self.checkpoints_dir.join(format!("audio_chunk_{:03}.mp4", i)))
+            .collect();
+        let output_path = output.clone();
+        // ffmpeg runs off the async runtime, so a hung process cannot stall the Quit timeout.
         // Using concat demuxer with copy codec for fast merging (no re-encoding)
-        
-        let mut command = std::process::Command::new(ffmpeg_path);
-        
-        command.args(concat_args(list_file.to_str().unwrap(), output.to_str().unwrap()));
+        tokio::task::spawn_blocking(move || -> Result<()> {
+            for chunk in &chunks {
+                verify_chunk(&ffmpeg_path, chunk)?;
+            }
 
-        // Hide console window on Windows to prevent CMD popup during finalization
-        #[cfg(target_os = "windows")]
-        {
-            use std::os::windows::process::CommandExt;
-            const CREATE_NO_WINDOW: u32 = 0x08000000;
-            command.creation_flags(CREATE_NO_WINDOW);
-        }
+            let mut command = std::process::Command::new(ffmpeg_path);
+            command.args(concat_args(list_file.to_str().unwrap(), output_path.to_str().unwrap()));
 
-        let ffmpeg_output = command.output()?;
+            // Hide console window on Windows to prevent CMD popup during finalization
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x08000000;
+                command.creation_flags(CREATE_NO_WINDOW);
+            }
 
-        if !ffmpeg_output.status.success() {
-            let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
-            error!("FFmpeg merge failed: {}", stderr);
-            return Err(anyhow!("FFmpeg concat failed: {}", stderr));
-        }
+            let ffmpeg_output = command.output()?;
 
-        // Verify output file was created
-        if !output.exists() {
-            return Err(anyhow!("Merged audio file was not created"));
-        }
+            if !ffmpeg_output.status.success() {
+                let stderr = String::from_utf8_lossy(&ffmpeg_output.stderr);
+                error!("FFmpeg merge failed: {}", stderr);
+                return Err(anyhow!("FFmpeg concat failed: {}", stderr));
+            }
+
+            // Verify output file was created
+            if !output_path.exists() {
+                return Err(anyhow!("Merged audio file was not created"));
+            }
+            Ok(())
+        })
+        .await
+        .map_err(|e| anyhow!("FFmpeg merge task failed: {}", e))??;
 
         info!("Successfully merged {} checkpoints", self.checkpoint_count);
 

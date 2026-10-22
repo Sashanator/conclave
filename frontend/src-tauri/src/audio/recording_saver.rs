@@ -217,9 +217,12 @@ impl RecordingSaver {
                 warn!("Queued audio chunks were still being written after 30 s; checkpointing what is on disk");
             }
         }
-        if let Some(saver) = &self.incremental_saver {
-            if let Err(e) = saver.lock().await.checkpoint_buffered() {
-                error!("Failed to checkpoint buffered audio: {}", e);
+        if let Some(saver) = self.incremental_saver.clone() {
+            // ffmpeg runs inside, so keep it off the async runtime (see merge_checkpoints)
+            match tokio::task::spawn_blocking(move || saver.blocking_lock().checkpoint_buffered()).await {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) => error!("Failed to checkpoint buffered audio: {}", e),
+                Err(e) => error!("Checkpointing buffered audio did not finish: {}", e),
             }
         }
     }
@@ -566,5 +569,33 @@ mod tests {
         assert!(run_folder_setup(true, failing).is_err());
         assert!(run_folder_setup(false, failing).is_ok());
         assert!(run_folder_setup(true, || Ok(())).is_ok());
+    }
+
+    #[tokio::test]
+    async fn stop_checkpoint_writes_the_buffered_audio() {
+        let temp_dir = tempfile::tempdir().unwrap();
+        let folder = temp_dir.path().join("Stop_Checkpoint");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        let mut saver = super::RecordingSaver::new();
+        let incremental = crate::audio::incremental_saver::IncrementalAudioSaver::new(folder.clone(), 48000).unwrap();
+        saver.incremental_saver = Some(super::Arc::new(super::AsyncMutex::new(incremental)));
+        saver
+            .incremental_saver
+            .as_ref()
+            .unwrap()
+            .lock()
+            .await
+            .add_chunk(crate::audio::recording_state::AudioChunk {
+                data: vec![0.5f32; 48000],
+                sample_rate: 48000,
+                timestamp: 0.0,
+                chunk_id: 0,
+                device_type: crate::audio::recording_state::DeviceType::Microphone,
+            })
+            .unwrap();
+
+        saver.checkpoint_buffered_audio().await;
+
+        assert!(folder.join(".checkpoints").join("audio_chunk_000.mp4").exists());
     }
 }

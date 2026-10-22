@@ -809,6 +809,8 @@ async fn stop_recording_inner<R: Runtime>(
         // Use FORCE FLUSH to immediately process all accumulated audio - eliminates 30s delay!
         info!("🚀 Using FORCE FLUSH to eliminate pipeline accumulation delays");
         let result = manager.stop_streams_and_force_flush().await;
+        // Put the buffered audio on disk before the slow transcription wait below
+        manager.checkpoint_buffered_audio().await;
         // Store manager back for later cleanup
         let manager_for_cleanup = Some(manager);
         (result, manager_for_cleanup)

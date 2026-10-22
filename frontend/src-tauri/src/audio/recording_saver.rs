@@ -59,6 +59,7 @@ pub struct RecordingSaver {
     metadata: Option<MeetingMetadata>,
     transcript_segments: Arc<Mutex<Vec<TranscriptSegment>>>,
     is_saving: Arc<Mutex<bool>>,
+    accumulation: Option<tokio::task::JoinHandle<()>>,
 }
 
 impl RecordingSaver {
@@ -70,6 +71,7 @@ impl RecordingSaver {
             metadata: None,
             transcript_segments: Arc::new(Mutex::new(Vec::new())),
             is_saving: Arc::new(Mutex::new(false)),
+            accumulation: None,
         }
     }
 
@@ -164,7 +166,7 @@ impl RecordingSaver {
         let incremental_saver_arc = self.incremental_saver.clone();
         let save_audio = auto_save;
 
-        tokio::spawn(async move {
+        let accumulation = tokio::spawn(async move {
             info!("Recording saver accumulation task started (save_audio: {})", save_audio);
 
             while let Some(chunk) = receiver.recv().await {
@@ -198,12 +200,28 @@ impl RecordingSaver {
 
             info!("Recording saver accumulation task ended");
         });
+        self.accumulation = Some(accumulation);
 
         // Set saving flag
         if let Ok(mut is_saving) = self.is_saving.lock() {
             *is_saving = true;
         }
         Ok(())
+    }
+
+    /// Waits until the accumulation task has written every chunk the pipeline already sent,
+    /// then saves the buffered audio as a checkpoint. Call after the pipeline has stopped.
+    pub async fn checkpoint_buffered_audio(&mut self) {
+        if let Some(handle) = self.accumulation.take() {
+            if tokio::time::timeout(tokio::time::Duration::from_secs(30), handle).await.is_err() {
+                warn!("Queued audio chunks were still being written after 30 s; checkpointing what is on disk");
+            }
+        }
+        if let Some(saver) = &self.incremental_saver {
+            if let Err(e) = saver.lock().await.checkpoint_buffered() {
+                error!("Failed to checkpoint buffered audio: {}", e);
+            }
+        }
     }
 
     /// Initialize meeting folder structure and metadata

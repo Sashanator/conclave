@@ -86,6 +86,18 @@ impl IncrementalAudioSaver {
         Ok(())
     }
 
+    /// Writes the buffered audio as the next checkpoint now, so it is on disk before any slow
+    /// stop work. Does nothing when the buffer is empty.
+    pub fn checkpoint_buffered(&mut self) -> Result<()> {
+        if self.checkpoint_buffer.is_empty() {
+            return Ok(());
+        }
+        self.save_checkpoint()?;
+        self.checkpoint_buffer.clear();
+        self.next_checkpoint_samples = self.checkpoint_interval_samples;
+        Ok(())
+    }
+
     /// Save current buffer as a checkpoint file
     fn save_checkpoint(&mut self) -> Result<()> {
         // Concatenate all chunks in buffer
@@ -553,5 +565,35 @@ mod tests {
         let no_chunks = temp_dir.path().join("No_Chunks");
         std::fs::create_dir_all(no_chunks.join(".checkpoints")).unwrap();
         assert!(!needs_checkpoint_merge(&no_chunks));
+    }
+
+    #[tokio::test]
+    async fn checkpoint_buffered_writes_the_tail_once_and_finalize_adds_nothing() {
+        let temp_dir = tempdir().unwrap();
+        let meeting_folder = temp_dir.path().join("Tail_Test");
+        std::fs::create_dir_all(meeting_folder.join(".checkpoints")).unwrap();
+        let checkpoints = meeting_folder.join(".checkpoints");
+        // One second stays buffered: far below the 30 s checkpoint interval.
+        let mut saver = IncrementalAudioSaver::new(meeting_folder.clone(), 48000).unwrap();
+        saver.add_chunk(AudioChunk {
+            data: vec![0.5f32; 48000],
+            sample_rate: 48000,
+            timestamp: 0.0,
+            chunk_id: 0,
+            device_type: DeviceType::Microphone,
+        }).unwrap();
+        assert_eq!(saver.checkpoint_count, 0);
+
+        saver.checkpoint_buffered().unwrap();
+        assert_eq!(saver.checkpoint_count, 1);
+        assert!(saver.checkpoint_buffer.is_empty());
+        assert!(checkpoints.join("audio_chunk_000.mp4").exists());
+
+        // Nothing buffered: no empty or duplicate chunk.
+        saver.checkpoint_buffered().unwrap();
+        assert_eq!(saver.checkpoint_count, 1);
+
+        saver.finalize().await.unwrap();
+        assert!(!checkpoints.join("audio_chunk_001.mp4").exists());
     }
 }

@@ -397,6 +397,11 @@ impl RecordingManager {
         Ok(())
     }
 
+    /// Puts the buffered audio on disk now, so an exit during the slow part of Stop loses nothing.
+    pub async fn checkpoint_buffered_audio(&mut self) {
+        self.recording_saver.checkpoint_buffered_audio().await;
+    }
+
     /// Stop recording and save audio (legacy method)
     pub async fn stop_recording<R: tauri::Runtime>(&mut self, app: &tauri::AppHandle<R>) -> Result<()> {
         info!("Stopping recording manager");

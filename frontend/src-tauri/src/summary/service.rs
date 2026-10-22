@@ -42,13 +42,13 @@ struct RegisteredCancellation {
 static CANCELLATION_REGISTRY: LazyLock<Arc<Mutex<HashMap<String, RegisteredCancellation>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
 
-/// Strips the first `#` heading line; returns "" if no `#` is found.
 /// Chunk size for Ollama. Ollama's default runtime context is 4096 tokens and requests never send num_ctx to raise it.
 /// shortcut: a fixed 4096 cap, not the server's OLLAMA_CONTEXT_LENGTH or per-request num_ctx; upgrade if those become configurable.
 fn ollama_chunk_tokens(context_size: usize) -> usize {
     context_size.min(4096).saturating_sub(300)
 }
 
+/// Strips the first `#` heading line; returns "" if no `#` is found.
 fn strip_leading_title(markdown: &str) -> String {
     if let Some(hash_pos) = markdown.find('#') {
         let body_start = markdown[hash_pos..]

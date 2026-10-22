@@ -1,4 +1,5 @@
 use super::{settings, ASK_TIMEOUT_SECS, MAX_CONTEXT_CHARS, MAX_QUESTION_CHARS};
+use crate::cancel_slot::{CancelSlot, Claim};
 use crate::ollama::metadata::ModelMetadataCache;
 use crate::state::AppState;
 use crate::summary::llm_client::{LLMProvider, LlmCompletion};
@@ -7,7 +8,7 @@ use crate::summary::processor::language_name_from_code;
 use crate::usage::{self, Purpose};
 use log::{info, warn};
 use serde::Deserialize;
-use std::sync::{LazyLock, Mutex, PoisonError};
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime};
 use tokio::task::AbortHandle;
@@ -66,7 +67,7 @@ fn instruction(action: CopilotAction) -> &'static str {
 const MAX_ERROR_CHARS: usize = 200;
 
 /// Cuts a provider error to MAX_ERROR_CHARS characters, marking the cut with "…".
-fn shorten_error(error: String) -> String {
+pub(crate) fn shorten_error(error: String) -> String {
     if error.chars().count() <= MAX_ERROR_CHARS {
         return error;
     }
@@ -171,48 +172,21 @@ async fn send<R: Runtime>(app: &AppHandle<R>, request: &CopilotRequest) -> Resul
     Ok(Sent { user, completion, provider: target.provider.as_str(), model: target.model })
 }
 
-/// Holds the single in-flight answer: its request id and how to abort it.
-static IN_FLIGHT: Mutex<Option<(u64, AbortHandle)>> = Mutex::new(None);
+/// The single in-flight answer.
+static IN_FLIGHT: CancelSlot = CancelSlot::new("A copilot answer is already running");
 
-/// Frees the slot on drop, but only if it still holds this request.
-struct SlotGuard(u64);
-
-impl Drop for SlotGuard {
-    fn drop(&mut self) {
-        let mut slot = IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner);
-        if slot.as_ref().is_some_and(|(held, _)| *held == self.0) {
-            *slot = None;
-        }
-    }
+fn claim(id: u64, abort: AbortHandle) -> Result<Claim<'static>, String> {
+    IN_FLIGHT.begin(id, abort)
 }
 
-fn claim(id: u64, abort: AbortHandle) -> Result<SlotGuard, String> {
-    let mut slot = IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner);
-    if slot.is_some() {
-        return Err("A copilot answer is already running".to_string());
-    }
-    *slot = Some((id, abort));
-    Ok(SlotGuard(id))
-}
-
-/// Aborts and frees the slot only when it holds this request. Freeing it here lets the next
-/// ask start at once, without waiting for the cancelled call to return.
 fn abort(id: u64) {
-    let mut slot = IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner);
-    if slot.as_ref().is_some_and(|(held, _)| *held == id) {
-        if let Some((_, handle)) = slot.take() {
-            handle.abort();
-        }
-    }
+    IN_FLIGHT.cancel(id)
 }
 
 /// Aborts whatever answer is in flight. Stop calls this, so a stop from the tray, the meeting
 /// detector or a device error reaches the call even when the webview is throttled.
 pub fn abort_in_flight() {
-    let mut slot = IN_FLIGHT.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some((_, handle)) = slot.take() {
-        handle.abort();
-    }
+    IN_FLIGHT.abort_all()
 }
 
 /// The copilot model, falling back to the summary model as Dictate cleanup does.

@@ -55,6 +55,7 @@ pub mod summary;
 pub mod tray;
 pub mod utils;
 pub mod whisper_engine;
+mod cancel_slot;
 mod copilot;
 mod knowledge;
 mod dictate;
@@ -984,6 +985,8 @@ pub fn run() {
             // Knowledge commands
             knowledge::settings::knowledge_get_settings,
             knowledge::settings::knowledge_save_settings,
+            knowledge::ask::ask_meetings,
+            knowledge::ask::ask_cancel,
             knowledge::feed::feed_list,
             knowledge::feed::feed_unread_count,
             knowledge::feed::feed_mark_read,

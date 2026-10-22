@@ -43,7 +43,7 @@ pub struct Excerpt {
     pub text: String,
 }
 
-const KEYWORD_MAX_CHARS: usize = 60;
+pub(super) const KEYWORD_MAX_CHARS: usize = 60;
 /// A text excerpt gets an equal share of the character budget, so a full set always fits.
 const SUMMARY_SHARE_CHARS: usize = ASK_MAX_EXCERPT_CHARS / ASK_MAX_EXCERPTS;
 /// Transcript lines around a matched or named line, on each side.

@@ -11,12 +11,13 @@ use icalendar::parser::{read_calendar, unfold, Component, Property};
 use log::{info, warn};
 use rrule::{RRule, RRuleSet, Tz, Unvalidated};
 use serde::{Deserialize, Serialize};
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, PoisonError, RwLock};
+use std::time::Instant;
 use tauri::path::BaseDirectory;
 use tauri::{AppHandle, Manager, Runtime};
 
@@ -26,12 +27,15 @@ const NOT_CONNECTED: &str = "Calendar is not connected";
 const CHANGED: &str = "Calendar changed during the sync";
 /// A redirect chain longer than this is refused.
 const MAX_REDIRECTS: usize = 5;
-/// The parser recurses once per nested BEGIN, so a deeper feed could overflow the stack. Real calendars nest 3.
+/// The parser recurses once per nested component. Real calendars nest 3.
 const MAX_NESTING: usize = 16;
-/// Work limits per expansion, in estimated rrule steps (about 1.5 us each): per series (about 0.15 s),
-/// for the whole feed (about 0.3 s), and the occurrences kept.
+/// Stack for the parser thread: the parser recurses, and a feed must never overflow the caller's stack.
+const PARSE_STACK_BYTES: usize = 64 * 1024 * 1024;
+/// Wall-clock limit for one expansion. Work limits per expansion, in estimated rrule steps (about 1.5 us
+/// each): per series (about 0.15 s) and for the whole feed (about 1.5 s), and the occurrences kept.
+const FEED_DEADLINE: std::time::Duration = std::time::Duration::from_secs(2);
 const MAX_SERIES_WORK: f64 = 100_000.0;
-const MAX_FEED_WORK: f64 = 200_000.0;
+const MAX_FEED_WORK: f64 = 1_000_000.0;
 const MAX_FEED_OCCURRENCES: usize = 5_000;
 /// A longer UID is skipped; it is copied into every occurrence of its series.
 const MAX_UID_CHARS: usize = 256;
@@ -82,15 +86,32 @@ struct Event {
     exdates: Vec<DateTime<Tz>>,
 }
 
-/// Pure: parse an iCal body and expand occurrences in [from, to). Skips all-day, cancelled and EXDATE'd instances; applies RECURRENCE-ID overrides. Bounded by the work and occurrence limits above.
+/// Pure: parse an iCal body and expand occurrences in [from, to). Skips all-day, cancelled and EXDATE'd instances; applies RECURRENCE-ID overrides. Bounded by the time, work and occurrence limits above.
 pub fn expand(
+    ics: &str,
+    from: DateTime<Utc>,
+    to: DateTime<Utc>,
+) -> Result<Vec<Occurrence>, String> {
+    // The parser recurses once per nested component. It runs on a thread with a large stack, so a
+    // structure the guard misses cannot overflow the stack of the caller.
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .stack_size(PARSE_STACK_BYTES)
+            .spawn_scoped(scope, || expand_here(ics, from, to))
+            .map_err(|_| UNREADABLE.to_string())?
+            .join()
+            .unwrap_or_else(|_| Err(UNREADABLE.to_string()))
+    })
+}
+
+fn expand_here(
     ics: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
 ) -> Result<Vec<Occurrence>, String> {
     // The parser's error quotes the input, so only fixed messages leave the function.
     let unfolded = unfold(ics);
-    if nesting_too_deep(&unfolded) {
+    if nesting_refused(&unfolded) {
         return Err(UNREADABLE.to_string());
     }
     let calendar = read_calendar(&unfolded).map_err(|_| UNREADABLE.to_string())?;
@@ -109,17 +130,31 @@ pub fn expand(
         .collect();
     let (masters, overrides): (Vec<Event>, Vec<Event>) =
         events.into_iter().partition(|e| e.recurrence_id.is_none());
-    let mut overrides: HashMap<(String, DateTime<Utc>), Event> = overrides
+    // A BTreeMap, so the order of the leftover overrides does not depend on hashing.
+    let mut overrides: BTreeMap<(String, DateTime<Utc>), Event> = overrides
         .into_iter()
         .filter_map(|e| Some(((e.uid.clone(), e.recurrence_id?), e)))
         .collect();
 
-    let mut out = Vec::new();
-    let mut spent = 0.0;
-    'series: for master in masters.iter().filter(|m| !m.cancelled) {
-        let cost = work(master, to);
+    let inside = |t: DateTime<Utc>| t >= from && t < to;
+    // Cheapest series first, in file order for ties, so a budget stop drops the expensive ones.
+    // A series that starts at or after the window end has nothing inside the window.
+    let mut series: Vec<(f64, &Event)> = masters
+        .iter()
+        .filter(|m| !m.cancelled && m.start.with_timezone(&Utc) < to)
+        .map(|m| (work(m, to), m))
+        .collect();
+    series.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+    let deadline = Instant::now() + FEED_DEADLINE;
+    let (mut out, mut spent, mut skipped, mut timed_out) = (Vec::new(), 0.0, 0usize, false);
+    'series: for (cost, master) in series {
+        if Instant::now() >= deadline {
+            timed_out = true;
+            break;
+        }
         if cost > MAX_SERIES_WORK || spent + cost > MAX_FEED_WORK {
-            warn!("calendar: skipped a series too large to expand");
+            skipped += 1;
             continue;
         }
         spent += cost;
@@ -128,9 +163,16 @@ pub fn expand(
                 break 'series;
             }
             let utc = start.with_timezone(&Utc);
+            if !inside(utc) {
+                continue;
+            }
             match overrides.remove(&(master.uid.clone(), utc)) {
-                Some(moved) if !moved.cancelled => out.push(occurrence(&moved)),
-                Some(_) => {}
+                Some(moved) => {
+                    let shown = occurrence(&moved);
+                    if !moved.cancelled && inside(shown.start) {
+                        out.push(shown);
+                    }
+                }
                 None => out.push(Occurrence {
                     uid: master.uid.clone(),
                     title: master.title.clone(),
@@ -145,34 +187,48 @@ pub fn expand(
         if out.len() >= MAX_FEED_OCCURRENCES {
             break;
         }
-        if !moved.cancelled && !cancelled_series.contains(&uid) {
-            out.push(occurrence(&moved));
+        let shown = occurrence(&moved);
+        if !moved.cancelled && !cancelled_series.contains(&uid) && inside(shown.start) {
+            out.push(shown);
         }
+    }
+    if timed_out {
+        warn!("calendar: expansion stopped at the time limit, the rest of the feed is not shown");
+    }
+    if skipped > 0 {
+        warn!("calendar: {skipped} series skipped to keep the expansion bounded");
     }
     if out.len() >= MAX_FEED_OCCURRENCES {
         warn!("calendar: occurrence limit reached, the feed is cut short");
     }
-    out.retain(|o| o.start >= from && o.start < to);
     out.sort_by_key(|o| o.start);
     Ok(out)
 }
 
-/// The parser matches tags case-insensitively, so the depth count must too.
-fn nesting_too_deep(unfolded: &str) -> bool {
+/// Refuses a structure the parser could recurse on too deeply. The parser ends a component by prefix, so
+/// `END:ABEGIN:A` closes one component and opens another from the rest of the line: a line may carry
+/// one tag only, and the depth is counted per line. Tags are matched case-insensitively, as the parser does.
+fn nesting_refused(unfolded: &str) -> bool {
     let mut depth = 0usize;
     for line in unfolded.lines() {
-        if line
-            .get(..6)
-            .is_some_and(|tag| tag.eq_ignore_ascii_case("BEGIN:"))
-        {
+        let lower = line.to_ascii_lowercase();
+        let (opens, tag_len) = if lower.starts_with("begin:") {
+            (true, 6)
+        } else if lower.starts_with("end:") {
+            (false, 4)
+        } else {
+            continue;
+        };
+        let rest = &lower[tag_len..];
+        if rest.contains("begin:") || rest.contains("end:") {
+            return true;
+        }
+        if opens {
             depth += 1;
             if depth > MAX_NESTING {
                 return true;
             }
-        } else if line
-            .get(..4)
-            .is_some_and(|tag| tag.eq_ignore_ascii_case("END:"))
-        {
+        } else {
             depth = depth.saturating_sub(1);
         }
     }
@@ -192,32 +248,22 @@ fn duration(e: &Event) -> Duration {
     e.end.map_or(Duration::zero(), |end| end - e.start)
 }
 
-/// Estimated rrule steps from DTSTART to `to`: the span over the period, times the BY* fan-out.
+/// Estimated rrule steps from DTSTART to `to`: the span over the period, times the BY* fan-out. Monthly,
+/// yearly and weekly rules with BY* parts are walked by day, so they are costed by day.
 /// shortcut: an upper estimate, not a count; rrule's real cost per step varies by rule.
 fn work(e: &Event, to: DateTime<Utc>) -> f64 {
     let Some(text) = &e.rrule else {
         return 1.0;
     };
     let span = (to - e.start.with_timezone(&Utc)).num_seconds().max(0) as f64;
-    let (mut period, mut interval, mut fanout) = (0.0, 1.0, 1.0);
+    let (mut freq, mut interval, mut fanout, mut has_by) = (String::new(), 1.0, 1.0, false);
     for part in text.split(';') {
         let Some((key, value)) = part.split_once('=') else {
             continue;
         };
         let value = value.trim();
         match key.trim().to_ascii_uppercase().as_str() {
-            "FREQ" => {
-                period = match value.to_ascii_uppercase().as_str() {
-                    "SECONDLY" => 1.0,
-                    "MINUTELY" => 60.0,
-                    "HOURLY" => 3_600.0,
-                    "DAILY" => 86_400.0,
-                    "WEEKLY" => 604_800.0,
-                    // Monthly and yearly rules are walked day by day when they have BY* parts.
-                    "MONTHLY" | "YEARLY" => 86_400.0,
-                    _ => 0.0,
-                }
-            }
+            "FREQ" => freq = value.to_ascii_uppercase(),
             "INTERVAL" => {
                 interval = value
                     .parse::<f64>()
@@ -225,14 +271,27 @@ fn work(e: &Event, to: DateTime<Utc>) -> f64 {
                     .filter(|i| *i >= 1.0)
                     .unwrap_or(1.0)
             }
-            k if k.starts_with("BY") => fanout *= value.split(',').count() as f64,
+            k if k.starts_with("BY") => {
+                has_by = true;
+                fanout *= value.split(',').count() as f64;
+            }
             _ => {}
         }
     }
-    if period == 0.0 {
+    let period = match freq.as_str() {
+        "SECONDLY" => 1.0,
+        "MINUTELY" => 60.0,
+        "HOURLY" => 3_600.0,
+        "DAILY" => 86_400.0,
+        "WEEKLY" if has_by => 86_400.0,
+        "WEEKLY" => 604_800.0,
+        "MONTHLY" if has_by => 86_400.0,
+        "MONTHLY" => 2_419_200.0,
+        "YEARLY" if has_by => 86_400.0,
+        "YEARLY" => 31_536_000.0,
         // No usable FREQ: rrule rejects the rule, so it costs nothing.
-        return 1.0;
-    }
+        _ => return 1.0,
+    };
     span / (period * interval) * fanout
 }
 
@@ -316,6 +375,7 @@ fn at(p: &Property<'_>, text: &str, unknown_tz_warned: &mut bool) -> Option<Date
         // A repeated hour (clocks go back): the first pass.
         LocalResult::Ambiguous(first, _) => Some(first),
         // A skipped hour (clocks go forward): RFC 5545 3.3.5 reads the time with the offset from before the gap.
+        // Known limit: a recurring series whose DTSTART is in the gap keeps the shifted wall time for its later instances.
         LocalResult::None => {
             let before = zone
                 .offset_from_utc_datetime(&naive.checked_sub_signed(Duration::days(1))?)
@@ -996,6 +1056,69 @@ mod tests {
         write_atomic(&path, b"second").unwrap();
         assert_eq!(std::fs::read(&path).unwrap(), b"second");
         assert_eq!(std::fs::read_dir(dir.path()).unwrap().count(), 1);
+    }
+
+    #[test]
+    fn nesting_bypass_refused() {
+        // Each line closes one component and opens another from the rest of the line, so the depth count
+        // sees one BEGIN per pair. Every spelling is refused.
+        let pairs = [
+            "BEGIN:A\r\nEND:ABEGIN:A\r\n",
+            "begin:a\r\nend:abegin:a\r\n",
+            "BEGIN:VEVENTBEGIN:VEVENT\r\n",
+        ];
+        for pair in pairs {
+            let body = format!("BEGIN:VCALENDAR\r\n{}", pair.repeat(20_000));
+            let err = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap_err();
+            assert_eq!(err, "Calendar could not be read", "{pair}");
+        }
+    }
+
+    #[test]
+    fn past_one_offs_do_not_fill_the_cap() {
+        let mut body = String::from("BEGIN:VCALENDAR\r\n");
+        for i in 0..6_000 {
+            body.push_str(&format!(
+                "BEGIN:VEVENT\r\nUID:past-{i}\r\nDTSTART:20200101T120000Z\r\nDTEND:20200101T130000Z\r\nEND:VEVENT\r\n"
+            ));
+        }
+        body.push_str("BEGIN:VEVENT\r\nUID:next\r\nDTSTART:20261020T120000Z\r\nDTEND:20261020T130000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].uid, "next");
+    }
+
+    #[test]
+    fn yearly_birthdays_do_not_starve_a_weekly_standup() {
+        let mut body = String::from("BEGIN:VCALENDAR\r\n");
+        for i in 0..20 {
+            body.push_str(&format!(
+                "BEGIN:VEVENT\r\nUID:bday-{i}\r\nDTSTART:19500305T090000Z\r\nRRULE:FREQ=YEARLY;BYMONTH=3;BYMONTHDAY=5\r\nEND:VEVENT\r\n"
+            ));
+        }
+        body.push_str("BEGIN:VEVENT\r\nUID:standup\r\nDTSTART:20261001T090000Z\r\nDTEND:20261001T093000Z\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 11, 2, 0, 0)).unwrap();
+        assert!(got.iter().any(|o| o.uid == "standup"), "{got:?}");
+    }
+
+    #[test]
+    fn never_matching_rule_stays_within_the_deadline() {
+        // February 30th never occurs, so rrule searches on for every year since 1950.
+        let mut body = String::from("BEGIN:VCALENDAR\r\n");
+        for i in 0..200 {
+            body.push_str(&format!(
+                "BEGIN:VEVENT\r\nUID:never-{i}\r\nDTSTART:19500101T090000Z\r\nRRULE:FREQ=YEARLY;BYMONTH=2;BYMONTHDAY=30\r\nEND:VEVENT\r\n"
+            ));
+        }
+        body.push_str("END:VCALENDAR\r\n");
+        let started = std::time::Instant::now();
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 11, 2, 0, 0)).unwrap();
+        assert!(got.is_empty());
+        assert!(
+            started.elapsed() < std::time::Duration::from_secs(3),
+            "{:?}",
+            started.elapsed()
+        );
     }
 
     #[test]

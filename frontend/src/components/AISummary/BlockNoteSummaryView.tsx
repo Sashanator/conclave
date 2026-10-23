@@ -9,6 +9,7 @@ import { useCreateBlockNote } from '@blocknote/react';
 import { BlockNoteView } from '@blocknote/shadcn';
 import { blocksToMarkdownSafely } from '@/lib/blocknote-markdown';
 import { useTheme } from '@/contexts/ThemeContext';
+import { setUnsavedChanges } from '@/lib/unsaved-guard';
 import "@blocknote/shadcn/style.css";
 
 // Dynamically import BlockNote Editor to avoid SSR issues
@@ -128,11 +129,13 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
     }
   }, []);
 
-  // Notify parent of dirty state changes
+  // Notify parent of dirty state changes, and the app-wide guard so navigation asks before discarding edits
   useEffect(() => {
     if (onDirtyChange) {
       onDirtyChange(isDirty);
     }
+    setUnsavedChanges(isDirty);
+    return () => setUnsavedChanges(false);
   }, [isDirty, onDirtyChange]);
 
   const handleSave = useCallback(async () => {

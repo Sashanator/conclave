@@ -1,6 +1,6 @@
 # Outbound network calls (audited 2026-10-10, Phase 0)
 
-Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src` (excluding `*_old`, `*.backup`, `core-old`, `lib_old_complex`), plus the `reqwest::`, `Client::new`, `Client::builder`, `fetch(` and `open_external_url` call sites. Line numbers are from the tree after Task 7 (`ee96a45`), except where a row says "was".
+Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src`, plus the `reqwest::`, `Client::new`, `Client::builder`, `fetch(` and `open_external_url` call sites. Line numbers are from the tree after Task 7 (`ee96a45`), except where a row says "was".
 
 `scripts/check-no-phone-home.sh` enforces that the removed hosts stay out of product code.
 

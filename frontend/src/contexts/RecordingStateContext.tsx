@@ -336,6 +336,27 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
   }, []);
 
   /**
+   * Recording errors from Rust (e.g. the audio stream dropped). App-wide, so the toast shows on every page.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    let unlisten: (() => void) | undefined;
+    recordingService.onRecordingError((message) => {
+      toast.error(message, { duration: 8000 });
+    }).then(
+      (fn) => {
+        if (cancelled) fn();
+        else unlisten = fn;
+      },
+      (e) => console.error('[RecordingStateContext] Failed to listen for recording errors:', e)
+    );
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
+  }, []);
+
+  /**
    * Mic following (meeting detection): the mic the recording moved to, and the warning when that fails.
    */
   useEffect(() => {

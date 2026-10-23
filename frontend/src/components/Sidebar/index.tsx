@@ -172,7 +172,7 @@ const Sidebar: React.FC = () => {
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
-        console.log('Sidebar received model-config-updated event:', event.payload);
+        console.log('Sidebar received model-config-updated event:', { provider: event.payload.provider, model: event.payload.model });
         setModelConfig(event.payload);
       });
 

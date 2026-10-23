@@ -6,7 +6,7 @@ use crate::cancel_slot::CancelSlot;
 use crate::copilot::ask::shorten_error;
 use crate::database::repositories::speakers::SpeakersRepository;
 use crate::state::AppState;
-use crate::summary::llm_client::{LLMProvider, LlmCompletion};
+use crate::summary::llm_client::{reject_truncated, LLMProvider, LlmCompletion};
 use crate::summary::llm_target::{complete, LlmTarget};
 use crate::summary::templates;
 use crate::usage::{self, Purpose};
@@ -209,6 +209,7 @@ where
     let reply = tokio::time::timeout(Duration::from_secs(secs), call(system, user)).await;
     let completion = reply.map_err(|_| "Timed out".to_string())?.map_err(shorten_error)?;
     usage::record(pool, target.provider.as_str(), &target.model, Purpose::Ask, None, None, completion.usage.as_ref()).await;
+    reject_truncated(&completion)?;
     Ok(completion.content)
 }
 
@@ -334,6 +335,7 @@ mod tests {
             content: content.into(),
             reasoning_stripped: false,
             usage: Some(TokenUsage { input: Some(100), output: Some(20), cache_read: None, cache_write: None, reported_cost_usd: None }),
+            truncated: false,
         }
     }
 
@@ -454,6 +456,27 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, 1, "the plan call is recorded");
+    }
+
+    #[tokio::test]
+    async fn truncated_reply_is_billed_then_rejected() {
+        let pool = test_pool().await;
+        let cut_off = LlmCompletion {
+            usage: Some(TokenUsage { output: Some(8192), ..TokenUsage::default() }),
+            truncated: true,
+            ..reply("half an ans")
+        };
+        let result = model(&pool, &target(), 5, &|_, _| {
+            let cut_off = cut_off.clone();
+            async move { Ok(cut_off) }
+        }, "system".into(), "user".into())
+        .await;
+        assert_eq!(result, Err(crate::summary::llm_client::OUTPUT_LIMIT_MESSAGE.to_string()));
+        let rows: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM llm_usage WHERE purpose = 'ask'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(rows, 1, "the cut-off reply is still billed");
     }
 
     #[tokio::test]

@@ -1,4 +1,4 @@
-use crate::summary::llm_client::{generate_summary, LLMProvider, TokenUsage};
+use crate::summary::llm_client::{generate_summary, reject_truncated, LLMProvider, TokenUsage};
 use crate::summary::templates::Template;
 use once_cell::sync::Lazy;
 use regex::Regex;
@@ -127,6 +127,15 @@ fn build_chunk_summary_user_prompt(chunk: &str, language_name: &str) -> String {
     format!(
         "Write in {language_name}.\n\nProvide a concise but comprehensive summary of the following transcript chunk. Capture all key points, decisions, action items, and mentioned individuals. Do not include reasoning, self-correction, or meta-commentary — output only the summary content.\n\n<transcript_chunk>\n{chunk}\n</transcript_chunk>"
     )
+}
+
+/// System prompt of the per-chunk call.
+pub(crate) const CHUNK_SYSTEM_PROMPT: &str = "You are an expert meeting summarizer.";
+
+/// Rough tokens the per-chunk call spends on instructions before the transcript, with the longest language name.
+pub(crate) fn chunk_prompt_overhead_tokens() -> usize {
+    rough_token_count(CHUNK_SYSTEM_PROMPT)
+        + rough_token_count(&build_chunk_summary_user_prompt("", "Traditional Chinese"))
 }
 
 fn build_combine_summary_user_prompt(combined_text: &str, language_name: &str) -> String {
@@ -319,7 +328,12 @@ pub(crate) async fn generate_meeting_summary(
         && total_tokens >= token_threshold
     {
         chunked = true;
-        let chunks = chunk_text(text, token_threshold - 300, 100);
+        // service.rs takes the prompt reserve from the threshold for both Ollama and BuiltInAI.
+        let chunk_tokens = token_threshold;
+        if chunk_tokens == 0 {
+            return Err("The model's context is too small to summarize this transcript".to_string());
+        }
+        let chunks = chunk_text(text, chunk_tokens, 100);
         let num_chunks = chunks.len();
         let mut chunk_summaries = Vec::with_capacity(num_chunks);
         for (index, chunk) in chunks.iter().enumerate() {
@@ -329,7 +343,7 @@ pub(crate) async fn generate_meeting_summary(
             let prompt = build_chunk_summary_user_prompt(chunk, language_name);
             for attempt in 1..=MAX_CHUNK_ATTEMPTS {
                 let result = match generate_summary(
-                    client, provider, model_name, api_key, "You are an expert meeting summarizer.",
+                    client, provider, model_name, api_key, CHUNK_SYSTEM_PROMPT,
                     &prompt, ollama_endpoint, custom_openai_endpoint, max_tokens, temperature,
                     top_p, app_data_dir, cancellation_token,
                 )
@@ -337,6 +351,8 @@ pub(crate) async fn generate_meeting_summary(
                 {
                     Ok(completion) => {
                         usage.extend(completion.usage);
+                        // A retry with the same prompt would be cut off the same way, so fail now.
+                        reject_truncated(&completion)?;
                         let cleaned = clean_llm_markdown_detailed(&completion.content);
                         reasoning_stripped |=
                             completion.reasoning_stripped || cleaned.reasoning_stripped;
@@ -401,6 +417,7 @@ pub(crate) async fn generate_meeting_summary(
             )
             .await?;
             usage.extend(completion.usage);
+            reject_truncated(&completion)?;
             let cleaned = clean_llm_markdown_detailed(&completion.content);
             reasoning_stripped |=
                 completion.reasoning_stripped || cleaned.reasoning_stripped;
@@ -422,6 +439,7 @@ pub(crate) async fn generate_meeting_summary(
     )
     .await?;
     usage.extend(completion.usage);
+    reject_truncated(&completion)?;
     let cleaned = clean_llm_markdown_detailed(&completion.content);
     reasoning_stripped |= completion.reasoning_stripped || cleaned.reasoning_stripped;
     require_visible_markdown("Final summary", &cleaned)?;
@@ -531,6 +549,56 @@ mod tests {
         let mut usage = Vec::new();
         assert!(run_chunked(&endpoint, &mut usage).await.is_err());
         assert_eq!(outputs(&usage), vec![Some(1)]);
+    }
+
+    #[tokio::test]
+    async fn truncated_chunk_fails_without_a_retry() {
+        let cut_off = r#"{"choices":[{"message":{"content":"Half"},"finish_reason":"length"}],"usage":{"prompt_tokens":10,"completion_tokens":8192}}"#;
+        let endpoint = serve(vec![
+            ("200 OK", cut_off.to_string()),
+            ("200 OK", cut_off.to_string()),
+            ("200 OK", cut_off.to_string()),
+        ])
+        .await;
+        let mut usage = Vec::new();
+        let error = run_chunked(&endpoint, &mut usage).await.unwrap_err();
+        assert_eq!(error, crate::summary::llm_client::OUTPUT_LIMIT_MESSAGE);
+        // The cut-off call is billed once and not repeated with the same prompt.
+        assert_eq!(outputs(&usage), vec![Some(8192)]);
+    }
+
+    #[tokio::test]
+    async fn ollama_without_room_for_a_chunk_fails_before_any_call() {
+        let template = templates::get_template(templates::STANDARD_TEMPLATE_ID).unwrap();
+        let mut usage = Vec::new();
+        let error = generate_meeting_summary(
+            &Client::new(), &LLMProvider::Ollama, "m", "", &long_transcript(), "", None, &[],
+            &template, "English", 0, Some("http://127.0.0.1:9"), None, None, None, None, None, None,
+            &mut usage,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains("too small"), "unexpected error: {error}");
+        assert!(usage.is_empty());
+    }
+
+    #[tokio::test]
+    async fn builtin_chunks_are_as_large_as_the_threshold() {
+        // service.rs already reserved the prompt room in the threshold, so the chunks must not lose it again.
+        let transcript = long_transcript().repeat(2);
+        let expected = chunk_text(&transcript, 1000, 100).len();
+        assert_ne!(expected, chunk_text(&transcript, 700, 100).len(), "the transcript must tell the two sizes apart");
+        let template = templates::get_template(templates::STANDARD_TEMPLATE_ID).unwrap();
+        let mut usage = Vec::new();
+        // No app data dir: the first chunk fails before any model runs, and the error names the chunk count.
+        let error = generate_meeting_summary(
+            &Client::new(), &LLMProvider::BuiltInAI, "m", "", &transcript, "", None, &[],
+            &template, "English", 1000, None, None, None, None, None, None, None,
+            &mut usage,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains(&format!("section 1 of {expected} ")), "unexpected error: {error}");
     }
 
     #[test]

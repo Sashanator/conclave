@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { invoke } from '@tauri-apps/api/core';
 import { Clock, Trash2 } from 'lucide-react';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { meetingHref } from '@/lib/meeting-target';
@@ -13,6 +14,9 @@ type Status = 'open' | 'done';
 type Run = (command: string, args: Record<string, unknown>) => Promise<boolean>;
 
 const SAVE_FAILED = 'Could not save that change. The list has been refreshed.';
+// The Undo toast stays up this long. sonner pauses it on hover and while the window is hidden,
+// so the delete waits for the toast to close (timeout or by hand), not for a fixed timer.
+const UNDO_MS = 5000;
 
 function formatDate(date: string): string {
   const d = new Date(date);
@@ -24,6 +28,11 @@ export function TaskList() {
   const [rows, setRows] = useState<TaskRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [newText, setNewText] = useState('');
+  // Tasks whose delete is waiting for the undo window to pass
+  const [hidden, setHidden] = useState<ReadonlySet<string>>(() => new Set());
+  // Each pending delete keeps the id of its own Undo toast, so a callback from an older toast cannot act on a newer delete
+  const pendingDeletes = useRef(new Map<string, string>());
+  const toastSeq = useRef(0);
 
   // The list is reloaded after every change, so it shows what the backend holds. A reload that
   // finishes after the tab changed is dropped, so it cannot show the old tab's tasks.
@@ -72,13 +81,79 @@ export function TaskList() {
     return ok;
   };
 
+  const unhide = (id: string) =>
+    setHidden((prev) => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
+
+  // The delete reaches the backend only once its undo toast closes. It is removed first, so a second
+  // close of the same toast (timeout, then dismiss) does not delete again.
+  const commitDelete = async (id: string, toastId: string) => {
+    if (pendingDeletes.current.get(id) !== toastId) return;
+    pendingDeletes.current.delete(id);
+    let deleted = true;
+    try {
+      await invoke('tasks_delete', { id });
+    } catch {
+      console.error('tasks_delete failed');
+      deleted = false;
+    }
+    try {
+      await reload();
+    } catch {
+      setError('Could not load tasks.');
+    }
+    // A deleted task stays hidden even if the reload failed: the backend no longer has it
+    if (!deleted) {
+      unhide(id);
+      toast.error('Could not delete that task. It is back in the list.');
+    }
+  };
+
+  const scheduleDelete = (task: TaskRow) => {
+    const id = task.id;
+    toastSeq.current += 1;
+    const toastId = `task-delete-${id}-${toastSeq.current}`;
+    pendingDeletes.current.set(id, toastId);
+    setHidden((prev) => new Set(prev).add(id));
+    const commit = () => void commitDelete(id, toastId);
+    toast(task.source === 'manual' ? 'Task deleted' : 'Task dismissed', {
+      id: toastId,
+      duration: UNDO_MS,
+      onAutoClose: commit,
+      onDismiss: commit,
+      action: {
+        label: 'Undo',
+        onClick: () => {
+          // Too late once the delete has started: the task is then not pending
+          if (pendingDeletes.current.get(id) !== toastId) return;
+          pendingDeletes.current.delete(id);
+          unhide(id);
+        },
+      },
+    });
+  };
+
+  // Leaving the page must not drop a pending delete, so it runs now
+  useEffect(() => {
+    const pending = pendingDeletes.current;
+    return () => {
+      for (const [id, toastId] of [...pending]) {
+        toast.dismiss(toastId);
+        void commitDelete(id, toastId);
+      }
+    };
+  }, []);
+
   const add = async () => {
     const text = newText.trim();
     if (!text) return;
     if (await run('tasks_add', { text })) setNewText('');
   };
 
-  const groups = groupByMeeting(rows);
+  const groups = groupByMeeting(rows.filter((row) => !hidden.has(row.id)));
 
   return (
     <div className="space-y-6">
@@ -132,7 +207,7 @@ export function TaskList() {
           </header>
           <ul className="divide-y divide-border rounded-lg border border-border bg-card">
             {group.tasks.map((task) => (
-              <TaskItem key={task.id} task={task} run={run} />
+              <TaskItem key={task.id} task={task} run={run} scheduleDelete={scheduleDelete} />
             ))}
           </ul>
         </section>
@@ -141,7 +216,7 @@ export function TaskList() {
   );
 }
 
-function TaskItem({ task, run }: { task: TaskRow; run: Run }) {
+function TaskItem({ task, run, scheduleDelete }: { task: TaskRow; run: Run; scheduleDelete: (task: TaskRow) => void }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(task.text);
   const done = task.status === 'done';
@@ -215,7 +290,7 @@ function TaskItem({ task, run }: { task: TaskRow; run: Run }) {
         </Link>
       )}
 
-      <Button variant="ghost" size="icon" aria-label="Delete task" onClick={() => run('tasks_delete', { id: task.id })}>
+      <Button variant="ghost" size="icon" aria-label="Delete task" onClick={() => scheduleDelete(task)}>
         <Trash2 className="h-4 w-4" />
       </Button>
     </li>

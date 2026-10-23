@@ -94,6 +94,11 @@ impl HotkeyMachine {
         self.bindings = bindings;
     }
 
+    /// True when no dictation is armed or hands-free.
+    pub fn is_idle(&self) -> bool {
+        matches!(self.state, State::Idle)
+    }
+
     /// `now` is KBDLLHOOKSTRUCT.time (ms, wrapping).
     pub fn on_key(&mut self, vk: u16, down: bool, now: u32) -> Decision {
         let (action, swallow) = if !down {

@@ -11,7 +11,7 @@ use crate::summary::metadata::{
 };
 use crate::summary::processor::{
     clean_llm_markdown_detailed, extract_meeting_name_from_markdown, generate_meeting_summary,
-    require_visible_markdown,
+    chunk_prompt_overhead_tokens, require_visible_markdown,
 };
 use crate::summary::template_choice::{
     auto_pick_answer_id, auto_pick_prompts, choice_to_store, choose_without_model, Choice,
@@ -41,6 +41,22 @@ struct RegisteredCancellation {
 
 static CANCELLATION_REGISTRY: LazyLock<Arc<Mutex<HashMap<String, RegisteredCancellation>>>> =
     LazyLock::new(|| Arc::new(Mutex::new(HashMap::new())));
+
+/// Output tokens kept free in Ollama's context so a chunk's summary is not cut off.
+const OLLAMA_REPLY_TOKENS: usize = 1024;
+
+/// Chunk size for Ollama. Ollama's default runtime context is 4096 tokens and requests never send num_ctx to raise it.
+/// shortcut: a fixed 4096 cap, not the server's OLLAMA_CONTEXT_LENGTH or per-request num_ctx; upgrade if those become configurable.
+fn ollama_chunk_tokens(context_size: usize) -> usize {
+    context_size
+        .min(4096)
+        .saturating_sub(chunk_prompt_overhead_tokens() + OLLAMA_REPLY_TOKENS)
+}
+
+/// Chunk size when the model's context cannot be fetched: Ollama's default runtime context.
+fn ollama_fallback_chunk_tokens() -> usize {
+    ollama_chunk_tokens(4096)
+}
 
 /// Strips the first `#` heading line; returns "" if no `#` is found.
 fn strip_leading_title(markdown: &str) -> String {
@@ -267,8 +283,7 @@ impl SummaryService {
         let token_threshold = if provider == LLMProvider::Ollama {
             match METADATA_CACHE.get_or_fetch(&model_name, ollama_endpoint.as_deref()).await {
                 Ok(metadata) => {
-                    // Reserve 300 tokens for prompt overhead
-                    let optimal = metadata.context_size.saturating_sub(300);
+                    let optimal = ollama_chunk_tokens(metadata.context_size);
                     info!(
                         "✓ Using dynamic context for {}: {} tokens (chunk size: {})",
                         model_name, metadata.context_size, optimal
@@ -280,7 +295,7 @@ impl SummaryService {
                         "Failed to fetch context for {}: {}. Using default 4000",
                         model_name, e
                     );
-                    4000  // Fallback to safe default
+                    ollama_fallback_chunk_tokens()
                 }
             }
         } else if provider == LLMProvider::BuiltInAI {
@@ -292,7 +307,7 @@ impl SummaryService {
             match model {
                 Ok(model_def) => {
                     // Reserve 300 tokens for prompt overhead
-                    let optimal = model_def.context_size.saturating_sub(300) as usize;
+                    let optimal = model_def.context_size.saturating_sub(300).max(1) as usize;
                     info!(
                         "✓ Using BuiltInAI context size: {} tokens (chunk size: {})",
                         model_def.context_size, optimal
@@ -347,6 +362,10 @@ impl SummaryService {
                     usage::record(&pool, provider.as_str(), &model_name, Purpose::TemplatePick, Some(&meeting_id), None, c.usage.as_ref()).await;
                 }
                 match answer {
+                    Ok(Ok(c)) if c.truncated => {
+                        warn!("Auto-pick answer was cut off at the output limit");
+                        (templates::STANDARD_TEMPLATE_ID.to_string(), TemplateSource::Fallback)
+                    }
                     Ok(Ok(c)) => match auto_pick_answer_id(&c.content, &listing.templates) {
                         Some(id) => (id, TemplateSource::Auto),
                         None => {
@@ -544,6 +563,22 @@ mod tests {
     use super::*;
     use crate::database::repositories::{test_pool, transcript::TranscriptsRepository};
     use crate::summary::llm_client::TokenUsage;
+
+    #[test]
+    fn ollama_fallback_chunks_leave_room_for_the_reply() {
+        let chunk = ollama_fallback_chunk_tokens();
+        assert!(chunk + chunk_prompt_overhead_tokens() + OLLAMA_REPLY_TOKENS <= 4096);
+    }
+
+    #[test]
+    fn ollama_chunks_leave_room_for_the_reply_in_the_default_context() {
+        // Prompt and reply share the context: chunk + instructions + 1024 reply tokens must fit in 4096.
+        for context in [2_048, 4_096, 131_072] {
+            let chunk = ollama_chunk_tokens(context);
+            assert!(chunk + chunk_prompt_overhead_tokens() + 1024 <= context.min(4096));
+        }
+        assert_eq!(ollama_chunk_tokens(200), 0);
+    }
 
     #[tokio::test]
     async fn summary_usage_is_recorded_for_each_call() {

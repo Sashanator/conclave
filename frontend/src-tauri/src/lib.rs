@@ -723,14 +723,20 @@ pub fn run() {
             // }
 
             // Initialize database (handles first launch detection and conditional setup)
-            tauri::async_runtime::block_on(async {
+            let db_init = tauri::async_runtime::block_on(async {
                 database::setup::initialize_database_on_startup(&_app.handle()).await
-            })
-            .expect("Failed to initialize database");
+            });
+            if let Err(e) = db_init {
+                // The rest of setup assumes AppState exists, so report the failure and stop here.
+                database::setup::report_open_failure(_app.handle(), &e);
+                return Ok(());
+            }
             // Dictate that was on comes back only now: its model load needs the database.
             dictate::apply_after_db_ready(_app.handle());
             // A practice session left running by a crash is closed as interrupted.
             tauri::async_runtime::spawn(practice::commands::recover_at_startup(_app.handle().clone()));
+            // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
+            tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {

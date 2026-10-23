@@ -30,6 +30,7 @@ use super::sentences::parse_json;
 use super::settings;
 use super::temp_audio::{TempAudio, TempFileGuard};
 use crate::audio::decoder::decode_to_mono_16k_file;
+use crate::audio::incremental_saver::merge_leftover_checkpoints;
 use crate::audio::meeting_folder::{find_audio_file, guarded_meeting_folder};
 use crate::audio::recording_preferences::get_default_recordings_folder;
 use crate::database::repositories::speakers::{Publish, SpeakersRepository};
@@ -455,7 +456,9 @@ pub(crate) async fn recording_of(pool: &SqlitePool, meeting_id: &str, base: Opti
         .fetch_optional(pool)
         .await?;
     let (Some((Some(folder),)), Some(base)) = (folder, base) else { return Ok(None) };
-    Ok(guarded_meeting_folder(&folder, &base).and_then(|dir| find_audio_file(&dir)))
+    let Some(dir) = guarded_meeting_folder(&folder, &base) else { return Ok(None) };
+    merge_leftover_checkpoints(&dir).await;
+    Ok(find_audio_file(&dir))
 }
 
 /// Queues a re-identify. Refused when the feature is off, the meeting has no recording, or a run is pending or running.

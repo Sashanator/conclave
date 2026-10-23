@@ -158,23 +158,26 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   };
 
   // Function to search through meeting transcripts
+  // Search runs per keystroke; only the newest request may write results (a slow earlier one must not win).
+  const searchSeqRef = React.useRef(0);
   const searchTranscripts = async (query: string) => {
+    const seq = ++searchSeqRef.current;
+    const isLatest = () => seq === searchSeqRef.current;
     if (!query.trim()) {
       setSearchResults([]);
+      setIsSearching(false);
       return;
     }
 
     try {
       setIsSearching(true);
-
-
       const results = await invoke('api_search_transcripts', { query }) as SearchHit[];
-      setSearchResults(results);
+      if (isLatest()) setSearchResults(results);
     } catch (error) {
       console.error('Error searching transcripts:', error);
-      setSearchResults([]);
+      if (isLatest()) setSearchResults([]);
     } finally {
-      setIsSearching(false);
+      if (isLatest()) setIsSearching(false);
     }
   };
 

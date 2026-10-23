@@ -4,6 +4,7 @@
 //! `delete_checkpoint_files` and `discard_import_folder`).
 //! Remaining window: another process running as the user could swap a path between the
 //! per-file re-check in `remove_checked` and the Recycle Bin call for that one file.
+use crate::audio::incremental_saver::merge_leftover_checkpoints;
 use crate::audio::recording_preferences::get_default_recordings_folder;
 use log::warn;
 use serde::Serialize;
@@ -317,11 +318,11 @@ pub(crate) async fn meeting_audio_inner(pool: &sqlx::SqlitePool, meeting_id: &st
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| format!("Meeting not found: {meeting_id}"))?;
-    let file = meeting
-        .folder_path
-        .as_deref()
-        .and_then(|p| guarded_meeting_folder(p, base))
-        .and_then(|folder| find_audio_file(&folder));
+    let folder = meeting.folder_path.as_deref().and_then(|p| guarded_meeting_folder(p, base));
+    if let Some(folder) = &folder {
+        merge_leftover_checkpoints(folder).await;
+    }
+    let file = folder.and_then(|folder| find_audio_file(&folder));
     Ok(MeetingAudio {
         path: file.map(|f| f.to_string_lossy().to_string()),
         keep_audio: meeting.keep_audio,

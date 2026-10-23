@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { appDataDir } from '@tauri-apps/api/path';
 import { useCallback, useEffect, useState, useRef } from 'react';
 import { Play, Pause, Square, Mic, AlertCircle, X } from 'lucide-react';
+import { toast } from 'sonner';
 import { ProcessRequest, SummaryResponse } from '@/types/summary';
 import { listen } from '@tauri-apps/api/event';
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
@@ -19,6 +20,7 @@ interface RecordingControlsProps {
   onTranscriptReceived: (summary: SummaryResponse) => void;
   onTranscriptionError?: (message: string) => void;
   onStopInitiated?: () => void; // Called immediately when stop button is clicked
+  onStopFailed?: () => void; // Called when stop_recording fails, so the status can go back to recording
   isRecordingDisabled: boolean;
   isParentProcessing: boolean;
   selectedDevices?: {
@@ -36,6 +38,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   onTranscriptReceived,
   onTranscriptionError,
   onStopInitiated,
+  onStopFailed,
   isRecordingDisabled,
   isParentProcessing,
   selectedDevices,
@@ -176,11 +179,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
         }
       }
       setIsProcessing(false);
-      onRecordingStop(false);
+      // Stop failed, so the session may still be live. Reset the status so Stop can be pressed again;
+      // onRecordingStop(false) would take the stop gate and block that retry.
+      onStopFailed?.();
+      toast.error('Could not stop recording', { description: error instanceof Error ? error.message : String(error), duration: 5000 });
     } finally {
       setIsStopping(false);
     }
-  }, [onRecordingStop]);
+  }, [onRecordingStop, onStopFailed]);
 
   const handleStopRecording = useCallback(async () => {
     console.log('handleStopRecording called - isRecording:', isRecording, 'isStarting:', isStarting, 'isStopping:', isStopping, 'isStartingRecording:', isStartingRecording);
@@ -242,9 +248,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
     };
   }, []);
 
+  // The page passes new callbacks on every render (it re-renders for the bar heights); keep the listeners stable.
+  const onTranscriptionErrorRef = useRef(onTranscriptionError);
+  onTranscriptionErrorRef.current = onTranscriptionError;
+
   useEffect(() => {
     console.log('Setting up recording event listeners');
     let unsubscribes: (() => void)[] = [];
+    let cancelled = false;
 
     const setupListeners = async () => {
       try {
@@ -260,11 +271,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
             return newCount;
           });
           setIsProcessing(false);
-          console.log('Calling onRecordingStop(false) due to transcript error');
-          onRecordingStop(false);
-          if (onTranscriptionError) {
-            onTranscriptionError(errorMessage);
-          }
+          onTranscriptionErrorRef.current?.(errorMessage);
         });
 
         // Transcription error listener - handles structured error objects with actionable flag
@@ -279,11 +286,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           });
           setIsProcessing(false);
 
-          if (event.payload.phase === 'active') {
-            console.log('Calling onRecordingStop(false) due to active transcription error');
-            onRecordingStop(false);
-          }
-
+          // Rust keeps recording after an active error, so this must not end the session (that would take the stop gate).
           // For actionable errors (like model loading failures), the main page will handle showing the model selector
           // For regular errors, they are handled by useModalState global listener which shows a toast
         });
@@ -297,11 +300,17 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
           setSpeechDetected(true);
         });
 
-        unsubscribes = [
+        const registered = [
           transcriptErrorUnsubscribe,
           transcriptionErrorUnsubscribe,
           speechDetectedUnsubscribe
         ];
+        // Unmounted while listen() was pending: drop what was just registered
+        if (cancelled) {
+          registered.forEach(unsubscribe => unsubscribe());
+          return;
+        }
+        unsubscribes = registered;
         console.log('Recording event listeners set up successfully');
       } catch (error) {
         console.error('Failed to set up recording event listeners:', error);
@@ -312,13 +321,14 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
 
     return () => {
       console.log('Cleaning up recording event listeners');
+      cancelled = true;
       unsubscribes.forEach(unsubscribe => {
         if (unsubscribe && typeof unsubscribe === 'function') {
           unsubscribe();
         }
       });
     };
-  }, [onRecordingStop, onTranscriptionError]);
+  }, []);
 
   return (
     <TooltipProvider>

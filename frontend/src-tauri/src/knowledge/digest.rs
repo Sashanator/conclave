@@ -11,7 +11,7 @@ use crate::knowledge::{
     DIGEST_SUMMARY_HEAD_CHARS, DIGEST_TIMEOUT_SECS,
 };
 use crate::state::AppState;
-use crate::summary::llm_client::LLMProvider;
+use crate::summary::llm_client::{reject_truncated, LLMProvider};
 use crate::summary::llm_target::complete;
 use crate::summary::processor::language_name_from_code;
 use crate::summary::templates::{self, TemplateEntry};
@@ -377,6 +377,7 @@ where
         reply.completion.usage.as_ref(),
     )
     .await;
+    reject_truncated(&reply.completion)?;
     let markdown = reply.completion.content.trim().to_string();
     if markdown.is_empty() {
         return Err("The model returned no digest".to_string());
@@ -424,7 +425,8 @@ pub(crate) async fn ready_lists(
     }
     // Only a meeting with no extraction yet, or a queued one, runs now. A failed one waits for the user's Retry.
     let status = extract_status(pool, meeting_id).await?;
-    if extract_on && status.as_deref().is_none_or(|s| s == "pending") {
+    // A meeting held back after a failed save waits for its backoff, as the worker's does.
+    if extract_on && status.as_deref().is_none_or(|s| s == "pending") && !extract::held_back(meeting_id) {
         if let Err(e) = extract::run_one(pool, meeting_id).await {
             warn!("knowledge: digest could not extract a meeting: {e}");
         }
@@ -432,7 +434,11 @@ pub(crate) async fn ready_lists(
             return Ok(Some(lists));
         }
     }
-    if extract::extraction_running(meeting_id) || extract_status(pool, meeting_id).await?.as_deref() == Some("pending") {
+    // With extraction off, nothing finishes a queued meeting, so waiting for it would block the digest for good.
+    if extract_on
+        && (extract::extraction_running(meeting_id)
+            || extract_status(pool, meeting_id).await?.as_deref() == Some("pending"))
+    {
         return Ok(None);
     }
     Ok(Some((Vec::new(), Vec::new())))
@@ -653,6 +659,7 @@ mod tests {
                 content: content.to_string(),
                 reasoning_stripped: false,
                 usage: None,
+                truncated: false,
             },
         }
     }
@@ -946,11 +953,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn digest_waits_for_a_queued_extraction() {
+    async fn digest_does_not_wait_for_a_queued_extraction_when_extraction_is_off() {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
         done_meeting(&pool, "digest_queued", "2026-10-19T10:00:00Z").await;
-        // A regenerated summary queues a new extraction: the old lists are not the current ones.
+        // A queued extraction that nothing will run while extraction is off must not block the digest.
         sqlx::query("UPDATE meeting_extracts SET status = 'pending' WHERE meeting_id = 'digest_queued'")
             .execute(&pool)
             .await
@@ -961,12 +968,31 @@ mod tests {
             async { Ok(reply(CANNED)) }
         };
 
-        // Extraction is off here, so nothing runs it: the digest must wait rather than store empty lists.
         let made = make_digest_with(app.handle(), &pool, at(16, 9, 0), at(23, 9, 0), false, call).await.unwrap();
 
-        assert_eq!(made, None);
-        assert_eq!(calls.get(), 0);
-        assert_eq!(digest_count(&pool).await, 0);
+        // One call: the digest's own. The queued extraction was not run.
+        assert!(made.is_some());
+        assert_eq!(calls.get(), 1);
+        assert_eq!(digest_count(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn held_back_meeting_is_not_extracted_again_by_digest() {
+        let pool = test_pool().await;
+        done_meeting(&pool, "digest_held", "2026-10-19T10:00:00Z").await;
+        sqlx::query("UPDATE meeting_extracts SET status = 'pending', extracted_at = '2026-10-01T00:00:00Z' WHERE meeting_id = 'digest_held'")
+            .execute(&pool)
+            .await
+            .unwrap();
+        // A save failed for it: no automatic run may call the model until the hold ends.
+        extract::record_outcome("digest_held", &Err("could not save".into()));
+
+        assert_eq!(ready_lists(&pool, "digest_held", true).await.unwrap(), None);
+        let status: String = sqlx::query_scalar("SELECT status FROM meeting_extracts WHERE meeting_id = 'digest_held'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(status, "pending");
     }
 
     #[tokio::test]

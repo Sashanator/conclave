@@ -2,7 +2,7 @@ use super::{settings, ASK_TIMEOUT_SECS, MAX_CONTEXT_CHARS, MAX_QUESTION_CHARS};
 use crate::cancel_slot::{CancelSlot, Claim};
 use crate::ollama::metadata::ModelMetadataCache;
 use crate::state::AppState;
-use crate::summary::llm_client::{LLMProvider, LlmCompletion};
+use crate::summary::llm_client::{reject_truncated, LLMProvider, LlmCompletion};
 use crate::summary::llm_target::{complete, target_with_override, LlmTarget};
 use crate::summary::processor::language_name_from_code;
 use crate::usage::{self, Purpose};
@@ -47,9 +47,10 @@ static METADATA_CACHE: LazyLock<ModelMetadataCache> =
     LazyLock::new(|| ModelMetadataCache::new(Duration::from_secs(300)));
 
 /// Ollama's context in characters: the room left after the instructions, at about 2.9 characters
-/// per token, capped at MAX_CONTEXT_CHARS.
+/// per token, capped at MAX_CONTEXT_CHARS. Ollama runs at 4096 tokens unless num_ctx is set, so a
+/// larger trained context does not add room.
 fn ollama_budget(context_tokens: usize) -> usize {
-    MAX_CONTEXT_CHARS.min(context_tokens.saturating_sub(1300) * 100 / 35)
+    MAX_CONTEXT_CHARS.min(context_tokens.min(4096).saturating_sub(1300) * 100 / 35)
 }
 
 fn instruction(action: CopilotAction) -> &'static str {
@@ -247,6 +248,7 @@ async fn answer<R: Runtime>(app: AppHandle<R>, request: CopilotRequest) -> Resul
         )
         .await;
     }
+    reject_truncated(&sent.completion)?;
     let answer = sent.completion.content.trim();
     if answer.is_empty() {
         warn!(
@@ -463,7 +465,8 @@ mod tests {
     #[test]
     fn ollama_budget_from_context() {
         assert_eq!(ollama_budget(4000), 7714);
-        assert_eq!(ollama_budget(100_000), MAX);
+        // Requests never set num_ctx, so Ollama runs at 4096 tokens whatever the model's trained context.
+        assert_eq!(ollama_budget(100_000), 7988);
         assert_eq!(ollama_budget(0), 0);
     }
 

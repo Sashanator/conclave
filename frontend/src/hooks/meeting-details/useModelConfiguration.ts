@@ -89,7 +89,7 @@ export function useModelConfiguration({ serverAddress }: UseModelConfigurationPr
     const setupListener = async () => {
       const { listen } = await import('@tauri-apps/api/event');
       const unlisten = await listen<ModelConfig>('model-config-updated', (event) => {
-        console.log('Meeting details received model-config-updated event:', event.payload);
+        console.log('Meeting details received model-config-updated event:', { provider: event.payload.provider, model: event.payload.model });
         setModelConfig(event.payload);
       });
 

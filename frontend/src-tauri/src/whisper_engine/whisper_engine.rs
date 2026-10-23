@@ -1346,12 +1346,14 @@ impl WhisperEngine {
 
         let client = Client::builder()
             .user_agent(concat!("Conclave/", env!("CARGO_PKG_VERSION")))
+            .connect_timeout(Duration::from_secs(30))
             .build()
             .map_err(|e| anyhow!("Failed to create download client: {}", e))?;
         let response = tokio::select! {
             biased;
             _ = active_download.cancellation.cancelled() => return Err(DownloadCancelled.into()),
-            response = client.get(model_url).send() => response
+            response = tokio::time::timeout(Duration::from_secs(60), client.get(model_url).send()) => response
+                .map_err(|_| anyhow!("Whisper model download timed out waiting for the server"))?
                 .map_err(|e| anyhow!("Failed to start download: {}", e))?,
         };
 
@@ -1378,7 +1380,9 @@ impl WhisperEngine {
             let chunk_result = tokio::select! {
                 biased;
                 _ = active_download.cancellation.cancelled() => return Err(DownloadCancelled.into()),
-                chunk_result = stream.next() => chunk_result,
+                chunk_result = tokio::time::timeout(Duration::from_secs(30), stream.next()) => {
+                    chunk_result.map_err(|_| anyhow!("Whisper model download stalled for 30 seconds"))?
+                }
             };
 
             let Some(chunk_result) = chunk_result else {
@@ -1951,6 +1955,55 @@ mod tests {
         let _ = release_b.send(());
         let _ = server_a.await;
         let _ = server_b.await;
+    }
+
+    #[tokio::test]
+    async fn server_that_never_sends_headers_fails_within_60_seconds() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
+        engine.discover_models().await.unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/ggml-tiny.bin", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let (_stream, _) = listener.accept().await.unwrap();
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        });
+
+        let error = timeout(
+            Duration::from_secs(90),
+            engine.download_model_from_url("tiny", &url, None),
+        )
+        .await
+        .expect("a silent server should fail within the 60 s response deadline")
+        .unwrap_err();
+
+        assert!(error.to_string().contains("timed out"));
+        assert!(!engine.active_downloads.lock().await.contains_key("tiny"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn stalled_body_fails_within_the_stall_deadline_and_removes_the_partial_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
+        let model_path = dir.path().join("ggml-tiny.bin");
+        engine.discover_models().await.unwrap();
+        let (url, _headers, release, server) = stalled_http_server().await;
+
+        let error = timeout(
+            Duration::from_secs(40),
+            engine.download_model_from_url("tiny", &url, None),
+        )
+        .await
+        .expect("a stalled body should fail within the 30 s stall deadline")
+        .unwrap_err();
+
+        assert!(error.to_string().contains("stalled"));
+        assert!(!engine.active_downloads.lock().await.contains_key("tiny"));
+        assert!(!dir.path().join("ggml-tiny.bin.part").exists());
+        assert!(!model_path.exists());
+        let _ = release.send(());
+        let _ = server.await;
     }
 
     #[tokio::test]

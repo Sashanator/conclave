@@ -328,12 +328,8 @@ pub(crate) async fn generate_meeting_summary(
         && total_tokens >= token_threshold
     {
         chunked = true;
-        // Ollama's threshold already reserves room for the prompt; BuiltInAI's is the bare context.
-        let chunk_tokens = if provider == &LLMProvider::Ollama {
-            token_threshold
-        } else {
-            token_threshold.saturating_sub(300).max(1)
-        };
+        // service.rs takes the prompt reserve from the threshold for both Ollama and BuiltInAI.
+        let chunk_tokens = token_threshold;
         if chunk_tokens == 0 {
             return Err("The model's context is too small to summarize this transcript".to_string());
         }
@@ -584,6 +580,25 @@ mod tests {
         .unwrap_err();
         assert!(error.contains("too small"), "unexpected error: {error}");
         assert!(usage.is_empty());
+    }
+
+    #[tokio::test]
+    async fn builtin_chunks_are_as_large_as_the_threshold() {
+        // service.rs already reserved the prompt room in the threshold, so the chunks must not lose it again.
+        let transcript = long_transcript().repeat(2);
+        let expected = chunk_text(&transcript, 1000, 100).len();
+        assert_ne!(expected, chunk_text(&transcript, 700, 100).len(), "the transcript must tell the two sizes apart");
+        let template = templates::get_template(templates::STANDARD_TEMPLATE_ID).unwrap();
+        let mut usage = Vec::new();
+        // No app data dir: the first chunk fails before any model runs, and the error names the chunk count.
+        let error = generate_meeting_summary(
+            &Client::new(), &LLMProvider::BuiltInAI, "m", "", &transcript, "", None, &[],
+            &template, "English", 1000, None, None, None, None, None, None, None,
+            &mut usage,
+        )
+        .await
+        .unwrap_err();
+        assert!(error.contains(&format!("section 1 of {expected} ")), "unexpected error: {error}");
     }
 
     #[test]

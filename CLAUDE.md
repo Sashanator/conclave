@@ -19,3 +19,10 @@ At each completed implementation task, before asking for my review:
   `codex review -c model="gpt-6.1-sol" -c model_reasoning_effort="medium" -c sandbox_mode='"danger-full-access"' -`.
 - Third reviewer for whole-branch reviews only (at the end of a phase): Antigravity CLI with Gemini 3.8 Flash High, run read-only:
   `agy -p "<review prompt>" --model gemini-3.8-flash-high --mode plan --dangerously-skip-permissions --print-timeout 1800s`. Verify its findings like Codex findings.
+
+## Context budget (token use)
+
+- Long main sessions are the biggest cost (2026-10-22 audit: one session averaged 586k context per request). At each natural phase boundary (task reviewed, phase merged, plan written), write the state to the plan's ledger or notes file, then `/clear` and resume from that file.
+- Subagent briefs are short: the task text plus cited line ranges (`path:120-160`), never whole plans, specs or diffs pasted in or "read the whole doc".
+- No forks for drafting work (plans, specs, briefs). Use a fresh agent with a brief, or write it in the main session.
+- In the main session, read with Grep, then Read with offset/limit; trim command output (`| tail`, `--stat`, summary reporters). Don't `cat` whole diffs or files to skim them.

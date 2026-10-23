@@ -37,6 +37,13 @@ The brief should give you a **scope** (a commit range, a base branch, or "uncomm
 5. **Verify each finding** before reporting it. Prove it with a concrete input and the wrong output, a failing command you ran, or a traced code path you cite line by line. Mark it **CONFIRMED** if you proved it, **PLAUSIBLE** if it is likely but unproven, and drop it if it doesn't hold. Treat Codex findings the same way: verify them yourself and label their source.
 6. **Collect the Codex output** if you started a pass, waiting for it to finish if needed. If it failed, say so. Never present a failed run as a clean review.
 
+## Context budget
+- Open plans, specs and constraints files only at the line ranges the brief cites. Read a constraints file once per task.
+- Find code with Grep (or the codebase-memory graph), then Read with offset/limit. Read a whole file only if it is under ~300 lines or you are mostly rewriting it.
+- Don't re-read a file you haven't changed since you last read it. Don't `cat` or `sed -n` large ranges through Bash when Read with a range works.
+- Iterate with the narrowest test command (one test file or filter). Trim output: `| tail -n 40`, `--stat` before a full diff, summary reporters.
+- Look at a screenshot at most once.
+
 ## Report
 
 - **Verdict:** `APPROVED` only if no blocker or major finding remains, otherwise `CHANGES REQUESTED`.

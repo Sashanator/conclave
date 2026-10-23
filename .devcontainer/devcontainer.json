@@ -24,7 +24,7 @@
   "initializeCommand": "umask 077; xauth nlist \"$DISPLAY\" | awk '{print \"ffff 0000  0000\", $(NF-3), $(NF-2), $(NF-1), $NF}' | xauth -f .devcontainer/.Xauthority nmerge - || true",
   // Installs the default Claude Code plugins + MCP servers and registers codebase-memory-mcp with Claude/Codex/Antigravity
   "postCreateCommand": "bash .devcontainer/setup-agents.sh",
-  "postStartCommand": "ln -sf /workspace/.devcontainer/.Xauthority ~/.Xauthority",
+  "postStartCommand": "ln -sf /workspace/.devcontainer/.Xauthority ~/.Xauthority && node /workspace/.devcontainer/claude-title-sync.js &",
   // Updates Claude Code, Codex and Antigravity on every attach (window open) with their own updaters; the Dockerfile installs them.
   // Codex lives under /usr/local, but root's npm prefix is node's npm-global, hence the prefix override. A failed update never blocks opening.
   "postAttachCommand": "claude update || true; sudo env NPM_CONFIG_PREFIX=/usr/local codex update || true; sudo agy update || true",
@@ -65,15 +65,19 @@
         "editor.codeActionsOnSave": {
           "source.fixAll.eslint": "explicit"
         },
+        "terminal.integrated.tabs.title": "${sequence}",
+        "terminal.integrated.defaultProfile.linux": "Claude Code chat",
         "terminal.integrated.profiles.linux": {
-          "Claude Code": {
+          "Claude Code chat": {
             "path": "zsh",
             "args": [
               "-l",
               "-c",
-              "printf '\\033]0;Claude Code\\007'; claude --dangerously-skip-permissions; exec zsh"
+              "node /workspace/.devcontainer/rotate-terminal.js; printf '\\033]0;Claude Code chat\\007'; CLAUDE_MISSION_CONTROL=1 claude --dangerously-skip-permissions; exec zsh"
             ],
-            "overrideName": true
+            "icon": "terminal",
+            "color": "terminal.ansiCyan",
+            "overrideName": false
           },
           "Codex CLI": {
             "path": "zsh",
@@ -82,7 +86,7 @@
               "-c",
               "printf '\\033]0;Codex CLI\\007'; codex --dangerously-bypass-approvals-and-sandbox; exec zsh"
             ],
-            "overrideName": true
+            "overrideName": false
           },
           "Antigravity": {
             "path": "zsh",
@@ -91,7 +95,7 @@
               "-c",
               "printf '\\033]0;Antigravity\\007'; agy --dangerously-skip-permissions; exec zsh"
             ],
-            "overrideName": true
+            "overrideName": false
           },
           "bash": {
             "path": "bash",

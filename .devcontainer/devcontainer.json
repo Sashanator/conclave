@@ -22,9 +22,9 @@
   // Host side, on every window open: exports the host X cookie as a wildcard entry (any display number) so
   // xclip can use VS Code's forwarded X socket for CLI image paste. Needs xauth on the host. Never commit the file.
   "initializeCommand": "umask 077; xauth nlist \"$DISPLAY\" | awk '{print \"ffff 0000  0000\", $(NF-3), $(NF-2), $(NF-1), $NF}' | xauth -f .devcontainer/.Xauthority nmerge - || true",
-  // Installs the default Claude Code plugins + MCP servers and registers codebase-memory-mcp with Claude/Codex/Antigravity
+  // Installs the default Claude Code plugins + MCP servers and indexes the repo with GitNexus and registers it with Codex
   "postCreateCommand": "bash .devcontainer/setup-agents.sh",
-  "postStartCommand": "ln -sf /workspace/.devcontainer/.Xauthority ~/.Xauthority && node /workspace/.devcontainer/claude-title-sync.js &",
+  "postStartCommand": "ln -sf /workspace/.devcontainer/.Xauthority ~/.Xauthority && node /workspace/.devcontainer/claude-title-sync.js & bash /workspace/.devcontainer/gitnexus.sh start || printf '%s\\n' 'GitNexus watcher failed; inspect ~/.cache/s-harness-gitnexus/*/watcher.log' >&2",
   // Updates Claude Code, Codex and Antigravity on every attach (window open) with their own updaters; the Dockerfile installs them.
   // Codex lives under /usr/local, but root's npm prefix is node's npm-global, hence the prefix override. A failed update never blocks opening.
   "postAttachCommand": "claude update || true; sudo env NPM_CONFIG_PREFIX=/usr/local codex update || true; sudo agy update || true",
@@ -34,14 +34,14 @@
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
   "mounts": [
-    // Per-project Claude home (settings, plugins, memory, login); only settings.json + statusline.sh are committed
+    // Per-project Claude home (settings, plugins, memory, login); only settings.json is committed
     "source=${localWorkspaceFolder}/.claude,target=/home/node/.claude,type=bind,consistency=cached",
     // Shared by all projects: log in once
     "source=antigravity-auth,target=/home/node/.gemini,type=volume", // agy OAuth token + config
     "source=gh-config,target=/home/node/.config/gh,type=volume", // GitHub CLI login
     "source=${localEnv:HOME}/.codex/auth.json,target=/home/node/.codex/auth.json,type=bind", // Codex login from the host
     // Per project: every project lives at /workspace, so shared state would collide
-    "source=codebase-memory-cache-${devcontainerId},target=/home/node/.cache/codebase-memory-mcp,type=volume", // graph index + ADRs
+    "source=gitnexus-registry-${devcontainerId},target=/home/node/.gitnexus,type=volume", // GitNexus repository registry
     "source=bashhistory-${devcontainerId},target=/commandhistory,type=volume"
   ],
   "containerEnv": {
@@ -73,7 +73,7 @@
             "args": [
               "-l",
               "-c",
-              "node /workspace/.devcontainer/rotate-terminal.js; printf '\\033]0;Claude Code chat\\007'; CLAUDE_MISSION_CONTROL=1 claude --dangerously-skip-permissions; exec zsh"
+              "node /workspace/.devcontainer/rotate-terminal.js; printf '\\033]0;Claude Code chat\\007'; claude --dangerously-skip-permissions; exec zsh"
             ],
             "icon": "terminal",
             "color": "terminal.ansiCyan",

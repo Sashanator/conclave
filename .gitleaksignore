@@ -1,0 +1,10 @@
+# Meetily's PostHog project keys (public client keys, already public upstream; analytics removed in Conclave)
+78c16db722febefe8422c8fbe9d600efb26690b5:frontend/src-tauri/src/analytics/commands.rs:generic-api-key:12
+bf84d968e6ea4726f66ed7cf0ee55dcc3b68cb56:frontend/src-tauri/src/analytics/commands.rs:generic-api-key:12
+bf84d968e6ea4726f66ed7cf0ee55dcc3b68cb56:frontend/src-tauri/src/lib_complex_backup.rs:generic-api-key:1818
+bf84d968e6ea4726f66ed7cf0ee55dcc3b68cb56:frontend/src-tauri/src/lib_old_complex.rs:generic-api-key:1818
+c09e79ede81c54b5bc1c23ff02f8a45edaa879e3:frontend/src-tauri/src/lib.rs:generic-api-key:1173
+c332a3a34f47e510295c9a64d0d1ba7791848129:frontend/src-tauri/src/analytics/commands.rs:generic-api-key:12
+d943b4d9024fa169a1a67d0bc0e5afc7ac01bdbe:frontend/src-tauri/src/lib.rs:generic-api-key:1174
+ffee1fd06c575f597a2d6aaa0384c8fd366ea8b7:frontend/src-tauri/src/analytics/commands.rs:generic-api-key:12
+ffee1fd06c575f597a2d6aaa0384c8fd366ea8b7:frontend/src-tauri/src/lib_old_complex.rs:generic-api-key:1818

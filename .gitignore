@@ -83,11 +83,6 @@ frontend/src-tauri/binaries/
 # Claude home is bind-mounted here; retain only reusable configuration.
 /.claude/*
 !/.claude/settings.json
-!/.claude/statusline.sh
-!/.claude/agents/
-/.claude/agents/*
-!/.claude/agents/reviewer.md
-!/.claude/agents/conclave-implementer.md
 
 # Host X11 cookie (initializeCommand): grants access to the host display.
 /.devcontainer/.Xauthority
@@ -100,3 +95,6 @@ frontend/src-tauri/binaries/
 *.env
 !backend/temp.env
 .DS_Store
+
+# GitNexus index, regenerated per checkout.
+.gitnexus/

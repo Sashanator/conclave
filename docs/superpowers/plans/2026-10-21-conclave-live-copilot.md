@@ -441,7 +441,7 @@
 - [ ] **Step 1:** Make the edits.
 - [ ] **Step 2:** Run the full check (Global Constraints), `bash scripts/check-no-phone-home.sh`, and `actionlint` if any workflow changed. Expected: all green.
 - [ ] **Step 3:** Commit `docs(copilot): network calls, release notes`.
-- [ ] **Step 4:** Run a whole-branch review: `reviewer` with Codex, plus Gemini via `agy` (CLAUDE.md), and one recheck after fixes.
+- [ ] **Step 4:** Run a whole-branch review: `reviewer` with Codex (CLAUDE.md), and one recheck after fixes.
 
 ### Task 9: Windows CI checkpoint (manual dispatch)
 

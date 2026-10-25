@@ -35,10 +35,19 @@ USER root
 # Codex CLI: install on the standard PATH for every user and container rebuild.
 RUN npm install -g --prefix /usr/local @openai/codex@latest
 
-# codebase-memory-mcp: code knowledge-graph MCP server. Binary only here; agent
-# registration happens in postCreateCommand since it writes to $HOME configs.
-RUN curl -fsSL https://raw.githubusercontent.com/DeusData/codebase-memory-mcp/main/install.sh \
-    | bash -s -- --dir=/usr/local/bin --skip-config
+# GitNexus: code graph for the gitnexus@s-harness plugin (MCP server, hooks, skills).
+RUN npm install -g --prefix /usr/local gitnexus@1.6.12
+
+# gitleaks: the harness plugin scans what Claude commits or pushes for secrets.
+# Pinned, and checked against the release's checksums file.
+ARG GITLEAKS_VERSION=8.30.1
+RUN arch="$(uname -m | sed 's/x86_64/x64/;s/aarch64/arm64/')" \
+    && cd /tmp \
+    && curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz" \
+    && curl -fsSLO "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_checksums.txt" \
+    && grep " gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz\$" "gitleaks_${GITLEAKS_VERSION}_checksums.txt" | sha256sum -c - \
+    && tar -xzf "gitleaks_${GITLEAKS_VERSION}_linux_${arch}.tar.gz" -C /usr/local/bin gitleaks \
+    && rm -f gitleaks_*
 
 # Antigravity CLI (Google's terminal coding agent, successor to Gemini CLI)
 # The installer hardcodes ~/.local/bin (no install-dir override), so relocate
@@ -68,8 +77,8 @@ RUN apt-get update \
 #     && rm -rf /var/lib/apt/lists/*
 
 # Pre-create agent config dirs with correct ownership so the mount targets exist
-RUN mkdir -p /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.cache/codebase-memory-mcp \
-    && chown -R node:node /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.cache
+RUN mkdir -p /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.gitnexus /home/node/.cache \
+    && chown -R node:node /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.gitnexus /home/node/.cache
 
 # Tauri 2 / Conclave Linux build dependencies (local cargo check/test; Windows is built in CI)
 RUN apt-get update && apt-get install -y --no-install-recommends \

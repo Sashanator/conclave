@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { ChevronRight } from 'lucide-react';
 import { TranscriptPanel } from './TranscriptPanel';
@@ -17,7 +17,8 @@ const tabClass = (on: boolean) =>
   `-mb-px border-b-2 px-2 py-2 text-sm ${on ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`;
 const bodyClass = (on: boolean) => (on ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden');
 
-export function LiveTranscriptAndNotes(props: { isProcessingStop: boolean; isStopping: boolean; showModal: (name: ModalType, message?: string) => void }) {
+// children (record bar, status overlays) float over the transcript column, which is the relative anchor below.
+export function LiveTranscriptAndNotes({ children, ...props }: { isProcessingStop: boolean; isStopping: boolean; showModal: (name: ModalType, message?: string) => void; children?: ReactNode }) {
   const { notes, addNote, updateNote, deleteNote } = useTranscripts();
   const { isRecording, isSaving, activeDuration } = useRecordingState();
   const locked = annotationsLocked({ isRecording, isStopping: props.isStopping, isProcessing: props.isProcessingStop, isSaving });
@@ -51,8 +52,9 @@ export function LiveTranscriptAndNotes(props: { isProcessingStop: boolean; isSto
 
   return (
     <div ref={split.containerRef} className="flex flex-1 min-w-0 overflow-hidden" {...split.containerHandlers}>
-      <div className="flex min-w-0" style={collapsed ? { flex: 1 } : { width: `${split.ratio * 100}%`, flex: 'none' }}>
+      <div className="relative flex min-w-0" style={collapsed ? { flex: 1 } : { width: `${split.ratio * 100}%`, flex: 'none' }}>
         <TranscriptPanel {...props} />
+        {children}
       </div>
       {!collapsed && <SplitHandle {...split.separatorProps} />}
       {collapsed ? (

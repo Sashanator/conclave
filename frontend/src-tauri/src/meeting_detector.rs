@@ -1,6 +1,7 @@
 //! App side of meeting detection (spec §5): the Off/Ask/Auto setting, the status Settings shows, and what each
 //! detector action does. The detection loop lives in `crates/meeting-detector`.
 use crate::audio::recording_commands::FollowError;
+use crate::audio::continuation;
 use crate::banner::{self, BannerKind};
 use meeting_detector::classify::{Action, Mode};
 use meeting_detector::runner::Host;
@@ -121,8 +122,24 @@ impl<R: Runtime> Host for AppHost<R> {
 fn apply<R: Runtime>(app: &AppHandle<R>, action: Action) {
     log::info!("Meeting detection: {action:?}");
     match action {
-        Action::Prompt { app: call, certain } => banner::show(app, BannerKind::Detected { call, certain }),
-        Action::Start { app: call } => crate::tray::request_recording_start(app, Some(call.label())),
+        Action::Prompt { app: call, certain } => {
+            banner::show(app, BannerKind::Detected { call, certain, offer: continuation::offer() });
+        }
+        Action::Start { app: call } => {
+            crate::tray::request_recording_start(app, Some(call.label()), None);
+            if let Some(offer) = continuation::offer() {
+                let app = app.clone();
+                tauri::async_runtime::spawn(async move {
+                    for _ in 0..60 {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        if crate::audio::recording_commands::is_recording_now() {
+                            banner::show(&app, BannerKind::Continue { call, offer });
+                            break;
+                        }
+                    }
+                });
+            }
+        }
         Action::Stop { app: call } => {
             let handle = app.clone();
             tauri::async_runtime::spawn(async move { crate::tray::stop_recording_and_save(&handle).await });

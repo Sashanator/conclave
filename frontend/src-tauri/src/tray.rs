@@ -81,14 +81,14 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             stop_recording_and_save(&app_clone).await;
         } else {
             log::info!("Emitting start recording event from tray");
-            request_recording_start(&app_clone, None);
+            request_recording_start(&app_clone, None, None);
         }
     });
 }
 
 /// Starts recording through the main webview's normal start path (model check, recording notice), without
 /// bringing the window forward. `title_prefix` (a call app name) goes in front of the generated meeting title.
-pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Option<&str>) {
+pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Option<&str>, continue_id: Option<&str>) {
     // An automatic start must never reload the page over a live, starting or saving recording.
     if crate::audio::recording_commands::is_recording_now()
         || crate::audio::recording_commands::start_in_flight()
@@ -101,8 +101,12 @@ pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Opt
     if let Some(window) = app.get_webview_window("main") {
         // JSON-encode so the prefix is always a safe JS string literal.
         let prefix = serde_json::to_string(title_prefix.unwrap_or("")).unwrap_or_else(|_| "\"\"".to_string());
+        let continuation = continue_id.map(|id| {
+            let id = serde_json::to_string(id).expect("a string is JSON serializable");
+            format!("sessionStorage.setItem('autoStartContinueId', {id}); ")
+        }).unwrap_or_default();
         let _ = window.eval(&format!(
-            "sessionStorage.setItem('autoStartTitlePrefix', {prefix}); sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/')"
+            "{continuation}sessionStorage.setItem('autoStartTitlePrefix', {prefix}); sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/')"
         ));
     }
 }

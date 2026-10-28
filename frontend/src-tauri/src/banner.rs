@@ -1,6 +1,7 @@
 //! Conclave's own top-centre meeting banner (spec §5.1 Ask mode). It replaces Windows notifications, which do
 //! nothing when clicked (probe check D, 2026-10-13).
 use crate::tray::focus_main_window;
+use crate::audio::continuation::{self, ContinueMeeting};
 use meeting_detector::classify::CallApp;
 use serde::Serialize;
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -16,7 +17,8 @@ const AUTO_HIDE: Duration = Duration::from_secs(15);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum BannerKind {
-    Detected { call: CallApp, certain: bool },
+    Detected { call: CallApp, certain: bool, offer: Option<ContinueMeeting> },
+    Continue { call: CallApp, offer: ContinueMeeting },
     Ended { call: CallApp },
     /// A transcript line that said one of the user's alert words (copilot name alert).
     Mention { line: String },
@@ -28,16 +30,20 @@ pub struct BannerView {
     pub app: &'static str,
     pub certain: bool,
     pub line: Option<String>,
+    pub continue_title: Option<String>,
 }
 
 impl BannerKind {
     fn view(&self) -> BannerView {
-        let (kind, app, certain, line) = match self {
-            BannerKind::Detected { call, certain } => ("detected", call.label(), *certain, None),
-            BannerKind::Ended { call } => ("ended", call.label(), true, None),
-            BannerKind::Mention { line } => ("mention", "", true, Some(line.clone())),
+        let (kind, app, certain, line, continue_title) = match self {
+            BannerKind::Detected { call, certain, offer } =>
+                ("detected", call.label(), *certain, None, offer.as_ref().map(|o| o.title.clone())),
+            BannerKind::Continue { call, offer } =>
+                ("continue", call.label(), true, None, Some(offer.title.clone())),
+            BannerKind::Ended { call } => ("ended", call.label(), true, None, None),
+            BannerKind::Mention { line } => ("mention", "", true, Some(line.clone()), None),
         };
-        BannerView { kind, app, certain, line }
+        BannerView { kind, app, certain, line, continue_title }
     }
 }
 
@@ -133,7 +139,7 @@ pub fn get_meeting_banner<R: Runtime>(window: WebviewWindow<R>) -> Option<Banner
     }
 }
 
-/// `action` is "record", "open" or "dismiss". Async: a sync command that touches windows can deadlock on Windows.
+/// `action` is "record", "continue", "open" or "dismiss". Async: a sync command that touches windows can deadlock on Windows.
 #[tauri::command]
 pub async fn meeting_banner_action<R: Runtime>(
     app: AppHandle<R>,
@@ -153,8 +159,29 @@ pub async fn meeting_banner_action<R: Runtime>(
             if crate::meeting_detector::busy().await {
                 log::info!("Meeting banner: Record ignored, a recording is already active");
             } else {
-                crate::tray::request_recording_start(&app, Some(call.label()));
+                crate::tray::request_recording_start(&app, Some(call.label()), None);
             }
+        }
+    } else if action == "continue" {
+        match kind {
+            Some(BannerKind::Detected { call, offer: Some(offer), .. }) => {
+                if crate::meeting_detector::busy().await {
+                    log::info!("Meeting banner: Continue ignored, a recording is already active");
+                } else {
+                    crate::tray::request_recording_start(&app, Some(call.label()), Some(&offer.meeting_id));
+                }
+            }
+            Some(BannerKind::Continue { offer, .. }) => {
+                let result = match app.try_state::<crate::state::AppState>() {
+                    Some(state) => continuation::set_target(&app, state.db_manager.pool(), &offer.meeting_id).await,
+                    None => Err("Database not ready".to_string()),
+                };
+                if let Err(e) = result {
+                    log::warn!("Meeting banner: cannot set continuation target: {e}");
+                    let _ = app.emit_to("main", "continue-target-failed", serde_json::json!({ "error": e }));
+                }
+            }
+            _ => {}
         }
     }
     Ok(())
@@ -206,14 +233,37 @@ mod tests {
 
     #[test]
     fn view_texts() {
-        let v = BannerKind::Detected { call: CallApp::Meet, certain: true }.view();
+        let v = BannerKind::Detected { call: CallApp::Meet, certain: true, offer: None }.view();
         assert_eq!((v.kind, v.app, v.certain), ("detected", "Google Meet", true));
+        assert_eq!(v.continue_title, None);
         assert_eq!(BannerKind::Ended { call: CallApp::Teams }.view().kind, "ended");
+    }
+
+    #[test]
+    fn detected_with_offer_shows_continue_title() {
+        let offer = crate::audio::continuation::ContinueMeeting {
+            meeting_id: "standup".into(),
+            title: "Standup".into(),
+        };
+        let v = BannerKind::Detected { call: CallApp::Meet, certain: true, offer: Some(offer) }.view();
+        assert_eq!(v.continue_title.as_deref(), Some("Standup"));
+    }
+
+    #[test]
+    fn continue_view() {
+        let offer = crate::audio::continuation::ContinueMeeting {
+            meeting_id: "standup".into(),
+            title: "Standup".into(),
+        };
+        let v = BannerKind::Continue { call: CallApp::Zoom, offer }.view();
+        assert_eq!((v.kind, v.app, v.certain), ("continue", "Zoom", true));
+        assert_eq!(v.continue_title.as_deref(), Some("Standup"));
     }
 
     #[test]
     fn mention_view() {
         let v = BannerKind::Mention { line: "x".into() }.view();
         assert_eq!((v.kind, v.line.as_deref()), ("mention", Some("x")));
+        assert_eq!(v.continue_title, None);
     }
 }

@@ -195,7 +195,9 @@ impl TranscriptsRepository {
             .bind(meeting_id)
             .execute(&mut *conn)
             .await?;
-        SpeakersRepository::transcripts_replaced_in_tx(&mut *conn, meeting_id, speakers_active).await?;
+        if speakers_active {
+            SpeakersRepository::enqueue_in_tx(&mut *conn, meeting_id).await?;
+        }
         Ok(())
     }
 

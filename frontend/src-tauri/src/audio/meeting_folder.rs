@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager, Runtime};
 /// The import formats (`import.rs` copies a file in as `audio.<ext>`), so every format is found.
 pub use crate::audio::constants::AUDIO_EXTENSIONS;
 
-pub const MEETING_FILES: [&str; 6] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp", "levels.bin", ".levels.bin.tmp"];
+pub const MEETING_FILES: [&str; 8] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp", "levels.bin", ".levels.bin.tmp", ".audio.merge.tmp.mp4", ".audio.prev.mp4"];
 
 /// Every deleting function takes this, so tests never touch the real Recycle Bin.
 /// `Sync` keeps the async commands that hold it across `.await` `Send`.
@@ -497,7 +497,7 @@ mod tests {
         let b = base();
         let m = b.path().join("m");
         fs::create_dir(&m).unwrap();
-        for f in ["audio.mp4", "transcripts.json", "metadata.json", "levels.bin", ".levels.bin.tmp"] {
+        for f in ["audio.mp4", "transcripts.json", "metadata.json", "levels.bin", ".levels.bin.tmp", ".audio.merge.tmp.mp4", ".audio.prev.mp4"] {
             fs::write(m.join(f), "x").unwrap();
         }
         let bin = FakeBin::new();

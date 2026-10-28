@@ -987,6 +987,7 @@ pub async fn api_save_transcript<R: Runtime>(
     calendar_uid: Option<String>,
     calendar_start: Option<String>,
     recording_id: Option<String>,
+    live: Option<bool>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
         "api_save_transcript called, title chars: {}, transcripts: {}, folder_path set: {}, auth_token: {}",
@@ -1017,32 +1018,64 @@ pub async fn api_save_transcript<R: Runtime>(
     // Speaker analysis is queued in the save's transaction only while the feature is active.
     let speakers_active = tokio::task::spawn_blocking(crate::speakers::is_active).await.unwrap_or(false);
     let title = TitleOrigin::new(title_source.as_deref(), calendar_uid, calendar_start);
-    // Now, call the repository with the correctly typed data.
-    match TranscriptsRepository::save_transcript(
-        pool,
-        &meeting_title,
-        &transcripts_to_save,
-        folder_path,
-        &parse_notes(notes.unwrap_or_default()),
-        speakers_active,
-        &title,
-    )
-    .await
-    {
+    let notes = parse_notes(notes.unwrap_or_default());
+    let mut continued = false;
+    let mut continue_error = None;
+    let mut saved_title = meeting_title.clone();
+    let mut continued_id = None;
+    if live == Some(true) {
+        use crate::audio::continuation::{continue_into, take_target};
+        // Stop keeps the recording flag true through its tail. Check after all awaits,
+        // immediately before taking the target; setters recheck under the target lock.
+        if crate::audio::recording_commands::is_recording_now() {
+            continue_error = Some("The recording was still stopping, so it was saved as a new meeting.".into());
+            log_warn!("Continuation skipped: recording_now=true, live=true");
+        } else if let Some(t) = take_target(crate::audio::recording_commands::recordings_started()) {
+            match continue_into(pool, &t.meeting_id, folder_path.as_deref(), &transcripts_to_save,
+                &notes, speakers_active, &crate::audio::recording_preferences::get_default_recordings_folder()).await {
+                Ok(saved) => {
+                    continued = true;
+                    saved_title = saved.title;
+                    continued_id = Some(saved.meeting_id);
+                }
+                Err(e) => {
+                    log_error!("continue into {} failed: {}", t.meeting_id, e);
+                    continue_error = Some(e);
+                }
+            }
+        }
+    }
+    let saved = if let Some(id) = continued_id {
+        Ok(id)
+    } else {
+        TranscriptsRepository::save_transcript(pool, &meeting_title, &transcripts_to_save,
+            folder_path, &notes, speakers_active, &title).await
+    };
+    match saved {
         Ok(meeting_id) => {
-            log_info!(
-                "Successfully saved transcript and created meeting with id: {}",
-                meeting_id
-            );
+            log_info!("Successfully saved transcript with meeting id: {}", meeting_id);
             attach_recording_usage(pool, recording_id.as_deref(), &meeting_id).await;
             if speakers_active {
                 crate::speakers::job::wake();
                 let _ = app.emit("speakers-updated", serde_json::json!({ "meeting_id": meeting_id }));
             }
+            if live == Some(true) {
+                match MeetingsRepository::get_meeting_metadata(pool, &meeting_id).await {
+                    Ok(Some(meeting)) if meeting.folder_path.is_some() => {
+                        crate::audio::continuation::remember_saved(
+                            crate::audio::continuation::ContinueMeeting { meeting_id: meeting_id.clone(), title: saved_title },
+                            std::time::Instant::now());
+                    }
+                    Ok(_) => {}
+                    Err(e) => log_warn!("Could not remember saved meeting for continuation: {}", e),
+                }
+            }
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Transcript saved successfully",
-                "meeting_id": meeting_id
+                "meeting_id": meeting_id,
+                "continued": continued,
+                "continue_error": continue_error
             }))
         }
         Err(e) => {

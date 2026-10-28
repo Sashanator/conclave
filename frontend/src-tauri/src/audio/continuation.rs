@@ -78,6 +78,265 @@ pub(crate) async fn eligible(
     })
 }
 
+pub(crate) fn parse_ffmpeg_duration(stderr: &str) -> Option<f64> {
+    let duration = stderr.split_once("Duration:")?.1.split(',').next()?.trim();
+    let mut fields = duration.split(':');
+    let hours: f64 = fields.next()?.parse().ok()?;
+    let minutes: f64 = fields.next()?.parse().ok()?;
+    let seconds: f64 = fields.next()?.parse().ok()?;
+    if fields.next().is_some() {
+        return None;
+    }
+    let total = hours * 3600.0 + minutes * 60.0 + seconds;
+    total.is_finite().then_some(total)
+}
+
+pub(crate) fn join_levels(
+    old: Option<Vec<crate::speakers::levels::LevelPair>>,
+    offset_secs: f64,
+    new: Option<Vec<crate::speakers::levels::LevelPair>>,
+) -> Option<Vec<crate::speakers::levels::LevelPair>> {
+    if old.is_none() && new.is_none() {
+        return None;
+    }
+    let mut joined = old.unwrap_or_default();
+    joined.resize(
+        (offset_secs / crate::speakers::levels::SLICE_SECS).round() as usize,
+        (0.0, 0.0),
+    );
+    joined.extend(new.unwrap_or_default());
+    Some(joined)
+}
+
+async fn ffmpeg_join(old: PathBuf, new: PathBuf, tmp: PathBuf) -> Result<f64, String> {
+    tokio::task::spawn_blocking(move || {
+        use super::incremental_saver::{concat_args, concat_line, verify_chunk};
+        let ffmpeg = super::ffmpeg::find_ffmpeg_path().ok_or("ffmpeg was not found.")?;
+        let command = || {
+            let mut cmd = std::process::Command::new(&ffmpeg);
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::process::CommandExt;
+                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+            }
+            cmd
+        };
+        // ffmpeg exits nonzero when probing without an output; the container line is still valid.
+        let probe = command()
+            .args(["-hide_banner", "-i"])
+            .arg(&old)
+            .output()
+            .map_err(|e| e.to_string())?;
+        let offset = parse_ffmpeg_duration(&String::from_utf8_lossy(&probe.stderr))
+            .ok_or("Could not read the earlier audio's duration.")?;
+        let checkpoints = new
+            .parent()
+            .ok_or("Missing recording folder.")?
+            .join(".checkpoints");
+        if checkpoints.symlink_metadata().is_ok()
+            && !super::meeting_folder::is_plain_dir(&checkpoints)
+        {
+            return Err("Invalid checkpoints folder.".into());
+        }
+        std::fs::create_dir_all(&checkpoints).map_err(|e| e.to_string())?;
+        let list = checkpoints.join("concat_list.txt");
+        if list.symlink_metadata().is_ok() && !is_plain_file(&list) {
+            return Err("Invalid concat list.".into());
+        }
+        std::fs::write(&list, concat_line(&old) + &concat_line(&new)).map_err(|e| e.to_string())?;
+        let output = command()
+            .args(concat_args(&list.to_string_lossy(), &tmp.to_string_lossy()))
+            .output()
+            .map_err(|e| e.to_string())?;
+        if !output.status.success() {
+            return Err(format!(
+                "ffmpeg concat failed: {}",
+                String::from_utf8_lossy(&output.stderr).trim()
+            ));
+        }
+        verify_chunk(&ffmpeg, &tmp).map_err(|e| e.to_string())?;
+        Ok(offset)
+    })
+    .await
+    .map_err(|e| format!("Audio merge worker failed: {e}"))?
+}
+
+fn remove_merge_tmp(tmp: &Path) {
+    if let Err(e) = std::fs::remove_file(tmp) {
+        if e.kind() != std::io::ErrorKind::NotFound {
+            log::warn!("Could not remove audio merge temporary file: {e}");
+        }
+    }
+}
+
+fn read_levels(folder: &Path) -> Option<Vec<crate::speakers::levels::LevelPair>> {
+    match std::fs::read(folder.join("levels.bin")) {
+        Ok(bytes) => match crate::speakers::levels::decode(&bytes) {
+            Ok(levels) => Some(levels),
+            Err(e) => {
+                log::warn!("Could not decode continuation levels: {e}");
+                None
+            }
+        },
+        Err(e) => {
+            if e.kind() != std::io::ErrorKind::NotFound {
+                log::warn!("Could not read continuation levels: {e}");
+            }
+            None
+        }
+    }
+}
+
+pub(crate) async fn continue_into_with<J, Fut>(
+    pool: &SqlitePool,
+    target_id: &str,
+    new_folder: Option<&str>,
+    transcripts: &[crate::api::TranscriptSegment],
+    notes: &[crate::database::repositories::meeting_notes::MeetingNote],
+    speakers_active: bool,
+    base: &Path,
+    remove: super::meeting_folder::Remover<'_>,
+    join: J,
+) -> Result<ContinueMeeting, String>
+where
+    J: FnOnce(PathBuf, PathBuf, PathBuf) -> Fut,
+    Fut: std::future::Future<Output = Result<f64, String>>,
+{
+    use super::meeting_folder::{delete_meeting_folder, remove_checked};
+    use crate::database::repositories::transcript::TranscriptsRepository;
+    let target = eligible(pool, target_id, base).await?;
+    let new = new_folder
+        .and_then(|p| guarded_meeting_folder(p, base))
+        .filter(|p| p != &target.folder && is_plain_file(&p.join("audio.mp4")))
+        .ok_or("This recording has no audio file to add.")?;
+    let old_audio = target.folder.join("audio.mp4");
+    let new_audio = new.join("audio.mp4");
+    let tmp = target.folder.join(".audio.merge.tmp.mp4");
+    let prev = target.folder.join(".audio.prev.mp4");
+    // Never overwrite recovery artifacts from an interrupted earlier save.
+    if tmp.symlink_metadata().is_ok() || prev.symlink_metadata().is_ok() {
+        return Err("Merging the audio failed: an earlier merge needs recovery.".into());
+    }
+    let merge = async {
+        let offset = join(old_audio.clone(), new_audio.clone(), tmp.clone()).await?;
+        if !offset.is_finite() || offset <= 0.0 {
+            return Err("Invalid earlier audio duration.".to_string());
+        }
+        if !is_plain_file(&tmp) {
+            return Err("Merged audio is missing or is not a plain file.".into());
+        }
+        let len = |p: &Path| {
+            std::fs::metadata(p)
+                .map(|m| m.len())
+                .map_err(|e| e.to_string())
+        };
+        let inputs = len(&old_audio)?
+            .checked_add(len(&new_audio)?)
+            .ok_or("Audio size overflow.")?;
+        if !super::incremental_saver::merged_is_complete(len(&tmp)?, inputs) {
+            return Err("Merged audio is incomplete.".into());
+        }
+        Ok(offset)
+    }
+    .await;
+    let offset = match merge {
+        Ok(offset) => offset,
+        Err(e) => {
+            remove_merge_tmp(&tmp);
+            return Err(format!("Merging the audio failed: {e}"));
+        }
+    };
+    let mut tx = match pool.begin().await {
+        Ok(tx) => tx,
+        Err(e) => {
+            remove_merge_tmp(&tmp);
+            return Err(format!("Could not begin continuation save: {e}"));
+        }
+    };
+    if let Err(e) = TranscriptsRepository::append_in_tx(
+        &mut tx,
+        target_id,
+        transcripts,
+        offset,
+        notes,
+        speakers_active,
+    )
+    .await
+    {
+        if let Err(rollback) = tx.rollback().await {
+            log::error!("Continuation rollback failed: {rollback}");
+        }
+        remove_merge_tmp(&tmp);
+        return Err(format!("Could not append the recording: {e}"));
+    }
+    let swap = std::fs::rename(&old_audio, &prev).and_then(|()| {
+        std::fs::rename(&tmp, &old_audio).inspect_err(|_| {
+            if let Err(e) = std::fs::rename(&prev, &old_audio) {
+                log::error!(
+                    "Could not restore original audio; original kept as .audio.prev.mp4: {e}"
+                );
+            }
+        })
+    });
+    if let Err(e) = swap {
+        if let Err(rollback) = tx.rollback().await {
+            log::error!("Continuation rollback failed: {rollback}");
+        }
+        remove_merge_tmp(&tmp);
+        return Err(format!("Could not replace the meeting audio: {e}"));
+    }
+    if let Err(e) = tx.commit().await {
+        // Windows rename cannot replace an existing file: move our merged output out of the way first.
+        let restored =
+            std::fs::rename(&old_audio, &tmp).and_then(|()| std::fs::rename(&prev, &old_audio));
+        if let Err(restore) = restored {
+            log::error!(
+                "Could not restore original audio; original kept as .audio.prev.mp4: {restore}"
+            );
+        }
+        remove_merge_tmp(&tmp);
+        return Err(format!("Could not commit the continued recording: {e}"));
+    }
+    if let Some(levels) = join_levels(read_levels(&target.folder), offset, read_levels(&new)) {
+        if let Err(e) = crate::speakers::levels::write_levels_file(&target.folder, &levels) {
+            log::warn!("Could not write continued recording levels: {e}");
+        }
+    }
+    if let Err(e) = remove_checked(&prev, &target.folder, remove) {
+        log::warn!("Could not recycle previous meeting audio: {e}");
+    }
+    if let Err(e) = delete_meeting_folder(&new.to_string_lossy(), base, remove) {
+        log::warn!("Could not recycle continued recording folder: {e}");
+    }
+    Ok(ContinueMeeting {
+        meeting_id: target_id.to_owned(),
+        title: target.title,
+    })
+}
+
+pub(crate) async fn continue_into(
+    pool: &SqlitePool,
+    target_id: &str,
+    new_folder: Option<&str>,
+    transcripts: &[crate::api::TranscriptSegment],
+    notes: &[crate::database::repositories::meeting_notes::MeetingNote],
+    speakers_active: bool,
+    base: &Path,
+) -> Result<ContinueMeeting, String> {
+    continue_into_with(
+        pool,
+        target_id,
+        new_folder,
+        transcripts,
+        notes,
+        speakers_active,
+        base,
+        &super::meeting_folder::recycle,
+        ffmpeg_join,
+    )
+    .await
+}
+
 pub(crate) fn remember_saved(m: ContinueMeeting, at: Instant) {
     *LAST.lock().unwrap_or_else(PoisonError::into_inner) = Some((m, at));
 }
@@ -127,6 +386,7 @@ pub(crate) async fn set_target<R: Runtime>(
     let recording = recordings_started();
     let earlier = eligible(pool, meeting_id, &get_default_recordings_folder()).await?;
     // Eligibility awaits the database: never attach a request to a replacement recording.
+    let mut target = TARGET.lock().unwrap_or_else(PoisonError::into_inner);
     if !is_recording_now() || recordings_started() != recording {
         return Err("Start a recording first.".into());
     }
@@ -134,7 +394,8 @@ pub(crate) async fn set_target<R: Runtime>(
         meeting_id: meeting_id.to_owned(),
         title: earlier.title,
     };
-    set_target_for(recording, m.clone());
+    *target = Some((recording, m.clone()));
+    drop(target);
     app.emit("continue-target-changed", &m)
         .map_err(|e| format!("Could not announce the continuation target: {e}."))?;
     Ok(m)
@@ -194,6 +455,459 @@ mod tests {
             .bind(folder.map(|p| p.to_string_lossy().to_string()))
             .bind(deleted.then_some("2026-10-16T00:00:00Z"))
             .execute(pool).await.unwrap();
+    }
+
+    use crate::api::TranscriptSegment;
+    use crate::database::repositories::meeting::TitleOrigin;
+    use crate::database::repositories::meeting_notes::{MeetingNote, MeetingNotesRepository};
+    use crate::database::repositories::transcript::TranscriptsRepository;
+
+    fn segment() -> TranscriptSegment {
+        TranscriptSegment {
+            id: "line".into(),
+            text: "new line".into(),
+            timestamp: "t".into(),
+            audio_start_time: Some(1.0),
+            audio_end_time: Some(2.0),
+            duration: Some(1.0),
+            mark: None,
+            sentences: None,
+            speaker_idx: None,
+        }
+    }
+
+    fn note() -> MeetingNote {
+        MeetingNote {
+            id: "note".into(),
+            at: Some(1.0),
+            text: "a note".into(),
+        }
+    }
+
+    struct FakeBin(Mutex<Vec<PathBuf>>);
+    impl FakeBin {
+        fn remove(&self, paths: &[PathBuf]) -> Result<(), String> {
+            for p in paths {
+                if p.is_dir() {
+                    fs::remove_dir(p)
+                } else {
+                    fs::remove_file(p)
+                }
+                .map_err(|e| e.to_string())?;
+                self.0.lock().unwrap().push(p.clone());
+            }
+            Ok(())
+        }
+    }
+
+    async fn setup_merge() -> (SqlitePool, tempfile::TempDir, PathBuf, PathBuf, String) {
+        let pool = test_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let old = base.path().join("old");
+        let new = base.path().join("new");
+        fs::create_dir(&old).unwrap();
+        fs::create_dir(&new).unwrap();
+        fs::write(old.join("audio.mp4"), vec![1; 100]).unwrap();
+        fs::write(new.join("audio.mp4"), vec![2; 100]).unwrap();
+        let id = TranscriptsRepository::save_transcript(
+            &pool,
+            "Earlier meeting",
+            &[segment()],
+            Some(old.to_string_lossy().into_owned()),
+            &[note()],
+            false,
+            &TitleOrigin::default(),
+        )
+        .await
+        .unwrap();
+        (pool, base, old, new, id)
+    }
+
+    async fn fake_join(old: PathBuf, new: PathBuf, tmp: PathBuf) -> Result<f64, String> {
+        let mut bytes = fs::read(old).unwrap();
+        bytes.extend(fs::read(new).unwrap());
+        fs::write(tmp, bytes).unwrap();
+        Ok(10.0)
+    }
+
+    #[test]
+    fn parse_ffmpeg_duration_reads_the_container_line() {
+        assert_eq!(
+            parse_ffmpeg_duration("  Duration: 01:02:03.45, start: 0.000000"),
+            Some(3723.45)
+        );
+        for input in [
+            "Duration: N/A",
+            "",
+            "Duration: 00:00:inf",
+            "Duration: 00:00:NaN",
+        ] {
+            assert_eq!(parse_ffmpeg_duration(input), None);
+        }
+    }
+
+    #[test]
+    fn join_levels_pads_or_trims_the_old_track() {
+        let new = vec![(0.3, 0.4); 2];
+        let joined = join_levels(Some(vec![(0.1, 0.2); 3]), 0.25, Some(new.clone())).unwrap();
+        assert_eq!(
+            joined,
+            [vec![(0.1, 0.2); 3], vec![(0.0, 0.0); 2], new.clone()].concat()
+        );
+        assert_eq!(
+            join_levels(Some(vec![(0.1, 0.2); 10]), 0.25, Some(new.clone())).unwrap(),
+            [vec![(0.1, 0.2); 5], new.clone()].concat()
+        );
+        assert_eq!(join_levels(None, 0.25, None), None);
+        assert_eq!(
+            join_levels(None, 0.25, Some(new.clone())).unwrap(),
+            [vec![(0.0, 0.0); 5], new].concat()
+        );
+    }
+
+    #[tokio::test]
+    async fn continue_appends_and_replaces_audio_after_commit() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        crate::speakers::levels::write_levels_file(&old, &[(0.1, 0.2)]).unwrap();
+        crate::speakers::levels::write_levels_file(&new, &[(0.3, 0.4)]).unwrap();
+        let bin = FakeBin(Mutex::new(vec![]));
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|p| bin.remove(p),
+            fake_join,
+        )
+        .await
+        .unwrap();
+        assert_eq!(result.meeting_id, id);
+        assert_eq!(result.title, "Earlier meeting");
+        assert_eq!(
+            fs::read(old.join("audio.mp4")).unwrap(),
+            [vec![1; 100], vec![2; 100]].concat()
+        );
+        let times: Vec<(f64,)> = sqlx::query_as("SELECT audio_start_time FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time")
+            .bind(&id).fetch_all(&pool).await.unwrap();
+        assert_eq!(times, vec![(1.0,), (11.0,)]);
+        let removed = bin.0.lock().unwrap();
+        assert_eq!(removed[0], old.join(".audio.prev.mp4"));
+        assert!(removed[1..].iter().all(|p| p.starts_with(&new)));
+        assert!(!new.exists());
+        assert!(!old.join(".audio.merge.tmp.mp4").exists());
+        let levels =
+            crate::speakers::levels::decode(&fs::read(old.join("levels.bin")).unwrap()).unwrap();
+        assert_eq!(levels.len(), 201);
+        assert_eq!(levels[200], (0.3, 0.4));
+    }
+
+    #[tokio::test]
+    async fn continue_with_speakers_off_keeps_finished_job() {
+        let (pool, base, _, new, id) = setup_merge().await;
+        let mut tx = pool.begin().await.unwrap();
+        crate::database::repositories::speakers::SpeakersRepository::enqueue_in_tx(&mut tx, &id)
+            .await
+            .unwrap();
+        tx.commit().await.unwrap();
+        sqlx::query("UPDATE speaker_jobs SET status = 'done' WHERE meeting_id = ?")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let bin = FakeBin(Mutex::new(vec![]));
+        continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|p| bin.remove(p),
+            fake_join,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, String>("SELECT status FROM speaker_jobs WHERE meeting_id = ?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            "done"
+        );
+    }
+
+    #[tokio::test]
+    async fn failed_join_leaves_the_old_meeting_untouched() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[note()],
+            false,
+            base.path(),
+            &|_| panic!("must not recycle"),
+            |_, _, tmp| async move {
+                fs::write(tmp, "partial").unwrap();
+                Err("join failed".into())
+            },
+        )
+        .await;
+        assert!(result.unwrap_err().starts_with("Merging the audio failed"));
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transcripts")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            MeetingNotesRepository::get(&pool, &id).await.unwrap(),
+            vec![note()]
+        );
+        assert!(new.exists());
+        assert!(!old.join(".audio.merge.tmp.mp4").exists());
+    }
+
+    #[tokio::test]
+    async fn incomplete_merge_is_rejected_and_tmp_removed() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[],
+            &[],
+            false,
+            base.path(),
+            &|_| panic!("must not recycle"),
+            |_, _, tmp| async move {
+                fs::write(tmp, vec![0; 10]).unwrap();
+                Ok(10.0)
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert!(!old.join(".audio.merge.tmp.mp4").exists());
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+    }
+
+    #[tokio::test]
+    async fn invalid_offsets_remove_tmp_and_preserve_both_recordings() {
+        for offset in [0.0, -1.0, f64::NAN, f64::INFINITY] {
+            let (pool, base, old, new, id) = setup_merge().await;
+            let result = continue_into_with(
+                &pool,
+                &id,
+                new.to_str(),
+                &[segment()],
+                &[],
+                false,
+                base.path(),
+                &|_| panic!("must not recycle"),
+                |a, b, tmp| async move {
+                    fake_join(a, b, tmp).await?;
+                    Ok(offset)
+                },
+            )
+            .await;
+            assert!(result.unwrap_err().starts_with("Merging the audio failed"));
+            assert!(!old.join(".audio.merge.tmp.mp4").exists());
+            assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+            assert!(new.join("audio.mp4").exists());
+        }
+    }
+
+    #[tokio::test]
+    async fn failed_audio_rename_rolls_back_appended_rows() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[note()],
+            false,
+            base.path(),
+            &|_| panic!("must not recycle"),
+            |a, b, tmp| async {
+                let offset = fake_join(a, b, tmp).await?;
+                // Force the first rename to fail without touching the original file.
+                fs::create_dir(old.join(".audio.prev.mp4")).unwrap();
+                Ok(offset)
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transcripts")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            MeetingNotesRepository::get(&pool, &id).await.unwrap(),
+            vec![note()]
+        );
+        assert!(!old.join(".audio.merge.tmp.mp4").exists());
+    }
+
+    #[tokio::test]
+    async fn failed_commit_restores_original_audio_and_rows() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        sqlx::query("CREATE TABLE continuation_commit_guard (meeting_id TEXT REFERENCES meetings(id) DEFERRABLE INITIALLY DEFERRED)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("CREATE TRIGGER fail_continuation_commit AFTER INSERT ON transcripts BEGIN INSERT INTO continuation_commit_guard VALUES ('missing'); END")
+            .execute(&pool).await.unwrap();
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[note()],
+            false,
+            base.path(),
+            &|_| panic!("must not recycle"),
+            fake_join,
+        )
+        .await;
+        assert!(result.unwrap_err().contains("commit"));
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+        assert!(!old.join(".audio.prev.mp4").exists());
+        assert!(!old.join(".audio.merge.tmp.mp4").exists());
+        assert!(new.join("audio.mp4").exists());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transcripts")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            MeetingNotesRepository::get(&pool, &id).await.unwrap(),
+            vec![note()]
+        );
+    }
+
+    #[tokio::test]
+    async fn recycling_failure_after_commit_still_returns_success() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|_| Err("bin unavailable".into()),
+            fake_join,
+        )
+        .await;
+        assert!(result.is_ok());
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap().len(), 200);
+        assert!(old.join(".audio.prev.mp4").exists());
+        assert!(new.exists());
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transcripts")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn missing_target_row_rolls_back_and_restores() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|_| panic!("must not recycle"),
+            |a, b, tmp| async {
+                sqlx::query("DELETE FROM meetings WHERE id = ?")
+                    .bind(&id)
+                    .execute(&pool)
+                    .await
+                    .unwrap();
+                fake_join(a, b, tmp).await
+            },
+        )
+        .await;
+        assert!(result.is_err());
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+        assert!(!old.join(".audio.prev.mp4").exists());
+        assert!(!old.join(".audio.merge.tmp.mp4").exists());
+    }
+
+    #[tokio::test]
+    async fn ineligible_target_saves_a_new_meeting_with_continue_error() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        sqlx::query("UPDATE meetings SET audio_deleted_at = 'deleted' WHERE id = ?")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        let continue_error = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|_| panic!("must not recycle"),
+            fake_join,
+        )
+        .await
+        .unwrap_err();
+        assert!(continue_error.contains("deleted"));
+        let saved = TranscriptsRepository::save_transcript(
+            &pool,
+            "New",
+            &[segment()],
+            Some(new.to_string_lossy().into_owned()),
+            &[],
+            false,
+            &TitleOrigin::default(),
+        )
+        .await
+        .unwrap();
+        assert_ne!(saved, id);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM meetings")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            2
+        );
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert_eq!(
+            MeetingNotesRepository::get(&pool, &id).await.unwrap(),
+            vec![note()]
+        );
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
     }
 
     #[tokio::test]

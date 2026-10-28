@@ -56,7 +56,7 @@ pub(crate) async fn eligible(
     }
     let meeting = MeetingsRepository::get_meeting_metadata(pool, meeting_id)
         .await
-        .map_err(|e| format!("Could not read the earlier meeting: {e}."))?
+        .map_err(|_| "Could not read the earlier meeting.".to_string())?
         .ok_or("The earlier meeting no longer exists.")?;
     let folder = meeting
         .folder_path
@@ -108,63 +108,103 @@ pub(crate) fn join_levels(
     Some(joined)
 }
 
+fn duration_matches(old: f64, new: Option<f64>, merged: Option<f64>) -> bool {
+    let (Some(new), Some(merged)) = (new, merged) else {
+        return false;
+    };
+    let total = old + new;
+    [old, new, merged, total]
+        .iter()
+        .all(|d| d.is_finite() && *d > 0.0)
+        && (merged - total).abs() <= 2.0 + 0.005 * total
+}
+
+fn join_parts(
+    ffmpeg: &Path,
+    old: &Path,
+    new: &Path,
+    tmp: &Path,
+    verify: &dyn Fn(&Path) -> Result<(), String>,
+) -> Result<f64, String> {
+    use super::incremental_saver::{concat_args, concat_line};
+    // Concat may silently skip a corrupt part and produce a valid old-only file.
+    // Check both inputs before any probing, concat-list writes, or output replacement.
+    verify(old).map_err(|_| "The earlier meeting's audio is unreadable.")?;
+    verify(new).map_err(|_| "The new recording's audio is unreadable.")?;
+    let command = || {
+        let mut cmd = std::process::Command::new(ffmpeg);
+        #[cfg(target_os = "windows")]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+        cmd
+    };
+    let probe = |path: &Path| -> Result<Option<f64>, String> {
+        // A nonzero exit is expected when probing without an output.
+        let output = command()
+            .args(["-hide_banner", "-i"])
+            .arg(path)
+            .output()
+            .map_err(|e| format!("Could not run the audio duration probe ({:?}).", e.kind()))?;
+        Ok(parse_ffmpeg_duration(&String::from_utf8_lossy(
+            &output.stderr,
+        )))
+    };
+    let offset = probe(old)?.ok_or("Could not read the earlier audio's duration.")?;
+    let new_duration = probe(new)?.ok_or("Merged audio does not match the two recordings.")?;
+    let checkpoints = new
+        .parent()
+        .ok_or("Missing recording folder.")?
+        .join(".checkpoints");
+    if checkpoints.symlink_metadata().is_ok() && !super::meeting_folder::is_plain_dir(&checkpoints)
+    {
+        return Err("Invalid checkpoints folder.".into());
+    }
+    std::fs::create_dir_all(&checkpoints)
+        .map_err(|e| format!("Could not create the checkpoints folder ({:?}).", e.kind()))?;
+    let list = checkpoints.join("concat_list.txt");
+    if list.symlink_metadata().is_ok() && !is_plain_file(&list) {
+        return Err("Invalid concat list.".into());
+    }
+    std::fs::write(&list, concat_line(old) + &concat_line(new))
+        .map_err(|e| format!("Could not write the concat list ({:?}).", e.kind()))?;
+    let output = command()
+        .args(concat_args(&list.to_string_lossy(), &tmp.to_string_lossy()))
+        .output()
+        .map_err(|e| format!("Could not run ffmpeg concat ({:?}).", e.kind()))?;
+    if !output.status.success() {
+        return Err(match output.status.code() {
+            Some(code) => format!("ffmpeg concat failed (exit {code})"),
+            None => "ffmpeg concat failed".into(),
+        });
+    }
+    verify(tmp).map_err(|_| "The merged audio is unreadable.")?;
+    if !duration_matches(offset, Some(new_duration), probe(tmp)?) {
+        return Err("Merged audio does not match the two recordings.".into());
+    }
+    Ok(offset)
+}
+
 async fn ffmpeg_join(old: PathBuf, new: PathBuf, tmp: PathBuf) -> Result<f64, String> {
     tokio::task::spawn_blocking(move || {
-        use super::incremental_saver::{concat_args, concat_line, verify_chunk};
         let ffmpeg = super::ffmpeg::find_ffmpeg_path().ok_or("ffmpeg was not found.")?;
-        let command = || {
-            let mut cmd = std::process::Command::new(&ffmpeg);
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::process::CommandExt;
-                cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
-            }
-            cmd
-        };
-        // ffmpeg exits nonzero when probing without an output; the container line is still valid.
-        let probe = command()
-            .args(["-hide_banner", "-i"])
-            .arg(&old)
-            .output()
-            .map_err(|e| e.to_string())?;
-        let offset = parse_ffmpeg_duration(&String::from_utf8_lossy(&probe.stderr))
-            .ok_or("Could not read the earlier audio's duration.")?;
-        let checkpoints = new
-            .parent()
-            .ok_or("Missing recording folder.")?
-            .join(".checkpoints");
-        if checkpoints.symlink_metadata().is_ok()
-            && !super::meeting_folder::is_plain_dir(&checkpoints)
-        {
-            return Err("Invalid checkpoints folder.".into());
-        }
-        std::fs::create_dir_all(&checkpoints).map_err(|e| e.to_string())?;
-        let list = checkpoints.join("concat_list.txt");
-        if list.symlink_metadata().is_ok() && !is_plain_file(&list) {
-            return Err("Invalid concat list.".into());
-        }
-        std::fs::write(&list, concat_line(&old) + &concat_line(&new)).map_err(|e| e.to_string())?;
-        let output = command()
-            .args(concat_args(&list.to_string_lossy(), &tmp.to_string_lossy()))
-            .output()
-            .map_err(|e| e.to_string())?;
-        if !output.status.success() {
-            return Err(format!(
-                "ffmpeg concat failed: {}",
-                String::from_utf8_lossy(&output.stderr).trim()
-            ));
-        }
-        verify_chunk(&ffmpeg, &tmp).map_err(|e| e.to_string())?;
-        Ok(offset)
+        join_parts(&ffmpeg, &old, &new, &tmp, &|p| {
+            super::incremental_saver::verify_chunk(&ffmpeg, p)
+                .map_err(|_| "Audio verification failed.".into())
+        })
     })
     .await
-    .map_err(|e| format!("Audio merge worker failed: {e}"))?
+    .map_err(|_| "Audio merge worker failed.".to_string())?
 }
 
 fn remove_merge_tmp(tmp: &Path) {
     if let Err(e) = std::fs::remove_file(tmp) {
         if e.kind() != std::io::ErrorKind::NotFound {
-            log::warn!("Could not remove audio merge temporary file: {e}");
+            log::warn!(
+                "Could not remove audio merge temporary file ({:?}).",
+                e.kind()
+            );
         }
     }
 }
@@ -180,7 +220,7 @@ fn read_levels(folder: &Path) -> Option<Vec<crate::speakers::levels::LevelPair>>
         },
         Err(e) => {
             if e.kind() != std::io::ErrorKind::NotFound {
-                log::warn!("Could not read continuation levels: {e}");
+                log::warn!("Could not read continuation levels ({:?}).", e.kind());
             }
             None
         }
@@ -213,9 +253,21 @@ where
     let new_audio = new.join("audio.mp4");
     let tmp = target.folder.join(".audio.merge.tmp.mp4");
     let prev = target.folder.join(".audio.prev.mp4");
-    // Never overwrite recovery artifacts from an interrupted earlier save.
-    if tmp.symlink_metadata().is_ok() || prev.symlink_metadata().is_ok() {
+    // The backup may hold the original; only a stale merge output is disposable.
+    let absent = |path: &Path| {
+        path.symlink_metadata()
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+    };
+    if !absent(&prev) {
         return Err("Merging the audio failed: an earlier merge needs recovery.".into());
+    }
+    if !absent(&tmp) {
+        if is_plain_file(&old_audio) {
+            remove_merge_tmp(&tmp);
+        }
+        if !absent(&tmp) {
+            return Err("Merging the audio failed: an earlier merge needs recovery.".into());
+        }
     }
     let merge = async {
         let offset = join(old_audio.clone(), new_audio.clone(), tmp.clone()).await?;
@@ -228,7 +280,7 @@ where
         let len = |p: &Path| {
             std::fs::metadata(p)
                 .map(|m| m.len())
-                .map_err(|e| e.to_string())
+                .map_err(|e| format!("Could not read audio size ({:?}).", e.kind()))
         };
         let inputs = len(&old_audio)?
             .checked_add(len(&new_audio)?)
@@ -248,12 +300,12 @@ where
     };
     let mut tx = match pool.begin().await {
         Ok(tx) => tx,
-        Err(e) => {
+        Err(_) => {
             remove_merge_tmp(&tmp);
-            return Err(format!("Could not begin continuation save: {e}"));
+            return Err("Could not begin continuation save.".into());
         }
     };
-    if let Err(e) = TranscriptsRepository::append_in_tx(
+    if TranscriptsRepository::append_in_tx(
         &mut tx,
         target_id,
         transcripts,
@@ -262,51 +314,60 @@ where
         speakers_active,
     )
     .await
+    .is_err()
     {
-        if let Err(rollback) = tx.rollback().await {
-            log::error!("Continuation rollback failed: {rollback}");
+        if tx.rollback().await.is_err() {
+            log::error!("Continuation rollback failed.");
         }
         remove_merge_tmp(&tmp);
-        return Err(format!("Could not append the recording: {e}"));
+        return Err("Could not append the recording.".into());
     }
     let swap = std::fs::rename(&old_audio, &prev).and_then(|()| {
         std::fs::rename(&tmp, &old_audio).inspect_err(|_| {
             if let Err(e) = std::fs::rename(&prev, &old_audio) {
                 log::error!(
-                    "Could not restore original audio; original kept as .audio.prev.mp4: {e}"
+                    "Could not restore original audio; original kept as .audio.prev.mp4 ({:?}).",
+                    e.kind()
                 );
             }
         })
     });
     if let Err(e) = swap {
-        if let Err(rollback) = tx.rollback().await {
-            log::error!("Continuation rollback failed: {rollback}");
+        if tx.rollback().await.is_err() {
+            log::error!("Continuation rollback failed.");
         }
         remove_merge_tmp(&tmp);
-        return Err(format!("Could not replace the meeting audio: {e}"));
+        return Err(format!(
+            "Could not replace the meeting audio ({:?}).",
+            e.kind()
+        ));
     }
-    if let Err(e) = tx.commit().await {
+    if tx.commit().await.is_err() {
         // Windows rename cannot replace an existing file: move our merged output out of the way first.
         let restored =
             std::fs::rename(&old_audio, &tmp).and_then(|()| std::fs::rename(&prev, &old_audio));
         if let Err(restore) = restored {
             log::error!(
-                "Could not restore original audio; original kept as .audio.prev.mp4: {restore}"
+                "Could not restore original audio; original kept as .audio.prev.mp4 ({:?}).",
+                restore.kind()
             );
         }
         remove_merge_tmp(&tmp);
-        return Err(format!("Could not commit the continued recording: {e}"));
+        return Err("Could not commit the continued recording.".into());
     }
     if let Some(levels) = join_levels(read_levels(&target.folder), offset, read_levels(&new)) {
         if let Err(e) = crate::speakers::levels::write_levels_file(&target.folder, &levels) {
-            log::warn!("Could not write continued recording levels: {e}");
+            log::warn!(
+                "Could not write continued recording levels ({:?}).",
+                e.kind()
+            );
         }
     }
-    if let Err(e) = remove_checked(&prev, &target.folder, remove) {
-        log::warn!("Could not recycle previous meeting audio: {e}");
+    if remove_checked(&prev, &target.folder, remove).is_err() {
+        log::warn!("Could not recycle previous meeting audio.");
     }
-    if let Err(e) = delete_meeting_folder(&new.to_string_lossy(), base, remove) {
-        log::warn!("Could not recycle continued recording folder: {e}");
+    if delete_meeting_folder(&new.to_string_lossy(), base, remove).is_err() {
+        log::warn!("Could not recycle continued recording folder.");
     }
     Ok(ContinueMeeting {
         meeting_id: target_id.to_owned(),
@@ -528,6 +589,154 @@ mod tests {
         bytes.extend(fs::read(new).unwrap());
         fs::write(tmp, bytes).unwrap();
         Ok(10.0)
+    }
+
+    #[test]
+    fn corrupt_new_part_fails_before_concat() {
+        let base = tempfile::tempdir().unwrap();
+        let old = base.path().join("old.mp4");
+        let new = base.path().join("new.mp4");
+        let tmp = base.path().join("tmp.mp4");
+        let checked = Mutex::new(Vec::new());
+        let result = join_parts(
+            &base.path().join("nonexistent-ffmpeg"),
+            &old,
+            &new,
+            &tmp,
+            &|p| {
+                checked.lock().unwrap().push(p.to_path_buf());
+                if p == new {
+                    Err(format!("unreadable {}", p.display()))
+                } else {
+                    Ok(())
+                }
+            },
+        );
+        assert_eq!(
+            result.unwrap_err(),
+            "The new recording's audio is unreadable."
+        );
+        assert_eq!(*checked.lock().unwrap(), vec![old, new]);
+        assert!(!base.path().join(".checkpoints").exists());
+        assert!(!tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn corrupt_new_part_keeps_the_old_meeting_and_its_folder() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        let bin = FakeBin(Mutex::new(vec![]));
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|p| bin.remove(p),
+            |a, b, tmp| async move {
+                join_parts(
+                    &tmp.with_file_name("nonexistent-ffmpeg"),
+                    &a,
+                    &b,
+                    &tmp,
+                    &|p| {
+                        if p == b {
+                            Err(format!("unreadable {}", p.display()))
+                        } else {
+                            Ok(())
+                        }
+                    },
+                )
+            },
+        )
+        .await;
+        let error = result.unwrap_err();
+        assert!(error.starts_with("Merging the audio failed"));
+        assert!(!error.contains(base.path().to_str().unwrap()));
+        assert!(!error.contains("Earlier meeting"));
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?")
+                .bind(&id)
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            1
+        );
+        assert!(new.exists());
+        assert!(bin.0.lock().unwrap().iter().all(|p| !p.starts_with(&new)));
+        assert!(!old.join(".audio.merge.tmp.mp4").exists());
+    }
+
+    #[test]
+    fn duration_mismatch_is_rejected() {
+        assert!(duration_matches(100.0, Some(20.0), Some(120.0)));
+        assert!(duration_matches(100.0, Some(20.0), Some(122.0)));
+        assert!(!duration_matches(100.0, Some(20.0), Some(100.0)));
+        assert!(!duration_matches(100.0, None, Some(120.0)));
+        assert!(!duration_matches(100.0, Some(20.0), None));
+        assert!(!duration_matches(f64::NAN, Some(20.0), Some(120.0)));
+        assert!(!duration_matches(100.0, Some(f64::INFINITY), Some(120.0)));
+        assert!(!duration_matches(100.0, Some(20.0), Some(f64::NAN)));
+        assert!(!duration_matches(100.0, Some(-20.0), Some(80.0)));
+    }
+
+    #[tokio::test]
+    async fn leftover_merge_tmp_is_removed_when_audio_is_intact() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        let tmp = old.join(".audio.merge.tmp.mp4");
+        fs::write(&tmp, "leftover bytes").unwrap();
+        let bin = FakeBin(Mutex::new(vec![]));
+        continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|p| bin.remove(p),
+            |a, b, tmp| async move {
+                assert!(!tmp.exists());
+                fake_join(a, b, tmp).await
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            fs::read(old.join("audio.mp4")).unwrap(),
+            [vec![1; 100], vec![2; 100]].concat()
+        );
+        assert!(!tmp.exists());
+    }
+
+    #[tokio::test]
+    async fn leftover_prev_still_blocks() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        let prev = old.join(".audio.prev.mp4");
+        fs::write(&prev, "original recovery bytes").unwrap();
+        let result = continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|_| panic!("must not recycle"),
+            |_, _, _| async {
+                panic!("must not join");
+                #[allow(unreachable_code)]
+                Ok(10.0)
+            },
+        )
+        .await;
+        assert_eq!(
+            result.unwrap_err(),
+            "Merging the audio failed: an earlier merge needs recovery."
+        );
+        assert_eq!(fs::read(prev).unwrap(), b"original recovery bytes");
     }
 
     #[test]

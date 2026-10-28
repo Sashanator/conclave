@@ -34,6 +34,7 @@ export default function PageContent({
   summaryData,
   initialSummary,
   shouldAutoGenerate = false,
+  regenerateOnAuto = false,
   onAutoGenerateComplete,
   onMeetingUpdated,
   onRefetchTranscripts,
@@ -53,6 +54,8 @@ export default function PageContent({
   summaryData: MeetingSummary | null;
   initialSummary: SummaryProcessResponse | null;
   shouldAutoGenerate?: boolean;
+  // A continued meeting replaces its summary instead of generating the first one
+  regenerateOnAuto?: boolean;
   onAutoGenerateComplete?: () => void;
   onMeetingUpdated?: () => Promise<void>;
   onRefetchTranscripts?: () => Promise<void>;
@@ -233,10 +236,12 @@ export default function PageContent({
     && summaryGeneration.summaryStatus === 'idle'
     && meetingData.transcripts.length > 0
     && !speakerGateOpen;
+  const replaceOnAuto = regenerateOnAuto
+    && (summaryGeneration.summaryStatus === 'completed' || summaryGeneration.summaryStatus === 'error');
   useEffect(() => {
     if (
       !shouldAutoGenerate
-      || summaryGeneration.summaryStatus !== 'idle'
+      || (summaryGeneration.summaryStatus !== 'idle' && !replaceOnAuto)
       || isModelConfigLoading
       || meetingData.transcripts.length === 0
       || !speakerGateOpen
@@ -249,9 +254,11 @@ export default function PageContent({
     console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
     onAutoGenerateComplete?.();
     speakers.clearNamesChanged();
-    void summaryGeneration.handleGenerateSummary('');
+    if (replaceOnAuto) void regenerateSummary();
+    else void summaryGeneration.handleGenerateSummary('');
   }, [
     shouldAutoGenerate,
+    replaceOnAuto,
     meeting.id,
     meetingData.transcripts.length,
     isModelConfigLoading,

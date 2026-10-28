@@ -13,6 +13,7 @@ import {
   detectAndCacheSummaryLanguage,
 } from '@/lib/summary-language-preferences';
 import { endStop, tryBeginStop } from '@/lib/recording-stop-gate';
+import { saveOutcome } from '@/lib/resume';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
@@ -261,7 +262,8 @@ export function useRecordingStop(
             folderPath,
             [...notesRef.current],
             currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id'),
-            { source: titleSource, uid: calendarLink?.uid, start: calendarLink?.start }
+            { source: titleSource, uid: calendarLink?.uid, start: calendarLink?.start },
+            true
           );
 
           const meetingId = responseData.meeting_id;
@@ -269,33 +271,42 @@ export function useRecordingStop(
             console.error('No meeting_id in response:', responseData);
             throw new Error('No meeting ID received from save operation');
           }
+          const outcome = saveOutcome(responseData);
+          if (outcome.continueError) {
+            toast.error('Could not add this recording to the earlier meeting', {
+              description: `${outcome.continueError} It was saved as a new meeting instead.`,
+            });
+          }
           if (!transcriptionComplete) {
             toast.warning('Saved before transcription finished', {
               description: 'The last part of the transcript may be missing.',
             });
           }
 
+          // A continued recording keeps the earlier meeting's language settings
           let shouldDetectSummaryLanguage = false;
-          try {
-            shouldDetectSummaryLanguage = !(await applyPinnedSummaryLanguageToMeeting(meetingId));
-          } catch (error) {
-            console.warn('Failed to apply pinned summary language preference for new meeting:', error);
-            toast.warning('Could not apply default summary language', {
-              description: 'The meeting was saved, but the default summary language was not applied.',
-            });
-          }
-
-          if (shouldDetectSummaryLanguage) {
+          if (!outcome.continued) {
             try {
-              await detectAndCacheSummaryLanguage(
-                meetingId,
-                freshTranscripts.map(t => t.text)
-              );
+              shouldDetectSummaryLanguage = !(await applyPinnedSummaryLanguageToMeeting(meetingId));
             } catch (error) {
-              console.warn('Failed to detect summary language for new meeting:', error);
-              toast.warning('Could not detect summary language', {
-                description: 'The meeting was saved, but Auto could not detect the summary language.',
+              console.warn('Failed to apply pinned summary language preference for new meeting:', error);
+              toast.warning('Could not apply default summary language', {
+                description: 'The meeting was saved, but the default summary language was not applied.',
               });
+            }
+
+            if (shouldDetectSummaryLanguage) {
+              try {
+                await detectAndCacheSummaryLanguage(
+                  meetingId,
+                  freshTranscripts.map(t => t.text)
+                );
+              } catch (error) {
+                console.warn('Failed to detect summary language for new meeting:', error);
+                toast.warning('Could not detect summary language', {
+                  description: 'The meeting was saved, but Auto could not detect the summary language.',
+                });
+              }
             }
           }
 
@@ -335,11 +346,13 @@ export function useRecordingStop(
 
           // Show success toast with navigation option
           toast.success('Recording saved successfully!', {
-            description: `${freshTranscripts.length} transcript segments saved.`,
+            description: outcome.continued
+              ? 'Added to the earlier meeting.'
+              : `${freshTranscripts.length} transcript segments saved.`,
             action: {
               label: 'View Meeting',
               onClick: () => {
-                router.push(`/meeting-details?id=${meetingId}`);
+                router.push(outcome.url);
               }
             },
             duration: 10000,
@@ -347,7 +360,7 @@ export function useRecordingStop(
 
           // Auto-navigate after a short delay with source parameter
           setTimeout(() => {
-            router.push(`/meeting-details?id=${meetingId}&source=recording`);
+            router.push(outcome.url);
             clearTranscripts()
 
             // Reset to IDLE after navigation

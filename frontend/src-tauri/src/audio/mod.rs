@@ -53,6 +53,7 @@ pub mod import;
 
 // Meeting folder guard and Recycle Bin deletes (spec 8.3)
 pub mod meeting_folder;
+pub mod continuation;
 
 // Old-audio review: list old recordings, recycle the confirmed ones (spec 8.1)
 pub mod retention;

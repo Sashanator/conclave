@@ -3,7 +3,7 @@
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
-import { Copy, FolderOpen, RefreshCw, Users } from 'lucide-react';
+import { Copy, FolderOpen, Mic, RefreshCw, Users } from 'lucide-react';
 import { RetranscribeDialog } from './RetranscribeDialog';
 import { useConfig } from '@/contexts/ConfigContext';
 import type { MeetingSpeakers } from '@/lib/speakers';
@@ -24,6 +24,8 @@ interface TranscriptButtonGroupProps {
   hasSpeakers?: boolean;
   speakersBusy?: boolean;
   onIdentifySpeakers?: () => Promise<void>;
+  /** Start a recording that continues this meeting; omitted while one is running or the audio cannot take a new part */
+  onResumeRecording?: () => void;
 }
 
 
@@ -39,6 +41,7 @@ export function TranscriptButtonGroup({
   hasSpeakers = false,
   speakersBusy = false,
   onIdentifySpeakers,
+  onResumeRecording,
 }: TranscriptButtonGroupProps) {
   const { betaFeatures, speakerIdActive } = useConfig();
   const reidentify = speakerJob?.status === 'done';
@@ -114,6 +117,19 @@ export function TranscriptButtonGroup({
           >
             <RefreshCw className="@[22rem]:mr-2" size={18} />
             <span className="hidden @[22rem]:inline">Enhance</span>
+          </Button>
+        )}
+
+        {onResumeRecording && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="px-2 @[22rem]:px-3"
+            onClick={onResumeRecording}
+            title="Resume recording"
+          >
+            <Mic className="@[22rem]:mr-2" size={18} />
+            <span className="hidden @[22rem]:inline">Resume recording</span>
           </Button>
         )}
       </ButtonGroup>

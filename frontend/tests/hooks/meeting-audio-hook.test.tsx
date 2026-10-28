@@ -39,8 +39,8 @@ const lookups = () => requests.filter(r => r.command === 'get_meeting_audio');
 async function resolve(req: Request, value: unknown) {
   await act(async () => { req.resolve(value); });
 }
-const found: MeetingAudioInfo = { path: 'C:\\rec\\m1\\audio.mp4', keep_audio: false, audio_deleted_at: null };
-const deleted: MeetingAudioInfo = { path: null, keep_audio: false, audio_deleted_at: '2026-11-20T10:00:00+00:00' };
+const found: MeetingAudioInfo = { path: 'C:\\rec\\m1\\audio.mp4', keep_audio: false, audio_deleted_at: null, resumable: false };
+const deleted: MeetingAudioInfo = { path: null, keep_audio: false, audio_deleted_at: '2026-11-20T10:00:00+00:00', resumable: false };
 async function mountWith(info: MeetingAudioInfo) {
   await act(async () => { renderer = create(<View meetingId="m1" />); });
   await resolve(lookups()[0], info);

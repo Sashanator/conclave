@@ -24,6 +24,7 @@ function MeetingDetailsContent() {
   const searchParams = useSearchParams();
   const meetingId = searchParams.get('id');
   const source = searchParams.get('source'); // Check if navigated from recording
+  const continued = searchParams.get('continued') === '1'; // A recording was added to this meeting: replace its summary
   const target = parseMeetingTarget(searchParams); // Search hits: a line to scroll to, or a tab to open
   const { setCurrentMeeting, refetchMeetings } = useSidebar();
   const { isAutoSummary } = useConfig(); // Get auto-summary toggle state
@@ -288,6 +289,7 @@ function MeetingDetailsContent() {
     meeting={meetingDetails}
     summaryData={meetingSummary}
     shouldAutoGenerate={shouldAutoGenerate}
+    regenerateOnAuto={continued}
     onAutoGenerateComplete={() => setShouldAutoGenerate(false)}
     onMeetingUpdated={async () => {
       // Refetch meeting details to get updated title from backend

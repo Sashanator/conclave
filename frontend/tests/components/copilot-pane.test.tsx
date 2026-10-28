@@ -24,6 +24,7 @@ type Pending = { requestId: number; resolve(answer: string): void; reject(error:
 let asks: Pending[] = [];
 const invoke = mock(async (command: string, args?: Record<string, any>): Promise<unknown> => {
   if (command === 'copilot_get_settings') return { provider: null, model: null, answer_language: 'en', alert_words: [] };
+  if (command === 'continue_status') return { offer: null, target: null };
   if (command === 'copilot_ask') {
     return new Promise((resolve, reject) => asks.push({ requestId: args!.requestId, resolve, reject }));
   }

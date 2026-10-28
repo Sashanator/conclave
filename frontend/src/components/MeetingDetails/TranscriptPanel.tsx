@@ -43,6 +43,7 @@ interface TranscriptPanelProps {
   footer?: ReactNode;
   // The page owns the speaker state so the summary can wait on it and show the names-changed hint
   speakers: MeetingSpeakersState;
+  onResumeRecording?: () => void;
 }
 
 export function TranscriptPanel({
@@ -70,6 +71,7 @@ export function TranscriptPanel({
   focusSegmentId,
   footer,
   speakers,
+  onResumeRecording,
 }: TranscriptPanelProps) {
   const { speakerIdActive } = useConfig();
   const speakersOn = speakerIdActive && !!meetingId;
@@ -129,6 +131,7 @@ export function TranscriptPanel({
           hasSpeakers={(speakers.data?.speakers.length ?? 0) > 0}
           speakersBusy={speakers.busy}
           onIdentifySpeakers={speakers.identify}
+          onResumeRecording={onResumeRecording}
         />
       </div>
 

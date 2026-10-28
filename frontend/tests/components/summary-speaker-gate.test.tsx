@@ -1,7 +1,7 @@
 import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { forwardRef, type ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import type { MeetingSpeakers, Transcript } from '../../src/types';
+import type { MeetingSpeakers, SummaryProcessResponse, Transcript } from '../../src/types';
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
 const originals = {
@@ -11,6 +11,8 @@ const originals = {
   sidebar: { ...await import('../../src/components/Sidebar/SidebarProvider') },
   motion: { ...await import('framer-motion') },
   sonner: { ...await import('sonner') },
+  navigation: { ...await import('next/navigation') },
+  recordingState: { ...await import('../../src/contexts/RecordingStateContext') },
   preferences: { ...await import('../../src/lib/summary-language-preferences') },
   blockNote: { ...await import('../../src/components/AISummary/BlockNoteSummaryView') },
   empty: { ...await import('../../src/components/EmptyStateSummary') },
@@ -37,6 +39,8 @@ afterAll(() => {
   mock.module('../../src/components/Sidebar/SidebarProvider', () => originals.sidebar);
   mock.module('framer-motion', () => originals.motion);
   mock.module('sonner', () => originals.sonner);
+  mock.module('next/navigation', () => originals.navigation);
+  mock.module('../../src/contexts/RecordingStateContext', () => originals.recordingState);
   mock.module('../../src/lib/summary-language-preferences', () => originals.preferences);
   mock.module('../../src/components/AISummary/BlockNoteSummaryView', () => originals.blockNote);
   mock.module('../../src/components/EmptyStateSummary', () => originals.empty);
@@ -107,6 +111,8 @@ mock.module('../../src/components/Sidebar/SidebarProvider', () => ({
 mock.module('framer-motion', () => ({ motion: { div: ({ children }: { children?: ReactNode }) => <div>{children}</div> } }));
 const notify = mock(() => {});
 mock.module('sonner', () => ({ toast: { info: notify, error: notify, success: notify, warning: notify } }));
+mock.module('next/navigation', () => ({ ...originals.navigation, useRouter: () => ({ push: () => {} }) }));
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recordingState, useRecordingState: () => ({ isRecording: false, isStopping: false, isProcessing: false, isSaving: false, activeDuration: null }) }));
 mock.module('../../src/lib/summary-language-preferences', () => ({
   readCachedDetectedSummaryLanguage: async () => null,
   detectAndCacheSummaryLanguage: async () => ({ language: 'en' }),
@@ -193,6 +199,8 @@ const job = (status: 'pending' | 'running' | 'done' | 'failed' | 'skipped'): Mee
 
 let renderer: ReactTestRenderer | undefined;
 let autoGenerate = true;
+let regenerateOnAuto = false;
+let initialSummary: SummaryProcessResponse | null = null;
 let onAutoGenerateComplete = mock(() => {});
 beforeEach(() => {
   settings = { speakerIdActive: false, speakerSettingsLoaded: true };
@@ -202,6 +210,8 @@ beforeEach(() => {
   aiSummary = null;
   dirty = false;
   autoGenerate = true;
+  regenerateOnAuto = false;
+  initialSummary = null;
   onAutoGenerateComplete = mock(() => {});
   handlers.clear();
   heldFiveSecondTimers.length = 0;
@@ -221,8 +231,9 @@ async function show() {
       <PageContent
         meeting={meeting}
         summaryData={null}
-        initialSummary={null}
+        initialSummary={initialSummary}
         shouldAutoGenerate={autoGenerate}
+        regenerateOnAuto={regenerateOnAuto}
         onAutoGenerateComplete={onAutoGenerateComplete}
       />
     );
@@ -254,6 +265,27 @@ function button(label: string): ReactTestInstance {
 async function click(label: string) {
   await act(async () => { button(label).props.onClick(); });
 }
+
+describe('continued meeting summary', () => {
+  const completed: SummaryProcessResponse = {
+    status: 'completed', meeting_id: 'meeting-a', meetingName: null, start: null, end: null, data: { markdown: 'Old summary' }, error: null,
+  };
+
+  test('a continued meeting with a completed summary regenerates it', async () => {
+    initialSummary = completed;
+    regenerateOnAuto = true;
+    await show();
+    await flush();
+    expect(processCalls().length).toBe(1);
+  });
+
+  test('without regenerateOnAuto a completed summary is not regenerated', async () => {
+    initialSummary = completed;
+    await show();
+    await flush();
+    expect(processCalls().length).toBe(0);
+  });
+});
 
 describe('summary waits for speaker analysis', () => {
   test('feature off starts the summary at once and shows no waiting text', async () => {

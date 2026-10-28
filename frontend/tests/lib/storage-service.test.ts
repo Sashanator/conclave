@@ -42,6 +42,18 @@ describe('saveMeeting', () => {
     );
   });
 
+  test('saveMeeting sends live false by default', async () => {
+    invoke.mockClear();
+    await storageService.saveMeeting('Standup', [], null);
+    expect(invoke).toHaveBeenCalledWith('api_save_transcript', expect.objectContaining({ live: false }));
+  });
+
+  test('saveMeeting sends live true from the live stop', async () => {
+    invoke.mockClear();
+    await storageService.saveMeeting('Standup', [], null, [], null, { source: 'default' }, true);
+    expect(invoke).toHaveBeenCalledWith('api_save_transcript', expect.objectContaining({ live: true }));
+  });
+
   test('sends no recording id when none is given', async () => {
     invoke.mockClear();
     await storageService.saveMeeting('Standup', [], null);

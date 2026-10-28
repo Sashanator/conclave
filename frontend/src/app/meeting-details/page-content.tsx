@@ -3,6 +3,8 @@ import { useState, useEffect, useRef, useMemo } from 'react';
 import { motion } from 'framer-motion';
 import { MeetingSummary, SummaryProcessResponse, Transcript, TranscriptMark } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
+import { useRouter } from 'next/navigation';
+import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
@@ -26,6 +28,7 @@ import { lineSpeakerName } from '@/lib/speakers';
 import { readSummaryMetadata } from '@/lib/summary-content';
 import { pickTemplateIfAllowed } from '@/lib/regenerate-guard';
 import { audioMissingMessage } from '@/lib/meeting-audio';
+import { requestResume } from '@/lib/resume';
 import { notesCollapsedOnScreen, readFlag, readMeetingPageLayout, writeFlag } from '@/lib/meeting-page-layout';
 import { useIsDesktop } from '@/hooks/useIsDesktop';
 
@@ -85,6 +88,8 @@ export default function PageContent({
   const layout = useMemo(readMeetingPageLayout, []);
   const notes = useMeetingNotes(meeting.id);
   const audio = useMeetingAudio(meeting.id);
+  const router = useRouter();
+  const recordingNow = useRecordingState().isRecording;
   const [notesCollapsed, setNotesCollapsed] = useState(() => readFlag('conclave.notesPaneCollapsed'));
   const toggleNotesCollapsed = () => setNotesCollapsed((c) => { writeFlag('conclave.notesPaneCollapsed', !c); return !c; });
   const isDesktop = useIsDesktop();
@@ -322,6 +327,7 @@ export default function PageContent({
               audioMissingReason={audioMissingMessage(audio.info)}
               onMarkChange={onSetTranscriptMark}
               onPlayFrom={audio.info?.path ? audio.playFrom : undefined}
+              onResumeRecording={audio.info?.resumable && !recordingNow ? () => requestResume(meeting.id, router.push) : undefined}
               playheadSeconds={audio.playhead}
               focusSegmentId={focusSegmentId}
               footer={<AudioPlayerBar audio={audio} />}

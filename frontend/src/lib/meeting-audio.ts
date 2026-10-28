@@ -18,6 +18,8 @@ export interface MeetingAudioInfo {
   path: string | null;
   keep_audio: boolean;
   audio_deleted_at: string | null;
+  /** The audio can take a new part recorded on (Resume recording) */
+  resumable: boolean;
 }
 
 export function audioMissingMessage(info: MeetingAudioInfo | null): string | null {

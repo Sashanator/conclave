@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { saveOutcome } from '../../src/lib/resume';
+import { requestResume, saveOutcome, takeAutoStartContinueId } from '../../src/lib/resume';
 
 describe('saveOutcome', () => {
   test('builds the meeting url', () => {
@@ -17,5 +17,23 @@ describe('saveOutcome', () => {
     const outcome = saveOutcome({ meeting_id: 'm2', continue_error: 'Merging the audio failed: x' });
     expect(outcome.continueError).toBe('Merging the audio failed: x');
     expect(outcome.continued).toBe(false);
+  });
+});
+
+describe('requestResume and takeAutoStartContinueId', () => {
+  test('requestResume sets both keys and opens home', () => {
+    sessionStorage.clear();
+    const push = (url: string) => pushed.push(url);
+    const pushed: string[] = [];
+    requestResume('m1', push);
+    expect(sessionStorage.getItem('autoStartContinueId')).toBe('m1');
+    expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
+    expect(pushed).toEqual(['/']);
+  });
+
+  test('takeAutoStartContinueId reads once', () => {
+    sessionStorage.setItem('autoStartContinueId', 'm2');
+    expect(takeAutoStartContinueId(sessionStorage)).toBe('m2');
+    expect(takeAutoStartContinueId(sessionStorage)).toBeNull();
   });
 });

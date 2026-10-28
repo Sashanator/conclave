@@ -22,7 +22,7 @@ describe('findActiveSegmentId', () => {
 });
 
 describe('audioMissingMessage', () => {
-  const base = { path: null, keep_audio: false, audio_deleted_at: null };
+  const base = { path: null, keep_audio: false, audio_deleted_at: null, resumable: false };
   test('messages', () => {
     expect(audioMissingMessage(null)).toBeNull();
     expect(audioMissingMessage({ ...base, path: 'C:\\x\\audio.mp4' })).toBeNull();

@@ -1,4 +1,5 @@
 'use client';
+import { ContinueControl } from './ContinueControl';
 import { useEffect, useState, type ReactNode } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { ChevronRight } from 'lucide-react';
@@ -53,6 +54,7 @@ export function LiveTranscriptAndNotes({ children, ...props }: { isProcessingSto
   return (
     <div ref={split.containerRef} className="flex flex-1 min-w-0 overflow-hidden" {...split.containerHandlers}>
       <div className="relative flex min-w-0" style={collapsed ? { flex: 1 } : { width: `${split.ratio * 100}%`, flex: 'none' }}>
+        {isRecording && <ContinueControl />}
         <TranscriptPanel {...props} />
         {children}
       </div>

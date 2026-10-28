@@ -11,6 +11,8 @@ const originals = {
   sidebar: { ...await import('../../src/components/Sidebar/SidebarProvider') },
   motion: { ...await import('framer-motion') },
   sonner: { ...await import('sonner') },
+  navigation: { ...await import('next/navigation') },
+  recordingState: { ...await import('../../src/contexts/RecordingStateContext') },
   preferences: { ...await import('../../src/lib/summary-language-preferences') },
   blockNote: { ...await import('../../src/components/AISummary/BlockNoteSummaryView') },
   empty: { ...await import('../../src/components/EmptyStateSummary') },
@@ -37,6 +39,8 @@ afterAll(() => {
   mock.module('../../src/components/Sidebar/SidebarProvider', () => originals.sidebar);
   mock.module('framer-motion', () => originals.motion);
   mock.module('sonner', () => originals.sonner);
+  mock.module('next/navigation', () => originals.navigation);
+  mock.module('../../src/contexts/RecordingStateContext', () => originals.recordingState);
   mock.module('../../src/lib/summary-language-preferences', () => originals.preferences);
   mock.module('../../src/components/AISummary/BlockNoteSummaryView', () => originals.blockNote);
   mock.module('../../src/components/EmptyStateSummary', () => originals.empty);
@@ -107,6 +111,8 @@ mock.module('../../src/components/Sidebar/SidebarProvider', () => ({
 mock.module('framer-motion', () => ({ motion: { div: ({ children }: { children?: ReactNode }) => <div>{children}</div> } }));
 const notify = mock(() => {});
 mock.module('sonner', () => ({ toast: { info: notify, error: notify, success: notify, warning: notify } }));
+mock.module('next/navigation', () => ({ ...originals.navigation, useRouter: () => ({ push: () => {} }) }));
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recordingState, useRecordingState: () => ({ isRecording: false, isStopping: false, isProcessing: false, isSaving: false, activeDuration: null }) }));
 mock.module('../../src/lib/summary-language-preferences', () => ({
   readCachedDetectedSummaryLanguage: async () => null,
   detectAndCacheSummaryLanguage: async () => ({ language: 'en' }),

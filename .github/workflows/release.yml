@@ -176,14 +176,19 @@ jobs:
           $p = Start-Process -FilePath $exe -PassThru -RedirectStandardError $errLog
           $null = $p.Handle  # keeps the handle open so $p.ExitCode is reliable if the exe dies at once
           Start-Sleep -Seconds 20
-          if ($p.HasExited) {
+          $exited = $p.HasExited
+          if (-not $exited) { Stop-Process -Id $p.Id -Force; $p.WaitForExit() }
+          # Print the app log so a failed check below shows why.
+          Write-Host "::group::App stderr log"
+          Get-Content -LiteralPath $errLog -ErrorAction SilentlyContinue
+          Write-Host "::endgroup::"
+          if ($exited) {
             # Any exit within 20 s fails: a CUDA DLL problem is one cause, but so is any other startup crash.
             $code = $p.ExitCode
             $why = if ($code -eq -1073741515) { " (STATUS_DLL_NOT_FOUND)" } elseif ($code -eq -1066598274) { " (delay-load DLL not found)" } else { "" }
             Write-Error ("app exited within 20 s without CUDA on PATH: exit code {0} (0x{1:X8}){2}" -f $code, $code, $why)
             exit 1
           }
-          Stop-Process -Id $p.Id -Force
           # A failed DirectML preload only logs a warning, so its success line is required too.
           foreach ($line in 'Initialized bundled ONNX Runtime', 'Preloaded bundled DirectML') {
             if (-not (Select-String -Path $errLog -Pattern $line -Quiet)) {

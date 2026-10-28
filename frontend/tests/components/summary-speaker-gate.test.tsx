@@ -112,7 +112,8 @@ mock.module('framer-motion', () => ({ motion: { div: ({ children }: { children?:
 const notify = mock(() => {});
 mock.module('sonner', () => ({ toast: { info: notify, error: notify, success: notify, warning: notify } }));
 mock.module('next/navigation', () => ({ ...originals.navigation, useRouter: () => ({ push: () => {} }) }));
-mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recordingState, useRecordingState: () => ({ isRecording: false, isStopping: false, isProcessing: false, isSaving: false, activeDuration: null }) }));
+let recordingState = { isRecording: false, isStopping: false, isProcessing: false, isSaving: false, activeDuration: null };
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recordingState, useRecordingState: () => recordingState }));
 mock.module('../../src/lib/summary-language-preferences', () => ({
   readCachedDetectedSummaryLanguage: async () => null,
   detectAndCacheSummaryLanguage: async () => ({ language: 'en' }),
@@ -141,7 +142,7 @@ mock.module('../../src/components/LanguagePickerPopover', () => ({ LanguagePicke
 mock.module('../../src/hooks/useRecentLanguages', () => ({ useRecentLanguages: () => ({ addRecent: () => {} }) }));
 
 // The transcript panel is stubbed; the page's speaker state reaches the test through its props
-let transcriptProps: { speakers: { name: (idx: number, target: { personId: string }) => Promise<string | null>; namesChanged: boolean } } = {
+let transcriptProps: { onResumeRecording?: () => void; speakers: { name: (idx: number, target: { personId: string }) => Promise<string | null>; namesChanged: boolean } } = {
   speakers: { name: async () => null, namesChanged: false },
 };
 mock.module('../../src/components/MeetingDetails/TranscriptPanel', () => ({
@@ -181,7 +182,7 @@ mock.module('../../src/hooks/useMeetingNotes', () => ({
   useMeetingNotes: () => ({ notes: [], loaded: true, addNote: () => {}, updateNote: () => {}, deleteNote: () => {} }),
 }));
 mock.module('../../src/hooks/useMeetingAudio', () => ({
-  useMeetingAudio: () => ({ info: null, src: null, audioRef: { current: null }, audioEvents: {}, playFrom: () => {}, playhead: null }),
+  useMeetingAudio: () => ({ info: { resumable: true }, src: null, audioRef: { current: null }, audioEvents: {}, playFrom: () => {}, playhead: null }),
 }));
 mock.module('../../src/hooks/useIsDesktop', () => ({ useIsDesktop: () => true }));
 
@@ -203,6 +204,7 @@ let regenerateOnAuto = false;
 let initialSummary: SummaryProcessResponse | null = null;
 let onAutoGenerateComplete = mock(() => {});
 beforeEach(() => {
+  recordingState = { isRecording: false, isStopping: false, isProcessing: false, isSaving: false, activeDuration: null };
   settings = { speakerIdActive: false, speakerSettingsLoaded: true };
   jobReply = { job: null, speakers: [] };
   lookupDelayMs = 0;
@@ -265,6 +267,20 @@ function button(label: string): ReactTestInstance {
 async function click(label: string) {
   await act(async () => { button(label).props.onClick(); });
 }
+
+describe('resume availability during recording save', () => {
+  test.each(['isRecording', 'isStopping', 'isProcessing', 'isSaving'] as const)('hides Resume while %s and restores it afterwards', async (flag) => {
+    autoGenerate = false;
+    await show();
+    expect(transcriptProps.onResumeRecording).toBeFunction();
+    recordingState = { ...recordingState, [flag]: true };
+    await show();
+    expect(transcriptProps.onResumeRecording).toBeUndefined();
+    recordingState = { ...recordingState, [flag]: false };
+    await show();
+    expect(transcriptProps.onResumeRecording).toBeFunction();
+  });
+});
 
 describe('continued meeting summary', () => {
   const completed: SummaryProcessResponse = {

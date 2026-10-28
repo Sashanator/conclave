@@ -1,5 +1,7 @@
 //! Eligibility and recording-scoped state for continuing an earlier meeting.
-use super::meeting_folder::{guarded_meeting_folder, is_plain_file};
+use super::meeting_folder::{
+    guarded_meeting_folder, is_plain_file, recycle, remove_checked, Remover,
+};
 use super::recording_commands::{is_recording_now, recordings_started};
 use super::recording_preferences::get_default_recordings_folder;
 use crate::database::repositories::meeting::MeetingsRepository;
@@ -46,10 +48,55 @@ pub(crate) fn resumable_folder(folder: &Path) -> bool {
     is_plain_file(&folder.join("audio.mp4")) && !imported(folder)
 }
 
+/// Only called with a canonical folder validated by `guarded_meeting_folder`.
+/// Keep ambiguous states intact so recovery never discards the only original audio.
+pub(crate) fn repair_interrupted_swap(folder: &Path, remove: Remover<'_>) {
+    let audio = folder.join("audio.mp4");
+    let prev = folder.join(".audio.prev.mp4");
+    match prev.symlink_metadata() {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Ok(_) if is_plain_file(&prev) => {
+            let repaired = match audio.symlink_metadata() {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                    std::fs::rename(&prev, &audio).is_ok()
+                }
+                Ok(meta)
+                    if is_plain_file(&audio)
+                        && prev.symlink_metadata().is_ok_and(|p| meta.len() >= p.len()) =>
+                {
+                    remove_checked(&prev, folder, remove).is_ok()
+                }
+                _ => false,
+            };
+            if !repaired {
+                log::warn!("Interrupted continuation swap needs recovery.");
+                return;
+            }
+        }
+        _ => {
+            log::warn!("Interrupted continuation swap needs recovery.");
+            return;
+        }
+    }
+    let tmp = folder.join(".audio.merge.tmp.mp4");
+    if is_plain_file(&audio) && is_plain_file(&tmp) {
+        remove_merge_tmp(&tmp);
+    }
+}
+
 pub(crate) async fn eligible(
     pool: &SqlitePool,
     meeting_id: &str,
     base: &Path,
+) -> Result<Eligible, String> {
+    eligible_with_remover(pool, meeting_id, base, &recycle).await
+}
+
+async fn eligible_with_remover(
+    pool: &SqlitePool,
+    meeting_id: &str,
+    base: &Path,
+    remove: Remover<'_>,
 ) -> Result<Eligible, String> {
     if meeting_id.trim().is_empty() {
         return Err("The earlier meeting no longer exists.".into());
@@ -69,6 +116,7 @@ pub(crate) async fn eligible(
     if imported(&folder) {
         return Err("Imported meetings cannot be continued.".into());
     }
+    repair_interrupted_swap(&folder, remove);
     if !is_plain_file(&folder.join("audio.mp4")) {
         return Err("The earlier meeting's audio.mp4 is missing.".into());
     }
@@ -244,7 +292,7 @@ where
 {
     use super::meeting_folder::{delete_meeting_folder, remove_checked};
     use crate::database::repositories::transcript::TranscriptsRepository;
-    let target = eligible(pool, target_id, base).await?;
+    let target = eligible_with_remover(pool, target_id, base, remove).await?;
     let new = new_folder
         .and_then(|p| guarded_meeting_folder(p, base))
         .filter(|p| p != &target.folder && is_plain_file(&p.join("audio.mp4")))
@@ -322,9 +370,11 @@ where
         remove_merge_tmp(&tmp);
         return Err("Could not append the recording.".into());
     }
+    let mut restore_failed = false;
     let swap = std::fs::rename(&old_audio, &prev).and_then(|()| {
         std::fs::rename(&tmp, &old_audio).inspect_err(|_| {
             if let Err(e) = std::fs::rename(&prev, &old_audio) {
+                restore_failed = true;
                 log::error!(
                     "Could not restore original audio; original kept as .audio.prev.mp4 ({:?}).",
                     e.kind()
@@ -337,6 +387,9 @@ where
             log::error!("Continuation rollback failed.");
         }
         remove_merge_tmp(&tmp);
+        if restore_failed {
+            return Err("The earlier meeting's audio could not be swapped; it will be restored the next time you open that meeting.".into());
+        }
         return Err(format!(
             "Could not replace the meeting audio ({:?}).",
             e.kind()
@@ -346,6 +399,7 @@ where
         // Windows rename cannot replace an existing file: move our merged output out of the way first.
         let restored =
             std::fs::rename(&old_audio, &tmp).and_then(|()| std::fs::rename(&prev, &old_audio));
+        let restore_failed = restored.is_err();
         if let Err(restore) = restored {
             log::error!(
                 "Could not restore original audio; original kept as .audio.prev.mp4 ({:?}).",
@@ -353,6 +407,9 @@ where
             );
         }
         remove_merge_tmp(&tmp);
+        if restore_failed {
+            return Err("The earlier meeting's audio could not be swapped; it will be restored the next time you open that meeting.".into());
+        }
         return Err("Could not commit the continued recording.".into());
     }
     if let Some(levels) = join_levels(read_levels(&target.folder), offset, read_levels(&new)) {
@@ -591,6 +648,107 @@ mod tests {
         Ok(10.0)
     }
 
+    #[tokio::test]
+    async fn interrupted_swap_restores_missing_audio_on_meeting_read() {
+        let (pool, base, old, _, id) = setup_merge().await;
+        fs::rename(old.join("audio.mp4"), old.join(".audio.prev.mp4")).unwrap();
+        fs::write(old.join(".audio.merge.tmp.mp4"), "stale merge").unwrap();
+        let audio = super::super::meeting_folder::meeting_audio_inner(&pool, &id, base.path())
+            .await
+            .unwrap();
+        assert!(audio.path.is_some());
+        assert!(audio.resumable);
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+        assert!(!old.join(".audio.prev.mp4").exists());
+        assert!(!old.join(".audio.merge.tmp.mp4").exists());
+    }
+
+    #[tokio::test]
+    async fn interrupted_swap_recycles_backup_and_allows_continue() {
+        let (pool, base, old, new, id) = setup_merge().await;
+        fs::write(old.join(".audio.prev.mp4"), vec![1; 100]).unwrap();
+        fs::write(old.join("audio.mp4"), vec![1; 150]).unwrap();
+        fs::write(old.join(".audio.merge.tmp.mp4"), "stale merge").unwrap();
+        let bin = FakeBin(Mutex::new(vec![]));
+        continue_into_with(
+            &pool,
+            &id,
+            new.to_str(),
+            &[segment()],
+            &[],
+            false,
+            base.path(),
+            &|p| bin.remove(p),
+            fake_join,
+        )
+        .await
+        .unwrap();
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap().len(), 250);
+        assert_eq!(
+            bin.0
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|p| p.ends_with(".audio.prev.mp4"))
+                .count(),
+            2
+        );
+    }
+
+    #[tokio::test]
+    async fn interrupted_swap_restores_before_eligibility_checks_audio() {
+        let (pool, base, old, _, id) = setup_merge().await;
+        fs::rename(old.join("audio.mp4"), old.join(".audio.prev.mp4")).unwrap();
+        let result =
+            eligible_with_remover(&pool, &id, base.path(), &|_| panic!("must not recycle")).await;
+        assert!(result.is_ok());
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
+    }
+
+    #[test]
+    fn interrupted_swap_keeps_ambiguous_files_and_tmp() {
+        for kind in [
+            "smaller",
+            "directory",
+            "backup-directory",
+            "recycle-failure",
+        ] {
+            let dir = tempfile::tempdir().unwrap();
+            let folder = dunce::canonicalize(dir.path()).unwrap();
+            let prev = folder.join(".audio.prev.mp4");
+            let audio = folder.join("audio.mp4");
+            let tmp = folder.join(".audio.merge.tmp.mp4");
+            if kind == "backup-directory" {
+                fs::create_dir(&prev).unwrap();
+            } else {
+                fs::write(&prev, vec![1; 100]).unwrap();
+            }
+            if kind == "directory" {
+                fs::create_dir(&audio).unwrap();
+            } else {
+                fs::write(&audio, vec![2; if kind == "smaller" { 50 } else { 100 }]).unwrap();
+            }
+            fs::write(&tmp, "keep temporary output").unwrap();
+            repair_interrupted_swap(&folder, &|_| {
+                assert_eq!(kind, "recycle-failure");
+                Err("Recycle failed".into())
+            });
+            assert!(prev.exists(), "{kind}");
+            assert!(audio.exists(), "{kind}");
+            assert_eq!(fs::read(&tmp).unwrap(), b"keep temporary output", "{kind}");
+            if kind != "backup-directory" {
+                assert_eq!(fs::read(&prev).unwrap(), vec![1; 100], "{kind}");
+            }
+            if kind != "directory" {
+                assert_eq!(
+                    fs::read(&audio).unwrap(),
+                    vec![2; if kind == "smaller" { 50 } else { 100 }],
+                    "{kind}"
+                );
+            }
+        }
+    }
+
     #[test]
     fn corrupt_new_part_fails_before_concat() {
         let base = tempfile::tempdir().unwrap();
@@ -715,7 +873,7 @@ mod tests {
     async fn leftover_prev_still_blocks() {
         let (pool, base, old, new, id) = setup_merge().await;
         let prev = old.join(".audio.prev.mp4");
-        fs::write(&prev, "original recovery bytes").unwrap();
+        fs::write(&prev, vec![3; 200]).unwrap();
         let result = continue_into_with(
             &pool,
             &id,
@@ -736,7 +894,8 @@ mod tests {
             result.unwrap_err(),
             "Merging the audio failed: an earlier merge needs recovery."
         );
-        assert_eq!(fs::read(prev).unwrap(), b"original recovery bytes");
+        assert_eq!(fs::read(prev).unwrap(), vec![3; 200]);
+        assert_eq!(fs::read(old.join("audio.mp4")).unwrap(), vec![1; 100]);
     }
 
     #[test]

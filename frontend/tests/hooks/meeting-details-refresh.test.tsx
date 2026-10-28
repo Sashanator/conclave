@@ -6,9 +6,11 @@ import type { SummaryProcessResponse } from '../../src/types';
 const originalCore = { ...await import('@tauri-apps/api/core') };
 const originalPreferences = { ...await import('../../src/lib/summary-language-preferences') };
 const originalToast = { ...await import('sonner') };
+const originalEvent = { ...await import('@tauri-apps/api/event') };
 const originalNavigation = { ...await import('next/navigation') };
 const originalConfig = { ...await import('../../src/contexts/ConfigContext') };
 afterAll(() => {
+  mock.module('@tauri-apps/api/event', () => originalEvent);
   mock.module('@tauri-apps/api/core', () => originalCore);
   mock.module('../../src/lib/summary-language-preferences', () => originalPreferences);
   mock.module('sonner', () => originalToast);
@@ -17,6 +19,9 @@ afterAll(() => {
 });
 
 let selectedMeeting = 'meeting-a';
+// SidebarProvider owns the app-wide continue failure listener.
+mock.module('@tauri-apps/api/event', () => ({ ...originalEvent, listen: async () => () => {} }));
+
 mock.module('next/navigation', () => ({
   usePathname: () => '/meeting-details', useRouter: () => ({}),
   useSearchParams: () => new URLSearchParams({ id: selectedMeeting }),

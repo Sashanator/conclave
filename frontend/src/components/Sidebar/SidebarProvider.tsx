@@ -3,6 +3,8 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { usePathname, useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
+import { continueFailed } from '@/lib/resume';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { SummaryProcessResponse } from '@/types';
 import type { SearchHit } from '@/lib/meeting-target';
@@ -78,6 +80,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
   // Use recording state from RecordingStateContext (single source of truth)
   const { isRecording } = useRecordingState();
+
+  useEffect(() => {
+    const failed = listen<{ error: string }>('continue-target-failed', (e) => continueFailed(e.payload.error));
+    return () => { failed.then((unlisten) => unlisten()); };
+  }, []);
 
   const pathname = usePathname();
   const router = useRouter();

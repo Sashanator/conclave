@@ -89,7 +89,7 @@ export default function PageContent({
   const notes = useMeetingNotes(meeting.id);
   const audio = useMeetingAudio(meeting.id);
   const router = useRouter();
-  const recordingNow = useRecordingState().isRecording;
+  const { isRecording: recordingNow, isStopping, isProcessing, isSaving } = useRecordingState();
   const [notesCollapsed, setNotesCollapsed] = useState(() => readFlag('conclave.notesPaneCollapsed'));
   const toggleNotesCollapsed = () => setNotesCollapsed((c) => { writeFlag('conclave.notesPaneCollapsed', !c); return !c; });
   const isDesktop = useIsDesktop();
@@ -327,7 +327,7 @@ export default function PageContent({
               audioMissingReason={audioMissingMessage(audio.info)}
               onMarkChange={onSetTranscriptMark}
               onPlayFrom={audio.info?.path ? audio.playFrom : undefined}
-              onResumeRecording={audio.info?.resumable && !recordingNow ? () => requestResume(meeting.id, router.push) : undefined}
+              onResumeRecording={audio.info?.resumable && !recordingNow && !isStopping && !isProcessing && !isSaving ? () => requestResume(meeting.id, router.push) : undefined}
               playheadSeconds={audio.playhead}
               focusSegmentId={focusSegmentId}
               footer={<AudioPlayerBar audio={audio} />}

@@ -12,10 +12,8 @@ export function ContinueControl() {
   useEffect(() => {
     invoke<ContinueStatus>('continue_status').then(setStatus).catch(() => {});
     const changed = listen<ContinueMeeting>('continue-target-changed', (e) => setStatus((s) => ({ ...s, target: e.payload })));
-    const failed = listen<{ error: string }>('continue-target-failed', (e) => continueFailed(e.payload.error));
     return () => {
       changed.then((fn) => fn());
-      failed.then((fn) => fn());
     };
   }, []);
 

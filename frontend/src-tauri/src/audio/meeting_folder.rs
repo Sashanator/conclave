@@ -321,6 +321,7 @@ pub(crate) async fn meeting_audio_inner(pool: &sqlx::SqlitePool, meeting_id: &st
         .ok_or_else(|| format!("Meeting not found: {meeting_id}"))?;
     let folder = meeting.folder_path.as_deref().and_then(|p| guarded_meeting_folder(p, base));
     if let Some(folder) = &folder {
+        super::continuation::repair_interrupted_swap(folder, &recycle);
         merge_leftover_checkpoints(folder).await;
     }
     let resumable = folder.as_deref().is_some_and(super::continuation::resumable_folder) && meeting.audio_deleted_at.is_none();

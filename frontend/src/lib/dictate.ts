@@ -13,6 +13,8 @@ export interface CustomMode {
 
 export interface DictateSettings {
   enabled: boolean;
+  /** null follows the microphone selected for Meetings. */
+  preferred_mic_device: string | null;
   main_hotkey: string;
   default_mode: string;
   /** null means the same provider and model as summaries. */

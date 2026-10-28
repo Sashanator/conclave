@@ -25,6 +25,7 @@ const placeholder = ({ placeholder: text }: { placeholder?: string }) => <>{text
 
 const BASE_SETTINGS: DictateSettings = {
   enabled: false,
+  preferred_mic_device: null,
   main_hotkey: 'Ctrl+Win',
   default_mode: 'cleaned-up',
   cleanup_provider: null,
@@ -51,6 +52,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
     if (loadFails) throw new Error('settings unavailable');
     return structuredClone(settings);
   }
+  if (command === 'get_audio_devices') return [{ name: 'Dictate mic', device_type: 'Input' }];
   if (command === 'dictate_status') {
     if (statusFails) throw new Error('status unavailable');
     return status;
@@ -163,6 +165,20 @@ describe('Dictate page', () => {
     expect(headings).toContain('General');
     expect(headings).toContain('Modes');
     expect(headings).toContain('Dictionary');
+  });
+
+  test('microphone selection saves a Dictate override and can return to Meetings', async () => {
+    const microphone = () => renderer!.root
+      .findAll((n) => n.props.onValueChange !== undefined && n.props.value !== undefined)
+      .find((n) => n.findAll((c) => c.props.id === 'dictate-microphone').length > 0)!;
+    expect(microphone().props.value).toBe('same-as-meetings');
+    expect(calls('get_audio_devices').length).toBeGreaterThan(0);
+    await act(async () => { microphone().props.onValueChange('Dictate mic (input)'); });
+    await flush();
+    expect(settings.preferred_mic_device).toBe('Dictate mic (input)');
+    await act(async () => { microphone().props.onValueChange('same-as-meetings'); });
+    await flush();
+    expect(settings.preferred_mic_device).toBeNull();
   });
 
   test('the dictionary note says the words are spelling hints for meeting summaries', () => {

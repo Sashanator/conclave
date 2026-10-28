@@ -5,6 +5,7 @@ import {
 
 const base: DictateSettings = {
   enabled: false,
+  preferred_mic_device: null,
   main_hotkey: 'Ctrl+Win',
   default_mode: 'cleaned-up',
   cleanup_provider: null,

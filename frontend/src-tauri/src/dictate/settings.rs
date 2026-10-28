@@ -49,6 +49,9 @@ pub struct CustomMode {
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DictateSettings {
     pub enabled: bool,
+    /// None follows the microphone selected for Meetings.
+    #[serde(default)]
+    pub preferred_mic_device: Option<String>,
     pub main_hotkey: String,
     pub default_mode: String,
     /// None means the same provider and model as summaries.
@@ -74,6 +77,7 @@ impl Default for DictateSettings {
     fn default() -> Self {
         Self {
             enabled: false,
+            preferred_mic_device: None,
             main_hotkey: DEFAULT_MAIN.display(),
             default_mode: CLEANED_UP_ID.to_string(),
             cleanup_provider: None,
@@ -102,6 +106,7 @@ pub fn sanitize(raw: Option<Value>) -> DictateSettings {
     };
     let candidate = DictateSettings {
         enabled: field(&obj, "enabled", false),
+        preferred_mic_device: field(&obj, "preferred_mic_device", None),
         main_hotkey: field(&obj, "main_hotkey", DEFAULT_MAIN.display()),
         default_mode: field(&obj, "default_mode", CLEANED_UP_ID.to_string()),
         cleanup_provider: field(&obj, "cleanup_provider", None),
@@ -384,6 +389,7 @@ fn normalise(s: DictateSettings, strict: bool) -> Result<DictateSettings, String
 
     Ok(DictateSettings {
         enabled: s.enabled,
+        preferred_mic_device: s.preferred_mic_device,
         main_hotkey: main.display(),
         default_mode,
         cleanup_provider: optional_text(s.cleanup_provider),
@@ -500,6 +506,18 @@ mod tests {
 
     fn mode_json(id: &str, name: &str) -> Value {
         json!({"id": id, "name": name, "instructions": "Do it.", "examples": [], "hotkey": null})
+    }
+
+    #[test]
+    fn microphone_setting_is_backward_compatible_and_preserved() {
+        let mut raw = serde_json::to_value(DictateSettings::default()).unwrap();
+        raw.as_object_mut().unwrap().remove("preferred_mic_device");
+        assert_eq!(serde_json::from_value::<DictateSettings>(raw.clone()).unwrap().preferred_mic_device, None);
+        assert_eq!(sanitize(Some(raw.clone())).preferred_mic_device, None);
+        raw["preferred_mic_device"] = json!("Dictate mic (input)");
+        let saved = validate_for_save(&sanitize(Some(raw))).unwrap();
+        assert_eq!(saved.preferred_mic_device.as_deref(), Some("Dictate mic (input)"));
+        assert_eq!(serde_json::from_value::<DictateSettings>(serde_json::to_value(saved).unwrap()).unwrap().preferred_mic_device.as_deref(), Some("Dictate mic (input)"));
     }
 
     #[test]

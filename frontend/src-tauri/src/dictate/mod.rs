@@ -149,6 +149,9 @@ pub async fn apply<R: Runtime>(app: &AppHandle<R>, old: &DictateSettings, new: &
         (false, true) => turn_on(app, new).await,
         (true, false) => turn_off(app).await,
         (true, true) => {
+            if old.preferred_mic_device != new.preferred_mic_device {
+                session::send(session::SessionEvent::ReopenMic);
+            }
             if !rebind_hook(new) {
                 install_hook(app, new).await;
             }

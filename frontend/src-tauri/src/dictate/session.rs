@@ -6,6 +6,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
+use cpal::traits::{DeviceTrait, HostTrait};
+
 use dictate_input::machine::{Action, Target};
 use dictate_input::paste::{foreground_monitor_point, paste_text};
 use dictate_input::PasteOutcome;
@@ -26,7 +28,7 @@ use super::{
 use crate::api::api::api_get_transcript_config;
 use crate::audio::audio_processing::resample_audio;
 use crate::audio::vad;
-use crate::audio::devices::{list_audio_devices, parse_audio_device};
+use crate::audio::devices::parse_audio_device;
 use crate::audio::default_input_device;
 use crate::audio::recording_preferences::load_recording_preferences;
 use crate::database::repositories::setting::SettingsRepository;
@@ -490,14 +492,14 @@ fn set_pill<R: Runtime>(app: &AppHandle<R>, state: PillState, mode: &str) {
 }
 
 /// Opens the microphone the preferences ask for, when needed: no live mic, the preference changed since the
-/// last reopen, or the preferred device is listed again after a fallback. A reopen during a capture is
+/// last reopen, the open device disappeared, or the preferred device is listed again after a fallback. A reopen during a capture is
 /// deferred; the retry tick picks it up once the capture has ended.
 async fn reopen<R: Runtime>(app: AppHandle<R>) {
     if OPENING.swap(true, Ordering::SeqCst) {
         return;
     }
     if let Ok(prefs) = load_recording_preferences(&app).await {
-        let raw = prefs.preferred_mic_device;
+        let raw = settings::current().preferred_mic_device.or(prefs.preferred_mic_device);
         let wanted = raw
             .as_deref()
             .and_then(|p| parse_audio_device(p).ok())
@@ -514,16 +516,18 @@ fn reopen_blocking(raw: Option<String>, wanted: Option<String>, epoch: u64) {
         return;
     }
     let changed = lock(&REQUESTED).as_ref() != Some(&wanted);
-    // The device the preference resolves to; with no preference, the default input.
-    let target = wanted
-        .clone()
-        .or_else(|| default_input_device().ok().map(|d| d.name));
-    let need = match with_live_mic(|m| m.device_name()) {
-        None => true,
-        Some(name) => target
-            .as_ref()
-            .is_some_and(|t| &name != t && (changed || device_listed(t))),
+    // Input-only enumeration is cheap and also catches removal without a cpal error callback.
+    let available: Vec<String> = match cpal::default_host().input_devices() {
+        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Err(e) => {
+            warn!("dictate: microphone enumeration failed: {e}");
+            return;
+        }
     };
+    let default = default_input_device().ok().map(|d| d.name);
+    let target = wanted.as_deref().or(default.as_deref());
+    let open = with_live_mic(|m| m.device_name());
+    let need = should_reopen_mic(open.as_deref(), target, changed, &available, default.as_deref());
     if !need {
         *lock(&REQUESTED) = Some(wanted);
         return;
@@ -546,10 +550,24 @@ fn reopen_blocking(raw: Option<String>, wanted: Option<String>, epoch: u64) {
     }
 }
 
-fn device_listed(name: &str) -> bool {
-    tauri::async_runtime::block_on(list_audio_devices())
-        .map(|devices| devices.iter().any(|d| d.name == name))
-        .unwrap_or(false)
+/// Decides from a single input-device snapshot, without touching the capture.
+fn should_reopen_mic(
+    open: Option<&str>,
+    target: Option<&str>,
+    changed: bool,
+    available: &[String],
+    default: Option<&str>,
+) -> bool {
+    match open {
+        None => true,
+        Some(name) => {
+            let listed = |n: &str| available.iter().any(|d| d == n);
+            let replacement = target.filter(|t| listed(t)).or(default.filter(|d| listed(d)));
+            // No available replacement: keep waiting instead of reopening a stale default each tick.
+            (!listed(name) && replacement.is_some_and(|r| r != name))
+                || target.is_some_and(|t| name != t && (changed || listed(t)))
+        }
+    }
 }
 
 /// Sends `ProcessingDone` when dropped, so the session returns to Idle on every exit path, including a panic.
@@ -858,6 +876,22 @@ async fn model_downloaded<R: Runtime>(app: &AppHandle<R>) -> bool {
 mod tests {
     use super::*;
     use crate::dictate::settings::{self as settings_mod, CustomMode};
+
+    #[test]
+    fn mic_reopen_decisions() {
+        let listed = vec!["preferred".to_string(), "default".to_string()];
+        let fallback = vec!["default".to_string()];
+        assert!(!should_reopen_mic(Some("preferred"), Some("preferred"), false, &listed, Some("default")));
+        // Disappears without a stream error; then the fallback stays open until preference returns.
+        assert!(should_reopen_mic(Some("preferred"), Some("preferred"), false, &fallback, Some("default")));
+        assert!(!should_reopen_mic(Some("default"), Some("preferred"), false, &fallback, Some("default")));
+        assert!(should_reopen_mic(Some("default"), Some("preferred"), false, &listed, Some("default")));
+        assert!(should_reopen_mic(Some("preferred"), Some("default"), true, &listed, Some("default")));
+        assert!(!should_reopen_mic(Some("preferred"), Some("preferred"), false, &[], None));
+        assert!(!should_reopen_mic(Some("preferred"), Some("preferred"), false, &[], Some("preferred")));
+        assert!(should_reopen_mic(None, Some("preferred"), false, &listed, Some("default")));
+        assert!(should_reopen_mic(Some("old-default"), Some("default"), false, &fallback, Some("default")));
+    }
 
     #[test]
     fn stop_without_a_shown_pill_shows_it_first() {

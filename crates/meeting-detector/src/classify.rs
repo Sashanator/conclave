@@ -337,6 +337,54 @@ mod tests {
     }
 
     #[test]
+    fn session_only_zoom_prompts_and_stops_after_release_grace() {
+        let detected = |active| crate::consent::merge_mic_users(
+            vec![], [(r"C:\Zoom\bin\Zoom.exe", active)],
+        ).iter().filter_map(|u| classify(u, &[])).collect();
+        let mut d = Detector::new();
+        assert_eq!(d.step(&snap(0, Mode::Ask, false, detected(true))),
+            vec![Action::Prompt { app: CallApp::Zoom, certain: true }]);
+        assert!(d.step(&with_id(snap(1000, Mode::Ask, true, detected(true)), 1)).is_empty());
+        assert_eq!(d.attached().unwrap().app, CallApp::Zoom);
+        assert!(d.step(&with_id(snap(2000, Mode::Ask, true, detected(false)), 1)).is_empty());
+        assert_eq!(d.step(&with_id(snap(7000, Mode::Ask, true, detected(false)), 1)),
+            vec![Action::Stop { app: CallApp::Zoom }]);
+    }
+
+    #[test]
+    fn registry_casing_change_does_not_stop_session_only_zoom() {
+        let detected = |registry| crate::consent::merge_mic_users(
+            registry, [(r"C:\Zoom\bin\Zoom.exe", true)],
+        ).iter().filter_map(|u| classify(u, &[])).collect::<Vec<_>>();
+        let mut d = Detector::new();
+        assert_eq!(d.step(&snap(0, Mode::Ask, false, detected(vec![]))),
+            vec![Action::Prompt { app: CallApp::Zoom, certain: true }]);
+        assert!(d.step(&with_id(snap(1000, Mode::Ask, true, detected(vec![])), 1)).is_empty());
+        let users = detected(vec![MicUser {
+            app: "zoom.exe".into(), path: r"c:\zoom\bin\zoom.exe".into(), packaged: false, in_use: true,
+        }]);
+        for now in [2000, 7000, 12000] {
+            let actions = d.step(&with_id(snap(now, Mode::Ask, true, users.clone()), 1));
+            assert!(!actions.iter().any(|a| matches!(a, Action::Stop { .. })),
+                "path casing caused a false Stop at {now}: {actions:?}");
+            assert_eq!(d.attached().unwrap().app, CallApp::Zoom);
+        }
+        let gone = crate::consent::merge_mic_users(vec![], []);
+        let gone = gone.iter().filter_map(|u| classify(u, &[])).collect::<Vec<_>>();
+        assert!(d.step(&with_id(snap(13000, Mode::Ask, true, gone.clone()), 1)).is_empty());
+        assert_eq!(d.step(&with_id(snap(18000, Mode::Ask, true, gone), 1)),
+            vec![Action::Stop { app: CallApp::Zoom }]);
+    }
+
+    #[test]
+    fn opera_is_classified_as_a_browser() {
+        let opera = user("opera.exe", r"C:\Opera GX\opera.exe", false);
+        let d = classify(&opera, &[]).unwrap();
+        assert_eq!((d.app, d.certain, d.exe.as_str()), (CallApp::Browser, false, "opera.exe"));
+        assert_eq!(classify(&opera, &["Meet - abc-defg-hij - Opera".into()]).unwrap().app, CallApp::Meet);
+    }
+
+    #[test]
     fn zoom_is_a_certain_zoom_call() {
         let d = classify(&user("zoom.exe", r"C:\Zoom\bin\Zoom.exe", false), &[]).unwrap();
         assert_eq!((d.app, d.certain, d.exe.as_str()), (CallApp::Zoom, true, "zoom.exe"));

@@ -141,9 +141,9 @@ pub fn build_claude_body(
     serde_json::json!(ClaudeRequest {
         system: system_prompt.to_string(),
         model: model_name.to_string(),
-        // Shared budget: on models with thinking enabled by default this
-        // covers thinking tokens as well as the answer.
-        max_tokens: 8192,
+        // Shared budget: Claude 5.x models always think, so this covers thinking
+        // tokens as well as the answer. Kept non-streaming-safe under the 300s timeout.
+        max_tokens: 16000,
         messages: vec![ChatMessage {
             role: "user".to_string(),
             content: user_prompt.to_string(),
@@ -707,7 +707,7 @@ mod tests {
             build_claude_body("claude-x", "sys", "user"),
             json!({
                 "model": "claude-x",
-                "max_tokens": 8192,
+                "max_tokens": 16000,
                 "system": "sys",
                 "messages": [{"role": "user", "content": "user"}]
             })

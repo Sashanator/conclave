@@ -56,6 +56,27 @@ pub fn shift_segments(transcripts: &[TranscriptSegment], offset: f64) -> Vec<Tra
         .collect()
 }
 
+/// The stored notes, read strictly. Unlike `MeetingNotesRepository::get`, an unreadable entry fails
+/// here, so the full-replace save that follows cannot silently drop the old notes.
+async fn read_notes_strict(conn: &mut SqliteConnection, meeting_id: &str) -> Result<Vec<MeetingNote>, SqlxError> {
+    let row: Option<(Option<String>,)> = sqlx::query_as("SELECT notes_json FROM meeting_notes WHERE meeting_id = ?")
+        .bind(meeting_id)
+        .fetch_optional(&mut *conn)
+        .await?;
+    let Some(json) = row.and_then(|(j,)| j) else { return Ok(Vec::new()) };
+    let unreadable = || {
+        error!("Unreadable stored notes for meeting {}", meeting_id);
+        SqlxError::Protocol("unreadable stored notes".into())
+    };
+    let values: Vec<serde_json::Value> = serde_json::from_str(&json).map_err(|_| unreadable())?;
+    let count = values.len();
+    let notes = parse_notes(values);
+    if notes.len() != count {
+        return Err(unreadable());
+    }
+    Ok(notes)
+}
+
 impl TranscriptsRepository {
     /// Saves a new meeting and its associated transcript segments.
     /// This function uses a transaction to ensure that either both the meeting
@@ -151,6 +172,10 @@ impl TranscriptsRepository {
         notes: &[MeetingNote],
         speakers_active: bool,
     ) -> Result<(), SqlxError> {
+        // A NaN or negative offset would write lines before the meeting's timeline start
+        if !(offset.is_finite() && offset >= 0.0) {
+            return Err(SqlxError::Protocol("offset must be finite and not negative".into()));
+        }
         let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM meetings WHERE id = ?")
             .bind(meeting_id)
             .fetch_optional(&mut *conn)
@@ -161,7 +186,7 @@ impl TranscriptsRepository {
         insert_segments(&mut *conn, meeting_id, &shift_segments(transcripts, offset)).await?;
         let new_notes = sanitize_notes(notes);
         if !new_notes.is_empty() {
-            let mut all = MeetingNotesRepository::get(&mut *conn, meeting_id).await?;
+            let mut all = read_notes_strict(&mut *conn, meeting_id).await?;
             all.extend(new_notes.into_iter().map(|n| MeetingNote { at: n.at.map(|t| t + offset), ..n }));
             MeetingNotesRepository::save(&mut *conn, meeting_id, &all).await?;
         }
@@ -686,5 +711,60 @@ mod tests {
         assert_eq!(out[0].sentences, Some(vec![Sentence(11.0, 12.0, "a".into())]));
         assert_eq!(out[1].text, "b");
         assert_eq!((out[1].audio_start_time, out[1].audio_end_time, out[1].sentences.clone()), (None, None, None));
+    }
+
+    /// Saves a meeting with one line and one note, then overwrites its stored notes JSON.
+    async fn meeting_with_notes_json(pool: &SqlitePool, json: &str) -> String {
+        let note = vec![MeetingNote { id: "n1".into(), at: Some(5.0), text: "old".into() }];
+        let id = TranscriptsRepository::save_transcript(pool, "M", &[seg("old", 0.0, None)], None, &note, false, &TitleOrigin::default()).await.unwrap();
+        sqlx::query("UPDATE meeting_notes SET notes_json = ? WHERE meeting_id = ?").bind(json).bind(&id).execute(pool).await.unwrap();
+        id
+    }
+
+    async fn assert_append_refused_keeps_rows(json: &str) {
+        let pool = crate::database::repositories::test_pool().await;
+        let id = meeting_with_notes_json(&pool, json).await;
+        let mut tx = pool.begin().await.unwrap();
+        // The new line is written before the notes step, so the rollback must also remove it
+        let note = MeetingNote { id: "n2".into(), at: Some(3.0), text: "new".into() };
+        let result = TranscriptsRepository::append_in_tx(&mut *tx, &id, &[seg("new", 0.0, None)], 100.0, &[note], false).await;
+        assert!(result.is_err());
+        tx.rollback().await.unwrap();
+        let (stored,): (String,) = sqlx::query_as("SELECT notes_json FROM meeting_notes WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert_eq!(stored, json);
+        let lines: Vec<(String,)> = sqlx::query_as("SELECT transcript FROM transcripts WHERE meeting_id = ?").bind(&id).fetch_all(&pool).await.unwrap();
+        assert_eq!(lines, vec![("old".to_string(),)]);
+    }
+
+    #[tokio::test]
+    async fn append_refuses_unreadable_stored_notes_and_keeps_old_rows() {
+        // Not a JSON array, and an array with one entry that does not decode
+        assert_append_refused_keeps_rows("not json").await;
+        assert_append_refused_keeps_rows(r#"[{"id":"n1","at":5.0,"text":"ok"},{"id":"n2","at":"soon","text":"bad"}]"#).await;
+    }
+
+    #[tokio::test]
+    async fn append_adds_notes_when_meeting_has_no_notes_row() {
+        let pool = crate::database::repositories::test_pool().await;
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("old", 0.0, None)], None, &[], false, &TitleOrigin::default()).await.unwrap();
+        let note = MeetingNote { id: "n2".into(), at: Some(3.0), text: "new".into() };
+        let mut tx = pool.begin().await.unwrap();
+        TranscriptsRepository::append_in_tx(&mut *tx, &id, &[], 100.0, &[note], false).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(MeetingNotesRepository::get(&pool, &id).await.unwrap(), vec![MeetingNote { id: "n2".into(), at: Some(103.0), text: "new".into() }]);
+    }
+
+    #[tokio::test]
+    async fn append_rejects_offsets_that_are_not_finite_or_negative() {
+        let pool = crate::database::repositories::test_pool().await;
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("old", 0.0, None)], None, &[], false, &TitleOrigin::default()).await.unwrap();
+        for offset in [f64::NAN, f64::INFINITY, -1.0] {
+            let mut tx = pool.begin().await.unwrap();
+            let result = TranscriptsRepository::append_in_tx(&mut *tx, &id, &[seg("new", 0.0, None)], offset, &[], false).await;
+            assert!(result.is_err(), "offset {offset} must be refused");
+            tx.rollback().await.unwrap();
+        }
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 1);
     }
 }

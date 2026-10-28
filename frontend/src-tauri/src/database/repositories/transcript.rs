@@ -8,11 +8,53 @@ use crate::database::repositories::meeting_notes::{
 use chrono::Utc;
 use serde::Serialize;
 use std::collections::HashMap;
-use sqlx::{Connection, Error as SqlxError, SqlitePool};
+use sqlx::{Connection, Error as SqlxError, SqliteConnection, SqlitePool};
 use tracing::{error, info};
 use uuid::Uuid;
 
 pub struct TranscriptsRepository;
+
+/// Inserts transcript lines as given. The caller owns the transaction and any error handling.
+async fn insert_segments(conn: &mut SqliteConnection, meeting_id: &str, transcripts: &[TranscriptSegment]) -> Result<(), SqlxError> {
+    for segment in transcripts {
+        let transcript_id = format!("transcript-{}", Uuid::new_v4());
+        // Sentences that do not match the saved line are dropped; the line itself still saves
+        let sentences = match (&segment.sentences, segment.audio_start_time, segment.audio_end_time) {
+            (Some(s), Some(start), Some(end)) if is_valid(s, &segment.text, start, end) => serde_json::to_string(s).ok(),
+            _ => None,
+        };
+        sqlx::query(
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, mark, speaker_idx, sentences)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+        )
+        .bind(&transcript_id)
+        .bind(meeting_id)
+        .bind(&segment.text)
+        .bind(&segment.timestamp)
+        .bind(segment.audio_start_time)
+        .bind(segment.audio_end_time)
+        .bind(segment.duration)
+        .bind(sanitize_mark(segment.mark.as_deref()))
+        .bind(segment.speaker_idx)
+        .bind(sentences)
+        .execute(&mut *conn)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Moves a part's lines by `offset` seconds: the line times and each sentence's times. Text, marks and speakers stay.
+pub fn shift_segments(transcripts: &[TranscriptSegment], offset: f64) -> Vec<TranscriptSegment> {
+    transcripts
+        .iter()
+        .map(|s| TranscriptSegment {
+            audio_start_time: s.audio_start_time.map(|t| t + offset),
+            audio_end_time: s.audio_end_time.map(|t| t + offset),
+            sentences: s.sentences.as_ref().map(|v| v.iter().map(|Sentence(a, b, t)| Sentence(a + offset, b + offset, t.clone())).collect()),
+            ..s.clone()
+        })
+        .collect()
+}
 
 impl TranscriptsRepository {
     /// Saves a new meeting and its associated transcript segments.
@@ -58,38 +100,13 @@ impl TranscriptsRepository {
         info!("Successfully created meeting with id: {}", meeting_id);
 
         // 2. Save each transcript segment with audio timing fields
-        for segment in transcripts {
-            let transcript_id = format!("transcript-{}", Uuid::new_v4());
-            // Sentences that do not match the saved line are dropped; the line itself still saves
-            let sentences = match (&segment.sentences, segment.audio_start_time, segment.audio_end_time) {
-                (Some(s), Some(start), Some(end)) if is_valid(s, &segment.text, start, end) => serde_json::to_string(s).ok(),
-                _ => None,
-            };
-            let result = sqlx::query(
-                "INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time, audio_end_time, duration, mark, speaker_idx, sentences)
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
-            )
-            .bind(&transcript_id)
-            .bind(&meeting_id)
-            .bind(&segment.text)
-            .bind(&segment.timestamp)
-            .bind(segment.audio_start_time)
-            .bind(segment.audio_end_time)
-            .bind(segment.duration)
-            .bind(sanitize_mark(segment.mark.as_deref()))
-            .bind(segment.speaker_idx)
-            .bind(sentences)
-            .execute(&mut *transaction)
-            .await;
-
-            if let Err(e) = result {
-                error!(
-                    "Failed to save transcript segment for meeting {}: {}",
-                    meeting_id, e
-                );
-                transaction.rollback().await?;
-                return Err(e);
-            }
+        if let Err(e) = insert_segments(&mut *transaction, &meeting_id, transcripts).await {
+            error!(
+                "Failed to save transcript segment for meeting {}: {}",
+                meeting_id, e
+            );
+            transaction.rollback().await?;
+            return Err(e);
         }
 
         info!(
@@ -121,6 +138,40 @@ impl TranscriptsRepository {
         transaction.commit().await?;
 
         Ok(meeting_id)
+    }
+
+    /// Appends a recording part to an existing meeting: lines shifted by `offset`, new notes
+    /// (also shifted) added after the old ones, and speaker analysis re-queued when it is on.
+    /// Never commits; the caller owns the transaction and rolls it back on error.
+    pub async fn append_in_tx(
+        conn: &mut SqliteConnection,
+        meeting_id: &str,
+        transcripts: &[TranscriptSegment],
+        offset: f64,
+        notes: &[MeetingNote],
+        speakers_active: bool,
+    ) -> Result<(), SqlxError> {
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&mut *conn)
+            .await?;
+        if exists.is_none() {
+            return Err(SqlxError::RowNotFound);
+        }
+        insert_segments(&mut *conn, meeting_id, &shift_segments(transcripts, offset)).await?;
+        let new_notes = sanitize_notes(notes);
+        if !new_notes.is_empty() {
+            let mut all = MeetingNotesRepository::get(&mut *conn, meeting_id).await?;
+            all.extend(new_notes.into_iter().map(|n| MeetingNote { at: n.at.map(|t| t + offset), ..n }));
+            MeetingNotesRepository::save(&mut *conn, meeting_id, &all).await?;
+        }
+        sqlx::query("UPDATE meetings SET updated_at = ? WHERE id = ?")
+            .bind(Utc::now())
+            .bind(meeting_id)
+            .execute(&mut *conn)
+            .await?;
+        SpeakersRepository::transcripts_replaced_in_tx(&mut *conn, meeting_id, speakers_active).await?;
+        Ok(())
     }
 
     /// Sets or clears the mark on one transcript line. Returns false if the line does not exist.
@@ -547,5 +598,93 @@ mod tests {
         let pool = crate::database::repositories::test_pool().await;
         let long = vec!["слово"; 2000].join(" ");
         assert!(search_all(&pool, &long).await.is_ok());
+    }
+
+    #[tokio::test]
+    async fn append_shifts_lines_and_sentences_after_existing() {
+        let pool = crate::database::repositories::test_pool().await;
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("old", 0.0, None)], None, &[], false, &TitleOrigin::default()).await.unwrap();
+        let new_line = TranscriptSegment {
+            audio_end_time: Some(2.0), sentences: Some(vec![Sentence(0.5, 1.5, "new".into())]),
+            ..seg("new", 0.0, None)
+        };
+        let mut tx = pool.begin().await.unwrap();
+        TranscriptsRepository::append_in_tx(&mut *tx, &id, &[new_line], 100.0, &[], false).await.unwrap();
+        tx.commit().await.unwrap();
+        let rows: Vec<(String, Option<f64>, Option<f64>, Option<String>)> = sqlx::query_as(
+            "SELECT transcript, audio_start_time, audio_end_time, sentences FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time",
+        ).bind(&id).fetch_all(&pool).await.unwrap();
+        assert_eq!(rows.iter().map(|r| r.0.as_str()).collect::<Vec<_>>(), vec!["old", "new"]);
+        assert_eq!((rows[1].1, rows[1].2), (Some(100.0), Some(102.0)));
+        assert_eq!(rows[1].3.as_deref(), Some(r#"[[100.5,101.5,"new"]]"#));
+    }
+
+    #[tokio::test]
+    async fn append_keeps_old_notes_and_marks_and_shifts_new_notes() {
+        let pool = crate::database::repositories::test_pool().await;
+        let old_notes = vec![MeetingNote { id: "n1".into(), at: Some(5.0), text: "old".into() }];
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("old", 0.0, Some("important"))], None, &old_notes, false, &TitleOrigin::default()).await.unwrap();
+        let new_notes = vec![
+            MeetingNote { id: "n2".into(), at: Some(3.0), text: "new".into() },
+            MeetingNote { id: "n3".into(), at: None, text: "later".into() },
+        ];
+        let mut tx = pool.begin().await.unwrap();
+        TranscriptsRepository::append_in_tx(&mut *tx, &id, &[seg("new", 0.0, None)], 100.0, &new_notes, false).await.unwrap();
+        tx.commit().await.unwrap();
+        assert_eq!(MeetingNotesRepository::get(&pool, &id).await.unwrap(), vec![
+            MeetingNote { id: "n1".into(), at: Some(5.0), text: "old".into() },
+            MeetingNote { id: "n2".into(), at: Some(103.0), text: "new".into() },
+            MeetingNote { id: "n3".into(), at: None, text: "later".into() },
+        ]);
+        let marks: Vec<(Option<String>,)> = sqlx::query_as("SELECT mark FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time")
+            .bind(&id).fetch_all(&pool).await.unwrap();
+        assert_eq!(marks, vec![(Some("important".into()),), (None,)]);
+    }
+
+    #[tokio::test]
+    async fn append_to_missing_meeting_fails_and_writes_nothing() {
+        let pool = crate::database::repositories::test_pool().await;
+        let note = MeetingNote { id: "n1".into(), at: Some(1.0), text: "x".into() };
+        let mut tx = pool.begin().await.unwrap();
+        let result = TranscriptsRepository::append_in_tx(&mut *tx, "meeting-nope", &[seg("a", 0.0, None)], 10.0, &[note], true).await;
+        assert!(result.is_err());
+        tx.rollback().await.unwrap();
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM transcripts").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn append_requeues_speakers_when_active() {
+        let pool = crate::database::repositories::test_pool().await;
+        let id = TranscriptsRepository::save_transcript(&pool, "M", &[seg("old", 0.0, None)], None, &[], true, &TitleOrigin::default()).await.unwrap();
+        sqlx::query("UPDATE speaker_jobs SET status = 'done' WHERE meeting_id = ?").bind(&id).execute(&pool).await.unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        TranscriptsRepository::append_in_tx(&mut *tx, &id, &[seg("new", 0.0, None)], 100.0, &[], true).await.unwrap();
+        tx.commit().await.unwrap();
+        let (status,): (String,) = sqlx::query_as("SELECT status FROM speaker_jobs WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[test]
+    fn shift_segments_moves_only_times() {
+        let line = TranscriptSegment {
+            id: "x".into(), text: "a".into(), timestamp: "t".into(),
+            audio_start_time: Some(1.0), audio_end_time: Some(2.0), duration: Some(1.0),
+            mark: Some("action".into()), sentences: Some(vec![Sentence(1.0, 2.0, "a".into())]), speaker_idx: Some(2),
+        };
+        let untimed = TranscriptSegment {
+            id: "y".into(), text: "b".into(), timestamp: "t".into(),
+            audio_start_time: None, audio_end_time: None, duration: None,
+            mark: None, sentences: None, speaker_idx: None,
+        };
+        let out = shift_segments(&[line, untimed], 10.0);
+        assert_eq!(out[0].text, "a");
+        assert_eq!(out[0].mark.as_deref(), Some("action"));
+        assert_eq!(out[0].speaker_idx, Some(2));
+        assert_eq!(out[0].duration, Some(1.0));
+        assert_eq!((out[0].audio_start_time, out[0].audio_end_time), (Some(11.0), Some(12.0)));
+        assert_eq!(out[0].sentences, Some(vec![Sentence(11.0, 12.0, "a".into())]));
+        assert_eq!(out[1].text, "b");
+        assert_eq!((out[1].audio_start_time, out[1].audio_end_time, out[1].sentences.clone()), (None, None, None));
     }
 }

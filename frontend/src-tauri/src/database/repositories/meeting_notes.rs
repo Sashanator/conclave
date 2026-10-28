@@ -1,6 +1,6 @@
 //! User notes for a meeting (spec §4). Stored as JSON in the existing `meeting_notes` table.
 use serde::{Deserialize, Serialize};
-use sqlx::{SqliteConnection, SqlitePool};
+use sqlx::SqliteConnection;
 use std::cmp::Ordering;
 use tracing::warn;
 
@@ -142,11 +142,11 @@ pub fn carry_marks(old: &[TimedMark], new: &[(String, f64, f64)]) -> Vec<(String
 pub struct MeetingNotesRepository;
 
 impl MeetingNotesRepository {
-    pub async fn get(pool: &SqlitePool, meeting_id: &str) -> Result<Vec<MeetingNote>, sqlx::Error> {
+    pub async fn get<'e, E: sqlx::SqliteExecutor<'e>>(ex: E, meeting_id: &str) -> Result<Vec<MeetingNote>, sqlx::Error> {
         let row: Option<(Option<String>,)> =
             sqlx::query_as("SELECT notes_json FROM meeting_notes WHERE meeting_id = ?")
                 .bind(meeting_id)
-                .fetch_optional(pool)
+                .fetch_optional(ex)
                 .await?;
         Ok(match row.and_then(|(json,)| json) {
             // Per note, like the save path: one bad stored entry must not hide the others.

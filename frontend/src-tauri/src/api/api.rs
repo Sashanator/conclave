@@ -176,7 +176,7 @@ pub struct SaveTranscriptRequest {
     pub transcripts: Vec<TranscriptSegment>,
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TranscriptSegment {
     pub id: String,
     pub text: String,

@@ -123,8 +123,8 @@ impl Drop for ChangeWatcher {
     }
 }
 
-/// Lowercase exe file name of a process, or None if it can't be opened (e.g. elevated/system process).
-pub fn process_exe_name(pid: u32) -> Option<String> {
+/// Full exe image path, or None if the process cannot be queried (e.g. elevated/system process).
+fn process_exe_path(pid: u32) -> Option<String> {
     unsafe {
         let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid).ok()?;
         let mut buf = [0u16; 1024];
@@ -132,9 +132,13 @@ pub fn process_exe_name(pid: u32) -> Option<String> {
         let ok = QueryFullProcessImageNameW(h, PROCESS_NAME_WIN32, PWSTR(buf.as_mut_ptr()), &mut len);
         let _ = CloseHandle(h);
         ok.ok()?;
-        let path = String::from_utf16_lossy(&buf[..len as usize]);
-        Some(path.rsplit('\\').next().unwrap_or(&path).to_lowercase())
+        Some(String::from_utf16_lossy(&buf[..len as usize]))
     }
+}
+
+/// Lowercase exe file name of a process, or None if it cannot be queried.
+pub fn process_exe_name(pid: u32) -> Option<String> {
+    process_exe_path(pid).map(|path| path.rsplit('\\').next().unwrap_or(&path).to_lowercase())
 }
 
 /// Titles of visible top-level windows whose process exe name equals `exe` (lowercase).
@@ -172,6 +176,7 @@ pub struct CaptureSession {
     pub device_name: String,
     pub process_id: u32,
     pub process_name: Option<String>,
+    pub process_path: Option<String>,
     pub active: bool,
 }
 
@@ -182,7 +187,8 @@ unsafe fn take_pwstr(p: PWSTR) -> String {
 }
 
 /// Audio sessions on every active capture device. A multi-process session is reported under its creator's pid;
-/// sessions whose pid cannot be queried are skipped.
+/// individual device/session failures are skipped. Process-query failures keep the session with no
+/// name/path; state-query failures keep it inactive. Only endpoint enumeration failures fail the scan.
 pub fn capture_sessions() -> windows::core::Result<Vec<CaptureSession>> {
     let mut out = Vec::new();
     unsafe {
@@ -197,9 +203,18 @@ pub fn capture_sessions() -> windows::core::Result<Vec<CaptureSession>> {
                 .and_then(|pv| PropVariantToStringAlloc(&pv))
                 .map(|p| take_pwstr(p))
                 .unwrap_or_else(|_| "(unknown device)".to_string());
-            let Ok(manager) = device.Activate::<IAudioSessionManager2>(CLSCTX_ALL, None) else { continue };
-            let Ok(sessions) = manager.GetSessionEnumerator() else { continue };
-            for j in 0..sessions.GetCount().unwrap_or(0) {
+            let sessions = device
+                .Activate::<IAudioSessionManager2>(CLSCTX_ALL, None)
+                .and_then(|m| m.GetSessionEnumerator())
+                .and_then(|s| Ok((s.GetCount()?, s)));
+            let (count, sessions) = match sessions {
+                Ok(v) => v,
+                Err(e) => {
+                    log::debug!("capture scan: skipping device {device_name}: {e}");
+                    continue;
+                }
+            };
+            for j in 0..count {
                 let Ok(control) = sessions.GetSession(j) else { continue };
                 let Ok(control2) = control.cast::<IAudioSessionControl2>() else { continue };
                 // A multi-process session returns AUDCLNT_S_NO_SINGLE_PROCESS, a success code, with its creator pid.
@@ -209,11 +224,15 @@ pub fn capture_sessions() -> windows::core::Result<Vec<CaptureSession>> {
                     continue;
                 }
                 let active = control2.GetState().map(|s| s == AudioSessionStateActive).unwrap_or(false);
+                let process_path = process_exe_path(pid);
+                let process_name = process_path.as_ref()
+                    .map(|path| path.rsplit('\\').next().unwrap_or(path).to_lowercase());
                 out.push(CaptureSession {
                     device_id: device_id.clone(),
                     device_name: device_name.clone(),
                     process_id: pid,
-                    process_name: process_exe_name(pid),
+                    process_name,
+                    process_path,
                     active,
                 });
             }

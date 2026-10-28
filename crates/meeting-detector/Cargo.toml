@@ -9,6 +9,7 @@ name = "conclave-probe"
 path = "src/bin/conclave-probe.rs"
 
 [target.'cfg(windows)'.dependencies]
+log = "0.4"
 winreg = "0.55"
 windows = { version = "0.61", features = [
     "Win32_Foundation",

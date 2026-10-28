@@ -40,13 +40,11 @@ fn spawn_at<H: Host>(path: String, host: H) -> std::io::Result<()> {
 #[cfg(windows)]
 use crate::classify::{classify, CaptureUse, Detected, Detector, Snapshot};
 #[cfg(windows)]
-use crate::consent::is_browser;
+use crate::consent::{is_browser, merge_mic_users};
 #[cfg(windows)]
 use crate::windows::{capture_sessions, init_com, read_mic_users, window_titles_for, ChangeWatcher};
 #[cfg(windows)]
-use std::collections::HashMap;
-#[cfg(windows)]
-use std::io;
+use std::collections::{BTreeMap, HashMap};
 #[cfg(windows)]
 use std::panic::{catch_unwind, AssertUnwindSafe};
 #[cfg(windows)]
@@ -63,6 +61,7 @@ fn run<H: Host>(path: &str, host: H) {
     let mut detector = Detector::new();
     // Browser titles are read once, when the browser starts using the mic (spec §5.3).
     let mut titles: HashMap<String, Vec<String>> = HashMap::new();
+    let mut last_detected = BTreeMap::new();
     let mut last_error: Option<Option<String>> = None;
     let mut report = |err: Option<String>| {
         if last_error.as_ref() != Some(&err) {
@@ -86,14 +85,14 @@ fn run<H: Host>(path: &str, host: H) {
     };
 
     loop {
-        let stepped = match catch_unwind(AssertUnwindSafe(|| pass(path, &host, t0, &mut detector, &mut titles))) {
+        let stepped = match catch_unwind(AssertUnwindSafe(|| pass(path, &host, t0, &mut detector, &mut titles, &mut last_detected))) {
             Ok(Ok(())) => {
                 report(watch_error.clone());
                 true
             }
-            // Skip the step: an unreadable store must not look like "every app released the mic" (no false stop).
+            // Skip the step: an unreadable store or session scan must not look like "every app released the mic" (no false stop).
             Ok(Err(e)) => {
-                report(Some(format!("Cannot read Windows' microphone usage record: {e}")));
+                report(Some(e));
                 false
             }
             Err(_) => {
@@ -123,7 +122,7 @@ fn run<H: Host>(path: &str, host: H) {
     }
 }
 
-/// One pass: read the store, classify it, and step the detector. A read error leaves the detector untouched.
+/// One pass: read both mic-usage sources, classify, and step. Either read failing leaves the detector untouched.
 #[cfg(windows)]
 fn pass<H: Host>(
     path: &str,
@@ -131,8 +130,24 @@ fn pass<H: Host>(
     t0: Instant,
     detector: &mut Detector,
     titles: &mut HashMap<String, Vec<String>>,
-) -> io::Result<()> {
-    let users = read_mic_users(path)?;
+    last_detected: &mut BTreeMap<String, (bool, bool)>,
+) -> Result<(), String> {
+    let registry = read_mic_users(path)
+        .map_err(|e| format!("Cannot read Windows' microphone usage record: {e}"))?;
+    // Normalize source identities too, so attribution uses the same stable keys as the detector.
+    let registry = merge_mic_users(registry, []);
+    // Scan even before recording. A top-level scan failure skips the detector step.
+    let capture = capture_sessions()
+        .map_err(|e| format!("Cannot list apps using the microphone: {e}"))?;
+    let session_users = merge_mic_users(
+        vec![],
+        capture.iter().filter(|c| c.active)
+            .filter_map(|c| Some((c.process_path.as_deref()?, true))),
+    );
+    let users = merge_mic_users(
+        registry.clone(),
+        session_users.iter().map(|u| (u.path.as_str(), u.in_use)),
+    );
     titles.retain(|p, _| users.iter().any(|u| u.in_use && &u.path == p));
     for u in users.iter().filter(|u| u.in_use && is_browser(&u.app)) {
         titles.entry(u.path.clone()).or_insert_with(|| window_titles_for(&u.app));
@@ -141,14 +156,32 @@ fn pass<H: Host>(
         .iter()
         .filter_map(|u| classify(u, titles.get(&u.path).map(Vec::as_slice).unwrap_or(&[])))
         .collect();
+    // Aggregate by exe for stable, privacy-safe logs: no paths or window/meeting titles.
+    let mut detected = BTreeMap::<String, (bool, bool)>::new();
+    for call in &in_use {
+        let sources = detected.entry(call.exe.to_lowercase()).or_default();
+        sources.0 |= registry.iter().any(|u| u.in_use && u.path == call.path);
+        sources.1 |= session_users.iter().any(|u| u.path == call.path
+            || (u.app == "ms-teams.exe" && call.exe == "ms-teams.exe"));
+    }
+    if &detected != last_detected {
+        let apps: Vec<String> = detected.iter().map(|(exe, sources)| {
+            let source = match sources {
+                (true, true) => "registry/session",
+                (true, false) => "registry",
+                _ => "session",
+            };
+            format!("{exe} ({source})")
+        }).collect();
+        log::info!("Meeting detector call apps: [{}]", apps.join(", "));
+        *last_detected = detected;
+    }
     let recording = host.is_recording();
     let sessions = if recording {
-        capture_sessions().ok().map(|list| {
-            list.into_iter()
-                .filter(|c| c.active)
-                .filter_map(|c| Some(CaptureUse { exe: c.process_name?, device: c.device_name }))
-                .collect()
-        })
+        Some(capture.into_iter()
+            .filter(|c| c.active)
+            .filter_map(|c| Some(CaptureUse { exe: c.process_name?, device: c.device_name }))
+            .collect())
     } else {
         None
     };

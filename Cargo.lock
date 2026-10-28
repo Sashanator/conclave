@@ -3614,6 +3614,7 @@ dependencies = [
 name = "meeting-detector"
 version = "0.1.0"
 dependencies = [
+ "log",
  "windows 0.61.3",
  "winreg 0.55.0",
 ]

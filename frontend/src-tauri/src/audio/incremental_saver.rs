@@ -336,7 +336,11 @@ fn merge_is_complete_on_disk(merged: &Path, checkpoints_dir: &Path, checkpoint_c
 
 /// True when the meeting has checkpoint chunks but no audio file, i.e. the Stop-time merge failed.
 fn needs_checkpoint_merge(folder: &Path) -> bool {
-    audio_files(folder).is_empty() && !checkpoint_files(&folder.join(".checkpoints")).is_empty()
+    audio_files(folder).is_empty()
+        // A continuation swap may temporarily leave only its backup.
+        && folder.join(".audio.prev.mp4").symlink_metadata()
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        && !checkpoint_files(&folder.join(".checkpoints")).is_empty()
 }
 
 /// Merges leftover checkpoint chunks before a lookup of the meeting's audio. Skipped while a
@@ -737,6 +741,20 @@ mod tests {
         let no_chunks = temp_dir.path().join("No_Chunks");
         std::fs::create_dir_all(no_chunks.join(".checkpoints")).unwrap();
         assert!(!needs_checkpoint_merge(&no_chunks));
+    }
+
+    #[test]
+    fn checkpoints_do_not_merge_over_a_swap_backup() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("Swap_Backup");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        std::fs::write(folder.join(".checkpoints").join("audio_chunk_000.mp4"), b"chunk").unwrap();
+        let prev = folder.join(".audio.prev.mp4");
+        std::fs::write(&prev, b"original").unwrap();
+        assert!(!needs_checkpoint_merge(&folder));
+
+        std::fs::remove_file(&prev).unwrap();
+        assert!(needs_checkpoint_merge(&folder));
     }
 
     #[tokio::test]

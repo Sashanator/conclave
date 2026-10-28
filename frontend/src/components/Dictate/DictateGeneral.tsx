@@ -66,13 +66,13 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
             {devices.map((device) => (
               <SelectItem key={device.name} value={`${device.name} (input)`}>{device.name}</SelectItem>
             ))}
-            {missingMic && <SelectItem value={settings.preferred_mic_device!}>{settings.preferred_mic_device} (unavailable)</SelectItem>}
+            {missingMic && <SelectItem value={settings.preferred_mic_device!}>{settings.preferred_mic_device!.replace(/ \(input\)$/, "")} (unavailable)</SelectItem>}
           </SelectContent>
         </Select>
         {loading && <p className="text-sm text-muted-foreground">Loading microphones…</p>}
         {deviceError && <p role="alert" className="text-sm text-destructive">{deviceError}</p>}
         {!loading && !deviceError && devices.length === 0 && <p className="text-sm text-muted-foreground">No microphones found</p>}
-        {missingMic && !loading && <p className="text-sm text-muted-foreground">The selected microphone is unavailable. Dictate uses the default microphone until it returns.</p>}
+        {missingMic && !loading && !deviceError && <p className="text-sm text-muted-foreground">The selected microphone is unavailable. Dictate uses the default microphone until it returns.</p>}
       </div>
 
       <div className="space-y-1.5">

@@ -41,7 +41,7 @@ export default function Home() {
 
   // Hooks
   const { hasMicrophone } = usePermissionCheck();
-  const { isCollapsed: sidebarCollapsed, refetchMeetings } = useSidebar();
+  const { refetchMeetings } = useSidebar();
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const [isRecordingDisabled, setIsRecordingDisabled] = useState(false);
   const { handleRecordingStart } = useRecordingStart(isRecording, setIsRecordingState, showModal);
@@ -227,54 +227,48 @@ export default function Home() {
           isProcessingStop={isProcessingStop}
           isStopping={isStopping}
           showModal={showModal}
-        />
-
-        {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
-        {(hasMicrophone || isRecording) &&
-          status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
-          status !== RecordingStatus.SAVING && (
-            <div className="fixed bottom-12 left-0 right-0 z-10">
-              <div
-                className="flex justify-center pl-8 transition-[margin] duration-300"
-                style={{
-                  marginLeft: sidebarCollapsed ? '4rem' : '16rem'
-                }}
-              >
-                <div className="w-2/3 max-w-[750px] flex justify-center relative">
-                  <div className="bg-card rounded-full shadow-lg flex items-center">
-                    <RecordingControls
-                      isRecording={recordingState.isRecording}
-                      onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
-                      onRecordingStart={handleRecordingStart}
-                      onTranscriptReceived={() => { }} // Not actually used by RecordingControls
-                      onStopInitiated={() => setIsStopping(true)}
-                      onStopFailed={() => setStatus(RecordingStatus.RECORDING)}
-                      barHeights={barHeights}
-                      onTranscriptionError={(message) => {
-                        showModal('errorAlert', message);
-                      }}
-                      isRecordingDisabled={isRecordingDisabled}
-                      isParentProcessing={isProcessingStop}
-                      selectedDevices={selectedDevices}
-                      meetingName={meetingTitle}
-                    />
-                  </div>
-                  {recordingState.isRecording && (
-                    <div className="absolute top-full mt-2 left-0 right-0 flex justify-center">
-                      <MicFollowingLine selectedMic={selectedDevices?.micDevice ?? null} />
+        >
+          {/* Recording controls - only show when permissions are granted or already recording and not showing status messages */}
+          {(hasMicrophone || isRecording) &&
+            status !== RecordingStatus.PROCESSING_TRANSCRIPTS &&
+            status !== RecordingStatus.SAVING && (
+              <div className="absolute bottom-12 left-0 right-0 z-10">
+                <div className="flex justify-center">
+                  <div className="w-2/3 max-w-[750px] flex justify-center relative">
+                    <div className="bg-card rounded-full shadow-lg flex items-center">
+                      <RecordingControls
+                        isRecording={recordingState.isRecording}
+                        onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
+                        onRecordingStart={handleRecordingStart}
+                        onTranscriptReceived={() => { }} // Not actually used by RecordingControls
+                        onStopInitiated={() => setIsStopping(true)}
+                        onStopFailed={() => setStatus(RecordingStatus.RECORDING)}
+                        barHeights={barHeights}
+                        onTranscriptionError={(message) => {
+                          showModal('errorAlert', message);
+                        }}
+                        isRecordingDisabled={isRecordingDisabled}
+                        isParentProcessing={isProcessingStop}
+                        selectedDevices={selectedDevices}
+                        meetingName={meetingTitle}
+                      />
                     </div>
-                  )}
+                    {recordingState.isRecording && (
+                      <div className="absolute top-full mt-2 left-0 right-0 flex justify-center">
+                        <MicFollowingLine selectedMic={selectedDevices?.micDevice ?? null} />
+                      </div>
+                    )}
+                  </div>
                 </div>
               </div>
-            </div>
-          )}
+            )}
 
-        {/* Status Overlays - Processing and Saving */}
-        <StatusOverlays
-          isProcessing={status === RecordingStatus.PROCESSING_TRANSCRIPTS && !recordingState.isRecording}
-          isSaving={status === RecordingStatus.SAVING}
-          sidebarCollapsed={sidebarCollapsed}
-        />
+          {/* Status Overlays - Processing and Saving */}
+          <StatusOverlays
+            isProcessing={status === RecordingStatus.PROCESSING_TRANSCRIPTS && !recordingState.isRecording}
+            isSaving={status === RecordingStatus.SAVING}
+          />
+        </LiveTranscriptAndNotes>
       </div>
     </div>
   );

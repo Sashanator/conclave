@@ -5,14 +5,19 @@ import { parseSummaryContent } from '../../src/lib/summary-content';
 import type { MeetingSummary, SummaryProcessResponse, Transcript } from '../../src/types';
 
 // Bun shares module mocks between test files; restore application modules after this suite.
+const originalEvent = { ...await import('@tauri-apps/api/event') };
 const originalNavigation = { ...await import('next/navigation') };
 const originalPreferences = { ...await import('../../src/lib/summary-language-preferences') };
 const originalToast = { ...await import('sonner') };
 afterAll(() => {
+  mock.module('@tauri-apps/api/event', () => originalEvent);
   mock.module('next/navigation', () => originalNavigation);
   mock.module('../../src/lib/summary-language-preferences', () => originalPreferences);
   mock.module('sonner', () => originalToast);
 });
+
+// SidebarProvider owns the app-wide continue failure listener.
+mock.module('@tauri-apps/api/event', () => ({ ...originalEvent, listen: async () => () => {} }));
 
 mock.module('next/navigation', () => ({ usePathname: () => '/meeting-details', useRouter: () => ({}) }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ useRecordingState: () => ({ isRecording: false }) }));

@@ -7,6 +7,7 @@ import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateCon
 import { recordingService } from '@/services/recordingService';
 import { showRecordingNotification } from '@/lib/recordingNotification';
 import { pickStartTitle } from '@/lib/calendar-title';
+import { continueFailed, takeAutoStartContinueId } from '@/lib/resume';
 import {
   getProviderCommands,
   hasDownloadingModel,
@@ -213,6 +214,8 @@ export function useRecordingStart(
           // Set by meeting detection (tray.rs request_recording_start): the call app's name, e.g. "Zoom".
           const titlePrefix = sessionStorage.getItem('autoStartTitlePrefix');
           sessionStorage.removeItem('autoStartTitlePrefix');
+          // Set by requestResume (Resume recording on the meeting page): the meeting this call continues.
+          const continueId = takeAutoStartContinueId(sessionStorage);
 
           // Check the selected transcription model before starting.
           const modelReady = await checkModelReady();
@@ -250,6 +253,7 @@ export function useRecordingStart(
               startTitle.title
             );
             console.log('Auto-start backend recording result:', result);
+            if (continueId) invoke('continue_set_target', { meetingId: continueId }).catch(continueFailed);
 
             // Update UI state after successful backend start
             // Note: RECORDING status will be set by RecordingStateContext event listener

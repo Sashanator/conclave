@@ -5,10 +5,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { Mic, X } from 'lucide-react';
 
 interface BannerView {
-  kind: 'detected' | 'ended' | 'mention';
+  kind: 'detected' | 'ended' | 'mention' | 'continue';
   app: string;
   certain: boolean;
   line: string | null;
+  /** The earlier meeting this call could continue into, if any */
+  continue_title: string | null;
 }
 
 export default function MeetingBanner() {
@@ -27,7 +29,7 @@ export default function MeetingBanner() {
     }
   }, []);
 
-  const act = (action: 'record' | 'open' | 'dismiss') => invoke('meeting_banner_action', { action }).catch(() => {});
+  const act = (action: 'record' | 'open' | 'dismiss' | 'continue') => invoke('meeting_banner_action', { action }).catch(() => {});
 
   if (!view) return null;
   if (view.kind === 'mention') {
@@ -53,15 +55,25 @@ export default function MeetingBanner() {
   const text =
     view.kind === 'ended'
       ? `${view.app} meeting ended. Notes are being generated.`
-      : view.certain
-        ? `${view.app} meeting detected`
-        : 'Browser is using the microphone';
+      : view.kind === 'continue'
+        ? `${view.app}: still the same call?`
+        : view.certain
+          ? `${view.app} meeting detected`
+          : 'Browser is using the microphone';
+  const continueButton = view.continue_title && (
+    <button
+      onClick={() => act('continue')}
+      className="min-w-0 truncate rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+    >
+      {`Continue "${view.continue_title}"`}
+    </button>
+  );
 
   return (
     <div className="flex h-screen w-screen select-none items-center gap-3 overflow-hidden rounded-xl border border-border bg-card px-4 text-card-foreground">
       <Mic className="h-5 w-5 shrink-0 text-primary" aria-hidden />
       <span className="flex-1 truncate text-sm font-medium">{text}</span>
-      {view.kind === 'detected' && (
+      {view.kind === 'detected' && !view.continue_title && (
         <button
           onClick={() => act('record')}
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
@@ -69,6 +81,15 @@ export default function MeetingBanner() {
           Record
         </button>
       )}
+      {view.kind === 'detected' && view.continue_title && (
+        <button
+          onClick={() => act('record')}
+          className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
+        >
+          Record new
+        </button>
+      )}
+      {(view.kind === 'detected' || view.kind === 'continue') && continueButton}
       <button
         onClick={() => act('dismiss')}
         aria-label="Dismiss"

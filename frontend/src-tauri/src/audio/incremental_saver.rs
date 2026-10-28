@@ -281,13 +281,13 @@ pub struct AudioRecoveryStatus {
 
 /// One line of an ffmpeg concat list. A single quote in the path is escaped as `'\''`, so a folder
 /// such as "John's 1-1" still parses.
-fn concat_line(path: &Path) -> String {
+pub(crate) fn concat_line(path: &Path) -> String {
     format!("file '{}'\n", path.display().to_string().replace('\'', r"'\''"))
 }
 
 /// ffmpeg concat with stream copy. Chunks are checked with `verify_chunk` first: `-xerror` here
 /// would also fail on the normal timestamp overlap at each chunk join.
-fn concat_args(list_file: &str, output: &str) -> Vec<String> {
+pub(crate) fn concat_args(list_file: &str, output: &str) -> Vec<String> {
     ["-f", "concat", "-safe", "0", "-i", list_file, "-c", "copy", "-y", output]
         .iter()
         .map(|a| a.to_string())
@@ -295,13 +295,13 @@ fn concat_args(list_file: &str, output: &str) -> Vec<String> {
 }
 
 /// Stream copy keeps the size about the same, so a merged file under 90% of the chunks means lost audio.
-fn merged_is_complete(merged_bytes: u64, chunk_bytes: u64) -> bool {
+pub(crate) fn merged_is_complete(merged_bytes: u64, chunk_bytes: u64) -> bool {
     u128::from(merged_bytes) * 10 >= u128::from(chunk_bytes) * 9
 }
 
 /// Decodes one chunk with `-xerror`. A truncated or corrupt chunk fails here; concat would keep
 /// what it can and exit 0.
-fn verify_chunk(ffmpeg: &Path, chunk: &Path) -> Result<()> {
+pub(crate) fn verify_chunk(ffmpeg: &Path, chunk: &Path) -> Result<()> {
     let mut command = std::process::Command::new(ffmpeg);
     command.args(["-v", "error", "-xerror", "-i"]).arg(chunk).args(["-f", "null", "-"]);
     #[cfg(target_os = "windows")]
@@ -336,7 +336,11 @@ fn merge_is_complete_on_disk(merged: &Path, checkpoints_dir: &Path, checkpoint_c
 
 /// True when the meeting has checkpoint chunks but no audio file, i.e. the Stop-time merge failed.
 fn needs_checkpoint_merge(folder: &Path) -> bool {
-    audio_files(folder).is_empty() && !checkpoint_files(&folder.join(".checkpoints")).is_empty()
+    audio_files(folder).is_empty()
+        // A continuation swap may temporarily leave only its backup.
+        && folder.join(".audio.prev.mp4").symlink_metadata()
+            .is_err_and(|e| e.kind() == std::io::ErrorKind::NotFound)
+        && !checkpoint_files(&folder.join(".checkpoints")).is_empty()
 }
 
 /// Merges leftover checkpoint chunks before a lookup of the meeting's audio. Skipped while a
@@ -737,6 +741,20 @@ mod tests {
         let no_chunks = temp_dir.path().join("No_Chunks");
         std::fs::create_dir_all(no_chunks.join(".checkpoints")).unwrap();
         assert!(!needs_checkpoint_merge(&no_chunks));
+    }
+
+    #[test]
+    fn checkpoints_do_not_merge_over_a_swap_backup() {
+        let temp_dir = tempdir().unwrap();
+        let folder = temp_dir.path().join("Swap_Backup");
+        std::fs::create_dir_all(folder.join(".checkpoints")).unwrap();
+        std::fs::write(folder.join(".checkpoints").join("audio_chunk_000.mp4"), b"chunk").unwrap();
+        let prev = folder.join(".audio.prev.mp4");
+        std::fs::write(&prev, b"original").unwrap();
+        assert!(!needs_checkpoint_merge(&folder));
+
+        std::fs::remove_file(&prev).unwrap();
+        assert!(needs_checkpoint_merge(&folder));
     }
 
     #[tokio::test]

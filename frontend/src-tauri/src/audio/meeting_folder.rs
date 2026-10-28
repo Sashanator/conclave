@@ -15,7 +15,7 @@ use tauri::{AppHandle, Manager, Runtime};
 /// The import formats (`import.rs` copies a file in as `audio.<ext>`), so every format is found.
 pub use crate::audio::constants::AUDIO_EXTENSIONS;
 
-pub const MEETING_FILES: [&str; 6] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp", "levels.bin", ".levels.bin.tmp"];
+pub const MEETING_FILES: [&str; 8] = ["transcripts.json", "metadata.json", ".transcripts.json.tmp", ".metadata.json.tmp", "levels.bin", ".levels.bin.tmp", ".audio.merge.tmp.mp4", ".audio.prev.mp4"];
 
 /// Every deleting function takes this, so tests never touch the real Recycle Bin.
 /// `Sync` keeps the async commands that hold it across `.await` `Send`.
@@ -69,7 +69,7 @@ pub fn guarded_meeting_folder(folder_path: &str, recordings_base: &Path) -> Opti
 }
 
 /// A real file, not a symlink/junction (links could point anywhere on disk).
-fn is_plain_file(p: &Path) -> bool {
+pub(crate) fn is_plain_file(p: &Path) -> bool {
     fs::symlink_metadata(p).is_ok_and(|m| m.file_type().is_file())
 }
 
@@ -307,6 +307,7 @@ pub async fn delete_meeting_and_folder(
 
 #[derive(Debug, Serialize)]
 pub struct MeetingAudio {
+    pub resumable: bool,
     pub path: Option<String>,
     pub keep_audio: bool,
     /// Set when the user deleted the audio in the old-audio review; picks the player message.
@@ -320,10 +321,13 @@ pub(crate) async fn meeting_audio_inner(pool: &sqlx::SqlitePool, meeting_id: &st
         .ok_or_else(|| format!("Meeting not found: {meeting_id}"))?;
     let folder = meeting.folder_path.as_deref().and_then(|p| guarded_meeting_folder(p, base));
     if let Some(folder) = &folder {
+        super::continuation::repair_interrupted_swap(folder, &recycle);
         merge_leftover_checkpoints(folder).await;
     }
+    let resumable = folder.as_deref().is_some_and(super::continuation::resumable_folder) && meeting.audio_deleted_at.is_none();
     let file = folder.and_then(|folder| find_audio_file(&folder));
     Ok(MeetingAudio {
+        resumable,
         path: file.map(|f| f.to_string_lossy().to_string()),
         keep_audio: meeting.keep_audio,
         audio_deleted_at: meeting.audio_deleted_at,
@@ -494,7 +498,7 @@ mod tests {
         let b = base();
         let m = b.path().join("m");
         fs::create_dir(&m).unwrap();
-        for f in ["audio.mp4", "transcripts.json", "metadata.json", "levels.bin", ".levels.bin.tmp"] {
+        for f in ["audio.mp4", "transcripts.json", "metadata.json", "levels.bin", ".levels.bin.tmp", ".audio.merge.tmp.mp4", ".audio.prev.mp4"] {
             fs::write(m.join(f), "x").unwrap();
         }
         let bin = FakeBin::new();
@@ -911,4 +915,25 @@ mod tests {
         assert!(meeting_audio_inner(&pool, "m1", b.path()).await.unwrap().path.is_none());
         assert!(meeting_audio_inner(&pool, "nope", b.path()).await.is_err());
     }
+    #[tokio::test]
+    async fn meeting_audio_is_resumable_only_for_recorded_mp4() {
+        let pool = crate::database::repositories::test_pool().await;
+        let b = base();
+        for (id, ext, source, deleted, expected) in [
+            ("recorded", "mp4", "recording", None, true),
+            ("imported", "mp3", "import", None, false),
+            ("imported-mp4", "mp4", "import", None, false),
+            ("deleted", "mp4", "recording", Some("2026-10-16T00:00:00Z"), false),
+        ] {
+            let folder = b.path().join(id);
+            fs::create_dir(&folder).unwrap();
+            fs::write(folder.join(format!("audio.{ext}")), "audio").unwrap();
+            fs::write(folder.join("metadata.json"), serde_json::json!({ "source": source }).to_string()).unwrap();
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, audio_deleted_at) VALUES (?, 't', '2026-10-15T00:00:00Z', '2026-10-15T00:00:00Z', ?, ?)")
+                .bind(id).bind(folder.to_string_lossy().to_string()).bind(deleted)
+                .execute(&pool).await.unwrap();
+            assert_eq!(meeting_audio_inner(&pool, id, b.path()).await.unwrap().resumable, expected, "{id}");
+        }
+    }
+
 }

@@ -834,6 +834,8 @@ pub fn run() {
             audio::recording_commands::get_recording_state,
             audio::recording_commands::get_meeting_folder_path,
             audio::meeting_folder::get_meeting_audio,
+            audio::continuation::continue_status,
+            audio::continuation::continue_set_target,
             // Reload sync commands (retrieve transcript history and meeting name)
             audio::recording_commands::get_transcript_history,
             audio::recording_commands::get_recording_meeting_name,

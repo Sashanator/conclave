@@ -12,16 +12,15 @@ import {
   type MeetingPrep, type PrepOverview, type PrepItem,
 } from '@/lib/prep';
 
-type Event = { uid: string; start: string; title: string; templateId: string | null };
+type Event = { uid: string; start: string; title: string; templateId: string | null; unreadableId?: number };
 type Templates = { templates: Array<{ id: string; name: string }>; errors: string[] };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const fieldClass = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm';
 
-function attachSaved(local: PrepItem[], saved: PrepItem[], sameList: boolean): PrepItem[] {
-  let j = 0;
+function attachSaved(local: PrepItem[], sent: PrepItem[], saved: PrepItem[], sameList: boolean): PrepItem[] {
   return local.map(item => {
-    if (!item.text.trim()) return item;
-    const stored = saved[j++];
+    const index = sent.indexOf(item);
+    const stored = index < 0 ? undefined : saved[index];
     if (!stored) return item;
     return sameList ? stored : item.id === '' ? { ...item, id: stored.id } : item;
   });
@@ -57,7 +56,7 @@ export function PrepPage() {
     if (!overview || !uid || !start) return;
     const upcoming = overview.upcoming.find(e => e.uid === uid && e.start === start);
     const other = overview.other.find(e => e.eventUid === uid && e.eventStart === start);
-    const event = upcoming ?? (other ? { uid, start, title: other.eventTitle, templateId: null } : { uid, start, title: '', templateId: null });
+    const event = upcoming ?? (other ? { uid, start, title: other.eventTitle, templateId: null, unreadableId: other.reason === 'unreadable' ? other.id : undefined } : { uid, start, title: '', templateId: null });
     void select(event);
     // Follow URL changes, without reopening the editor when the badges refresh.
   }, [uid, start, overview !== null]);
@@ -87,18 +86,33 @@ export function PrepPage() {
             <section>
               <h2 className="mb-2 text-sm font-semibold">Past and orphaned preps</h2>
               {overview.other.length === 0 && <p className="text-sm text-muted-foreground">No past or orphaned preps.</p>}
-              {overview.other.map(prep => <button type="button" key={prep.id} className="block w-full rounded-md border border-border bg-card p-3 text-left hover:bg-accent" onClick={() => select({ uid: prep.eventUid, start: prep.eventStart, title: prep.eventTitle, templateId: null })}>
+              {overview.other.map(prep => <button type="button" key={prep.id} className="block w-full rounded-md border border-border bg-card p-3 text-left hover:bg-accent" onClick={() => select({ uid: prep.eventUid, start: prep.eventStart, title: prep.eventTitle, templateId: null, unreadableId: prep.reason === 'unreadable' ? prep.id : undefined })}>
                 <span>{prep.eventTitle}</span><span className="ml-2 text-xs">{prep.approved ? 'Approved' : 'draft'}</span>
                 <span className="block text-xs text-muted-foreground">{new Date(prep.eventStart).toLocaleString()}</span>
+                {prep.reason === 'unreadable' && <span className="block text-xs text-muted-foreground">data is unreadable</span>}
                 {prep.reason === 'not_in_calendar' && <span className="block text-xs text-muted-foreground">event no longer in calendar</span>}
               </button>)}
             </section>
           </>}
         </aside>
-        {selected ? <PrepEditor key={`${selected.uid}:${selected.start}`} event={selected} guard={guard} onUpdated={refresh} onDeleted={() => { guard.current = null; setSelected(null); void refresh(); }} /> : <p className="p-6 text-sm text-muted-foreground">Select an event to prepare.</p>}
+        {selected?.unreadableId !== undefined ? <UnreadablePrep key={selected.unreadableId} id={selected.unreadableId} onDeleted={() => { setSelected(null); void refresh(); }} /> : selected ? <PrepEditor key={`${selected.uid}:${selected.start}`} event={selected} guard={guard} onUpdated={refresh} onDeleted={() => { guard.current = null; setSelected(null); void refresh(); }} /> : <p className="p-6 text-sm text-muted-foreground">Select an event to prepare.</p>}
       </div>
     </div>
   );
+}
+
+function UnreadablePrep({ id, onDeleted }: { id: number; onDeleted(): void }) {
+  const [pending, setPending] = useState(false);
+  return <section className="space-y-3 p-4">
+    <p>data is unreadable</p>
+    <Button variant="destructive" disabled={pending} onClick={async () => {
+      if (pending || !window.confirm('Delete this prep?')) return;
+      setPending(true);
+      try { await deletePrep(id); onDeleted(); }
+      catch (err) { toast.error(errorText(err)); }
+      finally { setPending(false); }
+    }}>Delete prep</Button>
+  </section>;
 }
 
 function PrepEditor({ event, guard, onUpdated, onDeleted }: {
@@ -159,12 +173,10 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
         const saved = await savePrep({ eventUid: value.eventUid, eventStart: value.eventStart, eventTitle: value.eventTitle, material: value.material, templateId: value.templateId, items: sentItems });
         savedRevision.current = version;
         // A write completing must never replace edits made while it was in flight.
-        if (version === revision.current) replace({ ...saved, items: attachSaved(current.current!.items, saved.items, true) });
+        if (version === revision.current) replace({ ...saved, items: attachSaved(current.current!.items, sentItems, saved.items, true) });
         else if (current.current) {
           const local = current.current;
-          // shortcut: index alignment holds while the non-blank item count is unchanged, upgrade to server-side ids for new items if add/remove races appear
-          const items = local.items.filter(item => item.text.trim() !== '').length === sentItems.length
-            ? attachSaved(local.items, saved.items, false) : local.items;
+          const items = attachSaved(local.items, sentItems, saved.items, false);
           replace({ ...local, items, id: saved.id, approvedAt: saved.approvedAt, updatedAt: saved.updatedAt });
         }
         void onUpdated();

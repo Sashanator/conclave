@@ -108,6 +108,41 @@ describe('Prep page', () => {
     for (const expected of ['2026-11-01', '2026-11-02', 'General', 'Review', 'draft', 'Approved', 'Past and orphaned preps', 'event no longer in calendar']) expect(content).toContain(expected);
     expect(calls('prep_save')).toHaveLength(0);
   });
+  for (const directLink of [false, true]) test(`unreadable prep can be deleted without loading an editor (direct link: ${directLink})`, async () => {
+    overview.upcoming = [];
+    overview.other = [{ id: 1, eventUid: 'e1', eventStart: initial.eventStart, eventTitle: 'Broken prep', approved: false, reason: 'unreadable' }];
+    const originalConfirm = window.confirm;
+    window.confirm = () => true;
+    try {
+      await mount(directLink);
+      expect(text(renderer!.root)).toContain('data is unreadable');
+      if (!directLink) {
+        const row = renderer!.root.findAll(n => n.type === 'button' && text(n).includes('Broken prep'))[0];
+        await act(async () => { await row.props.onClick(); });
+      }
+      expect(calls('prep_get')).toHaveLength(0);
+      expect(renderer!.root.findAllByProps({ 'aria-label': 'Material' })).toHaveLength(0);
+      await click('Delete prep');
+      expect(calls('prep_delete')).toEqual([['prep_delete', { prepId: 1 }]]);
+    } finally { window.confirm = originalConfirm; }
+  });
+  test('an in-flight save never gives a removed item id to its replacement', async () => {
+    stored.items[0].ticked = true;
+    let release!: () => void;
+    pauseSave = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await mount();
+      await change('Material', 'Start saving A');
+      await blur('Material');
+      await act(async () => { field('Remove item 1').props.onClick(); });
+      await click('Add item');
+      await change('Item 1', 'Y');
+      await act(async () => { release(); });
+      await flush();
+      expect(field('Item 1').props.value).toBe('Y');
+      expect((calls('prep_save')[1][1]?.items as MeetingPrep['items'])[0]).toMatchObject({ id: '', text: 'Y', ticked: false });
+    } finally { release(); await flush(); pauseSave = null; }
+  });
   test('suggest sends the default message once material exists', async () => {
     await mount();
     expect(button('Suggest')).toBeUndefined();

@@ -118,7 +118,7 @@ test('tick persists immediately without optimistic state', async () => {
   let resolve!: (p: MeetingPrep) => void;
   tick = () => new Promise((done) => { resolve = done; });
   const r = await render();
-  act(() => { boxes(r)[1].props.onChange(); });
+  await act(async () => { boxes(r)[1].props.onChange(); });
   expect(invoke).toHaveBeenCalledWith('prep_tick', { prepId: 7, itemId: 'b', ticked: true });
   expect(boxes(r)[1].props.checked).toBe(false);
   await act(async () => { resolve({ ...fixture(), items: fixture().items.map((i) => ({ ...i, ticked: true })) }); });
@@ -223,23 +223,50 @@ test('the notes child stays mounted when the prep arrives', async () => {
   expect(unmounts).toBe(0);
 });
 
-test('two quick ticks resolving in reverse order keep the latest list', async () => {
+test('two quick ticks on different boxes serialize and both stay ticked', async () => {
+  result = { ...fixture(), items: fixture().items.map(i => ({ ...i, ticked: false })) };
   const pending: Array<{ args: Record<string, unknown>; resolve(p: MeetingPrep): void }> = [];
-  tick = (args) => new Promise((resolve) => { pending.push({ args, resolve }); });
+  tick = args => new Promise(resolve => { pending.push({ args, resolve }); });
   const r = await render();
-  act(() => { boxes(r)[1].props.onChange(); });
-  act(() => { boxes(r)[0].props.onChange(); });
-  expect(pending.map((p) => p.args)).toEqual([
+  await act(async () => { boxes(r)[0].props.onChange(); boxes(r)[1].props.onChange(); });
+  expect(pending.map(p => p.args)).toEqual([{ prepId: 7, itemId: 'a', ticked: true }]);
+  const [a, b] = result.items;
+  await act(async () => { pending[0].resolve({ ...fixture(), items: [{ ...a, ticked: true }, b] }); });
+  expect(pending.map(p => p.args)).toEqual([
+    { prepId: 7, itemId: 'a', ticked: true },
     { prepId: 7, itemId: 'b', ticked: true },
-    { prepId: 7, itemId: 'a', ticked: false },
   ]);
-  const [a, b] = fixture().items;
-  // The later untick's reply lands first: a off, b on.
-  await act(async () => { pending[1].resolve({ ...fixture(), items: [{ ...a, ticked: false }, { ...b, ticked: true }] }); });
-  expect(textOf(prepTab(r)!)).toBe('Prep 1/2');
-  // The earlier tick's reply lands last with a stale list (a still on). It must not win.
-  await act(async () => { pending[0].resolve({ ...fixture(), items: [{ ...a, ticked: true }, { ...b, ticked: true }] }); });
-  expect(textOf(prepTab(r)!)).toBe('Prep 1/2');
-  expect(boxes(r)[0].props.checked).toBe(false);
+  await act(async () => { pending[1].resolve({ ...fixture(), items: [{ ...a, ticked: true }, { ...b, ticked: true }] }); });
+  expect(boxes(r).map(b => b.props.checked)).toEqual([true, true]);
+});
+
+test('double-clicking a box sends true then false', async () => {
+  let applied = fixture();
+  tick = async args => {
+    applied = { ...applied, items: applied.items.map(i => i.id === args.itemId ? { ...i, ticked: args.ticked as boolean } : i) };
+    return applied;
+  };
+  const r = await render();
+  await act(async () => { boxes(r)[1].props.onChange(); boxes(r)[1].props.onChange(); });
+  expect(invoke.mock.calls.filter(([c]) => c === 'prep_tick').map(([, args]) => args)).toEqual([
+    { prepId: 7, itemId: 'b', ticked: true },
+    { prepId: 7, itemId: 'b', ticked: false },
+  ]);
+  expect(boxes(r)[1].props.checked).toBe(false);
+});
+
+test('a rejected tick leaves the queue usable for the next click', async () => {
+  let attempts = 0;
+  tick = async () => {
+    if (++attempts === 1) throw new Error('write failed');
+    return { ...fixture(), items: fixture().items.map(i => ({ ...i, ticked: true })) };
+  };
+  const r = await render();
+  await act(async () => { boxes(r)[1].props.onChange(); boxes(r)[1].props.onChange(); });
+  expect(invoke.mock.calls.filter(([c]) => c === 'prep_tick').map(([, args]) => args)).toEqual([
+    { prepId: 7, itemId: 'b', ticked: true },
+    { prepId: 7, itemId: 'b', ticked: true },
+  ]);
+  expect(errorToast).toHaveBeenCalledTimes(1);
   expect(boxes(r)[1].props.checked).toBe(true);
 });

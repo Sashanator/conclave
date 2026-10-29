@@ -57,7 +57,7 @@ export interface OtherPrep {
   eventStart: string;
   eventTitle: string;
   approved: boolean;
-  reason: 'past' | 'not_in_calendar';
+  reason: 'past' | 'not_in_calendar' | 'unreadable';
 }
 
 export interface PrepOverview {

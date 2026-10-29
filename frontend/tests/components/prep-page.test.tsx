@@ -2,6 +2,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingPrep, PrepOverview } from '../../src/lib/prep';
 import { SUGGEST_MESSAGE } from '../../src/lib/prep';
+import { confirmLeave } from '../../src/lib/unsaved-guard';
 
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
@@ -25,6 +26,8 @@ let overview: PrepOverview;
 let limit = 100;
 let failSave = false;
 let failSend = false;
+let failTemplates = false;
+let mintedId = 0;
 let missingPrep = false;
 let pauseSave: Promise<void> | null = null;
 let query = '';
@@ -33,12 +36,15 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   switch (command) {
     case 'prep_overview': return structuredClone(overview);
     case 'prep_material_limit': return limit;
-    case 'api_list_templates': return { templates: [{ id: 't1', name: 'Review' }], errors: [] };
+    case 'api_list_templates':
+      if (failTemplates) throw new Error('Template listing failed');
+      return { templates: [{ id: 't1', name: 'Review' }], errors: [] };
     case 'prep_get': return missingPrep ? null : structuredClone(stored);
     case 'prep_save':
       if (pauseSave) await pauseSave;
       if (failSave) throw new Error('Write failed');
       stored = { ...stored, ...args } as MeetingPrep;
+      stored = { ...stored, items: stored.items.map(item => ({ ...item, id: item.id || `new-${++mintedId}` })) };
       return structuredClone(stored);
     case 'prep_send':
       if (failSend) throw new Error('Send failed');
@@ -83,7 +89,7 @@ async function keyDown(label: string, key: string) {
 async function click(name: string) { await act(async () => { await button(name).props.onClick(); }); await flush(); }
 beforeEach(() => {
   renderer?.unmount(); renderer = null;
-  stored = structuredClone(initial); limit = 100; failSave = false; failSend = false; missingPrep = false; pauseSave = null;
+  stored = structuredClone(initial); limit = 100; failSave = false; failSend = false; missingPrep = false; pauseSave = null; failTemplates = false; mintedId = 0;
   overview = { connected: true, upcoming: [{ uid: 'e1', title: 'Planning', start: initial.eventStart, end: initial.eventStart, templateId: null, templateName: null, prep: { id: 1, approved: false } }], other: [] };
   invoke.mockClear(); toastError.mockClear();
 });
@@ -99,7 +105,7 @@ describe('Prep page', () => {
     overview.other.push({ id: 3, eventUid: 'gone', eventStart: initial.eventStart, eventTitle: 'Old event', approved: false, reason: 'not_in_calendar' });
     await mount(false);
     const content = text(renderer!.root);
-    for (const expected of ['2026-11-01', '2026-11-02', 'General', 'Review', 'Draft', 'Approved', 'Past and orphaned preps', 'event no longer in calendar']) expect(content).toContain(expected);
+    for (const expected of ['2026-11-01', '2026-11-02', 'General', 'Review', 'draft', 'Approved', 'Past and orphaned preps', 'event no longer in calendar']) expect(content).toContain(expected);
     expect(calls('prep_save')).toHaveLength(0);
   });
   test('suggest sends the default message once material exists', async () => {
@@ -185,12 +191,35 @@ describe('Prep page', () => {
     await blur('Item 1');
     expect(calls('prep_save')).toHaveLength(1);
   });
-  test('new event stays unwritten until an item is added with an empty id', async () => {
+  test('new event sends a new item only once its text is non-blank', async () => {
     missingPrep = true;
     await mount();
     expect(calls('prep_save')).toHaveLength(0);
     await click('Add item');
-    expect(calls('prep_save')[0][1]?.items).toEqual([{ id: '', text: '', kind: 'question', ticked: false, byUser: true }]);
+    await click('Add item');
+    expect(calls('prep_save')).toHaveLength(0);
+    for (const call of calls('prep_save')) expect(call[1]?.items).toEqual([]);
+    await change('Item 2', 'Typed');
+    await blur('Item 2');
+    expect(calls('prep_save').at(-1)?.[1]?.items).toEqual([{ id: '', text: 'Typed', kind: 'question', ticked: false, byUser: true }]);
+    expect(field('Item 1').props.value).toBe('');
+    expect(field('Item 2').props.value).toBe('Typed');
+  });
+  test('Add item then blur with empty text sends no blank item', async () => {
+    await mount();
+    await click('Add item');
+    await blur('Item 2');
+    for (const call of calls('prep_save')) {
+      expect((call[1]?.items as MeetingPrep['items']).some(item => item.text.trim() === '')).toBe(false);
+    }
+    expect(field('Item 2').props.value).toBe('');
+  });
+  test('a cleared existing item is not sent but stays as an empty row', async () => {
+    await mount();
+    await change('Item 1', '   ');
+    await blur('Item 1');
+    expect(calls('prep_save').at(-1)?.[1]?.items).toEqual([]);
+    expect(field('Item 1').props.value).toBe('   ');
   });
   test('valid txt appends with a blank line and saves', async () => {
     stored.material = 'Existing';
@@ -255,6 +284,120 @@ describe('Prep page', () => {
       expect(calls('prep_delete')).toEqual([['prep_delete', { prepId: 1 }]]);
       expect(text(renderer!.root)).toContain('Select an event to prepare.');
     } finally { window.confirm = originalConfirm; }
+  });
+
+  test('a failed save makes leaving ask first', async () => {
+    const originalConfirm = window.confirm;
+    const confirm = mock(() => false);
+    window.confirm = confirm;
+    try {
+      failSave = true;
+      await mount();
+      await change('Item 1', 'Edited question');
+      await blur('Item 1');
+      expect(toastError).toHaveBeenCalledWith('Write failed');
+      expect(confirmLeave()).toBe(false);
+      expect(confirm).toHaveBeenCalled();
+    } finally { window.confirm = originalConfirm; }
+  });
+  test('a successful save clears the guard', async () => {
+    const originalConfirm = window.confirm;
+    const confirm = mock(() => false);
+    window.confirm = confirm;
+    try {
+      await mount();
+      await change('Item 1', 'Edited question');
+      expect(confirmLeave()).toBe(false);
+      confirm.mockClear();
+      await blur('Item 1');
+      expect(confirmLeave()).toBe(true);
+      expect(confirm).not.toHaveBeenCalled();
+    } finally { window.confirm = originalConfirm; }
+  });
+  test('unmounting clears the guard', async () => {
+    const originalConfirm = window.confirm;
+    const confirm = mock(() => false);
+    window.confirm = confirm;
+    try {
+      await mount();
+      await change('Item 1', 'Unsaved question');
+      expect(confirmLeave()).toBe(false);
+      confirm.mockClear();
+      await act(async () => { renderer!.unmount(); renderer = null; });
+      expect(confirmLeave()).toBe(true);
+      expect(confirm).not.toHaveBeenCalled();
+    } finally { window.confirm = originalConfirm; }
+  });
+  test('an oversized txt is refused before it is read', async () => {
+    limit = 10;
+    stored.material = 'Keep';
+    await mount();
+    const read = mock(async () => new TextEncoder().encode('More').buffer);
+    const file = { name: 'big.txt', size: 41, arrayBuffer: read } as unknown as File;
+    await act(async () => { await field('Add .txt file').props.onChange({ target: { files: [file], value: 'big.txt' } }); });
+    expect(toastError).toHaveBeenCalledWith('The file is too large to add');
+    expect(read).not.toHaveBeenCalled();
+    expect(field('Material').props.value).toBe('Keep');
+    expect(calls('prep_save')).toHaveLength(0);
+  });
+  test('switching while an action runs says why', async () => {
+    let release!: () => void;
+    pauseSave = new Promise<void>(resolve => { release = resolve; });
+    let action: Promise<void> | undefined;
+    try {
+      overview.upcoming.push({ ...overview.upcoming[0], uid: 'e2', title: 'Another event' });
+      await mount();
+      await change('Item 1', 'Keep my edit');
+      await act(async () => { action = button('Approve').props.onClick(); });
+      await flush();
+      const other = renderer!.root.findAll(n => n.type === 'button' && text(n).includes('Another event'))[0];
+      await act(async () => { await other.props.onClick(); });
+      expect(toastError).toHaveBeenCalledWith('Wait for the current action to finish, then switch.');
+      expect(field('Item 1').props.value).toBe('Keep my edit');
+      expect(calls('prep_get')).toHaveLength(1);
+    } finally {
+      release();
+      await act(async () => { await action; });
+      await flush();
+      pauseSave = null;
+    }
+  });
+  test('a new item keeps its server id typed during its save', async () => {
+    let release!: () => void;
+    pauseSave = new Promise<void>(resolve => { release = resolve; });
+    try {
+      await mount();
+      await act(async () => { button('Add item').props.onClick(); });
+      await flush();
+      await blur('Item 1');
+      await change('Item 2', 'Typed');
+      expect(calls('prep_save')[0][1]?.items).toEqual([initial.items[0]]);
+      await act(async () => { release(); });
+      await flush();
+      expect(field('Item 2').props.value).toBe('Typed');
+      await blur('Item 2');
+      expect(calls('prep_save')).toHaveLength(2);
+      expect((calls('prep_save')[1][1]?.items as MeetingPrep['items'])[1].id).toBe('');
+      await change('Item 2', 'Typed again');
+      await blur('Item 2');
+      expect(calls('prep_save')).toHaveLength(3);
+      expect((calls('prep_save').at(-1)?.[1]?.items as MeetingPrep['items'])[1].id).toBe('new-1');
+    } finally {
+      release();
+      await flush();
+      pauseSave = null;
+    }
+  });
+  test('a failed template listing does not block the editor', async () => {
+    failTemplates = true;
+    stored.templateId = 't1';
+    await mount();
+    expect(toastError).toHaveBeenCalledWith('Template listing failed');
+    expect(field('Material').props.value).toBe('');
+    expect(field('Template').props.value).toBe('');
+    await change('Material', 'Notes');
+    await blur('Material');
+    expect(calls('prep_save')[0][1]?.templateId).toBe('t1');
   });
 
 });

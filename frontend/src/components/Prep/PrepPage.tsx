@@ -5,6 +5,7 @@ import { useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { setUnsavedChanges } from '@/lib/unsaved-guard';
 import {
   approvalLabel, approvePrep, charCount, countLabel, deletePrep, getPrep, groupByDay,
   materialLimit, prepOverview, savePrep, sendPrep, SUGGEST_MESSAGE,
@@ -15,6 +16,16 @@ type Event = { uid: string; start: string; title: string; templateId: string | n
 type Templates = { templates: Array<{ id: string; name: string }>; errors: string[] };
 const errorText = (error: unknown) => error instanceof Error ? error.message : String(error);
 const fieldClass = 'w-full rounded-md border border-input bg-background px-3 py-2 text-sm';
+
+function attachSaved(local: PrepItem[], saved: PrepItem[], sameList: boolean): PrepItem[] {
+  let j = 0;
+  return local.map(item => {
+    if (!item.text.trim()) return item;
+    const stored = saved[j++];
+    if (!stored) return item;
+    return sameList ? stored : item.id === '' ? { ...item, id: stored.id } : item;
+  });
+}
 
 export function PrepPage() {
   const params = useSearchParams();
@@ -67,7 +78,7 @@ export function PrepPage() {
                   <button type="button" className="w-full space-y-1 px-3 py-2 text-left hover:bg-accent" aria-pressed={selected?.uid === event.uid && selected.start === event.start} onClick={() => select(event)}>
                     <span className="mr-2 text-xs text-muted-foreground">{new Date(event.start).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</span>
                     <span>{event.title}</span>
-                    <span className="block text-xs text-muted-foreground">{event.templateName ?? 'General'} {event.prep && <span className="rounded border px-1">{event.prep.approved ? 'Approved' : 'Draft'}</span>}</span>
+                    <span className="block text-xs text-muted-foreground">{event.templateName ?? 'General'} {event.prep && <span className="rounded border px-1">{event.prep.approved ? 'Approved' : 'draft'}</span>}</span>
                   </button>
                 </li>)}
               </ul>
@@ -77,7 +88,7 @@ export function PrepPage() {
               <h2 className="mb-2 text-sm font-semibold">Past and orphaned preps</h2>
               {overview.other.length === 0 && <p className="text-sm text-muted-foreground">No past or orphaned preps.</p>}
               {overview.other.map(prep => <button type="button" key={prep.id} className="block w-full rounded-md border border-border bg-card p-3 text-left hover:bg-accent" onClick={() => select({ uid: prep.eventUid, start: prep.eventStart, title: prep.eventTitle, templateId: null })}>
-                <span>{prep.eventTitle}</span><span className="ml-2 text-xs">{prep.approved ? 'Approved' : 'Draft'}</span>
+                <span>{prep.eventTitle}</span><span className="ml-2 text-xs">{prep.approved ? 'Approved' : 'draft'}</span>
                 <span className="block text-xs text-muted-foreground">{new Date(prep.eventStart).toLocaleString()}</span>
                 {prep.reason === 'not_in_calendar' && <span className="block text-xs text-muted-foreground">event no longer in calendar</span>}
               </button>)}
@@ -110,6 +121,8 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
   const [draft, setDraft] = useState('');
   const [sendError, setSendError] = useState<{ text: string; message: string } | null>(null);
   const live = useRef(true);
+  const syncDirty = () => { if (live.current) setUnsavedChanges(savedRevision.current !== revision.current); };
+  useEffect(() => () => setUnsavedChanges(false), []);
 
   const replace = (value: MeetingPrep) => { current.current = value; if (live.current) setPrep(value); };
   useEffect(() => {
@@ -117,7 +130,10 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
     const load = async () => {
       setLoadError(null);
       try {
-        const [existing, cap, listing] = await Promise.all([getPrep(event.uid, event.start), materialLimit(), invoke<Templates>('api_list_templates')]);
+        const [existing, cap, listing] = await Promise.all([getPrep(event.uid, event.start), materialLimit(), invoke<Templates>('api_list_templates').catch(err => {
+          toast.error(errorText(err));
+          return { templates: [], errors: [] };
+        })]);
         if (!live.current) return;
         replace(existing ?? {
           id: 0, eventUid: event.uid, eventStart: event.start, eventTitle: event.title,
@@ -138,15 +154,23 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
       if (charCount(value.material) > limit) { toast.error(countLabel(charCount(value.material), limit)); return null; }
       if (savedRevision.current === revision.current && value.id) return value;
       const version = revision.current;
+      const sentItems = value.items.filter(item => item.text.trim() !== '');
       try {
-        const saved = await savePrep({ eventUid: value.eventUid, eventStart: value.eventStart, eventTitle: value.eventTitle, material: value.material, templateId: value.templateId, items: value.items });
+        const saved = await savePrep({ eventUid: value.eventUid, eventStart: value.eventStart, eventTitle: value.eventTitle, material: value.material, templateId: value.templateId, items: sentItems });
         savedRevision.current = version;
         // A write completing must never replace edits made while it was in flight.
-        if (version === revision.current) replace(saved);
-        else if (current.current) replace({ ...current.current, id: saved.id, approvedAt: saved.approvedAt, updatedAt: saved.updatedAt });
+        if (version === revision.current) replace({ ...saved, items: attachSaved(current.current!.items, saved.items, true) });
+        else if (current.current) {
+          const local = current.current;
+          // shortcut: index alignment holds while the non-blank item count is unchanged, upgrade to server-side ids for new items if add/remove races appear
+          const items = local.items.filter(item => item.text.trim() !== '').length === sentItems.length
+            ? attachSaved(local.items, saved.items, false) : local.items;
+          replace({ ...local, items, id: saved.id, approvedAt: saved.approvedAt, updatedAt: saved.updatedAt });
+        }
         void onUpdated();
         return saved;
       } catch (err) { toast.error(errorText(err)); return null; }
+      finally { syncDirty(); }
     });
     queue.current = task;
     return task;
@@ -154,7 +178,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
   const commit = () => { if (savedRevision.current !== revision.current) void persist(); };
   useEffect(() => {
     const check = async () => {
-      if (busy.current) return false;
+      if (busy.current) { toast.error('Wait for the current action to finish, then switch.'); return false; }
       busy.current = true; setPending(true);
       try {
         await queue.current;
@@ -171,6 +195,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
   const edit = (patch: Partial<MeetingPrep>, save = false) => {
     if (!current.current || busy.current) return;
     revision.current += 1;
+    syncDirty();
     replace({ ...current.current, ...patch });
     if (save) void persist();
   };
@@ -215,6 +240,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
             const file = input.files?.[0];
             input.value = '';
             if (!file) return;
+            if (file.size > limit * 4) { toast.error('The file is too large to add'); return; }
             await run(async () => {
               let bytes: ArrayBuffer;
               try { bytes = await file.arrayBuffer(); }
@@ -226,13 +252,14 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
               const next = current.current.material ? `${current.current.material}\n\n${text}` : text;
               if (charCount(next) > limit) { toast.error(countLabel(charCount(next), limit)); return; }
               revision.current += 1;
+              syncDirty();
               replace({ ...current.current, material: next });
               await persist();
             });
           }} />
         </label>
         <label className="block text-sm">Template
-          <select aria-label="Template" className={`${fieldClass} mt-1`} disabled={pending} value={prep.templateId ?? ''} onChange={e => edit({ templateId: e.target.value || null }, true)}>
+          <select aria-label="Template" className={`${fieldClass} mt-1`} disabled={pending} value={templates.some(t => t.id === prep.templateId) ? (prep.templateId ?? '') : ''} onChange={e => edit({ templateId: e.target.value || null }, true)}>
             <option value="">Auto</option>
             {templates.map(template => <option key={template.id} value={template.id}>{template.name}</option>)}
           </select>
@@ -264,7 +291,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
         <span className="rounded bg-muted px-2 py-1 text-xs">{item.kind}</span>
         <Button aria-label={`Remove item ${i + 1}`} variant="ghost" size="sm" disabled={pending} onClick={() => edit({ items: prep.items.filter((_, index) => index !== i) }, true)}>Remove</Button>
       </div>)}
-      <Button variant="outline" disabled={pending} onClick={() => edit({ items: [...prep.items, { id: '', text: '', kind: 'question', ticked: false, byUser: true }] }, true)}>Add item</Button>
+      <Button variant="outline" disabled={pending} onClick={() => edit({ items: [...prep.items, { id: '', text: '', kind: 'question', ticked: false, byUser: true }] })}>Add item</Button>
       <div className="space-y-2 border-t border-border pt-3">
         <Button disabled={pending || overLimit} onClick={() => run(async () => {
           const saved = await persist();

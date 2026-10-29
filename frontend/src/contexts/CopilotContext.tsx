@@ -7,11 +7,14 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { actionLabel, buildCopilotRequest, resolveAnswerLanguage, type CopilotAction, type CopilotSettings } from '@/lib/copilot';
 import { readPinnedSummaryLanguageDefault } from '@/lib/summary-language-preferences';
 
-export const LIVE_SIDE_TAB_KEY = 'conclave.liveSideTab'; // 'notes' | 'copilot'
-export type LiveSideTab = 'notes' | 'copilot';
+export const LIVE_SIDE_TAB_KEY = 'conclave.liveSideTab'; // 'notes' | 'copilot' | 'prep'
+export type LiveSideTab = 'notes' | 'copilot' | 'prep';
 
 export function readLiveSideTab(): LiveSideTab {
-  try { return localStorage.getItem(LIVE_SIDE_TAB_KEY) === 'copilot' ? 'copilot' : 'notes'; } catch { return 'notes'; }
+  try {
+    const tab = localStorage.getItem(LIVE_SIDE_TAB_KEY);
+    return tab === 'copilot' || tab === 'prep' ? tab : 'notes';
+  } catch { return 'notes'; }
 }
 
 export function writeLiveSideTab(tab: LiveSideTab): void {

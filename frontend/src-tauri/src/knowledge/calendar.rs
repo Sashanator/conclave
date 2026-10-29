@@ -47,6 +47,9 @@ pub struct Occurrence {
     pub title: String,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+    /// True when the source event has an RRULE or is a RECURRENCE-ID override.
+    #[serde(default)]
+    pub recurring: bool,
 }
 
 /// What the settings page shows. The host only; the path and query are secrets.
@@ -180,6 +183,7 @@ fn expand_here(
                             title: master.title.clone(),
                             start: utc,
                             end: end.with_timezone(&Utc),
+                            recurring: master.rrule.is_some(),
                         });
                     }
                 }
@@ -294,6 +298,7 @@ fn occurrence(e: &Event) -> Option<Occurrence> {
         title: e.title.clone(),
         start: e.start.with_timezone(&Utc),
         end: e.start.checked_add_signed(duration(e))?.with_timezone(&Utc),
+        recurring: e.rrule.is_some() || e.recurrence_id.is_some(),
     })
 }
 
@@ -884,6 +889,7 @@ mod tests {
                 title: "Design review".into(),
                 start: utc(2026, 10, 20, 13, 0),
                 end: utc(2026, 10, 20, 14, 0),
+                recurring: false,
             }]
         );
     }
@@ -933,12 +939,46 @@ mod tests {
                 utc(2026, 11, 15, 9, 30),
             ),
         ];
+        assert!(got.iter().all(|o| o.recurring));
         let got: Vec<_> = got.into_iter().map(|o| (o.title, o.start, o.end)).collect();
         let want: Vec<_> = want
             .into_iter()
             .map(|(t, s, e)| (t.to_string(), s, e))
             .collect();
         assert_eq!(got, want);
+    }
+
+    #[test]
+    fn old_occurrence_json_defaults_to_nonrecurring() {
+        let occurrence: Occurrence = serde_json::from_str(r#"{
+            "uid": "u", "title": "Meeting",
+            "start": "2026-10-29T12:00:00+00:00", "end": "2026-10-29T12:30:00+00:00"
+        }"#).unwrap();
+        assert!(!occurrence.recurring);
+    }
+
+    #[test]
+    fn cancelled_weekly_instance_preserves_recurring_flag() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:series-2",
+            "DTSTART:20261019T090000Z",
+            "DTEND:20261019T093000Z",
+            "RRULE:FREQ=WEEKLY;COUNT=3",
+            "SUMMARY:Standup",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "UID:series-2",
+            "RECURRENCE-ID:20261026T090000Z",
+            "DTSTART:20261026T090000Z",
+            "STATUS:CANCELLED",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 18, 0, 0), utc(2026, 11, 30, 0, 0)).unwrap();
+        assert_eq!(got.len(), 2);
+        assert!(got.iter().all(|o| o.recurring));
     }
 
     #[test]
@@ -1553,6 +1593,7 @@ mod tests {
             title: format!("Title {uid}"),
             start,
             end: start + Duration::minutes(mins),
+            recurring: false,
         }
     }
 

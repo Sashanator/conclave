@@ -11,6 +11,7 @@ use crate::{
     summary::templates::{self, TemplateEntry},
 };
 use chrono::{DateTime, Duration, Utc};
+use log::warn;
 use serde::Serialize;
 use sqlx::SqlitePool;
 use std::collections::HashSet;
@@ -32,11 +33,14 @@ pub(crate) fn moves(
         .iter()
         .filter_map(|prep| {
             let key = (prep.event_uid.clone(), prep.event_start.clone());
-            if keys.contains(&key) || linked.contains(&key) {
+            if keys.contains(&key)
+                || linked.contains(&key)
+                || occ.iter().any(|o| o.uid == prep.event_uid && o.recurring)
+            {
                 return None;
             }
             let start = DateTime::parse_from_rfc3339(&prep.event_start).ok()?;
-            if start <= now {
+            if now >= start - Duration::minutes(10) {
                 return None;
             }
             let mut candidates = occ
@@ -79,8 +83,9 @@ pub(crate) async fn relocate(
     let mut count = 0;
     for prep in &preps {
         if let Some((id, start)) = planned.iter().find(|(id, _)| *id == prep.id) {
-            count += sqlx::query("UPDATE meeting_preps SET event_start = ? WHERE id = ? AND NOT EXISTS (SELECT 1 FROM meeting_preps WHERE event_uid = ? AND event_start = ?)")
-                .bind(start).bind(id).bind(&prep.event_uid).bind(start)
+            count += sqlx::query("UPDATE meeting_preps SET event_start = ? WHERE id = ? AND event_start = ? AND NOT EXISTS (SELECT 1 FROM meeting_preps WHERE event_uid = ? AND event_start = ?) AND NOT EXISTS (SELECT 1 FROM meetings WHERE calendar_uid = ? AND calendar_start = ?)")
+                .bind(start).bind(id).bind(&prep.event_start).bind(&prep.event_uid).bind(start)
+                .bind(&prep.event_uid).bind(&prep.event_start)
                 .execute(pool).await.map_err(|e| e.to_string())?.rows_affected() as usize;
         }
     }
@@ -141,7 +146,7 @@ pub(crate) fn overview(
         let prep = preps
             .iter()
             .find(|p| p.event_uid == o.uid && p.event_start == start);
-        if !(o.end > now && o.start < now + Duration::days(PREP_AHEAD_DAYS)) && prep.is_none() {
+        if !(o.end > now && (o.start < now + Duration::days(PREP_AHEAD_DAYS) || prep.is_some())) {
             continue;
         }
         let template = prep
@@ -200,9 +205,16 @@ pub async fn prep_overview(state: State<'_, AppState>) -> Result<PrepOverview, S
         relocate(pool, &occ, now).await?;
     }
     let preps = store::list_all(pool).await?;
-    let templates = tauri::async_runtime::spawn_blocking(|| templates::list_templates().templates)
+    let listing = tauri::async_runtime::spawn_blocking(templates::list_templates)
         .await
         .map_err(|e| format!("templates not read: {e}"))?;
+    if !listing.errors.is_empty() {
+        warn!(
+            "prep: {} template file(s) could not be read",
+            listing.errors.len()
+        );
+    }
+    let templates = listing.templates;
     Ok(overview(&preps, &occ, &templates, now, connected))
 }
 
@@ -229,6 +241,7 @@ mod tests {
             title: "Planning".into(),
             start,
             end: start + Duration::hours(1),
+            recurring: false,
         }
     }
 
@@ -272,6 +285,36 @@ mod tests {
             ),
             vec![(1, target.start.to_rfc3339())]
         );
+    }
+
+    #[test]
+    fn cancelled_weekly_instance_does_not_move() {
+        let mut target = occurrence("u", 8);
+        target.recurring = true;
+        assert!(moves(&[prep(1, "u", 1)], &HashSet::new(), &[target], now()).is_empty());
+    }
+
+    #[test]
+    fn prep_inside_recording_window_does_not_move() {
+        for minutes in [5, 10] {
+            let mut p = prep(1, "u", 1);
+            p.event_start = (now() + Duration::minutes(minutes)).to_rfc3339();
+            assert!(moves(&[p], &HashSet::new(), &[occurrence("u", 2)], now()).is_empty());
+        }
+    }
+
+    #[test]
+    fn ended_occurrence_with_prep_is_past_in_other() {
+        let mut ended = occurrence("u", 0);
+        ended.start = now() - Duration::hours(1);
+        ended.end = ended.start + Duration::minutes(30);
+        let mut p = prep(1, "u", 0);
+        p.event_start = ended.start.to_rfc3339();
+        let result = overview(&[p], &[ended], &[], now(), true);
+        assert!(result.upcoming.is_empty());
+        assert_eq!(result.other.len(), 1);
+        assert_eq!(result.other[0].id, 1);
+        assert_eq!(result.other[0].reason, "past");
     }
 
     #[test]
@@ -403,29 +446,29 @@ mod tests {
                 .iter()
                 .map(|e| e.uid.as_str())
                 .collect::<Vec<_>>(),
-            vec!["cached-past", "week", "saved"]
+            vec!["week", "saved"]
         );
         assert_eq!(
-            result.upcoming[2].prep,
+            result.upcoming[1].prep,
             Some(PrepBadge {
                 id: 1,
                 approved: true
             })
         );
-        assert_eq!(
-            result.upcoming[0].prep,
-            Some(PrepBadge {
-                id: 5,
-                approved: false
-            })
-        );
+        assert_eq!(result.upcoming[0].prep, None);
+        assert!(!result.other.iter().find(|p| p.id == 5).unwrap().approved);
         assert_eq!(
             result
                 .other
                 .iter()
                 .map(|p| (p.id, p.reason.as_str()))
                 .collect::<Vec<_>>(),
-            vec![(2, "not_in_calendar"), (3, "past"), (4, "past")]
+            vec![
+                (2, "not_in_calendar"),
+                (3, "past"),
+                (4, "past"),
+                (5, "past")
+            ]
         );
         assert!(!overview(&[], &[], &[], now(), false).connected);
     }

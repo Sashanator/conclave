@@ -151,6 +151,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
     queue.current = task;
     return task;
   };
+  const commit = () => { if (savedRevision.current !== revision.current) void persist(); };
   useEffect(() => {
     const check = async () => {
       if (busy.current) return false;
@@ -194,7 +195,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
   };
   const updateItem = (index: number, patch: Partial<PrepItem>) => {
     if (!current.current) return;
-    edit({ items: current.current.items.map((item, i) => i === index ? { ...item, ...patch, byUser: true } : item) }, true);
+    edit({ items: current.current.items.map((item, i) => i === index ? { ...item, ...patch, byUser: true } : item) });
   };
 
   if (loadError) return <div role="alert" className="p-4">{loadError}<Button variant="outline" onClick={() => setLoadAttempt(attempt => attempt + 1)}>Retry</Button></div>;
@@ -206,7 +207,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
       <div className="space-y-3 border-b border-border p-4">
         <h2 className="font-semibold">{prep.eventTitle}</h2>
         <label className="block text-sm" htmlFor="prep-material">Material</label>
-        <textarea id="prep-material" aria-label="Material" disabled={pending} className={`${fieldClass} min-h-[160px] resize-y`} value={prep.material} onChange={e => edit({ material: e.target.value })} onBlur={() => { if (savedRevision.current !== revision.current) void persist(); }} aria-invalid={overLimit} aria-describedby="prep-count" />
+        <textarea id="prep-material" aria-label="Material" disabled={pending} className={`${fieldClass} min-h-[160px] resize-y`} value={prep.material} onChange={e => edit({ material: e.target.value })} onBlur={commit} aria-invalid={overLimit} aria-describedby="prep-count" />
         <p id="prep-count" className={`text-xs ${overLimit ? 'text-destructive' : 'text-muted-foreground'}`}>{countLabel(count, limit)}</p>
         <label className="block text-sm">Add .txt file
           <input aria-label="Add .txt file" className="mt-1 block w-full text-sm" type="file" accept=".txt,text/plain" disabled={pending} onChange={async e => {
@@ -222,8 +223,10 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
               try { text = new TextDecoder('utf-8', { fatal: true }).decode(bytes); }
               catch { toast.error('The file is not UTF-8 text'); return; }
               if (!live.current || !current.current) return;
+              const next = current.current.material ? `${current.current.material}\n\n${text}` : text;
+              if (charCount(next) > limit) { toast.error(countLabel(charCount(next), limit)); return; }
               revision.current += 1;
-              replace({ ...current.current, material: current.current.material ? `${current.current.material}\n\n${text}` : text });
+              replace({ ...current.current, material: next });
               await persist();
             });
           }} />
@@ -257,7 +260,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
       <h2 className="font-semibold">Checklist</h2>
       {prep.items.length === 0 && <p className="text-sm text-muted-foreground">No items yet.</p>}
       {prep.items.map((item, i) => <div key={i} className="space-y-2 rounded-md border border-border p-3">
-        <input aria-label={`Item ${i + 1}`} className={fieldClass} disabled={pending} value={item.text} onChange={e => updateItem(i, { text: e.target.value })} />
+        <input aria-label={`Item ${i + 1}`} className={fieldClass} disabled={pending} value={item.text} onChange={e => updateItem(i, { text: e.target.value })} onBlur={commit} onKeyDown={e => { if (e.key === 'Enter') { e.preventDefault(); commit(); } }} />
         <span className="rounded bg-muted px-2 py-1 text-xs">{item.kind}</span>
         <Button aria-label={`Remove item ${i + 1}`} variant="ghost" size="sm" disabled={pending} onClick={() => edit({ items: prep.items.filter((_, index) => index !== i) }, true)}>Remove</Button>
       </div>)}

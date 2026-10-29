@@ -72,6 +72,14 @@ async function change(label: string, value: string) {
   await act(async () => { field(label).props.onChange({ target: { value } }); });
   await flush();
 }
+async function blur(label: string) {
+  await act(async () => { await field(label).props.onBlur(); });
+  await flush();
+}
+async function keyDown(label: string, key: string) {
+  await act(async () => { field(label).props.onKeyDown({ key, preventDefault: () => {} }); });
+  await flush();
+}
 async function click(name: string) { await act(async () => { await button(name).props.onClick(); }); await flush(); }
 beforeEach(() => {
   renderer?.unmount(); renderer = null;
@@ -133,7 +141,7 @@ describe('Prep page', () => {
   test('material over the limit is refused with the count', async () => {
     limit = 10;
     await mount(); await change('Material', '12345678901');
-    await act(async () => { await field('Material').props.onBlur(); });
+    await blur('Material');
     expect(text(renderer!.root)).toContain('11 / 10 characters');
     expect(calls('prep_save')).toHaveLength(0);
   });
@@ -149,12 +157,33 @@ describe('Prep page', () => {
   test('failed save keeps local edits', async () => {
     failSave = true;
     await mount(); await change('Item 1', 'Edited question');
+    await blur('Item 1');
     expect(toastError).toHaveBeenCalledWith('Write failed');
     expect(field('Item 1').props.value).toBe('Edited question');
     failSave = false;
     await change('Template', 't1');
     expect(calls('prep_save').at(-1)?.[1]?.items).toEqual([{ ...initial.items[0], text: 'Edited question', byUser: true }]);
     expect(field('Item 1').props.value).toBe('Edited question');
+  });
+  test('typing an item saves once on blur', async () => {
+    await mount();
+    const overviewCount = calls('prep_overview').length;
+    for (const value of ['a', 'ab', 'abc', 'abcd', 'abcde']) await change('Item 1', value);
+    expect(calls('prep_save')).toHaveLength(0);
+    expect(calls('prep_overview')).toHaveLength(overviewCount);
+    await blur('Item 1');
+    expect(calls('prep_save')).toHaveLength(1);
+    expect(calls('prep_save')[0][1]?.items).toEqual([{ ...initial.items[0], text: 'abcde', byUser: true }]);
+    expect(calls('prep_overview')).toHaveLength(overviewCount + 1);
+  });
+  test('Enter in an item saves once', async () => {
+    await mount();
+    await change('Item 1', 'Committed question');
+    await keyDown('Item 1', 'Enter');
+    expect(calls('prep_save')).toHaveLength(1);
+    expect(calls('prep_save')[0][1]?.items).toEqual([{ ...initial.items[0], text: 'Committed question', byUser: true }]);
+    await blur('Item 1');
+    expect(calls('prep_save')).toHaveLength(1);
   });
   test('new event stays unwritten until an item is added with an empty id', async () => {
     missingPrep = true;
@@ -172,11 +201,22 @@ describe('Prep page', () => {
     expect(field('Material').props.value).toBe('Existing\n\nAdditional notes');
     expect(calls('prep_save').at(-1)?.[1]?.material).toBe('Existing\n\nAdditional notes');
   });
+  test('txt over the limit is refused', async () => {
+    limit = 10;
+    stored.material = 'Keep';
+    await mount();
+    const file = new File(['Additional notes'], 'notes.txt');
+    await act(async () => { await field('Add .txt file').props.onChange({ target: { files: [file], value: 'notes.txt' } }); });
+    expect(toastError).toHaveBeenCalledWith('22 / 10 characters');
+    expect(field('Material').props.value).toBe('Keep');
+    expect(calls('prep_save')).toHaveLength(0);
+  });
   test('switching event after a failed save keeps the current edits', async () => {
     failSave = true;
     overview.upcoming.push({ ...overview.upcoming[0], uid: 'e2', title: 'Another event' });
     await mount();
     await change('Item 1', 'Keep my edit');
+    await blur('Item 1');
     const other = renderer!.root.findAll(n => n.type === 'button' && text(n).includes('Another event'))[0];
     await act(async () => { await other.props.onClick(); });
     expect(field('Item 1').props.value).toBe('Keep my edit');
@@ -187,7 +227,9 @@ describe('Prep page', () => {
     pauseSave = new Promise<void>(resolve => { release = resolve; });
     await mount();
     await change('Item 1', 'First edit');
+    await blur('Item 1');
     await change('Item 1', 'Newest edit');
+    await blur('Item 1');
     expect(field('Item 1').props.value).toBe('Newest edit');
     await act(async () => { release(); });
     await flush();

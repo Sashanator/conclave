@@ -200,7 +200,9 @@ pub async fn prep_overview(state: State<'_, AppState>) -> Result<PrepOverview, S
         relocate(pool, &occ, now).await?;
     }
     let preps = store::list_all(pool).await?;
-    let templates = templates::list_templates().templates;
+    let templates = tauri::async_runtime::spawn_blocking(|| templates::list_templates().templates)
+        .await
+        .map_err(|e| format!("templates not read: {e}"))?;
     Ok(overview(&preps, &occ, &templates, now, connected))
 }
 

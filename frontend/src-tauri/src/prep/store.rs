@@ -324,7 +324,20 @@ pub(crate) async fn apply_chat(
             }
         }
         // The user's items must never be dropped to make room for model items.
-        items.truncate(MAX_PREP_ITEMS.saturating_sub(kept.len()));
+        let reserve = kept
+            .iter()
+            .filter(|k| !items.iter().any(|m| m.id == k.id))
+            .count();
+        let limit = MAX_PREP_ITEMS.saturating_sub(reserve);
+        let kept_ids: Vec<&str> = kept.iter().map(|k| k.id.as_str()).collect();
+        // Cut from the tail, never a kept item: those are the user's.
+        let mut i = items.len();
+        while items.len() > limit && i > 0 {
+            i -= 1;
+            if !kept_ids.contains(&items[i].id.as_str()) {
+                items.remove(i);
+            }
+        }
         let missing: Vec<_> = kept
             .into_iter()
             .filter(|i| !items.iter().any(|m| m.id == i.id))
@@ -636,6 +649,89 @@ mod tests {
         assert!(!["x", "y"].contains(&after.items[1].id.as_str()));
         assert_eq!(after.items[2], saved.items[1]);
         assert!(after.items[2].by_user);
+    }
+
+    #[tokio::test]
+    async fn apply_chat_echoed_edit_keeps_all_fifty() {
+        let pool = test_pool().await;
+        let original: Vec<_> = (0..50)
+            .map(|i| item(&format!("item-{i:02}"), &format!("item-{i:02}")))
+            .collect();
+        let prep = seed(&pool, original.clone()).await;
+        for entry in original.iter().step_by(5) {
+            tick(&pool, prep.id, &entry.id, true).await.unwrap();
+        }
+        let sent: Vec<_> = original
+            .iter()
+            .map(|i| (i.id.clone(), i.text.clone()))
+            .collect();
+        let mut current = original.clone();
+        current[0].text = "edited".into();
+        let saved = seed(&pool, current).await;
+        let (after, updated) = apply_chat(
+            &pool,
+            prep.id,
+            message("user"),
+            message("assistant"),
+            Some(
+                original
+                    .iter()
+                    .map(|i| proposed(&i.text, "question"))
+                    .collect(),
+            ),
+            &sent,
+        )
+        .await
+        .unwrap();
+        assert!(updated);
+        assert_eq!(after.items.len(), 50);
+        for expected in &saved.items {
+            let matches: Vec<_> = after.items.iter().filter(|i| i.id == expected.id).collect();
+            assert_eq!(matches.len(), 1);
+            assert!(matches[0].text == expected.text);
+            assert_eq!(matches[0].ticked, expected.ticked);
+        }
+        assert!(after.items.iter().find(|i| i.id == "item-00").unwrap().ticked);
+    }
+
+    #[tokio::test]
+    async fn apply_chat_keeps_tail_echo_of_an_edit_under_the_cap() {
+        let pool = test_pool().await;
+        let mut original: Vec<_> = (0..48)
+            .map(|i| item(&format!("s{i:02}"), &format!("s{i:02}")))
+            .collect();
+        original.extend([item("x", "x"), item("y", "y")]);
+        let prep = seed(&pool, original.clone()).await;
+        let sent: Vec<_> = original
+            .iter()
+            .map(|i| (i.id.clone(), i.text.clone()))
+            .collect();
+        let mut current = original.clone();
+        current[48].text = "edited x".into();
+        current[49].text = "edited y".into();
+        seed(&pool, current).await;
+        let mut proposal = vec![proposed("n", "question")];
+        proposal.extend(original[..49].iter().map(|i| proposed(&i.text, "question")));
+        let (after, updated) = apply_chat(
+            &pool,
+            prep.id,
+            message("user"),
+            message("assistant"),
+            Some(proposal),
+            &sent,
+        )
+        .await
+        .unwrap();
+        assert!(updated);
+        assert_eq!(after.items.len(), 50);
+        assert!(after.items.len() <= MAX_PREP_ITEMS);
+        for (id, text) in [("x", "edited x"), ("y", "edited y")] {
+            let matches: Vec<_> = after.items.iter().filter(|i| i.id == id).collect();
+            assert_eq!(matches.len(), 1);
+            assert!(matches[0].text == text);
+        }
+        assert!(after.items.last().unwrap().id == "y");
+        assert!(after.items.iter().any(|i| i.text == "n"));
     }
 
     #[tokio::test]

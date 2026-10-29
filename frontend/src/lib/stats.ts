@@ -69,6 +69,7 @@ const PURPOSE_LABELS = new Map<string, string>([
   ['template_pick', 'Template choice'],
   ['extraction', 'Task extraction'],
   ['copilot', 'Copilot'],
+  ['prep', 'Meeting prep'],
   ['dictate', 'Dictation'],
   ['practice', 'Speaking practice'],
   ['ask', 'Ask'],

@@ -11,7 +11,7 @@ use crate::summary::metadata::{
 };
 use crate::summary::processor::{
     clean_llm_markdown_detailed, extract_meeting_name_from_markdown, generate_meeting_summary,
-    chunk_prompt_overhead_tokens, require_visible_markdown,
+    chunk_prompt_overhead_tokens, require_visible_markdown, rough_token_count,
 };
 use crate::summary::template_choice::{
     auto_pick_answer_id, auto_pick_prompts, choice_to_store, choose_without_model, Choice,
@@ -56,6 +56,12 @@ fn ollama_chunk_tokens(context_size: usize) -> usize {
 /// Chunk size when the model's context cannot be fetched: Ollama's default runtime context.
 fn ollama_fallback_chunk_tokens() -> usize {
     ollama_chunk_tokens(4096)
+}
+
+fn prep_material_budget(token_threshold: usize, transcript: &str) -> usize {
+    token_threshold
+        .saturating_sub(rough_token_count(transcript))
+        .saturating_mul(4)
 }
 
 /// Strips the first `#` heading line; returns "" if no `#` is found.
@@ -345,8 +351,12 @@ impl SummaryService {
         let title = meeting.as_ref().map(|m| m.title.clone()).unwrap_or_default();
         let folder = meeting.and_then(|m| m.folder_path).filter(|p| !p.trim().is_empty()).map(PathBuf::from);
         let stored = folder.as_deref().and_then(|f| read_template_choice_from_metadata(f).ok().flatten());
+        let prep = crate::prep::store::for_meeting(&pool, &meeting_id).await.unwrap_or_else(|_| {
+            warn!("Could not read prep for meeting {}", meeting_id);
+            None
+        });
         let listing = templates::list_templates();
-        let (template_id, source) = match choose_without_model(manual_template_id.as_deref(), stored, &title, &listing.templates) {
+        let (template_id, source) = match choose_without_model(manual_template_id.as_deref(), stored, prep.as_ref().and_then(|p| p.template_id.as_deref()), &title, &listing.templates) {
             Choice::Decided(id, source) => (id, source),
             Choice::AskModel => {
                 let (system, user) = auto_pick_prompts(&text, &listing.templates);
@@ -418,6 +428,9 @@ impl SummaryService {
                 Vec::new()
             });
         let notes_block = crate::summary::user_notes::render_notes_block(&notes);
+        let prep_block = prep.as_ref().and_then(|p| {
+            crate::summary::user_notes::render_prep_block(p, prep_material_budget(token_threshold, &text))
+        });
         let dictionary = crate::dictate::settings::current().dictionary;
 
         let mut calls = Vec::new();
@@ -429,6 +442,7 @@ impl SummaryService {
             &text,
             &custom_prompt,
             notes_block.as_deref(),
+            prep_block.as_deref(),
             &dictionary,
             &template,
             language.name,
@@ -563,6 +577,16 @@ mod tests {
     use super::*;
     use crate::database::repositories::{test_pool, transcript::TranscriptsRepository};
     use crate::summary::llm_client::TokenUsage;
+
+    #[test]
+    fn prep_material_budget_uses_only_tokens_left_after_transcript() {
+        assert_eq!(prep_material_budget(100, ""), 400);
+        assert_eq!(prep_material_budget(100, &"я".repeat(100)), 260);
+        assert_eq!(prep_material_budget(1, "я"), 0);
+        assert_eq!(prep_material_budget(35, &"a".repeat(100)), 0);
+        assert_eq!(prep_material_budget(10, &"a".repeat(100)), 0);
+        assert_eq!(prep_material_budget(0, ""), 0);
+    }
 
     #[test]
     fn ollama_fallback_chunks_leave_room_for_the_reply() {

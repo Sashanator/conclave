@@ -141,7 +141,7 @@ mod tests {
     }
 
     fn event(title: &str, start: DateTime<Utc>) -> Occurrence {
-        Occurrence { uid: format!("{title}-uid"), title: title.into(), start, end: start + Duration::minutes(30) }
+        Occurrence { uid: format!("{title}-uid"), title: title.into(), start, end: start + Duration::minutes(30), recurring: false }
     }
 
     /// `id` is unique per test: the extraction slots are process-wide, so tests must not share a meeting.

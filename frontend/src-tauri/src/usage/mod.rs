@@ -22,6 +22,7 @@ pub(crate) enum Purpose {
     Ask,
     Digest,
     ConnectionTest,
+    Prep,
 }
 
 impl Purpose {
@@ -36,6 +37,7 @@ impl Purpose {
             Purpose::Ask => "ask",
             Purpose::Digest => "digest",
             Purpose::ConnectionTest => "connection_test",
+            Purpose::Prep => "prep",
         }
     }
 }
@@ -155,6 +157,7 @@ mod tests {
         assert_eq!(Purpose::ConnectionTest.as_str(), "connection_test");
         assert_eq!(Purpose::TemplatePick.as_str(), "template_pick");
         assert_eq!(Purpose::Ask.as_str(), "ask");
+        assert_eq!(Purpose::Prep.as_str(), "prep");
     }
 
     #[tokio::test]

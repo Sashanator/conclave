@@ -31,6 +31,9 @@ pub struct Template {
     pub language: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub context: Option<String>,
+    /// What the Prep chat should suggest asking or clarifying before a meeting of this kind.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prep: Option<String>,
     pub sections: Vec<TemplateSection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub style: Option<String>,
@@ -125,6 +128,7 @@ mod tests {
             title_keywords: vec!["1-2-1".into()],
             language: Some("ru".into()),
             context: Some("Это встреча один-на-один.".into()),
+            prep: None,
             sections: vec![section("Краткое резюме", "2–3 предложения."), section("Задачи", "Чек-лист.")],
             style: Some("- Писать на русском языке.".into()),
         }
@@ -146,9 +150,25 @@ mod tests {
         assert_eq!(serde_json::from_str::<Template>(&json).unwrap(), t);
         let minimal = Template { use_when: None, title_keywords: vec![], language: None, context: None, style: None, ..template() };
         let json = serde_json::to_string(&minimal).unwrap();
-        for absent in ["use_when", "title_keywords", "language", "context", "style", "format"] {
+        for absent in ["use_when", "title_keywords", "language", "context", "style", "format", "prep"] {
             assert!(!json.contains(absent), "{absent} should be omitted: {json}");
         }
+    }
+
+    #[test]
+    fn old_templates_load_without_prep() {
+        let json = r#"{"name":"Old","sections":[{"title":"A","instruction":"B"}]}"#;
+        let t: Template = serde_json::from_str(json).unwrap();
+        assert_eq!(t.prep, None);
+        assert!(!serde_json::to_string(&t).unwrap().contains("\"prep\""));
+    }
+
+    #[test]
+    fn prep_round_trips_when_set() {
+        let t = Template { prep: Some("Ask about X.".into()), ..template() };
+        let json = serde_json::to_string(&t).unwrap();
+        assert!(json.contains("\"prep\":\"Ask about X.\""), "{json}");
+        assert_eq!(serde_json::from_str::<Template>(&json).unwrap(), t);
     }
 
     #[test]

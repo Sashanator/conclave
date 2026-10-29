@@ -258,13 +258,17 @@ pub(crate) fn build_final_prompts(
     chunked: bool,
     custom_prompt: &str,
     notes_block: Option<&str>,
+    prep_block: Option<&str>,
     dictionary: &[String],
 ) -> (String, String) {
-    use crate::summary::user_notes::{marked_lines_block, transcript_has_marks, NOTES_INSTRUCTION};
+    use crate::summary::user_notes::{marked_lines_block, transcript_has_marks, NOTES_INSTRUCTION, PREP_INSTRUCTION};
     let mut system = template.render_system_prompt(language_name);
     // Look at the original transcript: after chunking, `content` is model-written summaries.
     if notes_block.is_some() || transcript_has_marks(original_text) {
         system.push_str(NOTES_INSTRUCTION);
+    }
+    if prep_block.is_some() {
+        system.push_str(PREP_INSTRUCTION);
     }
     if !dictionary.is_empty() {
         system.push_str(&format!("Correct spellings of names and terms: {}.\n", dictionary.join(", ")));
@@ -278,6 +282,11 @@ pub(crate) fn build_final_prompts(
         }
     }
     if let Some(block) = notes_block {
+        user.push('\n');
+        user.push_str(block);
+        user.push('\n');
+    }
+    if let Some(block) = prep_block {
         user.push('\n');
         user.push_str(block);
         user.push('\n');
@@ -299,6 +308,7 @@ pub(crate) async fn generate_meeting_summary(
     text: &str,
     custom_prompt: &str,
     notes_block: Option<&str>,
+    prep_block: Option<&str>,
     dictionary: &[String],
     template: &Template,
     language_name: &str,
@@ -430,7 +440,7 @@ pub(crate) async fn generate_meeting_summary(
 
     info!("Generating final markdown report with template: {}", template.name);
     let (final_system_prompt, final_user_prompt) = build_final_prompts(
-        template, language_name, &content_to_summarize, text, chunked, custom_prompt, notes_block, dictionary,
+        template, language_name, &content_to_summarize, text, chunked, custom_prompt, notes_block, prep_block, dictionary,
     );
     let completion = generate_summary(
         client, provider, model_name, api_key, &final_system_prompt, &final_user_prompt,
@@ -472,7 +482,7 @@ mod tests {
         usage.iter().map(|u| u.output).collect()
     }
 
-    async fn read_request(stream: &mut TcpStream) {
+    async fn read_request(stream: &mut TcpStream) -> serde_json::Value {
         let mut buf = Vec::new();
         let mut chunk = [0_u8; 4096];
         loop {
@@ -486,7 +496,7 @@ mod tests {
                     .find_map(|line| line.strip_prefix("content-length:"))
                     .map_or(0, |v| v.trim().parse::<usize>().unwrap());
                 if buf.len() >= end + 4 + length {
-                    return;
+                    return serde_json::from_slice(&buf[end + 4..end + 4 + length]).unwrap();
                 }
             }
         }
@@ -515,7 +525,7 @@ mod tests {
     async fn run_chunked(endpoint: &str, usage: &mut Vec<TokenUsage>) -> Result<GeneratedMeetingSummary, String> {
         let template = templates::get_template(templates::STANDARD_TEMPLATE_ID).unwrap();
         generate_meeting_summary(
-            &Client::new(), &LLMProvider::Ollama, "m", "", &long_transcript(), "", None, &[],
+            &Client::new(), &LLMProvider::Ollama, "m", "", &long_transcript(), "", None, None, &[],
             &template, "English", 1000, Some(endpoint), None, None, None, None, None, None, usage,
         )
         .await
@@ -572,7 +582,7 @@ mod tests {
         let template = templates::get_template(templates::STANDARD_TEMPLATE_ID).unwrap();
         let mut usage = Vec::new();
         let error = generate_meeting_summary(
-            &Client::new(), &LLMProvider::Ollama, "m", "", &long_transcript(), "", None, &[],
+            &Client::new(), &LLMProvider::Ollama, "m", "", &long_transcript(), "", None, None, &[],
             &template, "English", 0, Some("http://127.0.0.1:9"), None, None, None, None, None, None,
             &mut usage,
         )
@@ -592,7 +602,7 @@ mod tests {
         let mut usage = Vec::new();
         // No app data dir: the first chunk fails before any model runs, and the error names the chunk count.
         let error = generate_meeting_summary(
-            &Client::new(), &LLMProvider::BuiltInAI, "m", "", &transcript, "", None, &[],
+            &Client::new(), &LLMProvider::BuiltInAI, "m", "", &transcript, "", None, None, &[],
             &template, "English", 1000, None, None, None, None, None, None, None,
             &mut usage,
         )
@@ -714,21 +724,77 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn prep_block_lists_ticks_and_goes_to_final_prompt_only() {
+        use crate::prep::{MeetingPrep, PrepItem};
+        use crate::summary::user_notes::{render_prep_block, PREP_INSTRUCTION};
+        let prep = MeetingPrep {
+            id: 1, event_uid: "event".into(), event_start: "start".into(),
+            event_title: "title".into(), template_id: None, material: "Background".into(),
+            chat: vec![], items: [("A", true), ("B", false)].into_iter().map(|(text, ticked)| PrepItem {
+                id: text.into(), text: text.into(), kind: "question".into(), ticked, by_user: false,
+            }).collect(), approved_at: None, created_at: "created".into(), updated_at: "updated".into(),
+        };
+        let block = render_prep_block(&prep, 1000).unwrap();
+        let template = templates::get_template(templates::STANDARD_TEMPLATE_ID).unwrap();
+        let notes = "<user_notes>note</user_notes>";
+        let (system, user) = build_final_prompts(&template, "English", "hi", "hi", false, "context", Some(notes), Some(&block), &[]);
+        assert!(system.contains(PREP_INSTRUCTION));
+        assert!(user.contains("[x] A") && user.contains("[ ] B"));
+        assert!(user.find("</user_notes>").unwrap() < user.find("<meeting_prep>").unwrap());
+        assert!(user.find("</meeting_prep>").unwrap() < user.find("<user_context>").unwrap());
+        let (system, user) = build_final_prompts(&template, "English", "hi", "hi", false, "", None, None, &[]);
+        assert_eq!(system, template.render_system_prompt("English"));
+        assert!(!system.contains(PREP_INSTRUCTION));
+        assert!(!user.contains("<meeting_prep>"));
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move {
+            let mut requests = Vec::new();
+            for _ in 0..4 {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                requests.push(read_request(&mut stream).await);
+                let body = reply("Summary.", 1);
+                let head = format!("HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", body.len());
+                stream.write_all(head.as_bytes()).await.unwrap();
+                stream.write_all(body.as_bytes()).await.unwrap();
+            }
+            requests
+        });
+        let mut usage = Vec::new();
+        generate_meeting_summary(
+            &Client::new(), &LLMProvider::Ollama, "m", "", &long_transcript(), "", None, Some(&block), &[],
+            &template, "English", 1000, Some(&endpoint), None, None, None, None, None, None, &mut usage,
+        ).await.unwrap();
+        let requests = server.await.unwrap();
+        for request in &requests[..3] {
+            let request = request.to_string();
+            assert!(!request.contains("<meeting_prep>"));
+            assert!(!request.contains("Background"));
+            assert!(!request.contains("Not covered"));
+        }
+        let final_request = &requests[3]["messages"];
+        assert!(final_request[0]["content"].as_str().unwrap().contains(PREP_INSTRUCTION));
+        let user = final_request[1]["content"].as_str().unwrap();
+        assert!(user.contains("<meeting_prep>") && user.contains("[x] A") && user.contains("[ ] B"));
+    }
+
     #[test]
     fn final_prompts_add_notes_only_when_present() {
         let t: crate::summary::templates::Template =
             serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
-        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, &[]);
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, None, &[]);
         assert!(!sys.contains("marked transcript lines"));
         assert!(!user.contains("<user_notes>"));
 
         let marked = "[00:01] [MARKED: action] hi";
-        let (sys, user) = build_final_prompts(&t, "English", marked, marked, false, "", None, &[]);
+        let (sys, user) = build_final_prompts(&t, "English", marked, marked, false, "", None, None, &[]);
         assert!(sys.contains("marked transcript lines"));
         assert!(!user.contains("<user_notes>"));
         assert!(!user.contains("<marked_lines>")); // not chunked: the lines are already in the transcript
 
-        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "ctx", Some("<user_notes>\n[00:01] x\n</user_notes>"), &[]);
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "ctx", Some("<user_notes>\n[00:01] x\n</user_notes>"), None, &[]);
         assert!(sys.contains("marked transcript lines"));
         assert!(user.contains("</transcript_chunks>\n\n<user_notes>"));
         assert!(user.contains("<user_context>\nctx"));
@@ -739,7 +805,7 @@ mod tests {
         let t: crate::summary::templates::Template =
             serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
         let original = "[00:01] hi\n[00:05] [MARKED: action] send deck";
-        let (sys, user) = build_final_prompts(&t, "English", "Chunk summary without marks", original, true, "", None, &[]);
+        let (sys, user) = build_final_prompts(&t, "English", "Chunk summary without marks", original, true, "", None, None, &[]);
         assert!(sys.contains("marked transcript lines"));
         assert!(user.contains("<marked_lines>\n[00:05] [MARKED: action] send deck\n</marked_lines>"));
     }
@@ -749,16 +815,16 @@ mod tests {
         let t: crate::summary::templates::Template =
             serde_json::from_value(serde_json::json!({"name": "T", "description": "", "sections": []})).unwrap();
         let base = t.render_system_prompt("English");
-        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, &[]);
+        let (sys, user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, None, &[]);
         assert_eq!(sys, base);
 
         let words = vec!["Tauri".to_string()];
-        let (hinted_sys, hinted_user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, &words);
+        let (hinted_sys, hinted_user) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, None, &words);
         assert_eq!(hinted_sys, format!("{base}Correct spellings of names and terms: Tauri.\n"));
         assert_eq!(hinted_user, user);
 
         let words = vec!["Tauri".to_string(), "Claude Code".to_string()];
-        let (sys, _) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, &words);
+        let (sys, _) = build_final_prompts(&t, "English", "[00:01] hi", "[00:01] hi", false, "", None, None, &words);
         assert!(sys.ends_with("Correct spellings of names and terms: Tauri, Claude Code.\n"), "{sys}");
     }
 

@@ -3,9 +3,11 @@ import { draftFromTemplate, emptyDraft, templateFromDraft, validateDraft } from 
 
 describe('template drafts', () => {
   test('round trip keeps every field and drops blanks', () => {
-    const t = { name: 'X', use_when: 'u', title_keywords: ['a', 'b'], language: 'ru', context: 'c',
+    const t = { name: 'X', use_when: 'u', title_keywords: ['a', 'b'], language: 'ru', context: 'c', prep: 'p',
       sections: [{ title: 'S', instruction: 'I', item_format: '| A |' }], style: 's' };
     expect(templateFromDraft(draftFromTemplate(t))).toEqual(t);
+    expect(emptyDraft().prep).toBe('');
+    expect(templateFromDraft({ ...emptyDraft(), name: 'M', prep: '  ', sections: [{ title: 'S', instruction: 'I' }] })).not.toHaveProperty('prep');
     const minimal = templateFromDraft({ ...emptyDraft(), name: 'M', sections: [{ title: 'S', instruction: 'I' }] });
     expect(minimal).toEqual({ name: 'M', sections: [{ title: 'S', instruction: 'I' }] });
   });

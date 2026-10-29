@@ -191,14 +191,14 @@ pub fn abort_in_flight() {
 }
 
 /// The copilot model, falling back to the summary model as Dictate cleanup does.
-async fn copilot_target<R: Runtime>(app: &AppHandle<R>) -> Result<LlmTarget, String> {
+pub(crate) async fn copilot_target<R: Runtime>(app: &AppHandle<R>) -> Result<LlmTarget, String> {
     let state = app.try_state::<AppState>().ok_or("no database")?;
     let s = settings::current();
     target_with_override(state.db_manager.pool(), s.provider, s.model).await
 }
 
 /// The context budget in characters. Errors are not logged: the reason is only the model's size.
-async fn budget(target: &LlmTarget) -> usize {
+pub(crate) async fn budget(target: &LlmTarget) -> usize {
     if target.provider != LLMProvider::Ollama {
         return MAX_CONTEXT_CHARS;
     }

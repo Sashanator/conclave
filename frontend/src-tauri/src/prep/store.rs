@@ -286,6 +286,7 @@ pub(crate) async fn apply_chat(
     user: ChatMessage,
     mut reply: ChatMessage,
     proposed: Option<Vec<ProposedItem>>,
+    sent_ids: &[String],
 ) -> Result<(MeetingPrep, bool), String> {
     let mut tx = pool
         .begin_with("BEGIN IMMEDIATE")
@@ -296,7 +297,20 @@ pub(crate) async fn apply_chat(
     let proposed = proposed.filter(|p| !p.is_empty());
     let list_updated = proposed.is_some();
     let items_changed = if let Some(proposed) = proposed {
-        let items = merge_items(&prep.items, proposed);
+        let mut items = merge_items(&prep.items, proposed);
+        let unsent: Vec<_> = prep
+            .items
+            .iter()
+            .filter(|i| !sent_ids.contains(&i.id))
+            .collect();
+        // The user's items must never be dropped to make room for model items.
+        items.truncate(MAX_PREP_ITEMS.saturating_sub(unsent.len()));
+        let missing: Vec<_> = unsent
+            .into_iter()
+            .filter(|i| !items.iter().any(|m| m.id == i.id))
+            .cloned()
+            .collect();
+        items.extend(missing);
         let changed = items != prep.items;
         prep.items = items;
         changed
@@ -520,6 +534,74 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn apply_chat_keeps_items_the_model_never_saw() {
+        let pool = test_pool().await;
+        let prep = seed(&pool, vec![item("x", "x")]).await;
+        linked_meeting(&pool).await;
+        let sent_ids = vec!["x".into()];
+        let mut y = item("y", "My new item");
+        y.by_user = true;
+        y.kind = "clarify".into();
+        y.ticked = true;
+        let saved = seed(&pool, vec![prep.items[0].clone(), y]).await;
+        let (after, updated) = apply_chat(
+            &pool,
+            prep.id,
+            message("user"),
+            message("assistant"),
+            Some(vec![proposed("x", "question"), proposed("z", "check")]),
+            &sent_ids,
+        )
+        .await
+        .unwrap();
+        assert!(updated);
+        assert_eq!(after.items.len(), 3);
+        assert_eq!(after.items[0].id, "x");
+        assert_eq!(after.items[1].text, "z");
+        assert!(!["x", "y"].contains(&after.items[1].id.as_str()));
+        assert_eq!(after.items[2], saved.items[1]);
+        assert!(after.items[2].by_user);
+    }
+
+    #[tokio::test]
+    async fn apply_chat_keeps_user_items_within_the_cap() {
+        let pool = test_pool().await;
+        let sent: Vec<_> = (0..40)
+            .map(|i| item(&format!("s{i}"), &format!("Sent {i}")))
+            .collect();
+        let prep = seed(&pool, sent.clone()).await;
+        let sent_ids: Vec<_> = sent.iter().map(|i| i.id.clone()).collect();
+        let unsent: Vec<_> = (0..10)
+            .map(|i| {
+                let mut entry = item(&format!("u{i}"), &format!("Unsent {i}"));
+                entry.by_user = true;
+                entry
+            })
+            .collect();
+        let mut current = sent;
+        current.extend(unsent.clone());
+        seed(&pool, current).await;
+        let (after, _) = apply_chat(
+            &pool,
+            prep.id,
+            message("user"),
+            message("assistant"),
+            Some(
+                (0..50)
+                    .map(|i| proposed(&format!("New {i}"), "check"))
+                    .collect(),
+            ),
+            &sent_ids,
+        )
+        .await
+        .unwrap();
+        assert!(after.items.len() <= MAX_PREP_ITEMS);
+        for entry in unsent {
+            assert!(after.items.contains(&entry));
+        }
+    }
+
+    #[tokio::test]
     async fn apply_chat_merges_against_current_items() {
         let pool = test_pool().await;
         let prep = seed(&pool, vec![item("x", "x")]).await;
@@ -530,6 +612,7 @@ mod tests {
             message("user"),
             message("assistant"),
             Some(vec![proposed("x", "question"), proposed("y", "question")]),
+            &[],
         )
         .await
         .unwrap();
@@ -542,10 +625,16 @@ mod tests {
     async fn apply_chat_none_keeps_list_and_flags_reply() {
         let pool = test_pool().await;
         let prep = seed(&pool, vec![item("x", "x")]).await;
-        let (after, updated) =
-            apply_chat(&pool, prep.id, message("user"), message("assistant"), None)
-                .await
-                .unwrap();
+        let (after, updated) = apply_chat(
+            &pool,
+            prep.id,
+            message("user"),
+            message("assistant"),
+            None,
+            &[],
+        )
+        .await
+        .unwrap();
         assert_eq!(after.items, prep.items);
         assert_eq!(after.updated_at, prep.updated_at);
         assert_eq!(after.chat.len(), 2);
@@ -687,6 +776,7 @@ mod tests {
             message("user"),
             message("assistant"),
             Some(vec![proposed("x", "question")]),
+            &[],
         )
         .await
         .unwrap();
@@ -706,6 +796,7 @@ mod tests {
             message("user"),
             message("assistant"),
             Some(vec![proposed("x", "check")]),
+            &[],
         )
         .await
         .unwrap();
@@ -734,11 +825,16 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(
-            apply_chat(&pool, prep.id, message("user"), message("assistant"), None)
-                .await
-                .is_err()
-        );
+        assert!(apply_chat(
+            &pool,
+            prep.id,
+            message("user"),
+            message("assistant"),
+            None,
+            &[]
+        )
+        .await
+        .is_err());
         let raw: (String, String) =
             sqlx::query_as("SELECT chat_json, items_json FROM meeting_preps WHERE id = ?")
                 .bind(prep.id)
@@ -775,6 +871,7 @@ mod tests {
             message("user"),
             message("assistant"),
             Some(vec![proposed("X", "question")]),
+            &[],
         )
         .await
         .unwrap();
@@ -843,6 +940,7 @@ mod tests {
             message("user"),
             message("assistant"),
             Some(vec![]),
+            &[],
         )
         .await
         .unwrap();

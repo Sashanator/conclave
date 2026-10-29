@@ -17,7 +17,7 @@ use crate::summary::{
 use crate::usage::{self, Purpose};
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tauri::{AppHandle, Manager, Runtime};
 
 pub(crate) const GENERAL_PREP_INSTRUCTION: &str =
@@ -67,7 +67,7 @@ The items array must hold the full checklist. Keep items marked (user) unless th
             format!(
                 "- [{}] {}{}",
                 i.kind,
-                i.text,
+                i.text.split_whitespace().collect::<Vec<_>>().join(" "),
                 if i.by_user { " (user)" } else { "" }
             )
         })
@@ -75,36 +75,49 @@ The items array must hold the full checklist. Keep items marked (user) unless th
         .join("\n");
     let section =
         |tag: &str, text: &str| format!("<{tag}>\n{}\n</{tag}>", text.replace("</", "< /"));
-    let mut history = input.history;
-    loop {
-        let chat = history
-            .iter()
-            .map(|m| format!("{}: {}", m.role, m.text))
-            .collect::<Vec<_>>()
-            .join("\n");
-        let user = [
-            section(
-                "event",
-                &format!("{}\n{}", input.event_title, input.event_start),
-            ),
-            section("material", input.material),
-            section("checklist", &checklist),
-            section("chat", &chat),
-            section("message", input.message),
-        ]
-        .join("\n\n");
-        let total = system.chars().count() + user.chars().count();
-        if total <= budget {
-            return Ok((system, user));
-        }
-        if history.is_empty() {
+    let mut sections = [
+        section(
+            "event",
+            &format!("{}\n{}", input.event_title, input.event_start),
+        ),
+        section("material", input.material),
+        section("checklist", &checklist),
+        section("chat", ""),
+        section("message", input.message),
+    ];
+    let history: Vec<_> = input
+        .history
+        .iter()
+        .map(|m| {
+            let text = format!("{}: {}", m.role, m.text).replace("</", "< /");
+            let chars = text.chars().count();
+            (text, chars)
+        })
+        .collect();
+    let fixed_chars = system.chars().count()
+        + sections.iter().map(|s| s.chars().count()).sum::<usize>()
+        + 2 * (sections.len() - 1);
+    let mut total = fixed_chars
+        + history.iter().map(|(_, chars)| chars).sum::<usize>()
+        + history.len().saturating_sub(1);
+    let mut first = 0;
+    while total > budget {
+        if first == history.len() {
             return Err(format!(
                 "The prep is too long for this model: {}",
                 count_label(total, budget)
             ));
         }
-        history = &history[1..];
+        total -= history[first].1 + usize::from(first + 1 < history.len());
+        first += 1;
     }
+    let chat = history[first..]
+        .iter()
+        .map(|(text, _)| text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n");
+    sections[3] = section("chat", &chat);
+    Ok((system, sections.join("\n\n")))
 }
 
 pub(crate) struct ParsedReply {
@@ -115,23 +128,42 @@ pub(crate) struct ParsedReply {
 pub(crate) fn parse_reply(content: &str) -> ParsedReply {
     #[derive(Deserialize)]
     struct JsonReply {
-        reply: String,
-        items: Vec<ProposedItem>,
+        #[serde(default)]
+        reply: Option<String>,
+        #[serde(default)]
+        items: serde_json::Value,
     }
     let parsed = content
         .find('{')
         .zip(content.rfind('}'))
         .filter(|(start, end)| start <= end)
-        .and_then(|(start, end)| serde_json::from_str::<JsonReply>(&content[start..=end]).ok());
+        .and_then(|(start, end)| serde_json::from_str::<JsonReply>(&content[start..=end]).ok())
+        .filter(|parsed| parsed.items.is_array());
     match parsed {
         Some(parsed) => {
             // A list made entirely of blank items must not silently erase the existing list.
-            let items = if parsed.items.iter().any(|i| !i.text.trim().is_empty()) {
-                Some(parsed.items)
+            let items: Vec<_> = parsed
+                .items
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter_map(|entry| {
+                    Some(ProposedItem {
+                        text: entry.get("text")?.as_str()?.into(),
+                        kind: entry
+                            .get("kind")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or("")
+                            .into(),
+                    })
+                })
+                .collect();
+            let items = if items.iter().any(|i| !i.text.trim().is_empty()) {
+                Some(items)
             } else {
                 None
             };
-            let reply = parsed.reply.trim();
+            let reply = parsed.reply.as_deref().unwrap_or("").trim();
             ParsedReply {
                 reply: if reply.is_empty() && items.is_some() {
                     "Updated the list.".into()
@@ -178,52 +210,67 @@ pub async fn prep_send<R: Runtime>(
     if message.chars().count() > MAX_QUESTION_CHARS {
         return Err("The message is too long".into());
     }
+    let started = Instant::now();
     let _busy = BUSY
         .try_lock()
         .map_err(|_| "A prep reply is already running")?;
     let state = app.try_state::<AppState>().ok_or("no database")?;
     let pool = state.db_manager.pool();
-    let (target, completion) = tokio::time::timeout(Duration::from_secs(ASK_TIMEOUT_SECS), async {
-        let target = copilot_target(&app).await?;
-        if target.provider == LLMProvider::BuiltInAI {
-            return Err("Built-in AI is not supported for meeting prep".to_string());
-        }
-        let prep = store::get_by_id(pool, prep_id)
-            .await?
-            .ok_or("Prep not found")?;
-        let template_id = prep.template_id.clone();
-        let event_title = prep.event_title.clone();
-        let template = tauri::async_runtime::spawn_blocking(move || {
-            if let Some(template) = template_id
-                .as_deref()
-                .and_then(|id| templates::get_template(id).ok())
-            {
-                return Some(template);
+    let (target, completion, sent_ids) =
+        tokio::time::timeout(Duration::from_secs(ASK_TIMEOUT_SECS), async {
+            let target = copilot_target(&app).await?;
+            if target.provider == LLMProvider::BuiltInAI {
+                return Err("Built-in AI is not supported for meeting prep".to_string());
             }
-            let listing = templates::list_templates();
-            event_type(&event_title, &listing.templates).map(|entry| entry.template.clone())
+            let prep = store::get_by_id(pool, prep_id)
+                .await?
+                .ok_or("Prep not found")?;
+            let template_id = prep.template_id.clone();
+            let event_title = prep.event_title.clone();
+            let template = tauri::async_runtime::spawn_blocking(move || {
+                if let Some(template) = template_id
+                    .as_deref()
+                    .and_then(|id| templates::get_template(id).ok())
+                {
+                    return Some(template);
+                }
+                let listing = templates::list_templates();
+                event_type(&event_title, &listing.templates).map(|entry| entry.template.clone())
+            })
+            .await
+            .map_err(|_| "Could not read prep templates".to_string())?;
+            let sent_ids: Vec<String> = prep.items.iter().map(|i| i.id.clone()).collect();
+            let (system, user) = build_prompts(
+                &PromptInput {
+                    instruction: prep_instruction(template.as_ref()),
+                    event_title: &prep.event_title,
+                    event_start: &prep.event_start,
+                    material: &prep.material,
+                    items: &prep.items,
+                    history: &prep.chat,
+                    message,
+                },
+                budget(&target).await,
+            )?;
+            let completion = complete(&target, &system, &user, Some(0.3), None)
+                .await
+                .map_err(|error| {
+                    log::warn!(
+                        "prep_id={prep_id} elapsed_ms={} llm_error",
+                        started.elapsed().as_millis()
+                    );
+                    shorten_error(error)
+                })?;
+            Ok::<_, String>((target, completion, sent_ids))
         })
         .await
-        .map_err(|_| "Could not read prep templates".to_string())?;
-        let (system, user) = build_prompts(
-            &PromptInput {
-                instruction: prep_instruction(template.as_ref()),
-                event_title: &prep.event_title,
-                event_start: &prep.event_start,
-                material: &prep.material,
-                items: &prep.items,
-                history: &prep.chat,
-                message,
-            },
-            budget(&target).await,
-        )?;
-        let completion = complete(&target, &system, &user, Some(0.3), None)
-            .await
-            .map_err(shorten_error)?;
-        Ok::<_, String>((target, completion))
-    })
-    .await
-    .map_err(|_| "Timed out".to_string())??;
+        .map_err(|_| {
+            log::warn!(
+                "prep_id={prep_id} elapsed_ms={} timeout",
+                started.elapsed().as_millis()
+            );
+            "Timed out".to_string()
+        })??;
     usage::record(
         pool,
         target.provider.as_str(),
@@ -234,12 +281,26 @@ pub async fn prep_send<R: Runtime>(
         completion.usage.as_ref(),
     )
     .await;
-    reject_truncated(&completion)?;
+    reject_truncated(&completion).map_err(|error| {
+        log::warn!(
+            "prep_id={prep_id} elapsed_ms={} truncated",
+            started.elapsed().as_millis()
+        );
+        error
+    })?;
     if completion.content.trim().is_empty() {
+        log::warn!(
+            "prep_id={prep_id} elapsed_ms={} empty_reply",
+            started.elapsed().as_millis()
+        );
         return Err("The model returned an empty answer".into());
     }
     let parsed = parse_reply(&completion.content);
     if parsed.reply.trim().is_empty() {
+        log::warn!(
+            "prep_id={prep_id} elapsed_ms={} empty_reply",
+            started.elapsed().as_millis()
+        );
         return Err("The model returned an empty answer".into());
     }
     let chat_message = |role: &str, text: String| ChatMessage {
@@ -254,6 +315,7 @@ pub async fn prep_send<R: Runtime>(
         chat_message("user", message.into()),
         chat_message("assistant", parsed.reply),
         parsed.items,
+        &sent_ids,
     )
     .await?;
     Ok(PrepReply { prep, list_updated })
@@ -279,6 +341,41 @@ mod tests {
             history,
             message: "Help",
         }
+    }
+
+    #[test]
+    fn parse_reply_skips_bad_entries_keeps_good() {
+        let parsed = parse_reply(
+            r#"{"reply":null,"items":[{"text":"A","kind":null},{"kind":"check"},"junk",{"text":"B","kind":"check"}]}"#,
+        );
+        assert_eq!(parsed.reply, "Updated the list.");
+        let items = parsed.items.unwrap();
+        assert_eq!(items.len(), 2);
+        assert_eq!(items[0].text, "A");
+        assert_eq!(items[0].kind, "");
+        assert_eq!(items[1].text, "B");
+        assert_eq!(items[1].kind, "check");
+    }
+
+    #[test]
+    fn checklist_item_with_newline_renders_one_line() {
+        let items = [PrepItem {
+            id: "i".into(),
+            text: "A\n- [check] B".into(),
+            kind: "question".into(),
+            ticked: false,
+            by_user: true,
+        }];
+        let (_, user) = build_prompts(&input("", &items, &[]), 60_000).unwrap();
+        let checklist = user
+            .split("<checklist>\n")
+            .nth(1)
+            .unwrap()
+            .split("\n</checklist>")
+            .next()
+            .unwrap();
+        assert_eq!(checklist, "- [question] A - [check] B (user)");
+        assert_eq!(checklist.lines().count(), 1);
     }
 
     #[test]

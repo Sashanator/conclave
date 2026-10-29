@@ -18,28 +18,33 @@ export function NotesWithPrep({ meetingId, notes }: { meetingId: string; notes: 
     return () => { active = false; };
   }, [meetingId]);
 
-  if (!prep) return notes;
+  // One tree shape with or without a prep: the notes child keeps its place and never remounts when the prep arrives.
+  const showPrep = prep !== null && tab === 'prep';
 
   return (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
-      <div role="tablist" aria-label="Notes and Prep" className="flex gap-1 border-b border-border px-2">
-        {(['notes', 'prep'] as const).map((name) => (
-          <button
-            key={name}
-            type="button"
-            role="tab"
-            aria-selected={tab === name}
-            onClick={() => setTab(name)}
-            className={`-mb-px border-b-2 px-2 py-2 text-sm ${tab === name ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
-          >
-            {name === 'notes' ? 'My notes' : prepCounter(prep.items)}
-          </button>
-        ))}
-      </div>
-      <div className={tab === 'notes' ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>{notes}</div>
-      <div className={tab === 'prep' ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>
-        <PrepTickList prep={prep} onChange={setPrep} />
-      </div>
+      {prep && (
+        <div role="tablist" aria-label="Notes and Prep" className="flex gap-1 border-b border-border px-2">
+          {(['notes', 'prep'] as const).map((name) => (
+            <button
+              key={name}
+              type="button"
+              role="tab"
+              aria-selected={tab === name}
+              onClick={() => setTab(name)}
+              className={`-mb-px border-b-2 px-2 py-2 text-sm ${tab === name ? 'border-primary font-medium text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}
+            >
+              {name === 'notes' ? 'My notes' : prepCounter(prep.items)}
+            </button>
+          ))}
+        </div>
+      )}
+      <div className={showPrep ? 'hidden' : 'flex min-h-0 min-w-0 flex-1 flex-col'}>{notes}</div>
+      {prep && (
+        <div className={showPrep ? 'flex min-h-0 min-w-0 flex-1 flex-col' : 'hidden'}>
+          <PrepTickList prep={prep} onChange={setPrep} />
+        </div>
+      )}
     </div>
   );
 }

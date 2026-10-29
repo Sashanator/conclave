@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeEach, expect, mock, test } from 'bun:test';
-import type { ReactNode } from 'react';
+import { useEffect, type ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingPrep } from '../../src/lib/prep';
 
@@ -33,10 +33,10 @@ const fixture = (): MeetingPrep => ({
 });
 let result: MeetingPrep | null;
 let load: () => Promise<MeetingPrep | null>;
-let tick: () => Promise<MeetingPrep>;
+let tick: (args: Record<string, unknown>) => Promise<MeetingPrep>;
 const invoke = mock(async (command: string, _args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'prep_get' || command === 'prep_for_meeting') return load();
-  if (command === 'prep_tick') return tick();
+  if (command === 'prep_tick') return tick(_args ?? {});
   if (command === 'continue_status') return { offer: null, target: null };
   return undefined;
 });
@@ -139,7 +139,8 @@ test('post-call notes column shows Prep only with a prep', async () => {
   result = null;
   const r = await render(postCall());
   expect(invoke).toHaveBeenCalledWith('prep_for_meeting', { meetingId: 'meeting-1' });
-  expect(r.toJSON()).toEqual({ type: 'div', props: {}, children: ['Original notes'] });
+  expect(tabs(r)).toHaveLength(0);
+  expect(json(r)).toContain('Original notes');
 });
 
 test('post-call prep can be ticked and both bodies stay mounted', async () => {
@@ -203,4 +204,42 @@ test('live and post-call load failures show toasts', async () => {
   await render();
   await render(postCall());
   expect(errorToast).toHaveBeenCalledTimes(2);
+});
+
+test('the notes child stays mounted when the prep arrives', async () => {
+  let finish!: (p: MeetingPrep | null) => void;
+  load = () => new Promise((resolve) => { finish = resolve; });
+  let mounts = 0;
+  let unmounts = 0;
+  const Probe = () => {
+    useEffect(() => { mounts++; return () => { unmounts++; }; }, []);
+    return <div>Probe notes</div>;
+  };
+  const r = await render(<NotesWithPrep meetingId="meeting-1" notes={<Probe />} />);
+  expect(mounts).toBe(1);
+  await act(async () => { finish(fixture()); });
+  expect(prepTab(r)).toBeDefined();
+  expect(mounts).toBe(1);
+  expect(unmounts).toBe(0);
+});
+
+test('two quick ticks resolving in reverse order keep the latest list', async () => {
+  const pending: Array<{ args: Record<string, unknown>; resolve(p: MeetingPrep): void }> = [];
+  tick = (args) => new Promise((resolve) => { pending.push({ args, resolve }); });
+  const r = await render();
+  act(() => { boxes(r)[1].props.onChange(); });
+  act(() => { boxes(r)[0].props.onChange(); });
+  expect(pending.map((p) => p.args)).toEqual([
+    { prepId: 7, itemId: 'b', ticked: true },
+    { prepId: 7, itemId: 'a', ticked: false },
+  ]);
+  const [a, b] = fixture().items;
+  // The later untick's reply lands first: a off, b on.
+  await act(async () => { pending[1].resolve({ ...fixture(), items: [{ ...a, ticked: false }, { ...b, ticked: true }] }); });
+  expect(textOf(prepTab(r)!)).toBe('Prep 1/2');
+  // The earlier tick's reply lands last with a stale list (a still on). It must not win.
+  await act(async () => { pending[0].resolve({ ...fixture(), items: [{ ...a, ticked: true }, { ...b, ticked: true }] }); });
+  expect(textOf(prepTab(r)!)).toBe('Prep 1/2');
+  expect(boxes(r)[0].props.checked).toBe(false);
+  expect(boxes(r)[1].props.checked).toBe(true);
 });

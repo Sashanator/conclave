@@ -1,11 +1,15 @@
 'use client';
 
 import Link from 'next/link';
+import { useRef } from 'react';
 import { toast } from 'sonner';
 import { prepCounter, tickItem, type MeetingPrep } from '@/lib/prep';
 
 export function PrepTickList({ prep, onChange }: { prep: MeetingPrep; onChange(p: MeetingPrep): void }) {
   const href = `/prep?${new URLSearchParams({ event: prep.eventUid, start: prep.eventStart })}`;
+  // Each tick's reply is the whole list. Replies can resolve out of order, so only a reply newer than the one shown is applied.
+  const issued = useRef(0);
+  const applied = useRef(0);
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3">
@@ -21,8 +25,11 @@ export function PrepTickList({ prep, onChange }: { prep: MeetingPrep; onChange(p
                 type="checkbox"
                 checked={item.ticked}
                 onChange={() => {
+                  const seq = ++issued.current;
                   tickItem(prep.id, item.id, !item.ticked)
-                    .then(onChange)
+                    .then((next) => {
+                      if (seq > applied.current) { applied.current = seq; onChange(next); }
+                    })
                     .catch((error) => toast.error(`Failed to save Prep tick: ${String(error)}`));
                 }}
                 className="mt-1"

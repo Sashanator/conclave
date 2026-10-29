@@ -46,7 +46,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
 
 Facts the `harness@s-harness` agents read from this file:
 
-- **Cargo:** run `. "$HOME/.cargo/env"` if `cargo` is missing. `export CARGO_TARGET_DIR=/workspace/target` (every worktree shares one warm cache; waiting on its lock is fine), and run cargo under `nice -n 10` with `-j 4` (full builds froze the VM).
+- **Cargo:** run `. "$HOME/.cargo/env"` if `cargo` is missing. `export CARGO_TARGET_DIR=/workspace/target` (every worktree shares one warm cache; waiting on its lock is fine), and run cargo under `nice -n 10` with `-j 4` (full builds froze the VM). Only one cargo runs at a time across all worktrees: wrap every call as `flock /workspace/.superpowers/cargo.lock nice -n 10 cargo ... -j 4` (parallel lanes building at once crashed the VM: 8 vCPUs, 22 GB, about 10 GB already in use at idle).
 - **Frontend:** pnpm must be 9.15.9. Tests are `bun test` in `frontend/`, with a happy-dom preload.
 - **No lint:** the project has no linter, by the user's decision. Don't add one or report its absence.
 - **Config-only changes:** parse changed JSON, run `bash -n` on changed shell scripts and `node --check` on changed JavaScript.

@@ -1020,6 +1020,7 @@ pub fn run() {
             knowledge::calendar::calendar_disconnect,
             knowledge::calendar::calendar_status,
             knowledge::calendar::calendar_title_now,
+            prep::upcoming::prep_overview,
             prep::store::prep_get,
             prep::store::prep_for_meeting,
             prep::store::prep_save,

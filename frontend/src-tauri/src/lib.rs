@@ -1027,6 +1027,7 @@ pub fn run() {
             prep::store::prep_tick,
             prep::store::prep_approve,
             prep::store::prep_delete,
+            prep::chat::prep_send, prep::chat::prep_material_limit,
             usage::stats::stats_cost,
             usage::stats::meeting_cost,
             usage::stats::stats_talk_time,

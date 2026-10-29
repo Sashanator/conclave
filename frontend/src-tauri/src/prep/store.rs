@@ -4,6 +4,7 @@ use super::{
 };
 use crate::{knowledge::MAX_EVENT_TITLE_CHARS, state::AppState, summary::templates::is_valid_id};
 use chrono::Utc;
+use log::warn;
 use sqlx::{sqlite::SqliteRow, Row, SqliteConnection, SqlitePool};
 use tauri::State;
 use uuid::Uuid;
@@ -13,7 +14,8 @@ pub(crate) fn merge_items(current: &[PrepItem], proposed: Vec<ProposedItem>) -> 
     proposed
         .into_iter()
         .filter_map(|p| {
-            let text = p.text.trim();
+            // Truncate before matching, so an over-long proposal still finds its stored copy.
+            let text = clean_text(&p.text);
             if text.is_empty() {
                 return None;
             }
@@ -25,7 +27,7 @@ pub(crate) fn merge_items(current: &[PrepItem], proposed: Vec<ProposedItem>) -> 
             let matching = current
                 .iter()
                 .enumerate()
-                .position(|(i, item)| !used[i] && item.text == text);
+                .position(|(i, item)| !used[i] && item.text.trim() == text);
             let mut item = match matching {
                 Some(i) => {
                     used[i] = true;
@@ -39,7 +41,7 @@ pub(crate) fn merge_items(current: &[PrepItem], proposed: Vec<ProposedItem>) -> 
                     by_user: false,
                 },
             };
-            item.text = text.chars().take(MAX_ITEM_CHARS).collect();
+            item.text = text;
             item.kind = kind;
             Some(item)
         })
@@ -47,8 +49,19 @@ pub(crate) fn merge_items(current: &[PrepItem], proposed: Vec<ProposedItem>) -> 
         .collect()
 }
 
+// Trimmed, then cut to the item limit, then trimmed again so no trailing space survives the cut.
+fn clean_text(text: &str) -> String {
+    text.trim()
+        .chars()
+        .take(MAX_ITEM_CHARS)
+        .collect::<String>()
+        .trim_end()
+        .to_string()
+}
+
 fn decode(row: SqliteRow) -> Result<MeetingPrep, String> {
     // Parsing failures must reach callers; replacing corrupted JSON would lose data on the next save.
+    let id: i64 = row.try_get("id").map_err(|e| e.to_string())?;
     let parse = || -> Result<MeetingPrep, Box<dyn std::error::Error>> {
         Ok(MeetingPrep {
             id: row.try_get("id")?,
@@ -64,7 +77,10 @@ fn decode(row: SqliteRow) -> Result<MeetingPrep, String> {
             updated_at: row.try_get("updated_at")?,
         })
     };
-    parse().map_err(|e| e.to_string())
+    parse().map_err(|e| {
+        warn!("Meeting prep {id} has unreadable stored data");
+        format!("Prep data is unreadable (id {id}): {e}")
+    })
 }
 
 pub(crate) async fn get(
@@ -141,13 +157,17 @@ pub(crate) async fn save(
     if items.len() > MAX_PREP_ITEMS {
         return Err(format!("Too many items (maximum {MAX_PREP_ITEMS})"));
     }
-    if items
-        .iter()
-        .any(|i| i.text.chars().count() > MAX_ITEM_CHARS)
-    {
-        return Err(format!(
-            "Item too long (maximum {MAX_ITEM_CHARS} characters)"
-        ));
+    for item in &mut items {
+        // Trimmed here, so the stored copy matches what merge_items compares against.
+        item.text = item.text.trim().to_string();
+        if item.text.is_empty() {
+            return Err("Item text is empty".into());
+        }
+        if item.text.chars().count() > MAX_ITEM_CHARS {
+            return Err(format!(
+                "Item too long (maximum {MAX_ITEM_CHARS} characters)"
+            ));
+        }
     }
 
     // Lock before reading so a concurrent tick cannot be overwritten by this save.
@@ -164,9 +184,14 @@ pub(crate) async fn save(
             .map_err(|e| e.to_string())?
             .map(decode)
             .transpose()?;
+    let mut seen = std::collections::HashSet::new();
     for item in &mut items {
-        if item.id.is_empty() {
+        // A repeated id would share one stored tick, and tick() only reaches the first copy.
+        if item.id.is_empty() || !seen.insert(item.id.clone()) {
             item.id = Uuid::new_v4().to_string();
+        }
+        if !KINDS.contains(&item.kind.as_str()) {
+            item.kind = "other".into();
         }
         let previous = current
             .as_ref()
@@ -267,6 +292,8 @@ pub(crate) async fn apply_chat(
         .await
         .map_err(|e| e.to_string())?;
     let mut prep = require_prep(&mut tx, prep_id).await?;
+    // An empty proposal must never wipe the list, so it counts as no proposal.
+    let proposed = proposed.filter(|p| !p.is_empty());
     let list_updated = proposed.is_some();
     let items_changed = if let Some(proposed) = proposed {
         let items = merge_items(&prep.items, proposed);
@@ -534,7 +561,8 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        assert!(get_by_id(&pool, prep.id).await.is_err());
+        let err = get_by_id(&pool, prep.id).await.unwrap_err();
+        assert!(err.starts_with(&format!("Prep data is unreadable (id {}): ", prep.id)));
     }
 
     #[tokio::test]
@@ -733,5 +761,93 @@ mod tests {
             "Item not found"
         );
         assert_eq!(get_by_id(&pool, prep.id).await.unwrap(), Some(prep));
+    }
+
+    #[tokio::test]
+    async fn saved_trailing_space_item_keeps_its_tick_on_chat_merge() {
+        let pool = test_pool().await;
+        let prep = seed(&pool, vec![item("i1", "X ")]).await;
+        assert_eq!(prep.items[0].text, "X");
+        tick(&pool, prep.id, "i1", true).await.unwrap();
+        let (after, _) = apply_chat(
+            &pool,
+            prep.id,
+            message("user"),
+            message("assistant"),
+            Some(vec![proposed("X", "question")]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(after.items.len(), 1);
+        assert_eq!(after.items[0].id, "i1");
+        assert!(after.items[0].ticked);
+    }
+
+    #[test]
+    fn merge_matches_stored_text_with_trailing_space_and_long_proposal() {
+        let long = "я".repeat(MAX_ITEM_CHARS);
+        let mut legacy = item("a", "X ");
+        legacy.ticked = true;
+        let mut stored_long = item("b", &long);
+        stored_long.ticked = true;
+        let merged = merge_items(
+            &[legacy, stored_long],
+            vec![
+                proposed("X", "check"),
+                proposed(&format!("{long}я"), "check"),
+            ],
+        );
+        assert_eq!(merged[0].id, "a");
+        assert!(merged[0].ticked);
+        assert_eq!(merged[1].id, "b");
+        assert!(merged[1].ticked);
+    }
+
+    #[tokio::test]
+    async fn save_rejects_blank_item_and_trims_text() {
+        let pool = test_pool().await;
+        assert_eq!(
+            seed_invalid_items(&pool, vec![item("", "   ")])
+                .await
+                .unwrap_err(),
+            "Item text is empty"
+        );
+        let saved = seed(&pool, vec![item("", "  Padded  ")]).await;
+        assert_eq!(saved.items[0].text, "Padded");
+    }
+
+    #[tokio::test]
+    async fn save_maps_unknown_kind_and_gives_repeated_id_a_fresh_one() {
+        let pool = test_pool().await;
+        let first = seed(&pool, vec![item("d", "A")]).await;
+        tick(&pool, first.id, "d", true).await.unwrap();
+        let mut bogus = item("", "New");
+        bogus.kind = "bogus".into();
+        let saved = seed(&pool, vec![item("d", "A"), item("d", "B"), bogus]).await;
+        assert_eq!(saved.items[0].id, "d");
+        assert!(saved.items[0].ticked);
+        assert_ne!(saved.items[1].id, "d");
+        assert!(!saved.items[1].ticked);
+        assert_eq!(saved.items[2].kind, "other");
+        let ids: std::collections::HashSet<_> = saved.items.iter().map(|i| i.id.clone()).collect();
+        assert_eq!(ids.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn apply_chat_empty_proposal_keeps_list() {
+        let pool = test_pool().await;
+        let prep = seed(&pool, vec![item("x", "x")]).await;
+        let (after, updated) = apply_chat(
+            &pool,
+            prep.id,
+            message("user"),
+            message("assistant"),
+            Some(vec![]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(after.items, prep.items);
+        assert!(after.chat.last().unwrap().list_not_updated);
+        assert!(!updated);
     }
 }

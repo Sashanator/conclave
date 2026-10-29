@@ -20,10 +20,11 @@ fn exists(id: &str, templates: &[TemplateEntry]) -> bool {
     templates.iter().any(|e| e.id == id)
 }
 
-/// Spec §5.1 steps 1-2 (manual, then the choice stored on the meeting, then title keywords); AskModel means step 3.
+/// Spec §5.1 steps 1-2 (manual, then the choice stored on the meeting, then prep, then title keywords); AskModel means step 3.
 pub(crate) fn choose_without_model(
     manual: Option<&str>,
     stored: Option<(String, TemplateSource)>,
+    prep: Option<&str>,
     title: &str,
     templates: &[TemplateEntry],
 ) -> Choice {
@@ -32,6 +33,9 @@ pub(crate) fn choose_without_model(
     }
     if let Some((id, source)) = stored.filter(|(id, _)| exists(id, templates)) {
         return Choice::Decided(id, source);
+    }
+    if let Some(id) = prep.filter(|id| exists(id, templates)) {
+        return Choice::Decided(id.to_string(), TemplateSource::Keyword);
     }
     match templates.iter().find(|e| e.template.matches_title(title)) {
         Some(e) => Choice::Decided(e.id.clone(), TemplateSource::Keyword),
@@ -96,19 +100,33 @@ mod tests {
     #[test]
     fn manual_beats_stored_beats_keyword_beats_model() {
         let stored = Some(("german_lessons".to_string(), TemplateSource::Auto));
-        assert_eq!(choose_without_model(Some("no_hint"), stored.clone(), "1-2-1 x", &all()),
+        assert_eq!(choose_without_model(Some("no_hint"), stored.clone(), None, "1-2-1 x", &all()),
                    Choice::Decided("no_hint".into(), TemplateSource::Manual));
-        assert_eq!(choose_without_model(None, stored, "1-2-1 x", &all()),
+        assert_eq!(choose_without_model(None, stored, None, "1-2-1 x", &all()),
                    Choice::Decided("german_lessons".into(), TemplateSource::Auto));
-        assert_eq!(choose_without_model(None, None, "Meeting 1-2-1", &all()),
+        assert_eq!(choose_without_model(None, None, None, "Meeting 1-2-1", &all()),
                    Choice::Decided("one_two_one_rasulov".into(), TemplateSource::Keyword));
-        assert_eq!(choose_without_model(None, None, "Zoom Meeting 14_10_26", &all()), Choice::AskModel);
+        assert_eq!(choose_without_model(None, None, None, "Zoom Meeting 14_10_26", &all()), Choice::AskModel);
+    }
+
+    #[test]
+    fn prep_template_after_manual_and_stored_before_keyword() {
+        let prep = Some("german_lessons");
+        let stored = Some(("no_hint".to_string(), TemplateSource::Auto));
+        assert_eq!(choose_without_model(Some("no_hint"), None, prep, "1-2-1 x", &all()),
+                   Choice::Decided("no_hint".into(), TemplateSource::Manual));
+        assert_eq!(choose_without_model(None, stored, prep, "1-2-1 x", &all()),
+                   Choice::Decided("no_hint".into(), TemplateSource::Auto));
+        assert_eq!(choose_without_model(None, None, prep, "1-2-1 x", &all()),
+                   Choice::Decided("german_lessons".into(), TemplateSource::Keyword));
+        assert_eq!(choose_without_model(None, None, Some("missing"), "1-2-1 x", &all()),
+                   Choice::Decided("one_two_one_rasulov".into(), TemplateSource::Keyword));
     }
 
     #[test]
     fn a_deleted_or_unknown_template_is_ignored_not_fatal() {
         let gone = Some(("deleted_one".to_string(), TemplateSource::Manual));
-        assert_eq!(choose_without_model(Some("also_gone"), gone, "Zoom Meeting", &all()), Choice::AskModel);
+        assert_eq!(choose_without_model(Some("also_gone"), gone, None, "Zoom Meeting", &all()), Choice::AskModel);
     }
 
     #[test]

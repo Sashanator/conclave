@@ -12,6 +12,7 @@ import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { MeetingDetailsSplitView, type MeetingDetailsTab } from '@/components/MeetingDetails/MeetingDetailsSplitView';
 import { AudioPlayerBar } from '@/components/MeetingDetails/AudioPlayerBar';
 import { NotesPane } from '@/components/MeetingNotes/NotesPane';
+import { NotesWithPrep } from '@/components/Prep/NotesWithPrep';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
 // Custom hooks
@@ -293,16 +294,19 @@ export default function PageContent({
           notesCount={notes.notes.length}
           notesCollapsed={notesStripShown}
           notes={
-            <NotesPane
-              disabled={!notes.loaded}
-              disabledHint="Loading notes…"
-              notes={notes.notes}
-              onAdd={notes.addNote}
-              onUpdate={notes.updateNote}
-              onDelete={notes.deleteNote}
-              onTimeClick={audio.info?.path ? audio.playFrom : undefined}
-              collapsed={notesStripShown}
-              onToggleCollapsed={toggleNotesCollapsed}
+            <NotesWithPrep meetingId={meeting.id} notes={
+              <NotesPane
+                disabled={!notes.loaded}
+                disabledHint="Loading notes…"
+                notes={notes.notes}
+                onAdd={notes.addNote}
+                onUpdate={notes.updateNote}
+                onDelete={notes.deleteNote}
+                onTimeClick={audio.info?.path ? audio.playFrom : undefined}
+                collapsed={notesStripShown}
+                onToggleCollapsed={toggleNotesCollapsed}
+              />
+            }
             />
           }
           transcript={

@@ -13,7 +13,7 @@ use crate::{
 use chrono::{DateTime, Duration, Utc};
 use log::warn;
 use serde::Serialize;
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use std::collections::HashSet;
 use tauri::State;
 
@@ -66,7 +66,7 @@ pub(crate) async fn relocate(
     occ: &[Occurrence],
     now: DateTime<Utc>,
 ) -> Result<usize, String> {
-    let preps = store::list_all(pool).await?;
+    let (preps, _) = read_preps(pool).await?;
     // calendar_title_now supplies to_rfc3339(), stored unchanged in meetings.
     // A UID can have a NULL calendar_start; that row cannot link to a prep key.
     let rows: Vec<(String, Option<String>)> = sqlx::query_as(
@@ -195,16 +195,57 @@ pub(crate) fn overview(
     }
 }
 
+// Only the overview tolerates unreadable content, retaining metadata for deletion.
+async fn read_preps(pool: &SqlitePool) -> Result<(Vec<MeetingPrep>, Vec<OtherPrep>), String> {
+    let rows = sqlx::query("SELECT * FROM meeting_preps ORDER BY id")
+        .fetch_all(pool)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut preps = Vec::new();
+    let mut unreadable = Vec::new();
+    for row in rows {
+        let metadata = OtherPrep {
+            id: row.try_get("id").map_err(|e| e.to_string())?,
+            event_uid: row.try_get("event_uid").map_err(|e| e.to_string())?,
+            event_start: row.try_get("event_start").map_err(|e| e.to_string())?,
+            event_title: row.try_get("event_title").map_err(|e| e.to_string())?,
+            approved: row.try_get::<Option<String>, _>("approved_at")
+                .map_err(|e| e.to_string())?
+                .is_some(),
+            reason: "unreadable".into(),
+        };
+        // decode warns with the id only; do not log the stored content or parse error.
+        match store::decode(row) {
+            Ok(prep) => preps.push(prep),
+            Err(_) => unreadable.push(metadata),
+        }
+    }
+    Ok((preps, unreadable))
+}
+
+async fn stored_overview(
+    pool: &SqlitePool,
+    occ: &[Occurrence],
+    templates: &[TemplateEntry],
+    now: DateTime<Utc>,
+    connected: bool,
+) -> Result<PrepOverview, String> {
+    let (preps, unreadable) = read_preps(pool).await?;
+    let mut result = overview(&preps, occ, templates, now, connected);
+    result.other.extend(unreadable);
+    Ok(result)
+}
+
 #[tauri::command]
 pub async fn prep_overview(state: State<'_, AppState>) -> Result<PrepOverview, String> {
     let connected = settings::current().calendar_url.is_some();
+    let refreshed = calendar::has_refreshed();
     let occ = calendar::upcoming();
     let now = Utc::now();
     let pool = state.db_manager.pool();
-    if connected && !occ.is_empty() {
+    if connected && refreshed && !occ.is_empty() {
         relocate(pool, &occ, now).await?;
     }
-    let preps = store::list_all(pool).await?;
     let listing = tauri::async_runtime::spawn_blocking(templates::list_templates)
         .await
         .map_err(|e| format!("templates not read: {e}"))?;
@@ -215,7 +256,7 @@ pub async fn prep_overview(state: State<'_, AppState>) -> Result<PrepOverview, S
         );
     }
     let templates = listing.templates;
-    Ok(overview(&preps, &occ, &templates, now, connected))
+    stored_overview(pool, &occ, &templates, now, connected).await
 }
 
 #[cfg(test)]
@@ -271,6 +312,34 @@ mod tests {
             .bind(p.id).bind(&p.event_uid).bind(&p.event_start).bind(&p.event_title).bind(&p.material)
             .bind(serde_json::to_string(&p.chat).unwrap()).bind(&p.created_at).bind(&p.updated_at)
             .execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn overview_keeps_unreadable_rows_deletable() {
+        for column in ["chat_json", "items_json"] {
+            let pool = test_pool().await;
+            let mut corrupt = prep(1, "bad", 1);
+            corrupt.approved_at = Some(now().to_rfc3339());
+            insert(&pool, &corrupt).await;
+            insert(&pool, &prep(2, "good", 2)).await;
+            sqlx::query(&format!("UPDATE meeting_preps SET {column} = 'invalid', approved_at = ? WHERE id = 1"))
+                .bind(&corrupt.approved_at).execute(&pool).await.unwrap();
+            let occ = [occurrence("bad", 1), occurrence("good", 2)];
+            // Relocation must not fail on the same corrupt row either.
+            assert_eq!(relocate(&pool, &occ, now()).await, Ok(0));
+            let result = stored_overview(&pool, &occ, &[], now(), true).await.unwrap();
+            let good = result.upcoming.iter().find(|e| e.uid == "good").unwrap();
+            assert_eq!(good.prep.as_ref().unwrap().id, 2);
+            assert_eq!(result.other, vec![OtherPrep {
+                id: corrupt.id,
+                event_uid: corrupt.event_uid,
+                event_start: corrupt.event_start,
+                event_title: corrupt.event_title,
+                approved: true,
+                reason: "unreadable".into(),
+            }]);
+            assert!(store::get_by_id(&pool, 1).await.is_err());
+        }
     }
 
     #[test]

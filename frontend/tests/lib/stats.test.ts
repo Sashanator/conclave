@@ -65,6 +65,7 @@ describe('purposeLabel', () => {
     expect(purposeLabel('template_pick')).toBe('Template choice');
     expect(purposeLabel('connection_test')).toBe('Connection test');
     expect(purposeLabel('extraction')).toBe('Task extraction');
+    expect(purposeLabel('prep')).toBe('Meeting prep');
     expect(purposeLabel('something_new')).toBe('something_new');
     expect(purposeLabel('constructor')).toBe('constructor');
   });

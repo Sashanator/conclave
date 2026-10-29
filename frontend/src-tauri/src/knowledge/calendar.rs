@@ -15,7 +15,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{LazyLock, PoisonError, RwLock};
 use std::time::Instant;
 use tauri::path::BaseDirectory;
@@ -638,6 +638,13 @@ fn in_window(occurrences: &[Occurrence], now: DateTime<Utc>) -> Vec<Occurrence> 
         .collect()
 }
 
+// A loaded disk cache may predate recurrence metadata. Only fresh expansions allow relocation.
+static HAS_REFRESHED: AtomicBool = AtomicBool::new(false);
+
+pub(crate) fn has_refreshed() -> bool {
+    HAS_REFRESHED.load(Ordering::Acquire)
+}
+
 /// The cached occurrences inside the window around now, sorted by start.
 pub fn upcoming() -> Vec<Occurrence> {
     let state = STATE.read().unwrap_or_else(PoisonError::into_inner);
@@ -697,6 +704,7 @@ fn store<R: Runtime>(app: &AppHandle<R>, url: &str, occurrences: Vec<Occurrence>
     }
     state.cache = cache;
     state.last_error = None;
+    HAS_REFRESHED.store(true, Ordering::Release);
     Some(count)
 }
 

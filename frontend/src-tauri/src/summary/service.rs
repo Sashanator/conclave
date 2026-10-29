@@ -345,8 +345,12 @@ impl SummaryService {
         let title = meeting.as_ref().map(|m| m.title.clone()).unwrap_or_default();
         let folder = meeting.and_then(|m| m.folder_path).filter(|p| !p.trim().is_empty()).map(PathBuf::from);
         let stored = folder.as_deref().and_then(|f| read_template_choice_from_metadata(f).ok().flatten());
+        let prep = crate::prep::store::for_meeting(&pool, &meeting_id).await.unwrap_or_else(|_| {
+            warn!("Could not read prep for meeting {}", meeting_id);
+            None
+        });
         let listing = templates::list_templates();
-        let (template_id, source) = match choose_without_model(manual_template_id.as_deref(), stored, &title, &listing.templates) {
+        let (template_id, source) = match choose_without_model(manual_template_id.as_deref(), stored, prep.as_ref().and_then(|p| p.template_id.as_deref()), &title, &listing.templates) {
             Choice::Decided(id, source) => (id, source),
             Choice::AskModel => {
                 let (system, user) = auto_pick_prompts(&text, &listing.templates);
@@ -418,6 +422,7 @@ impl SummaryService {
                 Vec::new()
             });
         let notes_block = crate::summary::user_notes::render_notes_block(&notes);
+        let prep_block = prep.as_ref().and_then(|p| crate::summary::user_notes::render_prep_block(p, token_threshold));
         let dictionary = crate::dictate::settings::current().dictionary;
 
         let mut calls = Vec::new();
@@ -429,6 +434,7 @@ impl SummaryService {
             &text,
             &custom_prompt,
             notes_block.as_deref(),
+            prep_block.as_deref(),
             &dictionary,
             &template,
             language.name,

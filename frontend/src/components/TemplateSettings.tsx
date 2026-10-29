@@ -247,6 +247,9 @@ export function TemplateSettings() {
             <Field id="tpl-context" label="Context">
               <Textarea id="tpl-context" rows={5} value={draft.context} onChange={(e) => update({ context: e.target.value })} />
             </Field>
+            <Field id="tpl-prep" label="Prep instruction">
+              <Textarea id="tpl-prep" rows={3} value={draft.prep} onChange={(e) => update({ prep: e.target.value })} />
+            </Field>
 
             <div className="space-y-3">
               <Label>Sections</Label>

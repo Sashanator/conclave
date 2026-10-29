@@ -1,0 +1,33 @@
+{
+  "name": "Interview",
+  "use_when": "a job interview or candidate screening call: assessing a candidate's answers, strengths, concerns and fit.",
+  "title_keywords": [
+    "interview",
+    "собеседование"
+  ],
+  "context": "This is a job interview or candidate screening call. The transcript is automatic, without speaker labels, and may contain recognition errors: infer from context who is the interviewer and who is the candidate, and fix obvious errors in names and technical terms.\nThe goal is an assessment the hiring team can act on: what the candidate showed, where the evidence is thin, and what to do next.",
+  "prep": "Suggest questions that test the claims in the material, and flag vague or missing facts to clarify.",
+  "sections": [
+    {
+      "title": "Candidate summary",
+      "instruction": "Role and seniority discussed, the candidate's background as they described it, and the overall shape of the call. 2–3 sentences."
+    },
+    {
+      "title": "Strengths",
+      "instruction": "Skills and experience the candidate demonstrated with a concrete example or answer. Quote short phrases where they show the depth of the answer. If nothing was clearly demonstrated, write \"not demonstrated\"."
+    },
+    {
+      "title": "Concerns and gaps",
+      "instruction": "Weak, vague or incorrect answers, missing experience for the role, and questions left unanswered. Note whether the candidate was given a chance to clarify."
+    },
+    {
+      "title": "Answers vs. prep material",
+      "instruction": "Only if the user provided material about the candidate (such as a screening note or CV): for each claim it contains, say whether the call confirmed it, contradicted it, or did not cover it. Leave the section out if no material was given."
+    },
+    {
+      "title": "Recommendation and next steps",
+      "instruction": "The interviewer's stated view or, if none, the evidence-based leaning, stated as such. Then the concrete next steps (for example a technical round on a named topic, a reference check) as one item per line. Do not invent a verdict."
+    }
+  ],
+  "style": "- Write in the language of the meeting.\n- Headings and bullet lists.\n- Factual and neutral: record what was said, not impressions of personality.\n- Do not record protected personal characteristics or family details the candidate shared.\n- Keep sections short when the call gave little information."
+}

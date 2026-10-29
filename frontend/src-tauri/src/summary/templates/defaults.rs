@@ -12,3 +12,6 @@ pub const SEED_TEMPLATES: [(&str, &str); 8] = [
     ("delivery_management", include_str!("../../../templates/delivery_management.json")),
     ("one_to_one", include_str!("../../../templates/one_to_one.json")),
 ];
+
+/// Added in a later release; seeded once more into existing installs (`.seeded-v2`), missing files only.
+pub const SEED_TEMPLATES_V2: [(&str, &str); 1] = [("interview", include_str!("../../../templates/interview.json"))];

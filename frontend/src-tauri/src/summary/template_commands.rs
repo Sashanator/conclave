@@ -65,6 +65,7 @@ mod tests {
                 title_keywords: keywords.iter().map(|k| k.to_string()).collect(),
                 language: language.map(String::from),
                 context: None,
+                prep: None,
                 sections: vec![],
                 style: None,
             },

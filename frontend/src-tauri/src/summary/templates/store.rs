@@ -5,6 +5,7 @@ use tracing::{info, warn};
 
 pub const STANDARD_TEMPLATE_ID: &str = "standard_meeting";
 const SEED_MARKER: &str = ".seeded-v1";
+const SEED_MARKER_V2: &str = ".seeded-v2";
 
 pub struct TemplateEntry { pub id: String, pub template: Template }
 pub struct TemplateListing { pub templates: Vec<TemplateEntry>, pub errors: Vec<String> }
@@ -121,19 +122,26 @@ pub fn delete_template_in(dir: &Path, id: &str) -> Result<(), String> {
     std::fs::remove_file(&path).map_err(|e| format!("Cannot delete template '{id}': {e}"))
 }
 
+/// Runs each seed batch once, in order. A batch writes only the files that are missing.
 pub fn seed_templates_in(dir: &Path) -> Result<bool, String> {
-    let marker = dir.join(SEED_MARKER);
+    let v1 = seed_batch_once(dir, SEED_MARKER, &defaults::SEED_TEMPLATES)?;
+    let v2 = seed_batch_once(dir, SEED_MARKER_V2, &defaults::SEED_TEMPLATES_V2)?;
+    Ok(v1 || v2)
+}
+
+fn seed_batch_once(dir: &Path, marker_name: &str, seeds: &[(&str, &str)]) -> Result<bool, String> {
+    let marker = dir.join(marker_name);
     if marker.exists() {
         return Ok(false);
     }
-    for (id, json) in defaults::SEED_TEMPLATES {
+    for (id, json) in seeds {
         let path = checked_path(dir, id)?;
         if !path.exists() {
             write_atomically(&path, json)?;
         }
     }
     write_atomically(&marker, "seeded by Conclave; delete to re-add missing default templates\n")?;
-    info!("Seeded default templates into {}", dir.display());
+    info!("Seeded default templates ({marker_name}) into {}", dir.display());
     Ok(true)
 }
 
@@ -228,6 +236,31 @@ mod tests {
         delete_template_in(dir.path(), "german_lessons").unwrap();
         assert!(!seed_templates_in(dir.path()).unwrap(), "must not seed twice");
         assert!(get_template_in(dir.path(), "german_lessons").is_err(), "a deleted seed stays deleted");
+    }
+
+    #[test]
+    fn seeding_v2_adds_interview_to_an_old_install() {
+        let dir = tempdir().unwrap();
+        std::fs::write(dir.path().join(".seeded-v1"), "old").unwrap();
+        let mine = serde_json::to_string(&t("Mine")).unwrap();
+        std::fs::write(dir.path().join("one_to_one.json"), &mine).unwrap();
+        assert!(seed_templates_in(dir.path()).unwrap());
+        assert!(dir.path().join("interview.json").exists());
+        assert_eq!(std::fs::read_to_string(dir.path().join("one_to_one.json")).unwrap(), mine);
+        assert!(dir.path().join(".seeded-v2").exists());
+        delete_template_in(dir.path(), "interview").unwrap();
+        assert!(!seed_templates_in(dir.path()).unwrap(), "must not seed v2 twice");
+        assert!(get_template_in(dir.path(), "interview").is_err(), "a deleted seed stays deleted");
+    }
+
+    #[test]
+    fn interview_seed_is_valid() {
+        let t: Template = serde_json::from_str(defaults::SEED_TEMPLATES_V2[0].1).unwrap();
+        t.validate().unwrap();
+        assert_eq!(t.sections.len(), 5);
+        assert!(t.prep.is_some());
+        assert_eq!(t.fixed_language(), None);
+        assert!(t.matches_title("Техническое собеседование"));
     }
 
     #[test]

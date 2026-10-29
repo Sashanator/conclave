@@ -104,7 +104,7 @@ The items array must hold the full checklist. Keep items marked (user) unless th
     while total > budget {
         if first == history.len() {
             return Err(format!(
-                "The prep is too long for this model: {}",
+                "The prep is too long for this model: {}. Shorten the material or remove items.",
                 count_label(total, budget)
             ));
         }
@@ -216,7 +216,7 @@ pub async fn prep_send<R: Runtime>(
         .map_err(|_| "A prep reply is already running")?;
     let state = app.try_state::<AppState>().ok_or("no database")?;
     let pool = state.db_manager.pool();
-    let (target, completion, sent_ids) =
+    let (target, completion, sent) =
         tokio::time::timeout(Duration::from_secs(ASK_TIMEOUT_SECS), async {
             let target = copilot_target(&app).await?;
             if target.provider == LLMProvider::BuiltInAI {
@@ -239,7 +239,11 @@ pub async fn prep_send<R: Runtime>(
             })
             .await
             .map_err(|_| "Could not read prep templates".to_string())?;
-            let sent_ids: Vec<String> = prep.items.iter().map(|i| i.id.clone()).collect();
+            let sent: Vec<(String, String)> = prep
+                .items
+                .iter()
+                .map(|i| (i.id.clone(), i.text.clone()))
+                .collect();
             let (system, user) = build_prompts(
                 &PromptInput {
                     instruction: prep_instruction(template.as_ref()),
@@ -261,7 +265,7 @@ pub async fn prep_send<R: Runtime>(
                     );
                     shorten_error(error)
                 })?;
-            Ok::<_, String>((target, completion, sent_ids))
+            Ok::<_, String>((target, completion, sent))
         })
         .await
         .map_err(|_| {
@@ -315,7 +319,7 @@ pub async fn prep_send<R: Runtime>(
         chat_message("user", message.into()),
         chat_message("assistant", parsed.reply),
         parsed.items,
-        &sent_ids,
+        &sent,
     )
     .await?;
     Ok(PrepReply { prep, list_updated })
@@ -438,9 +442,9 @@ mod tests {
 
     #[test]
     fn fixed_parts_over_budget_is_an_error() {
-        assert!(build_prompts(&input("", &[], &[]), 100)
-            .unwrap_err()
-            .starts_with("The prep is too long"));
+        let error = build_prompts(&input("", &[], &[]), 100).unwrap_err();
+        assert!(error.starts_with("The prep is too long for this model: "));
+        assert!(error.ends_with("Shorten the material or remove items."));
     }
 
     #[test]

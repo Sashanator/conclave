@@ -1,21 +1,21 @@
 export interface TemplateSectionJson { title: string; instruction: string; format?: string; item_format?: string; example_item_format?: string }
 export interface TemplateJson {
   name: string; description?: string; use_when?: string; title_keywords?: string[]; language?: string;
-  context?: string; sections: TemplateSectionJson[]; style?: string;
+  context?: string; prep?: string; sections: TemplateSectionJson[]; style?: string;
 }
 export interface TemplateDraft {
-  name: string; use_when: string; title_keywords: string; language: string; context: string;
+  name: string; use_when: string; title_keywords: string; language: string; context: string; prep: string;
   sections: Array<{ title: string; instruction: string; item_format?: string }>; style: string;
 }
 
 export const emptyDraft = (): TemplateDraft => ({
-  name: '', use_when: '', title_keywords: '', language: 'auto', context: '', sections: [{ title: '', instruction: '' }], style: '',
+  name: '', use_when: '', title_keywords: '', language: 'auto', context: '', prep: '', sections: [{ title: '', instruction: '' }], style: '',
 });
 
 export function draftFromTemplate(t: TemplateJson): TemplateDraft {
   return {
     name: t.name, use_when: t.use_when ?? '', title_keywords: (t.title_keywords ?? []).join(', '),
-    language: t.language || 'auto', context: t.context ?? '', style: t.style ?? '',
+    language: t.language || 'auto', context: t.context ?? '', prep: t.prep ?? '', style: t.style ?? '',
     sections: t.sections.map(s => ({
       title: s.title, instruction: s.instruction,
       ...(s.item_format ?? s.example_item_format ? { item_format: s.item_format ?? s.example_item_format } : {}),
@@ -32,6 +32,7 @@ export function templateFromDraft(d: TemplateDraft): TemplateJson {
   if (keywords.length) t.title_keywords = keywords;
   if (d.language && d.language !== 'auto') t.language = d.language;
   if (d.context.trim()) t.context = d.context.trim();
+  if (d.prep.trim()) t.prep = d.prep.trim();
   if (d.style.trim()) t.style = d.style.trim();
   return t;
 }

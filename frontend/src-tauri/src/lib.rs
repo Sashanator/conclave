@@ -62,6 +62,7 @@ mod dictate;
 mod speakers;
 mod practice;
 mod usage;
+mod prep;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
@@ -1019,6 +1020,12 @@ pub fn run() {
             knowledge::calendar::calendar_disconnect,
             knowledge::calendar::calendar_status,
             knowledge::calendar::calendar_title_now,
+            prep::store::prep_get,
+            prep::store::prep_for_meeting,
+            prep::store::prep_save,
+            prep::store::prep_tick,
+            prep::store::prep_approve,
+            prep::store::prep_delete,
             usage::stats::stats_cost,
             usage::stats::meeting_cost,
             usage::stats::stats_talk_time,

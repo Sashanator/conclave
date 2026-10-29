@@ -108,19 +108,32 @@ export const countLabel = (count: number, limit: number) =>
 
 export const approvalLabel = (prep: Pick<MeetingPrep, 'approvedAt' | 'updatedAt'>): string | null => {
   if (!prep.approvedAt) return null;
-  return Date.parse(prep.updatedAt) > Date.parse(prep.approvedAt)
-    ? 'Approved · edited after approval'
-    : 'Approved';
+  const approved = Date.parse(prep.approvedAt);
+  const updated = Date.parse(prep.updatedAt);
+  // An unreadable date cannot show an edit, so the plain label is the safe one.
+  if (Number.isNaN(approved) || Number.isNaN(updated)) return 'Approved';
+  return updated > approved ? 'Approved · edited after approval' : 'Approved';
 };
 
 const localDay = (d: Date) =>
   `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 
+// An unreadable start sorts last and keeps its raw text as its day, so no comparator sees NaN.
+const startKey = (ev: UpcomingEvent) => {
+  const t = Date.parse(ev.start);
+  return Number.isNaN(t) ? Number.POSITIVE_INFINITY : t;
+};
+
 export const groupByDay = (events: UpcomingEvent[]): Array<{ day: string; events: UpcomingEvent[] }> => {
   const groups: Array<{ day: string; events: UpcomingEvent[] }> = [];
-  const sorted = [...events].sort((a, b) => Date.parse(a.start) - Date.parse(b.start));
+  const sorted = [...events].sort((a, b) => {
+    const ka = startKey(a);
+    const kb = startKey(b);
+    return ka === kb ? 0 : ka < kb ? -1 : 1;
+  });
   for (const ev of sorted) {
-    const day = localDay(new Date(ev.start));
+    const start = new Date(ev.start);
+    const day = Number.isNaN(start.getTime()) ? ev.start : localDay(start);
     const last = groups[groups.length - 1];
     if (last && last.day === day) last.events.push(ev);
     else groups.push({ day, events: [ev] });

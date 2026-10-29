@@ -70,6 +70,26 @@ describe('groupByDay', () => {
     expect(groups[0].day).toBe('2026-10-29');
     expect(groups[1].day).toBe('2026-10-31');
   });
+
+  test('unreadable starts sort last under their raw text and never produce NaN', () => {
+    const groups = groupByDay([
+      { ...ev('bad', new Date(2026, 9, 29, 9, 0)), start: 'not a date' },
+      ev('late', new Date(2026, 9, 31, 8, 0)),
+      ev('early', new Date(2026, 9, 29, 9, 0)),
+    ]);
+    expect(groups.map((g) => g.day)).toEqual(['2026-10-29', '2026-10-31', 'not a date']);
+    expect(groups.flatMap((g) => g.events.map((e) => e.uid))).toEqual(['early', 'late', 'bad']);
+  });
+});
+
+describe('approvalLabel with unreadable dates', () => {
+  test('bad approvedAt gives the plain label', () => {
+    expect(approvalLabel({ approvedAt: 'garbage', updatedAt: '2026-10-29T10:00:00.000Z' })).toBe('Approved');
+  });
+
+  test('bad updatedAt gives the plain label', () => {
+    expect(approvalLabel({ approvedAt: '2026-10-29T09:00:00.000Z', updatedAt: 'garbage' })).toBe('Approved');
+  });
 });
 
 describe('tickItem', () => {

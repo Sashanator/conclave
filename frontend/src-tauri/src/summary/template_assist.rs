@@ -826,6 +826,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn revision_from_meeting_records_usage_with_meeting_id() {
+        let pool = test_pool().await;
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m1', 'M', 't', 't')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let t = full_template();
+        let input = AssistInput {
+            template_id: Some("t"),
+            request: "Add a section",
+            current: Some(&t),
+            summary: Some("Summary text"),
+            summary_edits: None,
+            transcript: None,
+            previous: None,
+            refinement: None,
+            meeting_id: Some("m1"),
+        };
+        run(&pool, &target(), &input, |_, _| std::future::ready(Ok(reply(&valid_reply()))))
+            .await
+            .unwrap();
+        let meetings: Vec<Option<String>> = sqlx::query_scalar(
+            "SELECT meeting_id FROM llm_usage WHERE purpose = 'template_assist'",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap();
+        assert_eq!(meetings, vec![Some("m1".to_string())]);
+    }
+
+    #[tokio::test]
     async fn repair_then_success() {
         let pool = test_pool().await;
         let calls = AtomicUsize::new(0);

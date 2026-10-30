@@ -1,7 +1,7 @@
 use crate::api::{MeetingDetails, MeetingTranscript};
 use crate::database::models::{MeetingModel, Transcript};
 use crate::knowledge::feed;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use sqlx::{Connection, Error as SqlxError, SqliteConnection, SqlitePool};
 use tracing::{error, info};
 
@@ -169,6 +169,19 @@ impl MeetingsRepository {
             .bind(meeting_id)
             .fetch_optional(pool)
             .await
+    }
+
+    /// When the title_source migration ran here; user titles of older meetings were set by it.
+    pub async fn title_source_installed_on(
+        pool: &SqlitePool,
+    ) -> Result<Option<DateTime<Utc>>, SqlxError> {
+        let installed_on: Option<Option<i64>> = sqlx::query_scalar(
+            "SELECT CAST(strftime('%s', installed_on) AS INTEGER) FROM _sqlx_migrations WHERE version = ?",
+        )
+        .bind(20261022000003_i64)
+        .fetch_optional(pool)
+        .await?;
+        Ok(installed_on.flatten().and_then(|secs| DateTime::from_timestamp(secs, 0)))
     }
 
     /// Pins or unpins a meeting's audio ("Keep audio"). Returns false if the meeting does not exist.
@@ -563,6 +576,18 @@ mod migration_tests {
             MeetingsRepository::get_title_source(&pool, "missing").await.unwrap(),
             None
         );
+    }
+
+    #[tokio::test]
+    async fn title_source_installed_on_reads_the_migration_row() {
+        let pool = test_pool().await;
+        let installed_on = MeetingsRepository::title_source_installed_on(&pool)
+            .await
+            .unwrap()
+            .unwrap();
+        let age = Utc::now() - installed_on;
+        assert!(age >= chrono::Duration::zero());
+        assert!(age < chrono::Duration::hours(1));
     }
 
     async fn title_source(pool: &SqlitePool, id: &str) -> (String, Option<String>, Option<String>) {

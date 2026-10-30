@@ -40,6 +40,7 @@ pub(crate) mod template_choice;
 pub mod processor;
 pub mod service;
 pub mod summary_engine;
+pub mod template_assist_settings;
 pub mod template_commands;
 pub mod templates;
 pub mod user_notes;

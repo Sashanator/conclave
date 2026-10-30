@@ -653,6 +653,7 @@ pub fn run() {
             knowledge::settings::load_at_startup(_app.handle());
             knowledge::calendar::load_at_startup(_app.handle());
             practice::settings::load_at_startup(_app.handle());
+            summary::template_assist_settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
@@ -1070,6 +1071,8 @@ pub fn run() {
             practice::commands::practice_delete_session,
             practice::settings::practice_get_settings,
             practice::settings::practice_save_settings,
+            summary::template_assist_settings::template_assist_get_settings,
+            summary::template_assist_settings::template_assist_save_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

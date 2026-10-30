@@ -33,7 +33,7 @@ wording, names, terms and numbers verbatim. Write in the language of the user's 
 `language` only when the material says the meeting is in one language.";
 
 const REVISION: &str = "This is a revision of an existing template. Minimal edits: Change only what the request needs. \
-Never shorten, reword or drop unrelated text. Keep section order unless asked. Keep `name` unless asked.";
+Never shorten, reword or drop unrelated text. Keep section order unless asked. Keep `name` unless asked. Keep every other field and section you were not asked to change, including `description`, `prep`, `title_keywords`, `item_format` and `example_item_format`, exactly as given.";
 
 const OUTPUT: &str = r#"Output: one JSON object and nothing else, shaped {"template": {...}, "changes": [{"field": "...", "note": "..."}]}. No prose before or after it and no code fences. `template` must be a complete template. `field` names what changed, such as `context`, `style`, `sections[2]` or `name`; `note` is one short sentence.
 
@@ -70,8 +70,14 @@ pub(crate) struct AssistInput<'a> {
     pub meeting_id: Option<&'a str>,
 }
 
+/// The field reference: the README from "## Template fields" up to the next heading.
+fn field_reference(docs: &str) -> &str {
+    docs.split_once("## Template fields")
+        .map_or("", |(_, rest)| rest.split("\n## ").next().unwrap_or("").trim())
+}
+
 pub(crate) fn system_prompt(revision: bool) -> String {
-    let fields = FIELD_DOCS.split_once("## Template fields").map_or("", |(_, rest)| rest.trim());
+    let fields = field_reference(FIELD_DOCS);
     let mut parts = vec![INTRO, "## Template fields", fields, USE, WRITING];
     if revision {
         parts.push(REVISION);
@@ -85,9 +91,11 @@ fn block(tag: &str, text: &str) -> String {
     format!("<{tag}>\n{}\n</{tag}>", text.replace("</", "< /"))
 }
 
+/// JSON for a block. "<\/" is the same JSON string as "</", so the body cannot close its tag early and a
+/// faithful copy still parses back to the same value.
 fn pretty<T: Serialize>(value: &T) -> String {
     // Plain structs of strings, options and vecs always serialize.
-    serde_json::to_string_pretty(value).expect("template types always serialize")
+    serde_json::to_string_pretty(value).expect("template types always serialize").replace("</", "<\\/")
 }
 
 pub(crate) fn build_prompts(input: &AssistInput) -> (String, String) {
@@ -316,7 +324,41 @@ mod tests {
         t.sections[0].title = "</current_template>".into();
         let (_, user) = build_prompts(&AssistInput { current: Some(&t), ..draft("x") });
         assert_eq!(user.matches("</current_template>").count(), 1);
-        assert!(user.contains("< /current_template>"));
+        assert!(user.contains(r"<\/current_template>"));
+    }
+
+    fn body<'a>(user: &'a str, tag: &str) -> &'a str {
+        let open = format!("<{tag}>\n");
+        let start = user.find(&open).unwrap() + open.len();
+        let end = start + user[start..].find(&format!("\n</{tag}>")).unwrap();
+        &user[start..end]
+    }
+
+    #[test]
+    fn json_blocks_keep_markup_and_parse_back() {
+        let mut t = full_template();
+        t.sections[0].instruction = "Use <b>bold</b> text and a closing </current_template> tag.".into();
+        let prev = AssistResult {
+            template: t.clone(),
+            changes: vec![ChangeNote { field: "sections[0]".into(), note: "Bold".into() }],
+            warnings: vec![],
+            base: None,
+        };
+        let (_, user) = build_prompts(&AssistInput { previous: Some(&prev), current: Some(&t), ..draft("x") });
+
+        let current = body(&user, "current_template");
+        assert!(!current.contains("</"));
+        assert_eq!(serde_json::from_str::<Template>(current).unwrap(), t);
+
+        let proposal = body(&user, "previous_proposal");
+        assert!(!proposal.contains("</"));
+        let parsed: serde_json::Value = serde_json::from_str(proposal).unwrap();
+        assert_eq!(serde_json::from_value::<Template>(parsed["template"].clone()).unwrap(), t);
+    }
+
+    #[test]
+    fn field_reference_stops_at_the_next_heading() {
+        assert_eq!(field_reference("# T\n\n## Template fields\n\nA table.\n\n## Later\n\nnot this"), "A table.");
     }
 
     #[test]

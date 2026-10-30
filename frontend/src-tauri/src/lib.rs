@@ -904,6 +904,9 @@ pub fn run() {
             summary::template_commands::api_get_template,
             summary::template_commands::api_save_template,
             summary::template_commands::api_delete_template,
+            summary::template_commands::api_template_history,
+            summary::template_commands::api_template_version,
+            summary::template_commands::api_deleted_templates,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
             summary::summary_engine::commands::builtin_ai_get_model_info,

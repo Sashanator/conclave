@@ -1,4 +1,6 @@
-use crate::summary::templates::{self, Template, TemplateEntry};
+use crate::summary::templates::{
+    self, DeletedTemplate, HistoryEntry, HistorySource, SaveOrigin, Template, TemplateEntry,
+};
 use serde::Serialize;
 
 #[derive(Debug, Serialize)]
@@ -41,14 +43,44 @@ pub async fn api_get_template(template_id: String) -> Result<Template, String> {
     templates::get_template(&template_id)
 }
 
+/// Missing origin means a manual save; Delete is reserved for the delete path; the note is capped.
+fn checked_origin(origin: Option<SaveOrigin>) -> Result<SaveOrigin, String> {
+    let mut origin = origin.unwrap_or_default();
+    if origin.source == HistorySource::Delete {
+        return Err("Invalid save origin".into());
+    }
+    origin.note = origin.note.chars().take(200).collect();
+    Ok(origin)
+}
+
 #[tauri::command]
-pub async fn api_save_template(template_id: Option<String>, template: Template) -> Result<String, String> {
-    templates::save_template(template_id.as_deref(), &template)
+pub async fn api_save_template(
+    template_id: Option<String>,
+    template: Template,
+    origin: Option<SaveOrigin>,
+) -> Result<String, String> {
+    let origin = checked_origin(origin)?;
+    templates::save_template(template_id.as_deref(), &template, &origin)
 }
 
 #[tauri::command]
 pub async fn api_delete_template(template_id: String) -> Result<(), String> {
     templates::delete_template(&template_id)
+}
+
+#[tauri::command]
+pub async fn api_template_history(template_id: String) -> Result<Vec<HistoryEntry>, String> {
+    templates::list_history(&template_id)
+}
+
+#[tauri::command]
+pub async fn api_template_version(template_id: String, version: String) -> Result<Template, String> {
+    templates::get_version(&template_id, &version)
+}
+
+#[tauri::command]
+pub async fn api_deleted_templates() -> Result<Vec<DeletedTemplate>, String> {
+    templates::list_deleted()
 }
 
 #[cfg(test)]
@@ -83,5 +115,17 @@ mod tests {
         assert!(!template_info(entry(None, &["", "  "], None)).has_keywords);
         assert!(!template_info(entry(None, &[], Some("auto"))).has_keywords);
         assert_eq!(template_info(entry(None, &[], Some("auto"))).language, None);
+    }
+
+    #[test]
+    fn origin_rules() {
+        assert_eq!(
+            checked_origin(None).unwrap(),
+            SaveOrigin { source: HistorySource::Manual, note: String::new() }
+        );
+        let delete = SaveOrigin { source: HistorySource::Delete, note: String::new() };
+        assert_eq!(checked_origin(Some(delete)), Err("Invalid save origin".to_string()));
+        let long = SaveOrigin { source: HistorySource::Ai, note: "x".repeat(300) };
+        assert_eq!(checked_origin(Some(long)).unwrap().note.chars().count(), 200);
     }
 }

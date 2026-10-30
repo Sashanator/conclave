@@ -280,6 +280,10 @@ export function SummaryPanel({
   const hasSummary = hasVisibleSummaryContent(aiSummary);
   const templateExists = !!currentTemplate && availableTemplates.some(t => t.id === currentTemplate.id);
   const canImproveTemplate = hasSummary && !isSummaryLoading && currentTemplate && templateExists;
+  // A regenerated summary is not an edit, so the post-edit hint must not survive it
+  useEffect(() => {
+    if (isSummaryLoading) setEditHintMeetingId(null);
+  }, [isSummaryLoading]);
   summaryExistsRef.current = hasSummary;
   summaryDirtyRef.current = isSummaryDirty;
 

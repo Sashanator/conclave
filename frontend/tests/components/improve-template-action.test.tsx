@@ -18,13 +18,14 @@ const merged = { ...base, style: 'Be concise' };
 const openTemplate = { ...base, name: 'Open-time name' };
 let saved: TemplateJson;
 let hasEdits: boolean;
+let transcriptTokens: number;
 let failure: string | null;
 let reads: number;
 const proposal = { base, template: merged, changes: [{ field: 'style', note: 'Shorter notes' }], warnings: [] };
 const invoke = mock(async (command: string, _args?: unknown): Promise<unknown> => {
   if (failure === command) throw new Error('disk unavailable');
   switch (command) {
-    case 'api_template_meeting_info': return { templateId: 'one_on_one', hasEdits, transcriptTokens: 1234 };
+    case 'api_template_meeting_info': return { templateId: 'one_on_one', hasEdits, transcriptTokens };
     case 'api_get_template': return ++reads === 1 ? openTemplate : saved;
     case 'template_assist_get_settings': return { includeTranscript: false, provider: null, model: null };
     case 'api_get_model_config': return undefined;
@@ -54,7 +55,7 @@ async function review() {
   await click('Generate');
 }
 afterEach(() => { act(() => renderer?.unmount()); });
-beforeEach(() => { saved = base; reads = 0; hasEdits = true; failure = null; invoke.mockClear(); regenerate.mockClear(); });
+beforeEach(() => { saved = base; reads = 0; hasEdits = true; transcriptTokens = 1234; failure = null; invoke.mockClear(); regenerate.mockClear(); });
 test('hidden for missing or empty template ids; legacy summaries have no template id', async () => {
   expect(readSummaryMetadata({ MeetingName: 'x' }).templateId).toBeNull();
   for (const props of [{ templateExists: false }, { templateId: '' }]) {
@@ -72,6 +73,11 @@ test('no invoke on mount; meeting checkboxes, token label and edits-only generat
     templateId: 'one_on_one', request: '', meetingId: 'meeting-a', includeEdits: true, includeTranscript: false,
     previous: null, refinement: null,
   });
+});
+test('no transcript option when the meeting has no transcript', async () => {
+  transcriptTokens = 0; await mount(); await click('Improve template…');
+  expect(checkbox('Your edits to this summary will be included').props.checked).toBe(true);
+  expect(renderer.root.findAllByType('label').some(n => text(n).startsWith('Include the transcript'))).toBe(false);
 });
 test('empty request without edits disables Generate', async () => {
   hasEdits = false; await mount(); await click('Improve template…');

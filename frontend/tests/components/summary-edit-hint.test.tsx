@@ -127,6 +127,13 @@ test('does not carry a saved edit hint to another meeting in the same panel', as
   });
   expect(hasHint()).toBe(false);
 });
+test('a regeneration clears the edit hint, so the completed summary does not bring it back', async () => {
+  await mount(); await click('Save'); expect(hasHint()).toBe(true);
+  const props = renderer!.root.findByType(SummaryPanel).props as ComponentProps<typeof SummaryPanel>;
+  await act(async () => { renderer!.update(<SummaryPanel {...props} summaryStatus="regenerating" />); });
+  await act(async () => { renderer!.update(<SummaryPanel {...props} summaryStatus="completed" />); });
+  expect(hasHint()).toBe(false);
+});
 test('does not show the hint when save returns false', async () => {
   onSaveAll.mockImplementation(async () => false);
   await mount(); await click('Save'); expect(hasHint()).toBe(false);

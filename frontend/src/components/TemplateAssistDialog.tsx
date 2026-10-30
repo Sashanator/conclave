@@ -176,10 +176,10 @@ export function TemplateAssistDialog(props: {
               <input type="checkbox" checked={includeEdits} disabled={running} onChange={e => setIncludeEdits(e.target.checked)} />
               Your edits to this summary will be included
             </label>}
-            <label className="flex items-center gap-2 text-sm">
+            {props.meeting.transcriptTokens > 0 && <label className="flex items-center gap-2 text-sm">
               <input type="checkbox" checked={includeTranscript} disabled={running} onChange={e => setIncludeTranscript(e.target.checked)} />
               {`Include the transcript (more accurate, costs more: ~${props.meeting.transcriptTokens.toLocaleString()} tokens)`}
-            </label>
+            </label>}
           </>}
           {model && <p className="text-xs text-muted-foreground">
             Uses: {model.model} ({PROVIDERS.find(p => p.id === model.provider)?.label ?? model.provider})

@@ -12,6 +12,7 @@ import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { CopilotSettings } from '@/components/CopilotSettings';
 import { KnowledgeSettings } from '@/components/KnowledgeSettings';
 import { TemplateSettings } from '@/components/TemplateSettings';
+import { TemplateAssistSettings } from '@/components/TemplateAssistSettings';
 import { confirmLeave } from '@/lib/unsaved-guard';
 import { BetaSettings } from '@/components/BetaSettings';
 import { SpeakerSettings } from '@/components/SpeakerSettings';
@@ -154,7 +155,10 @@ function SettingsContent() {
               <CostsSettings />
             </TabsContent>
             <TabsContent value="templates">
-              <TemplateSettings />
+              <div className="space-y-6">
+                <TemplateAssistSettings />
+                <TemplateSettings />
+              </div>
             </TabsContent>
             <TabsContent value="beta" className="mt-6">
               <BetaSettings />

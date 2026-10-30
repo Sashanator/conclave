@@ -2,6 +2,48 @@ import { describe, expect, test } from 'bun:test';
 import { draftFromTemplate, emptyDraft, templateFromDraft, validateDraft } from '@/lib/template-draft';
 
 describe('template drafts', () => {
+  test('round trip keeps hidden fields', () => {
+    const t = { name: 'N', description: 'D', sections: [{ title: 'A', instruction: 'i', format: 'list', example_item_format: '- x' }] };
+    const draft = draftFromTemplate(t);
+    expect(templateFromDraft(draft)).toEqual(t);
+    expect(JSON.stringify(draft)).toBe(JSON.stringify(draftFromTemplate(t)));
+    expect(draft.sections[0].item_format ?? draft.sections[0].example_item_format).toBe('- x');
+  });
+
+  test('item_format edited in the editor wins', () => {
+    const t = { name: 'N', description: 'D', sections: [{ title: 'A', instruction: 'i', format: 'list', example_item_format: '- x' }] };
+    const draft = draftFromTemplate(t);
+    draft.sections[0].item_format = '- y';
+    expect(templateFromDraft(draft).sections[0]).toEqual({ title: 'A', instruction: 'i', format: 'list', item_format: '- y', example_item_format: '- x' });
+  });
+
+  test('new section has no hidden fields', () => {
+    const t = { name: 'N', description: 'D', sections: [{ title: 'A', instruction: 'i', format: 'list', example_item_format: '- x' }] };
+    const draft = draftFromTemplate(t);
+    draft.sections.push({ title: 'B', instruction: 'j' });
+    expect(templateFromDraft(draft).sections[1]).toEqual({ title: 'B', instruction: 'j' });
+  });
+
+  test('unchanged fallback stays a legacy example and clearing the box keeps it', () => {
+    const t = { name: 'N', sections: [{ title: 'A', instruction: 'i', example_item_format: '- x' }] };
+    const draft = draftFromTemplate(t);
+    draft.sections[0].item_format = '- x';
+    expect(templateFromDraft(draft)).toEqual(t);
+    draft.sections[0].item_format = '';
+    expect(templateFromDraft(draft).sections[0]).toEqual({ title: 'A', instruction: 'i', example_item_format: '- x' });
+  });
+
+  test('both fields loaded and unchanged round trip to the input', () => {
+    const t = { name: 'N', sections: [{ title: 'A', instruction: 'i', item_format: '| A |', example_item_format: '| ex |' }] };
+    expect(templateFromDraft(draftFromTemplate(t))).toEqual(t);
+  });
+
+  test('hidden fields retain empty strings and whitespace', () => {
+    const t = { name: 'N', description: ' D ', sections: [{ title: 'A', instruction: 'i', format: '', example_item_format: ' - x ' }] };
+    expect(templateFromDraft(draftFromTemplate(t))).toEqual(t);
+    expect(templateFromDraft(draftFromTemplate({ ...t, description: '' })).description).toBe('');
+  });
+
   test('round trip keeps every field and drops blanks', () => {
     const t = { name: 'X', use_when: 'u', title_keywords: ['a', 'b'], language: 'ru', context: 'c', prep: 'p',
       sections: [{ title: 'S', instruction: 'I', item_format: '| A |' }], style: 's' };

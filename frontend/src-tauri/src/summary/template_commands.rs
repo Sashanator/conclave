@@ -43,7 +43,7 @@ pub async fn api_get_template(template_id: String) -> Result<Template, String> {
 
 #[tauri::command]
 pub async fn api_save_template(template_id: Option<String>, template: Template) -> Result<String, String> {
-    templates::save_template(template_id.as_deref(), &template)
+    templates::save_template(template_id.as_deref(), &template, &templates::SaveOrigin::default())
 }
 
 #[tauri::command]

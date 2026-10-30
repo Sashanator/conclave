@@ -1,4 +1,5 @@
 use super::defaults;
+use super::history::{copy_to_history, move_to_history, SaveOrigin, HISTORY_DIR};
 use super::types::Template;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -27,15 +28,15 @@ pub fn is_valid_id(id: &str) -> bool {
         && !WINDOWS_RESERVED.contains(&id)
 }
 
-fn checked_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
+pub(super) fn checked_path(dir: &Path, id: &str) -> Result<PathBuf, String> {
     if is_valid_id(id) { Ok(dir.join(format!("{id}.json"))) } else { Err(format!("Invalid template id '{id}'")) }
 }
 
-fn embedded_standard() -> Template {
+pub(super) fn embedded_standard() -> Template {
     serde_json::from_str(defaults::STANDARD_MEETING).expect("embedded standard_meeting.json is valid")
 }
 
-fn parse(json: &str) -> Result<Template, String> {
+pub(super) fn parse(json: &str) -> Result<Template, String> {
     let t: Template = serde_json::from_str(json).map_err(|e| format!("not a valid template: {e}"))?;
     t.validate()?;
     Ok(t)
@@ -96,11 +97,16 @@ fn taken_ids(dir: &Path) -> Vec<String> {
     let mut ids: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
         .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".json").map(str::to_string))
         .collect();
+    for entry in std::fs::read_dir(dir.join(HISTORY_DIR)).into_iter().flatten().flatten() {
+        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+            ids.push(entry.file_name().to_string_lossy().to_string());
+        }
+    }
     ids.push(STANDARD_TEMPLATE_ID.into());
     ids
 }
 
-pub fn save_template_in(dir: &Path, id: Option<&str>, template: &Template) -> Result<String, String> {
+pub fn save_template_in(dir: &Path, id: Option<&str>, template: &Template, origin: &SaveOrigin) -> Result<String, String> {
     template.validate()?;
     let id = match id {
         Some(id) => { checked_path(dir, id)?; id.to_string() }
@@ -109,17 +115,18 @@ pub fn save_template_in(dir: &Path, id: Option<&str>, template: &Template) -> Re
         }
     };
     let json = serde_json::to_string_pretty(template).map_err(|e| e.to_string())?;
+    copy_to_history(dir, &id, origin)?;
     write_atomically(&checked_path(dir, &id)?, &json)?;
     info!("Saved template '{id}'");
     Ok(id)
 }
 
 pub fn delete_template_in(dir: &Path, id: &str) -> Result<(), String> {
-    let path = checked_path(dir, id)?;
     if id == STANDARD_TEMPLATE_ID {
         return Err("The Standard template cannot be deleted".into());
     }
-    std::fs::remove_file(&path).map_err(|e| format!("Cannot delete template '{id}': {e}"))
+    checked_path(dir, id)?;
+    move_to_history(dir, id)
 }
 
 /// Runs each seed batch once, in order. A batch writes only the files that are missing.
@@ -172,7 +179,7 @@ pub fn new_template_id(name: &str, existing: &[String]) -> String {
     (2..).map(|n| format!("{base}_{n}")).find(|c| !existing.contains(c)).unwrap()
 }
 
-fn with_dir<T>(f: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String> {
+pub(super) fn with_dir<T>(f: impl FnOnce(&Path) -> Result<T, String>) -> Result<T, String> {
     f(&templates_dir().ok_or("Cannot find the app data folder")?)
 }
 
@@ -192,7 +199,7 @@ pub fn get_template(id: &str) -> Result<Template, String> {
         None => Err("Cannot find the app data folder".into()),
     }
 }
-pub fn save_template(id: Option<&str>, t: &Template) -> Result<String, String> { with_dir(|d| save_template_in(d, id, t)) }
+pub fn save_template(id: Option<&str>, t: &Template, origin: &SaveOrigin) -> Result<String, String> { with_dir(|d| save_template_in(d, id, t, origin)) }
 pub fn delete_template(id: &str) -> Result<(), String> { with_dir(|d| delete_template_in(d, id)) }
 pub fn seed_templates() -> Result<bool, String> { with_dir(seed_templates_in) }
 
@@ -269,7 +276,7 @@ mod tests {
         for bad in ["../x", "a/b", "a\\b", "C:x", "", "UPPER", "a b", &"x".repeat(65)] {
             assert!(!is_valid_id(bad), "{bad}");
             assert!(get_template_in(dir.path(), bad).is_err());
-            assert!(save_template_in(dir.path(), Some(bad), &t("X")).is_err());
+            assert!(save_template_in(dir.path(), Some(bad), &t("X"), &SaveOrigin::default()).is_err());
             assert!(delete_template_in(dir.path(), bad).is_err());
         }
         assert!(is_valid_id("one_two_one_rasulov") && is_valid_id("a-1"));
@@ -304,13 +311,13 @@ mod tests {
     #[test]
     fn save_validates_writes_atomically_and_keeps_the_id_on_rename() {
         let dir = tempdir().unwrap();
-        let id = save_template_in(dir.path(), None, &t("Weekly Sync")).unwrap();
+        let id = save_template_in(dir.path(), None, &t("Weekly Sync"), &SaveOrigin::default()).unwrap();
         assert_eq!(id, "weekly_sync");
-        let renamed = save_template_in(dir.path(), Some(&id), &t("Weekly Sync v2")).unwrap();
+        let renamed = save_template_in(dir.path(), Some(&id), &t("Weekly Sync v2"), &SaveOrigin::default()).unwrap();
         assert_eq!(renamed, id);
         assert_eq!(get_template_in(dir.path(), &id).unwrap().name, "Weekly Sync v2");
         let invalid = Template { sections: vec![], ..t("Bad") };
-        assert!(save_template_in(dir.path(), Some(&id), &invalid).is_err());
+        assert!(save_template_in(dir.path(), Some(&id), &invalid, &SaveOrigin::default()).is_err());
         assert_eq!(get_template_in(dir.path(), &id).unwrap().name, "Weekly Sync v2", "invalid save leaves the file alone");
         let leftovers: Vec<_> = std::fs::read_dir(dir.path()).unwrap().flatten()
             .filter(|e| e.file_name().to_string_lossy().ends_with(".tmp")).collect();
@@ -330,17 +337,17 @@ mod tests {
     fn new_ids_never_take_a_file_that_cannot_be_read() {
         let dir = tempdir().unwrap();
         std::fs::write(dir.path().join("weekly_sync.json"), "{ broken").unwrap();
-        let id = save_template_in(dir.path(), None, &t("Weekly Sync")).unwrap();
+        let id = save_template_in(dir.path(), None, &t("Weekly Sync"), &SaveOrigin::default()).unwrap();
         assert_eq!(id, "weekly_sync_2");
         assert_eq!(std::fs::read_to_string(dir.path().join("weekly_sync.json")).unwrap(), "{ broken");
-        assert_eq!(save_template_in(dir.path(), None, &t("Standard Meeting")).unwrap(), "standard_meeting_2");
+        assert_eq!(save_template_in(dir.path(), None, &t("Standard Meeting"), &SaveOrigin::default()).unwrap(), "standard_meeting_2");
     }
 
     #[test]
     fn listing_skips_bad_files_reports_them_and_always_has_standard() {
         let dir = tempdir().unwrap();
-        save_template_in(dir.path(), None, &t("Zeta")).unwrap();
-        save_template_in(dir.path(), None, &t("alpha")).unwrap();
+        save_template_in(dir.path(), None, &t("Zeta"), &SaveOrigin::default()).unwrap();
+        save_template_in(dir.path(), None, &t("alpha"), &SaveOrigin::default()).unwrap();
         std::fs::write(dir.path().join("broken.json"), "{").unwrap();
         std::fs::write(dir.path().join("notes.txt"), "ignored").unwrap();
         let listing = list_templates_in(dir.path());

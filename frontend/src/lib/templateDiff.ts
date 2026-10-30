@@ -215,7 +215,7 @@ export function diffItems(old: Template, next: Template): DiffItem[] {
       ...(pair.status === 'changed' ? { parts: wordDiff(beforeText, afterText) } : {}),
     });
   }
-  addField(fields[fields.length - 1]);
+  addField({ key: 'style', label: 'Style', kind: 'text' });
   return items;
 }
 

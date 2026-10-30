@@ -14,7 +14,7 @@ describe('template drafts', () => {
     const t = { name: 'N', description: 'D', sections: [{ title: 'A', instruction: 'i', format: 'list', example_item_format: '- x' }] };
     const draft = draftFromTemplate(t);
     draft.sections[0].item_format = '- y';
-    expect(templateFromDraft(draft).sections[0]).toEqual({ title: 'A', instruction: 'i', format: 'list', item_format: '- y' });
+    expect(templateFromDraft(draft).sections[0]).toEqual({ title: 'A', instruction: 'i', format: 'list', item_format: '- y', example_item_format: '- x' });
   });
 
   test('new section has no hidden fields', () => {
@@ -24,13 +24,18 @@ describe('template drafts', () => {
     expect(templateFromDraft(draft).sections[1]).toEqual({ title: 'B', instruction: 'j' });
   });
 
-  test('unchanged fallback stays a legacy example and clearing it removes it', () => {
+  test('unchanged fallback stays a legacy example and clearing the box keeps it', () => {
     const t = { name: 'N', sections: [{ title: 'A', instruction: 'i', example_item_format: '- x' }] };
     const draft = draftFromTemplate(t);
     draft.sections[0].item_format = '- x';
     expect(templateFromDraft(draft)).toEqual(t);
     draft.sections[0].item_format = '';
-    expect(templateFromDraft(draft).sections[0]).toEqual({ title: 'A', instruction: 'i' });
+    expect(templateFromDraft(draft).sections[0]).toEqual({ title: 'A', instruction: 'i', example_item_format: '- x' });
+  });
+
+  test('both fields loaded and unchanged round trip to the input', () => {
+    const t = { name: 'N', sections: [{ title: 'A', instruction: 'i', item_format: '| A |', example_item_format: '| ex |' }] };
+    expect(templateFromDraft(draftFromTemplate(t))).toEqual(t);
   });
 
   test('hidden fields retain empty strings and whitespace', () => {

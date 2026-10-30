@@ -291,14 +291,14 @@ pub(crate) fn keep_hidden_fields(current: &Template, mut next: Template) -> Temp
         next.prep = current.prep.clone();
     }
     let same_count = current.sections.len() == next.sections.len();
-    let matched_by_title: Vec<bool> = current.sections.iter().map(|old| {
+    let old_claimed: Vec<bool> = current.sections.iter().map(|old| {
         let title = normalized_title(&old.title);
         next.sections.iter().any(|section| normalized_title(&section.title) == title)
     }).collect();
     for (index, section) in next.sections.iter_mut().enumerate() {
         let title = normalized_title(&section.title);
         let old = current.sections.iter().find(|s| normalized_title(&s.title) == title)
-            .or_else(|| if same_count && !matched_by_title[index] { current.sections.get(index) } else { None });
+            .or_else(|| if same_count && !old_claimed[index] { current.sections.get(index) } else { None });
         if let Some(old) = old {
             if blank(&section.format) {
                 section.format = old.format.clone();

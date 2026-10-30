@@ -653,6 +653,7 @@ pub fn run() {
             knowledge::settings::load_at_startup(_app.handle());
             knowledge::calendar::load_at_startup(_app.handle());
             practice::settings::load_at_startup(_app.handle());
+            summary::template_assist_settings::load_at_startup(_app.handle());
             meeting_detector::start(_app.handle());
 
             // Initialize notification system with proper defaults
@@ -904,6 +905,11 @@ pub fn run() {
             summary::template_commands::api_get_template,
             summary::template_commands::api_save_template,
             summary::template_commands::api_delete_template,
+            summary::template_commands::api_template_history,
+            summary::template_commands::api_template_version,
+            summary::template_commands::api_deleted_templates,
+            summary::template_assist::api_template_draft,
+            summary::template_assist::api_template_revise,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
             summary::summary_engine::commands::builtin_ai_get_model_info,
@@ -1067,6 +1073,8 @@ pub fn run() {
             practice::commands::practice_delete_session,
             practice::settings::practice_get_settings,
             practice::settings::practice_save_settings,
+            summary::template_assist_settings::template_assist_get_settings,
+            summary::template_assist_settings::template_assist_save_settings,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

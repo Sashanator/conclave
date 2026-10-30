@@ -18,7 +18,8 @@ One JSON file per template. The file name without `.json` is the template id; id
 | `title_keywords` | string[], optional | Case-insensitive substrings matched against the meeting title |
 | `language` | string, optional | BCP-47 code (`ru`, `en`, `de`, …). Absent or `"auto"` means the meeting's language |
 | `context` | string, optional | Free text, sent as written |
-| `sections` | array, required, ≥1 | `{title, instruction, format?, item_format?}`; `format` becomes optional (default `paragraph`) and the editor does not show it |
+| `prep` | string, optional | Free text; what the Prep chat should ask or clarify before this kind of meeting; not used by summaries |
+| `sections` | array, required, ≥1 | Each section has `title` and `instruction` (both non-empty), and optional `format` (default `paragraph`; the editor does not show it), `item_format` and `example_item_format` |
 | `style` | string, optional | Free text, sent as written |
 
 Validation: non-empty name, at least one section, every section has a non-empty title and instruction, `language` is `auto` or a code Conclave knows, and `format` (when present) is one of `paragraph`, `list`, `string`. A file that fails validation is skipped and reported once in Settings → Templates.

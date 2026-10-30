@@ -5,8 +5,10 @@
 //! The Standard template is also embedded in the binary, so summaries still work if its file is gone.
 
 mod defaults;
+mod history;
 mod store;
 mod types;
 
+pub use history::*;
 pub use store::*;
 pub use types::{Template, TemplateSection};

@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import { ArrowDown, ArrowUp, Copy, Plus, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Copy, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -16,6 +16,8 @@ import {
   draftFromTemplate, emptyDraft, templateFromDraft, validateDraft,
   type TemplateDraft, type TemplateJson,
 } from '@/lib/template-draft';
+import { TemplateAssistDialog, type AssistMode } from '@/components/TemplateAssistDialog';
+import { originFor, type ChangeNote, type PendingOrigin } from '@/lib/templateAssist';
 
 const STANDARD_ID = 'standard_meeting';
 const DISCARD_PROMPT = 'Discard unsaved changes?';
@@ -40,6 +42,9 @@ export function TemplateSettings() {
   const [currentId, setCurrentId] = useState<string | null>(null);
   const [draft, setDraft] = useState<TemplateDraft | null>(null);
   const [savedJson, setSavedJson] = useState('');
+  const [assist, setAssist] = useState<AssistMode | null>(null);
+  const [notes, setNotes] = useState<ChangeNote[] | null>(null);
+  const pendingOrigin = useRef<PendingOrigin | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
@@ -90,6 +95,8 @@ export function TemplateSettings() {
     setCurrentId(id);
     setDraft(d);
     setSavedJson(JSON.stringify(d));
+    setNotes(null);
+    pendingOrigin.current = null;
   };
   const open = (id: string) => runExclusive(() => load(id));
 
@@ -106,12 +113,15 @@ export function TemplateSettings() {
   };
 
   const startNew = () => {
-    if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+    if (dirty && !window.confirm(DISCARD_PROMPT)) return false;
     viewRef.current += 1;
     const d = emptyDraft();
     setCurrentId(null);
     setDraft(d);
     setSavedJson(JSON.stringify(d));
+    setNotes(null);
+    pendingOrigin.current = null;
+    return true;
   };
 
   const update = (patch: Partial<TemplateDraft>) => setDraft((d) => d && { ...d, ...patch });
@@ -132,8 +142,9 @@ export function TemplateSettings() {
     if (!draft) return;
     const view = viewRef.current;
     try {
-      const id = await invoke<string>('api_save_template', { templateId: currentId, template: templateFromDraft(draft) });
+      const id = await invoke<string>('api_save_template', { templateId: currentId, template: templateFromDraft(draft), origin: originFor(draft, pendingOrigin.current) });
       if (viewRef.current === view) {
+        pendingOrigin.current = null;
         setCurrentId(id);
         setSavedJson(JSON.stringify(draft));
       }
@@ -179,11 +190,17 @@ export function TemplateSettings() {
   return (
     <div className="grid grid-cols-[16rem_1fr] gap-6">
       <div className="bg-card rounded-lg border border-border p-4 space-y-3 self-start">
-        <div className="flex items-center justify-between gap-2">
+        <div className="flex flex-wrap items-center gap-2">
           <h3 className="text-lg font-semibold text-foreground">Templates</h3>
           <Button variant="outline" size="sm" onClick={startNew} disabled={busy}>
             <Plus className="w-4 h-4 mr-1" />
             New template
+          </Button>
+          <Button variant="outline" size="sm" disabled={busy} onClick={() => {
+            if (startNew()) setAssist({ kind: 'create' });
+          }}>
+            <Sparkles className="w-4 h-4 mr-1" />
+            Create with AI
           </Button>
         </div>
         {listing.errors.length > 0 && (
@@ -214,6 +231,12 @@ export function TemplateSettings() {
           <p className="text-sm text-muted-foreground">No template selected.</p>
         ) : (
           <div className="space-y-5">
+            {!!notes?.length && <div className="space-y-1 text-sm">
+              <p className="font-medium">What I did</p>
+              <ul className="list-disc pl-5">
+                {notes.map((change, i) => <li key={i}>{change.field}: {change.note}</li>)}
+              </ul>
+            </div>}
             <Field id="tpl-name" label="Name">
               <Input id="tpl-name" value={draft.name} onChange={(e) => update({ name: e.target.value })} />
             </Field>
@@ -320,6 +343,21 @@ export function TemplateSettings() {
         )}
       </div>
 
+      {assist && <TemplateAssistDialog
+        open={true}
+        onOpenChange={open => { if (!open) setAssist(null); }}
+        mode={assist}
+        onCreated={r => {
+          viewRef.current += 1;
+          setCurrentId(null);
+          const d = draftFromTemplate(r.template);
+          setDraft(d);
+          setSavedJson('');
+          setNotes(r.changes);
+          pendingOrigin.current = { json: JSON.stringify(d), origin: { source: 'ai', note: r.changes[0]?.note ?? '' } };
+        }}
+        onAccepted={() => {}}
+      />}
       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <DialogContent>
           <DialogHeader>

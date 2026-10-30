@@ -1,5 +1,6 @@
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import type { ReactNode } from 'react';
+import { confirmLeave } from '../../src/lib/unsaved-guard';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
 const originals = {
@@ -52,6 +53,7 @@ const invoke = mock(async (command: string, _args?: Record<string, unknown>): Pr
       pendingSave = { resolve };
     });
   }
+  if (command === 'api_template_draft') return { template: { ...template, name: 'AI draft' }, changes: [{ field: 'name', note: 'Created a meeting template' }], warnings: [] };
   if (command === 'api_delete_template') return undefined;
   throw new Error(`Unexpected command: ${command}`);
 });
@@ -132,6 +134,7 @@ describe('template editor busy state', () => {
     expect(button('Duplicate').props.disabled).toBe(true);
     expect(button('Delete').props.disabled).toBe(true);
     expect(button('New template').props.disabled).toBe(true);
+    expect(button('Create with AI').props.disabled).toBe(true);
     expect(renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Beta')[0].props.disabled).toBe(true);
 
     await act(async () => {
@@ -206,10 +209,70 @@ describe('template editor busy state', () => {
     });
     const saves = invoke.mock.calls.filter(([command]) => command === 'api_save_template');
     expect(saves.length).toBe(1);
-    expect(saves[0][1]).toEqual({ templateId: 'beta', template: expect.anything() });
+    expect(saves[0][1]).toEqual({ templateId: 'beta', template: expect.anything(), origin: { source: 'manual', note: '' } });
     await act(async () => {
       pendingSave?.resolve('beta');
     });
     await flush();
+  });
+});
+
+async function createWithAI() {
+  await act(async () => { button('Create with AI').props.onClick(); });
+  await type('template-assist-request', 'textarea', 'Planning notes');
+  await act(async () => { button('Generate').props.onClick(); });
+}
+
+describe('AI template draft persistence', () => {
+  beforeEach(async () => {
+    renderer?.unmount();
+    renderer = null;
+    invoke.mockClear();
+    pendingSave = null;
+    holdBeta = false;
+    failBeta = false;
+    await act(async () => { renderer = create(<TemplateSettings />); });
+    await flush();
+  });
+
+  test('created draft stays unsaved, guards navigation and sends AI origin on first Save only', async () => {
+    const confirm = spyOn(window, 'confirm').mockImplementation(() => false);
+    try {
+      await createWithAI();
+      expect(field('tpl-name', 'input').props.value).toBe('AI draft');
+      expect(confirmLeave()).toBe(false);
+      expect(renderer!.root.findAll(n => n.type === 'li').map(text)).toContain('name: Created a meeting template');
+      expect(invoke.mock.calls.some(([c]) => c === 'api_save_template')).toBe(false);
+      await act(async () => { button('Beta').props.onClick(); });
+      expect(confirm).toHaveBeenCalledWith('Discard unsaved changes?');
+      expect(field('tpl-name', 'input').props.value).toBe('AI draft');
+      await act(async () => { button('Create with AI').props.onClick(); });
+      expect(renderer!.root.findAll(n => n.type === 'textarea' && n.props.id === 'template-assist-request')).toHaveLength(0);
+      await act(async () => { button('Save').props.onClick(); });
+      let saves = invoke.mock.calls.filter(([c]) => c === 'api_save_template');
+      expect(saves[0][1]).toEqual({ templateId: null, template: expect.anything(), origin: { source: 'ai', note: 'Created a meeting template' } });
+      await act(async () => { pendingSave?.resolve('ai-draft'); });
+      await flush();
+      await act(async () => { button('Save').props.onClick(); });
+      saves = invoke.mock.calls.filter(([c]) => c === 'api_save_template');
+      expect(saves[1][1]?.origin).toEqual({ source: 'manual', note: '' });
+      await act(async () => { pendingSave?.resolve('ai-draft'); });
+    } finally { confirm.mockRestore(); }
+  });
+
+  test('a hand edit before first Save changes the origin to manual; loading clears notes', async () => {
+    const confirm = spyOn(window, 'confirm').mockImplementation(() => true);
+    try {
+      await createWithAI();
+      await type('tpl-name', 'input', 'Hand edited');
+      await act(async () => { button('Save').props.onClick(); });
+      const saves = invoke.mock.calls.filter(([c]) => c === 'api_save_template');
+      expect(saves[0][1]?.origin).toEqual({ source: 'manual', note: '' });
+      await act(async () => { pendingSave?.resolve('hand-edited'); });
+      await flush();
+      await act(async () => { button('Beta').props.onClick(); });
+      await flush();
+      expect(text(renderer!.root)).not.toContain('What I did');
+    } finally { confirm.mockRestore(); }
   });
 });

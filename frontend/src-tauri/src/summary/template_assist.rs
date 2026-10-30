@@ -50,8 +50,8 @@ pub(crate) fn summary_edits_diff(generated: &str, current: &str) -> Option<Strin
                     None => line.to_string(),
                 }
             })
-            .collect::<Vec<_>>()
-            .join("\n")
+            .map(|line| line + "\n")
+            .collect::<String>()
     };
     let generated = normalize(generated);
     let current = normalize(current);
@@ -114,7 +114,10 @@ pub(crate) async fn load_meeting_inputs(
     let edits = result["generated_markdown"]
         .as_str()
         .and_then(|generated| summary_edits_diff(generated, markdown));
-    let template_id = result["template_id"].as_str().map(str::to_string);
+    let template_id = result["template_id"]
+        .as_str()
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
     let lines: Vec<String> = sqlx::query_scalar(
         "SELECT transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time ASC, id ASC",
     )
@@ -638,6 +641,14 @@ mod tests {
     #[test]
     fn edits_diff_none_for_formatting_only_changes() {
         assert!(summary_edits_diff("* a\n\n\n- b  \n", "- a\n- b\n").is_none());
+    }
+
+    #[test]
+    fn edits_diff_appended_line_has_no_newline_noise() {
+        let diff = summary_edits_diff("a\nb", "a\nb\nc").unwrap();
+        assert!(diff.contains("+c"));
+        assert!(!diff.contains("-b"));
+        assert!(!diff.contains("No newline"));
     }
 
     #[test]

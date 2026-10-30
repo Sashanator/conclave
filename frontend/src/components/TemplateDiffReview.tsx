@@ -9,11 +9,11 @@ import { collapseSame, diffItems, matchSections, mergeSelected } from '@/lib/tem
 export function TemplateDiffReview(props: {
   old: TemplateJson; next: TemplateJson;
   changes?: ChangeNote[]; warnings?: string[];
-  selectable: boolean; acceptLabel: string; notice?: string | null;
+  selectable: boolean; acceptLabel: string; notice?: string | null; busy?: boolean;
   onAccept: (merged: TemplateJson) => void; onDiscard: () => void;
   children?: ReactNode;
 }): JSX.Element {
-  const { old, next, changes, warnings, selectable, acceptLabel, notice, onAccept, onDiscard, children } = props;
+  const { old, next, changes, warnings, selectable, acceptLabel, notice, busy = false, onAccept, onDiscard, children } = props;
   const items = useMemo(() => diffItems(old, next), [old, next]);
   const [selected, setSelected] = useState<Set<string>>(() => new Set(items.map(i => i.key)));
   useEffect(() => { setSelected(new Set(items.map(i => i.key))); }, [items]);
@@ -52,8 +52,8 @@ export function TemplateDiffReview(props: {
     {notice && <p role="status" className="text-amber-700 dark:text-amber-400">{notice}</p>}
     {children}
     <div className="flex justify-end gap-2">
-      <Button variant="outline" onClick={onDiscard}>Discard</Button>
-      <Button disabled={selectable && selected.size === 0} onClick={() => onAccept(selectable ? mergeSelected(old, next, selected) : next)}>{acceptLabel}</Button>
+      <Button variant="outline" disabled={busy} onClick={onDiscard}>Discard</Button>
+      <Button disabled={busy || (selectable && selected.size === 0)} onClick={() => onAccept(selectable ? mergeSelected(old, next, selected) : next)}>{acceptLabel}</Button>
     </div>
   </div>;
 }

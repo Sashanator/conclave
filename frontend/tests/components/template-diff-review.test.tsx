@@ -53,3 +53,13 @@ test('renders notes before amber warnings and diffs, collapsed context, and adde
   expect(content).toContain('removed');
   expect(renderer.root.findAllByType('del').map(text).join('')).toContain('old');
 });
+
+test('busy disables Accept and Discard until the operation finishes', () => {
+  const props = { old, next: { ...old, name: 'After' }, selectable: true, acceptLabel: 'Accept selected', onAccept: () => {}, onDiscard: () => {} };
+  act(() => { renderer = create(<TemplateDiffReview {...props} busy />); });
+  expect(button('Accept selected').props.disabled).toBe(true);
+  expect(button('Discard').props.disabled).toBe(true);
+  act(() => renderer.update(<TemplateDiffReview {...props} busy={false} />));
+  expect(button('Accept selected').props.disabled).toBe(false);
+  expect(button('Discard').props.disabled).toBe(false);
+});

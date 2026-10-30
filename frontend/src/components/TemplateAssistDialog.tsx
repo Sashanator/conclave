@@ -146,7 +146,7 @@ export function TemplateAssistDialog(props: {
         </DialogHeader>
         {proposal && mode.kind === 'improve' ? <TemplateDiffReview
           old={proposal.base ?? mode.saved} next={proposal.template}
-          changes={proposal.changes} warnings={proposal.warnings} selectable
+          changes={proposal.changes} warnings={proposal.warnings} selectable busy={running}
           acceptLabel="Accept selected" notice={notice} onAccept={accept} onDiscard={() => changeOpen(false)}
         >
           {refining ? <div className="space-y-2">

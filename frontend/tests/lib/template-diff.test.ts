@@ -217,3 +217,21 @@ test('hidden section fields have visible diffs even when item_format is present'
   expect(item.next).toContain('new example');
   expect(mergeSelected(before, after, new Set([item.key]))).toEqual(after);
 });
+
+test('omitted hidden section fields agree in matching, display, and merge', () => {
+  for (const key of ['format', 'example_item_format'] as const) {
+    const section = { [key]: 'Keep this', title: 'Notes', instruction: 'List', item_format: 'Item' };
+    const before = { name: 'Notes', sections: [section] };
+    const after = { name: 'Notes', sections: [{ title: 'Notes', instruction: 'List', item_format: 'Item' }] };
+    expect(matchSections(before.sections, after.sections)).toEqual([{ old: 0, next: 0, status: 'unchanged' }]);
+    expect(diffItems(before, after)).toEqual([]);
+    expect(mergeSelected(before, after, new Set())).toEqual(before);
+    expect(mergeSelected(before, after, new Set(['section:0:0']))).toEqual(before);
+
+    const changed = { ...after, sections: [{ ...after.sections[0], instruction: 'Updated' }] };
+    const item = diffItems(before, changed)[0];
+    expect(item.next).toContain('Keep this');
+    expect(item.parts?.filter(p => p.kind === 'del').map(p => p.text).join('')).not.toContain('Keep this');
+    expect(mergeSelected(before, changed, new Set([item.key])).sections[0]).toEqual({ ...section, instruction: 'Updated' });
+  }
+});

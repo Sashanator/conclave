@@ -117,6 +117,17 @@ function inOrder(pairs: SectionPair[]): Set<SectionPair> {
   return result;
 }
 
+function withKeptHiddenFields(next: TemplateSection, before: TemplateSection): TemplateSection {
+  const { format, example_item_format, ...rest } = next;
+  const keptFormat = format === undefined ? before.format : format;
+  const keptExample = example_item_format === undefined ? before.example_item_format : example_item_format;
+  return {
+    ...rest,
+    ...(keptFormat !== undefined ? { format: keptFormat } : {}),
+    ...(keptExample !== undefined ? { example_item_format: keptExample } : {}),
+  };
+}
+
 export function matchSections(old: TemplateSection[], next: TemplateSection[]): SectionPair[] {
   const titleKey = (s: TemplateSection) => s.title.trim().replace(/\s+/g, ' ').toLowerCase();
   const usedOld = new Set<number>();
@@ -138,7 +149,8 @@ export function matchSections(old: TemplateSection[], next: TemplateSection[]): 
   const ordered = inOrder(pairs);
   for (const pair of pairs) {
     if (pair.old !== undefined && pair.next !== undefined) {
-      pair.status = JSON.stringify(old[pair.old]) === JSON.stringify(next[pair.next])
+      const before = old[pair.old];
+      pair.status = JSON.stringify(withKeptHiddenFields(before, before)) === JSON.stringify(withKeptHiddenFields(next[pair.next], before))
         ? (ordered.has(pair) ? 'unchanged' : 'moved')
         : 'changed';
     }
@@ -190,7 +202,8 @@ export function diffItems(old: Template, next: Template): DiffItem[] {
   for (const pair of matchSections(old.sections, next.sections)) {
     if (pair.status === 'unchanged') continue;
     const before = pair.old === undefined ? undefined : old.sections[pair.old];
-    const after = pair.next === undefined ? undefined : next.sections[pair.next];
+    const proposed = pair.next === undefined ? undefined : next.sections[pair.next];
+    const after = proposed && before ? withKeptHiddenFields(proposed, before) : proposed;
     const beforeText = before ? sectionText(before) : '';
     const afterText = after ? sectionText(after) : '';
     items.push({
@@ -233,12 +246,7 @@ export function mergeSelected(old: Template, next: Template, selected: Set<strin
     } else if (pair.status === 'removed') {
       if (!accepted) merged.sections.push(old.sections[pair.old!]);
     } else if (accepted) {
-      const before = old.sections[pair.old!];
-      const section = { ...next.sections[pair.next!] };
-      for (const key of ['format', 'example_item_format'] as const) {
-        if (section[key] === undefined && before[key] !== undefined) section[key] = before[key];
-      }
-      merged.sections.push(section);
+      merged.sections.push(withKeptHiddenFields(next.sections[pair.next!], old.sections[pair.old!]));
     } else {
       merged.sections.push(old.sections[pair.old!]);
     }

@@ -259,10 +259,17 @@ const CARRIED_SUMMARY_KEYS: [&str; 6] = [
 ];
 
 fn carry_summary_metadata(old_result: Option<&str>, mut new: Value) -> Value {
+    // Only the stored result may supply the generated baseline, never an edit.
+    if let Some(new_object) = new.as_object_mut() {
+        new_object.remove("generated_markdown");
+    }
     let Some(old) = old_result.and_then(|raw| serde_json::from_str::<Value>(raw).ok()) else {
         return new;
     };
     if let (Some(old), Some(new_object)) = (old.as_object(), new.as_object_mut()) {
+        if let Some(value) = old.get("generated_markdown") {
+            new_object.insert("generated_markdown".to_string(), value.clone());
+        }
         for key in CARRIED_SUMMARY_KEYS {
             if let Some(value) = old.get(key).filter(|_| !new_object.contains_key(key)) {
                 new_object.insert(key.to_string(), value.clone());
@@ -326,6 +333,70 @@ mod tests {
     fn carry_summary_metadata_ignores_invalid_old_json() {
         let new = json!({"markdown": "edited"});
         assert_eq!(carry_summary_metadata(Some("not json {"), new.clone()), new);
+    }
+
+    #[test]
+    fn edit_keeps_stored_generated_markdown() {
+        let merged = carry_summary_metadata(
+            Some(r#"{"markdown":"g","generated_markdown":"g"}"#),
+            json!({"markdown": "edited", "generated_markdown": "stale"}),
+        );
+        assert_eq!(merged["generated_markdown"], "g");
+        assert_eq!(merged["markdown"], "edited");
+    }
+
+    #[test]
+    fn edit_on_old_row_has_no_generated_markdown() {
+        let merged = carry_summary_metadata(
+            Some(r#"{"markdown":"g"}"#),
+            json!({"markdown": "e", "generated_markdown": "x"}),
+        );
+        assert!(merged.get("generated_markdown").is_none());
+        assert_eq!(merged["markdown"], "e");
+    }
+
+    #[test]
+    fn carry_summary_metadata_drops_generated_markdown_without_readable_old_row() {
+        for old in [None, Some("not json {")] {
+            let merged = carry_summary_metadata(
+                old,
+                json!({"markdown": "edited", "generated_markdown": "stale"}),
+            );
+            assert!(merged.get("generated_markdown").is_none());
+            assert_eq!(merged["markdown"], "edited");
+        }
+    }
+
+    #[tokio::test]
+    async fn generated_markdown_survives_save_and_is_replaced_on_regeneration() {
+        let pool = crate::database::repositories::test_pool().await;
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m', 'Meeting', '2026-10-30 09:00:00', '2026-10-30 09:00:00')")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('m', 'completed', '2026-10-30 09:00:00', '2026-10-30 09:00:00', ?)")
+            .bind(json!({"markdown": "g1", "generated_markdown": "g1"}).to_string())
+            .execute(&pool).await.unwrap();
+
+        assert!(SummaryProcessesRepository::update_meeting_summary(
+            &pool, "m", &json!({"markdown": "edited"}),
+        ).await.unwrap());
+        let saved = SummaryProcessesRepository::get_summary_data(&pool, "m")
+            .await.unwrap().unwrap();
+        let saved: Value = serde_json::from_str(&saved.result.unwrap()).unwrap();
+        assert_eq!(saved["generated_markdown"], "g1");
+        assert_eq!(saved["markdown"], "edited");
+
+        let started = Utc::now();
+        SummaryProcessesRepository::create_or_reset_process(&pool, "m", started)
+            .await.unwrap();
+        assert!(SummaryProcessesRepository::update_process_completed(
+            &pool, "m", started, json!({"markdown": "g2", "generated_markdown": "g2"}),
+            1, 1.0, None,
+        ).await.unwrap());
+        let regenerated = SummaryProcessesRepository::get_summary_data(&pool, "m")
+            .await.unwrap().unwrap();
+        let regenerated: Value = serde_json::from_str(&regenerated.result.unwrap()).unwrap();
+        assert_eq!(regenerated["generated_markdown"], "g2");
+        assert_eq!(regenerated["markdown"], "g2");
     }
 
     async fn test_pool() -> SqlitePool {

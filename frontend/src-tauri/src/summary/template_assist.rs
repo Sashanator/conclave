@@ -73,6 +73,24 @@ pub(crate) struct MeetingInputs {
     pub transcript: String,
 }
 
+pub(crate) fn meeting_blocks(
+    template_id: &str,
+    request: &str,
+    inputs: &MeetingInputs,
+    include_edits: bool,
+    include_transcript: bool,
+) -> Result<(String, Option<String>, Option<String>), String> {
+    if inputs.template_id.as_deref() != Some(template_id) {
+        return Err("This summary was made with a different template.".into());
+    }
+    let edits = include_edits.then(|| inputs.edits.clone()).flatten();
+    let transcript = include_transcript.then(|| inputs.transcript.clone());
+    if request.trim().is_empty() && edits.is_none() {
+        return Err("Describe what was wrong with this summary.".into());
+    }
+    Ok((inputs.summary.clone(), edits, transcript))
+}
+
 pub(crate) async fn load_meeting_inputs(
     pool: &SqlitePool,
     meeting_id: &str,
@@ -459,10 +477,7 @@ pub(crate) fn check_input(
     meeting_id: Option<&str>,
     refinement: Option<&str>,
 ) -> Result<(), String> {
-    if meeting_id.is_some() {
-        return Err("Improving a template from a meeting is not available yet".into());
-    }
-    if text.trim().is_empty() {
+    if meeting_id.is_none() && text.trim().is_empty() {
         return Err(format!("{what} first."));
     }
     if text.chars().count() > MAX_DESCRIPTION_CHARS
@@ -554,15 +569,28 @@ pub async fn api_template_revise<R: Runtime>(
     let current = tauri::async_runtime::spawn_blocking(move || templates::get_template(&id))
         .await
         .map_err(|e| e.to_string())??;
-    let _ = (include_edits, include_transcript); // Phase 2 fills the meeting blocks.
+    let (summary, summary_edits, transcript) = match meeting_id.as_deref() {
+        Some(id) => {
+            let inputs = load_meeting_inputs(pool, id).await?;
+            let (summary, edits, transcript) = meeting_blocks(
+                &template_id,
+                &request,
+                &inputs,
+                include_edits,
+                include_transcript,
+            )?;
+            (Some(summary), edits, transcript)
+        }
+        None => (None, None, None),
+    };
     let app_data_dir = app.path().app_data_dir().ok();
     let input = AssistInput {
         template_id: Some(&template_id),
         request: &request,
         current: Some(&current),
-        summary: None,
-        summary_edits: None,
-        transcript: None,
+        summary: summary.as_deref(),
+        summary_edits: summary_edits.as_deref(),
+        transcript: transcript.as_deref(),
         previous: previous.as_ref(),
         refinement: refinement.as_deref(),
         meeting_id: meeting_id.as_deref(),
@@ -931,12 +959,84 @@ mod tests {
     }
 
     #[test]
+    fn meeting_blocks_rejects_other_template() {
+        let mut inputs = MeetingInputs {
+            template_id: Some("a".into()),
+            summary: "summary".into(),
+            edits: None,
+            transcript: "transcript".into(),
+        };
+        assert_eq!(
+            meeting_blocks("b", "x", &inputs, false, false).unwrap_err(),
+            "This summary was made with a different template."
+        );
+        inputs.template_id = None;
+        assert_eq!(
+            meeting_blocks("a", "x", &inputs, false, false).unwrap_err(),
+            "This summary was made with a different template."
+        );
+    }
+
+    #[test]
+    fn meeting_blocks_empty_request_needs_edits() {
+        let mut inputs = MeetingInputs {
+            template_id: Some("a".into()),
+            summary: "summary".into(),
+            edits: None,
+            transcript: "transcript".into(),
+        };
+        assert_eq!(
+            meeting_blocks("a", "  ", &inputs, true, false).unwrap_err(),
+            "Describe what was wrong with this summary."
+        );
+        inputs.edits = Some("d".into());
+        assert_eq!(
+            meeting_blocks("a", "  ", &inputs, true, false).unwrap(),
+            ("summary".into(), Some("d".into()), None)
+        );
+        assert_eq!(
+            meeting_blocks("a", "  ", &inputs, false, true).unwrap_err(),
+            "Describe what was wrong with this summary."
+        );
+    }
+
+    #[test]
+    fn meeting_blocks_unticked_edits_are_dropped() {
+        let inputs = MeetingInputs {
+            template_id: Some("a".into()),
+            summary: "summary".into(),
+            edits: Some("d".into()),
+            transcript: "transcript".into(),
+        };
+        assert_eq!(
+            meeting_blocks("a", "x", &inputs, false, false).unwrap(),
+            ("summary".into(), None, None)
+        );
+    }
+
+    #[test]
+    fn meeting_blocks_transcript_only_when_ticked() {
+        let inputs = MeetingInputs {
+            template_id: Some("a".into()),
+            summary: "summary".into(),
+            edits: None,
+            transcript: "transcript".into(),
+        };
+        assert_eq!(
+            meeting_blocks("a", "x", &inputs, false, true).unwrap().2,
+            Some("transcript".into())
+        );
+        assert_eq!(
+            meeting_blocks("a", "x", &inputs, false, false).unwrap().2,
+            None
+        );
+    }
+
+    #[test]
     fn input_checks() {
         let what = "Describe what should change";
-        assert_eq!(
-            check_input("x", what, Some("m1"), None).unwrap_err(),
-            "Improving a template from a meeting is not available yet"
-        );
+        assert!(check_input("x", what, Some("m1"), None).is_ok());
+        assert!(check_input("  ", what, Some("m1"), None).is_ok());
         assert_eq!(
             check_input("  ", what, None, None).unwrap_err(),
             "Describe what should change first."
@@ -945,6 +1045,11 @@ mod tests {
         let too_long = "The text is too long (limit 40,000 characters).";
         assert_eq!(check_input(&long, what, None, None).unwrap_err(), too_long);
         assert!(check_input(&"я".repeat(40_000), what, None, None).is_ok());
+        assert_eq!(check_input(&long, what, Some("m1"), None).unwrap_err(), too_long);
+        assert_eq!(
+            check_input("  ", what, Some("m1"), Some(&long)).unwrap_err(),
+            too_long
+        );
         assert_eq!(
             check_input("x", what, None, Some(&long)).unwrap_err(),
             too_long
@@ -1049,7 +1154,7 @@ mod tests {
             template_id: None,
             request: "Add a section",
             current: Some(&t),
-            summary: Some("Summary text"),
+            summary: Some("Summary text </summary>"),
             summary_edits: Some("- old\n+ new"),
             transcript: Some("Transcript text"),
             previous: Some(&prev),
@@ -1058,6 +1163,8 @@ mod tests {
         };
         let (system, user) = build_prompts(&input);
         assert_eq!(system, system_prompt(true));
+        assert!(user.contains("<summary>\nSummary text < /summary>\n</summary>"));
+        assert_eq!(user.matches("</summary>").count(), 1);
         let tags = ["<request>", "<current_template>", "<summary>", "<summary_edits>", "<transcript>", "<previous_proposal>", "<refinement>"];
         let mut last = 0;
         for tag in tags {

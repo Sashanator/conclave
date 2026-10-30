@@ -24,6 +24,7 @@ import {
 } from '@/lib/summary-language-preferences';
 import { hasVisibleSummaryContent } from '@/lib/summary-content';
 import { shouldRegenerate } from '@/lib/regenerate-guard';
+import { getAssistSettings, saveAssistSettings, type TemplateAssistSettings } from '@/lib/templateAssist';
 
 interface SummaryPanelProps {
   meeting: {
@@ -35,7 +36,7 @@ interface SummaryPanelProps {
   isSummaryDirty: boolean;
   summaryRef: RefObject<BlockNoteSummaryViewRef>;
   isSaving: boolean;
-  onSaveAll: () => Promise<void>;
+  onSaveAll: () => Promise<boolean>;
   onCopySummary: () => Promise<void>;
   aiSummary: MeetingSummary | null;
   summaryStatus: 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
@@ -98,6 +99,8 @@ export function SummaryPanel({
   onSummarizeNow,
   namesChanged = false,
 }: SummaryPanelProps) {
+  const [editHintMeetingId, setEditHintMeetingId] = useState<string | null>(null);
+  const [assistSettings, setAssistSettings] = useState<TemplateAssistSettings | null>(null);
   const [improveTemplateOpen, setImproveTemplateOpen] = useState(false);
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   // Bumped when task extraction finishes: its usage changes the meeting's cost line
@@ -125,6 +128,35 @@ export function SummaryPanel({
   } | null>(null);
   activeMeetingIdRef.current = meeting.id;
   const { addRecent } = useRecentLanguages();
+
+  useEffect(() => {
+    let cancelled = false;
+    getAssistSettings().then(settings => {
+      if (!cancelled) setAssistSettings(settings);
+    }).catch(err => {
+      console.error('Failed to load template assist settings:', err);
+    });
+    return () => { cancelled = true; };
+  }, []);
+
+  const handleSaveAll = async () => {
+    const id = meeting.id;
+    if (await onSaveAll() && assistSettings && !assistSettings.hideEditHint) {
+      setEditHintMeetingId(id);
+    }
+  };
+
+  const hideEditHintPermanently = async () => {
+    if (!assistSettings) return;
+    const settings = { ...assistSettings, hideEditHint: true };
+    try {
+      await saveAssistSettings(settings);
+      setAssistSettings(settings);
+      setEditHintMeetingId(null);
+    } catch (err) {
+      toast.error('Failed to save template assist settings', { description: String(err) });
+    }
+  };
 
   const effectiveLangLabel = summaryLang ? labelForCode(summaryLang) : 'Auto';
   const isLocalFallbackLanguage = summaryLangStorage === 'local_fallback';
@@ -246,6 +278,7 @@ export function SummaryPanel({
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
   const hasSummary = hasVisibleSummaryContent(aiSummary);
+  const canImproveTemplate = hasSummary && !isSummaryLoading && currentTemplate && availableTemplates.some(t => t.id === currentTemplate.id);
   summaryExistsRef.current = hasSummary;
   summaryDirtyRef.current = isSummaryDirty;
 
@@ -311,7 +344,7 @@ export function SummaryPanel({
             />
           </div>
 
-          {hasSummary && !isSummaryLoading && currentTemplate && availableTemplates.some(t => t.id === currentTemplate.id) && (
+          {canImproveTemplate && currentTemplate && (
             <ImproveTemplateAction meetingId={meeting.id} templateId={currentTemplate.id}
               templateExists={availableTemplates.some(t => t.id === currentTemplate.id)}
               open={improveTemplateOpen} onOpenChange={setImproveTemplateOpen}
@@ -327,7 +360,7 @@ export function SummaryPanel({
               <SummaryUpdaterButtonGroup
                 isSaving={isSaving}
                 isDirty={isSummaryDirty}
-                onSave={onSaveAll}
+                onSave={handleSaveAll}
                 onCopy={onCopySummary}
               />
             </div>
@@ -336,6 +369,20 @@ export function SummaryPanel({
         <MeetingCostLine meetingId={meeting.id} refreshKey={`${summaryStatus}/${costRefresh}`} />
         <ExtractionStatusLine meetingId={meeting.id} refreshKey={summaryStatus} onSettled={() => setCostRefresh((n) => n + 1)} />
       </div>
+
+      {editHintMeetingId === meeting.id && canImproveTemplate && (
+        <div className="flex items-center justify-between gap-2 px-4 py-2 border-b border-border text-sm text-muted-foreground">
+          <span>You changed this summary. Suggest template changes?</span>
+          <div className="flex items-center gap-2">
+            <Button variant="outline" size="sm" onClick={() => {
+              setImproveTemplateOpen(true);
+              setEditHintMeetingId(null);
+            }}>Suggest</Button>
+            <Button variant="outline" size="sm" onClick={() => setEditHintMeetingId(null)}>Dismiss</Button>
+            <Button variant="outline" size="sm" onClick={hideEditHintPermanently}>Don&apos;t show again</Button>
+          </div>
+        </div>
+      )}
 
       {/* Names changed after a summary: it only uses them once regenerated, and the user decides */}
       {namesChanged && hasSummary && !isSummaryLoading && (

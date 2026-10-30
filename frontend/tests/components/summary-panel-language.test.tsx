@@ -75,7 +75,7 @@ async function renderPanel(aiSummary: MeetingSummary | null, isSummaryDirty = fa
         isSummaryDirty={isSummaryDirty}
         summaryRef={{ current: null }}
         isSaving={false}
-        onSaveAll={async () => {}}
+        onSaveAll={async () => false}
         onCopySummary={async () => {}}
         aiSummary={aiSummary}
         summaryStatus="completed"

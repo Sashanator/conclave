@@ -53,21 +53,25 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
     });
   }, [meeting.id, meetingTitle]);
 
-  const saveAllChanges = useCallback(async () => {
+  const saveAllChanges = useCallback(async (): Promise<boolean> => {
     setIsSaving(true);
     try {
+      let savedEdits = false;
       // Save BlockNote editor changes if dirty
       if (blockNoteSummaryRef.current?.isDirty) {
         console.log('💾 Saving BlockNote editor changes...');
         await blockNoteSummaryRef.current.saveSummary();
+        savedEdits = true;
       } else if (aiSummary) {
         await handleSaveSummary(aiSummary);
       }
 
       toast.success("Changes saved successfully");
+      return savedEdits;
     } catch (error) {
       console.error('Failed to save changes:', error);
       toast.error("Failed to save changes", { description: String(error) });
+      return false;
     } finally {
       setIsSaving(false);
     }

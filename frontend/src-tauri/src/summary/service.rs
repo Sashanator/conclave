@@ -443,6 +443,7 @@ impl SummaryService {
             &custom_prompt,
             notes_block.as_deref(),
             prep_block.as_deref(),
+            None,
             &dictionary,
             &template,
             language.name,

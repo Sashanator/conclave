@@ -75,6 +75,7 @@ const PURPOSE_LABELS = new Map<string, string>([
   ['ask', 'Ask'],
   ['digest', 'Weekly digest'],
   ['connection_test', 'Connection test'],
+  ['template_assist', 'Template assistant'],
 ]);
 
 export function purposeLabel(purpose: string): string {

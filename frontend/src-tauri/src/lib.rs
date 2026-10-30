@@ -910,6 +910,7 @@ pub fn run() {
             summary::template_commands::api_deleted_templates,
             summary::template_assist::api_template_draft,
             summary::template_assist::api_template_revise,
+            summary::template_assist::api_template_meeting_info,
             // Built-in AI commands
             summary::summary_engine::commands::builtin_ai_list_models,
             summary::summary_engine::commands::builtin_ai_get_model_info,

@@ -5,6 +5,7 @@ use crate::copilot::ask::shorten_error;
 use crate::state::AppState;
 use crate::summary::llm_client::{reject_truncated, LLMProvider, LlmCompletion};
 use crate::summary::llm_target::{complete, LlmTarget};
+use crate::summary::processor::rough_token_count;
 use crate::summary::templates::Template;
 use crate::summary::{template_assist_settings, templates};
 use crate::usage::{self, Purpose};
@@ -20,6 +21,128 @@ pub(crate) const MAX_SUMMARY_CHARS: usize = 20_000;
 pub(crate) const MAX_EDITS_CHARS: usize = 10_000;
 pub(crate) const MAX_TRANSCRIPT_CHARS: usize = 60_000;
 pub(crate) const TEMPERATURE: f32 = 0.2;
+pub(crate) const CUT_MARKER: &str = "\n[…]\n";
+
+pub(crate) fn middle_cut(text: &str, max: usize) -> String {
+    let count = text.chars().count();
+    if count <= max {
+        return text.to_string();
+    }
+    let half = max / 2;
+    let head: String = text.chars().take(half).collect();
+    let tail: String = text.chars().skip(count - half).collect();
+    format!("{head}{CUT_MARKER}{tail}")
+}
+
+pub(crate) fn summary_edits_diff(generated: &str, current: &str) -> Option<String> {
+    let normalize = |text: &str| {
+        text.lines()
+            .map(str::trim_end)
+            .filter(|line| !line.is_empty())
+            .map(|line| {
+                let content = line.trim_start();
+                let list_item = content
+                    .strip_prefix('*')
+                    .or_else(|| content.strip_prefix('+'))
+                    .filter(|rest| rest.starts_with(char::is_whitespace));
+                match list_item {
+                    Some(rest) => format!("{}-{rest}", &line[..line.len() - content.len()]),
+                    None => line.to_string(),
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    };
+    let generated = normalize(generated);
+    let current = normalize(current);
+    if generated.trim() == current.trim() {
+        return None;
+    }
+    let diff = similar::TextDiff::from_lines(&generated, &current)
+        .unified_diff()
+        .context_radius(2)
+        .header("generated", "edited")
+        .to_string();
+    Some(middle_cut(&diff, MAX_EDITS_CHARS))
+}
+
+pub(crate) struct MeetingInputs {
+    pub template_id: Option<String>,
+    pub summary: String,
+    pub edits: Option<String>,
+    pub transcript: String,
+}
+
+pub(crate) async fn load_meeting_inputs(
+    pool: &SqlitePool,
+    meeting_id: &str,
+) -> Result<MeetingInputs, String> {
+    let raw = sqlx::query_scalar::<_, Option<String>>(
+        "SELECT result FROM summary_processes WHERE meeting_id = ?",
+    )
+    .bind(meeting_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?
+    .flatten();
+    let result = raw
+        .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .ok_or("This meeting has no summary yet.")?;
+    let markdown = result["markdown"]
+        .as_str()
+        .filter(|text| !text.trim().is_empty())
+        .ok_or("This meeting has no summary yet.")?;
+    let summary = middle_cut(markdown, MAX_SUMMARY_CHARS);
+    let edits = result["generated_markdown"]
+        .as_str()
+        .and_then(|generated| summary_edits_diff(generated, markdown));
+    let template_id = result["template_id"].as_str().map(str::to_string);
+    let lines: Vec<String> = sqlx::query_scalar(
+        "SELECT transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time ASC, id ASC",
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let transcript = middle_cut(&lines.join("\n"), MAX_TRANSCRIPT_CHARS);
+    Ok(MeetingInputs {
+        template_id,
+        summary,
+        edits,
+        transcript,
+    })
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TemplateMeetingInfo {
+    pub template_id: Option<String>,
+    pub has_edits: bool,
+    pub transcript_tokens: usize,
+}
+
+#[tauri::command]
+pub async fn api_template_meeting_info(
+    state: tauri::State<'_, AppState>,
+    meeting_id: String,
+) -> Result<TemplateMeetingInfo, String> {
+    let inputs = load_meeting_inputs(state.db_manager.pool(), &meeting_id).await?;
+    info!(
+        "template assist: meeting {} summary_chars={} edits_chars={} transcript_chars={}",
+        meeting_id,
+        inputs.summary.chars().count(),
+        inputs
+            .edits
+            .as_deref()
+            .map_or(0, |text| text.chars().count()),
+        inputs.transcript.chars().count(),
+    );
+    Ok(TemplateMeetingInfo {
+        template_id: inputs.template_id,
+        has_edits: inputs.edits.is_some(),
+        transcript_tokens: rough_token_count(&inputs.transcript),
+    })
+}
 
 pub(crate) const NO_MODEL_MESSAGE: &str = "Set up a summary model in Settings → Summary first.";
 pub(crate) const TRUNCATED_MESSAGE: &str =
@@ -463,6 +586,144 @@ mod tests {
     use sqlx::SqlitePool;
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::Mutex;
+
+    #[test]
+    fn middle_cut_keeps_short_text() {
+        assert_eq!(middle_cut("abc", 3), "abc");
+    }
+
+    #[test]
+    fn middle_cut_keeps_both_ends() {
+        let s = "а".repeat(50) + &"б".repeat(50);
+        let c = middle_cut(&s, 20);
+        assert!(c.starts_with(&"а".repeat(10)));
+        assert!(c.ends_with(&"б".repeat(10)));
+        assert!(c.contains(CUT_MARKER));
+    }
+
+    #[test]
+    fn edits_diff_none_when_unchanged() {
+        assert!(summary_edits_diff("a\nb\n", "a\nb\n").is_none());
+        assert!(summary_edits_diff(" a\nb\n", "a\nb").is_none());
+    }
+
+    #[test]
+    fn edits_diff_none_for_formatting_only_changes() {
+        assert!(summary_edits_diff("* a\n\n\n- b  \n", "- a\n- b\n").is_none());
+    }
+
+    #[test]
+    fn edits_diff_is_unified() {
+        let diff = summary_edits_diff("a\nb\n", "a\nc\n").unwrap();
+        assert!(diff.contains("-b"));
+        assert!(diff.contains("+c"));
+        assert!(diff.contains("@@"));
+    }
+
+    async fn insert_meeting_summary(pool: &SqlitePool, result: &str) {
+        sqlx::query(
+            "INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m', 'M', 't', 't')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('m', 'completed', 't', 't', ?)")
+            .bind(result).execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn load_inputs_reads_summary_edits_and_transcript() {
+        let pool = test_pool().await;
+        insert_meeting_summary(
+            &pool,
+            &json!({
+                "markdown": "x\ny", "generated_markdown": "x\nz", "template_id": "one_on_one"
+            })
+            .to_string(),
+        )
+        .await;
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time) VALUES ('second', 'm', 'second', 't', 2.0), ('first', 'm', 'first', 't', 1.0)")
+            .execute(&pool).await.unwrap();
+        let inputs = load_meeting_inputs(&pool, "m").await.unwrap();
+        assert_eq!(inputs.template_id.as_deref(), Some("one_on_one"));
+        assert_eq!(inputs.summary, "x\ny");
+        assert!(inputs.edits.unwrap().contains("+y"));
+        assert_eq!(inputs.transcript, "first\nsecond");
+    }
+
+    #[tokio::test]
+    async fn load_inputs_old_summary_has_no_edits() {
+        let pool = test_pool().await;
+        insert_meeting_summary(&pool, &json!({ "markdown": "old summary" }).to_string()).await;
+        let inputs = load_meeting_inputs(&pool, "m").await.unwrap();
+        assert!(inputs.edits.is_none());
+    }
+
+    #[tokio::test]
+    async fn load_inputs_without_summary_errors() {
+        let pool = test_pool().await;
+        assert_eq!(
+            load_meeting_inputs(&pool, "m").await.err().as_deref(),
+            Some("This meeting has no summary yet.")
+        );
+    }
+
+    #[tokio::test]
+    async fn load_inputs_rejects_unusable_summary_results() {
+        let pool = test_pool().await;
+        insert_meeting_summary(&pool, "{}").await;
+        for result in [
+            None,
+            Some(""),
+            Some("not JSON"),
+            Some("{}"),
+            Some(r#"{"markdown":null}"#),
+            Some(r#"{"markdown":42}"#),
+            Some(r#"{"markdown":""}"#),
+            Some(r#"{"markdown":"  \n "}"#),
+        ] {
+            sqlx::query("UPDATE summary_processes SET result = ? WHERE meeting_id = 'm'")
+                .bind(result)
+                .execute(&pool)
+                .await
+                .unwrap();
+            assert_eq!(
+                load_meeting_inputs(&pool, "m").await.err().as_deref(),
+                Some("This meeting has no summary yet.")
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn load_inputs_caps_material_and_orders_equal_times_by_id() {
+        let pool = test_pool().await;
+        let markdown = "а".repeat(MAX_SUMMARY_CHARS + 1);
+        let generated = "б".repeat(MAX_SUMMARY_CHARS + 1);
+        insert_meeting_summary(
+            &pool,
+            &json!({
+                "markdown": markdown, "generated_markdown": generated
+            })
+            .to_string(),
+        )
+        .await;
+        let long_line = "я".repeat(MAX_TRANSCRIPT_CHARS);
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp, audio_start_time) VALUES ('b', 'm', ?, 't', 1.0), ('a', 'm', 'first', 't', 1.0)")
+            .bind(&long_line).execute(&pool).await.unwrap();
+        let inputs = load_meeting_inputs(&pool, "m").await.unwrap();
+        assert!(inputs.template_id.is_none());
+        assert_eq!(inputs.summary, middle_cut(&markdown, MAX_SUMMARY_CHARS));
+        let edits = inputs.edits.unwrap();
+        assert!(edits.contains(CUT_MARKER));
+        assert_eq!(
+            edits.chars().count(),
+            MAX_EDITS_CHARS + CUT_MARKER.chars().count()
+        );
+        assert_eq!(
+            inputs.transcript,
+            middle_cut(&format!("first\n{long_line}"), MAX_TRANSCRIPT_CHARS)
+        );
+    }
 
     fn target() -> LlmTarget {
         LlmTarget {

@@ -149,8 +149,19 @@ fn archive(
         };
         let folder = dir.join(HISTORY_DIR).join(id);
         fs::create_dir_all(&folder)?;
+        let existing = versions(&folder)?;
         let mut base = now.format("%Y%m%dT%H%M%S%3fZ").to_string();
-        if let Some(newest) = versions(&folder)?.first() {
+        if let Some(newest) = existing.first() {
+            if !moving {
+                let live = match &embedded {
+                    Some(json) => json.clone(),
+                    None => fs::read(&source)?,
+                };
+                // Failed save retries must not crowd real undo versions out of history.
+                if live == fs::read(folder.join(format!("{newest}.json")))? {
+                    return Ok(());
+                }
+            }
             let newest_stem = &newest[..19];
             if base.as_str() <= newest_stem {
                 let timestamp = NaiveDateTime::parse_from_str(newest_stem, "%Y%m%dT%H%M%S%3fZ")
@@ -553,6 +564,67 @@ mod tests {
     }
 
     #[test]
+    fn failed_save_retries_archive_the_live_version_only_once() {
+        let d = tempdir().unwrap();
+        let d = d.path();
+        let origin = SaveOrigin::default();
+        let id = save_template_in(d, None, &t("v0"), &origin).unwrap();
+        for i in 1..=20 {
+            save_template_in(d, Some(&id), &t(&format!("v{i}")), &origin).unwrap();
+        }
+        let original = list_history_in(d, &id).unwrap();
+        assert_eq!(original.len(), HISTORY_KEEP);
+        let blocked = checked_path(d, &id).unwrap().with_extension("json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        for _ in 0..5 {
+            assert!(save_template_in(d, Some(&id), &t("replacement"), &origin).is_err());
+        }
+        let after_failures = list_history_in(d, &id).unwrap();
+        assert_eq!(after_failures.len(), HISTORY_KEEP + 1);
+        for entry in &original {
+            assert!(after_failures.contains(entry));
+        }
+        let added = after_failures.iter().filter(|entry| !original.contains(entry)).collect::<Vec<_>>();
+        assert_eq!(added.len(), 1);
+        assert_eq!(get_version_in(d, &id, &added[0].version).unwrap().name, "v20");
+        fs::remove_dir(&blocked).unwrap();
+        save_template_in(d, Some(&id), &t("replacement"), &origin).unwrap();
+        let history = list_history_in(d, &id).unwrap();
+        assert_eq!(history.len(), HISTORY_KEEP);
+        assert_eq!(history.iter().filter(|entry| !original.contains(entry)).count(), 1);
+        assert!(history.contains(added[0]));
+        for (i, entry) in original.iter().enumerate() {
+            let version = get_version_in(d, &id, &entry.version);
+            if i == HISTORY_KEEP - 1 {
+                assert!(!history.contains(entry));
+                assert!(version.is_err());
+            } else {
+                assert!(history.contains(entry));
+                assert_eq!(version.unwrap().name, format!("v{}", HISTORY_KEEP - 1 - i));
+            }
+        }
+        assert_eq!(get_template_in(d, &id).unwrap().name, "replacement");
+    }
+
+    #[test]
+    fn embedded_standard_save_retries_archive_only_once() {
+        let d = tempdir().unwrap();
+        let d = d.path();
+        let origin = SaveOrigin::default();
+        let blocked = checked_path(d, STANDARD_TEMPLATE_ID).unwrap().with_extension("json.tmp");
+        fs::create_dir(&blocked).unwrap();
+        for _ in 0..5 {
+            assert!(save_template_in(d, Some(STANDARD_TEMPLATE_ID), &t("replacement"), &origin).is_err());
+        }
+        let history = list_history_in(d, STANDARD_TEMPLATE_ID).unwrap();
+        assert_eq!(history.len(), 1);
+        assert_eq!(get_version_in(d, STANDARD_TEMPLATE_ID, &history[0].version).unwrap(), embedded_standard());
+        fs::remove_dir(&blocked).unwrap();
+        save_template_in(d, Some(STANDARD_TEMPLATE_ID), &t("replacement"), &origin).unwrap();
+        assert_eq!(list_history_in(d, STANDARD_TEMPLATE_ID).unwrap(), history);
+    }
+
+    #[test]
     fn versions_advance_past_future_history_and_deleted_list_uses_latest_delete() {
         let d = tempdir().unwrap();
         let d = d.path();
@@ -604,7 +676,8 @@ mod tests {
         // Unpaired metadata claims still use the existing suffix collision logic.
         fs::write(folder.join(format!("{base}.meta.json")), "{}").unwrap();
         fs::write(folder.join(format!("{base}-1.meta.json")), "{}").unwrap();
-        for _ in 0..3 {
+        for i in 0..3 {
+            fs::write(checked_path(d, &id).unwrap(), serde_json::to_vec(&t(&format!("v{i}"))).unwrap()).unwrap();
             archive(d, &id, &SaveOrigin::default(), false, now).unwrap();
         }
         assert_eq!(
@@ -780,6 +853,7 @@ mod tests {
         let id = save_template_in(dir, None, &t("A"), &SaveOrigin::default()).unwrap();
         let now: DateTime<Utc> = "2026-10-30T12:00:00Z".parse().unwrap();
         for n in 0..20 {
+            fs::write(checked_path(dir, &id).unwrap(), serde_json::to_vec(&t(&format!("v{n}"))).unwrap()).unwrap();
             archive(
                 dir,
                 &id,
@@ -790,6 +864,7 @@ mod tests {
             .unwrap();
         }
         let now: DateTime<Utc> = "2026-10-30T11:00:00Z".parse().unwrap();
+        fs::write(checked_path(dir, &id).unwrap(), serde_json::to_vec(&t("v20")).unwrap()).unwrap();
         archive(dir, &id, &SaveOrigin::default(), false, now).unwrap();
         let folder = dir.join(HISTORY_DIR).join(&id);
         assert!(folder.join("20261030T121900001Z.json").exists());

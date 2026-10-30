@@ -5,7 +5,7 @@
     "interview",
     "собеседование"
   ],
-  "context": "This is a job interview or candidate screening call. The transcript is automatic, without speaker labels, and may contain recognition errors: infer from context who is the interviewer and who is the candidate, and fix obvious errors in names and technical terms.\nThe goal is an assessment the hiring team can act on: what the candidate showed, where the evidence is thin, and what to do next.",
+  "context": "This is a job interview or candidate screening call. Speaker labels, if present, are automatic and can be wrong, and may contain recognition errors: infer from context who is the interviewer and who is the candidate, and fix obvious errors in names and technical terms.\nThe goal is an assessment the hiring team can act on: what the candidate showed, where the evidence is thin, and what to do next.",
   "prep": "Suggest questions that test the claims in the material, and flag vague or missing facts to clarify.",
   "sections": [
     {

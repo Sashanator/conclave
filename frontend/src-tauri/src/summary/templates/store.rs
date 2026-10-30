@@ -218,6 +218,7 @@ mod tests {
         assert_eq!(defaults::SEED_TEMPLATES.len(), expected.len());
         for (id, lang, sections) in expected {
             let json = defaults::SEED_TEMPLATES.iter().find(|(i, _)| *i == id).unwrap().1;
+            assert!(!json.contains("без указания говорящих"), "{id}");
             let t: Template = serde_json::from_str(json).unwrap();
             t.validate().unwrap();
             assert_eq!(t.fixed_language(), lang, "{id}");
@@ -255,7 +256,9 @@ mod tests {
 
     #[test]
     fn interview_seed_is_valid() {
-        let t: Template = serde_json::from_str(defaults::SEED_TEMPLATES_V2[0].1).unwrap();
+        let json = defaults::SEED_TEMPLATES_V2[0].1;
+        assert!(!json.contains("without speaker labels"));
+        let t: Template = serde_json::from_str(json).unwrap();
         t.validate().unwrap();
         assert_eq!(t.sections.len(), 5);
         assert!(t.prep.is_some());

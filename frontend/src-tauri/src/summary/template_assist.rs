@@ -163,10 +163,14 @@ pub(crate) fn keep_hidden_fields(current: &Template, mut next: Template) -> Temp
         next.prep = current.prep.clone();
     }
     let same_count = current.sections.len() == next.sections.len();
+    let matched_by_title: Vec<bool> = current.sections.iter().map(|old| {
+        let title = normalized_title(&old.title);
+        next.sections.iter().any(|section| normalized_title(&section.title) == title)
+    }).collect();
     for (index, section) in next.sections.iter_mut().enumerate() {
         let title = normalized_title(&section.title);
         let old = current.sections.iter().find(|s| normalized_title(&s.title) == title)
-            .or_else(|| if same_count { current.sections.get(index) } else { None });
+            .or_else(|| if same_count && !matched_by_title[index] { current.sections.get(index) } else { None });
         if let Some(old) = old {
             if blank(&section.format) {
                 section.format = old.format.clone();
@@ -986,6 +990,36 @@ mod tests {
         assert_eq!(kept.sections[0].format, None);
         assert_eq!(kept.sections[0].item_format, None);
         assert_eq!(kept.sections[0].example_item_format, None);
+    }
+
+    #[test]
+    fn renamed_and_moved_section_does_not_take_another_sections_hidden_fields() {
+        let mut current = full_template();
+        current.sections = ["A", "B", "C"].into_iter().map(|title| TemplateSection {
+            title: title.into(),
+            instruction: "Keep details.".into(),
+            format: Some(match title { "A" => "list", "B" => "string", _ => "paragraph" }.into()),
+            item_format: Some(format!("{title} item")),
+            example_item_format: Some(format!("{title} example")),
+        }).collect();
+        let mut next = current.clone();
+        next.sections = vec![current.sections[2].clone(), current.sections[0].clone(), current.sections[1].clone()];
+        next.sections[2].title = "B'".into();
+        for section in &mut next.sections {
+            section.format = None;
+            section.item_format = None;
+            section.example_item_format = None;
+        }
+
+        let kept = keep_hidden_fields(&current, next);
+        assert_eq!(kept.sections[2].format, None);
+        assert_eq!(kept.sections[2].item_format, None);
+        assert_eq!(kept.sections[2].example_item_format, None);
+        for (new_index, old_index) in [(0, 2), (1, 0)] {
+            assert_eq!(kept.sections[new_index].format, current.sections[old_index].format);
+            assert_eq!(kept.sections[new_index].item_format, current.sections[old_index].item_format);
+            assert_eq!(kept.sections[new_index].example_item_format, current.sections[old_index].example_item_format);
+        }
     }
 
     #[test]

@@ -2,7 +2,7 @@ use super::store::{
     checked_path, embedded_standard, is_valid_id, parse, with_dir, STANDARD_TEMPLATE_ID,
 };
 use super::Template;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, NaiveDateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
@@ -149,7 +149,20 @@ fn archive(
         };
         let folder = dir.join(HISTORY_DIR).join(id);
         fs::create_dir_all(&folder)?;
-        let base = now.format("%Y%m%dT%H%M%S%3fZ").to_string();
+        let mut base = now.format("%Y%m%dT%H%M%S%3fZ").to_string();
+        if let Some(newest) = versions(&folder)?.first() {
+            let newest_stem = &newest[..19];
+            if base.as_str() <= newest_stem {
+                let timestamp = NaiveDateTime::parse_from_str(newest_stem, "%Y%m%dT%H%M%S%3fZ")
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let next = timestamp.checked_add_signed(Duration::milliseconds(1))
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "History timestamp overflow"))?;
+                base = next.format("%Y%m%dT%H%M%S%3fZ").to_string();
+                if !is_valid_version(&base) {
+                    return Err(io::Error::new(io::ErrorKind::InvalidData, "History timestamp out of range"));
+                }
+            }
+        }
         let meta = serde_json::to_vec_pretty(&HistoryMeta {
             source: origin.source,
             note: origin.note.clone(),
@@ -212,9 +225,6 @@ fn archive(
                 }
                 return Err(e);
             }
-            if prune(&folder, &version).is_err() {
-                warn!("Cannot prune template history for '{id}'");
-            }
             return Ok(());
         }
         Err(io::Error::new(
@@ -225,11 +235,17 @@ fn archive(
     keep().map_err(|e| format!("Cannot keep an undo copy of '{id}': {e}"))
 }
 
-fn prune(folder: &Path, claimed: &str) -> io::Result<()> {
+/// Retention runs only after the live save or delete has succeeded.
+pub(super) fn prune_history(dir: &Path, id: &str) {
+    if prune(&dir.join(HISTORY_DIR).join(id)).is_err() {
+        warn!("Cannot prune template history for '{id}'");
+    }
+}
+
+fn prune(folder: &Path) -> io::Result<()> {
     for version in versions(folder)?
         .into_iter()
-        .filter(|version| version != claimed)
-        .skip(HISTORY_KEEP - 1)
+        .skip(HISTORY_KEEP)
     {
         fs::remove_file(folder.join(format!("{version}.json")))?;
         match fs::remove_file(folder.join(format!("{version}.meta.json"))) {
@@ -332,7 +348,6 @@ pub fn list_deleted_in(dir: &Path) -> Result<Vec<DeletedTemplate>, String> {
             version: newest.version,
         });
     }
-    // shortcut: deleted list sorts by the version stamp, so a clock set back can misorder deletions; upgrade to sorting by saved_at if that matters.
     deleted.sort_by(|a, b| version_key(&b.version).cmp(&version_key(&a.version)));
     Ok(deleted)
 }
@@ -425,11 +440,11 @@ mod tests {
             note: String::new(),
         }, true, earlier).unwrap();
         let history = list_history_in(d, &id).unwrap();
-        assert_eq!(history[0].source, HistorySource::Manual);
+        assert_eq!(history[0].source, HistorySource::Delete);
         let deleted = list_deleted_in(d).unwrap();
         assert_eq!(deleted.len(), 1);
         assert_eq!(deleted[0].id, id);
-        assert_eq!(deleted[0].version, history[1].version);
+        assert_eq!(deleted[0].version, history[0].version);
         assert_eq!(deleted[0].deleted_at, earlier.to_rfc3339());
     }
 
@@ -450,8 +465,8 @@ mod tests {
             archive(d, &id, &SaveOrigin::default(), moving, now).unwrap();
             assert!(fs::read(&orphan).unwrap() == original);
             assert!(!folder.join(format!("{base}.meta.json")).exists());
-            assert!(folder.join(format!("{base}-1.json")).exists());
-            assert!(folder.join(format!("{base}-1.meta.json")).exists());
+            assert!(folder.join("20261030T142233124Z.json").exists());
+            assert!(folder.join("20261030T142233124Z.meta.json").exists());
             assert_eq!(checked_path(d, &id).unwrap().exists(), !moving);
         }
     }
@@ -508,6 +523,57 @@ mod tests {
         assert!(d.join(format!("{id}.json")).exists());
     }
     #[test]
+    fn failed_live_writes_never_prune_existing_history() {
+        let d = tempdir().unwrap();
+        let d = d.path();
+        let origin = SaveOrigin::default();
+        let id = save_template_in(d, None, &t("v0"), &origin).unwrap();
+        for i in 1..=20 {
+            save_template_in(d, Some(&id), &t(&format!("v{i}")), &origin).unwrap();
+        }
+        let original = list_history_in(d, &id).unwrap();
+        assert_eq!(original.len(), HISTORY_KEEP);
+        // The undo copy succeeds, but writing the live replacement fails.
+        fs::create_dir(checked_path(d, &id).unwrap().with_extension("json.tmp")).unwrap();
+        for _ in 0..20 {
+            assert!(save_template_in(d, Some(&id), &t("replacement"), &origin).is_err());
+        }
+        let history = list_history_in(d, &id).unwrap();
+        for entry in original {
+            assert!(history.contains(&entry));
+            assert!(get_version_in(d, &id, &entry.version).is_ok());
+        }
+        assert_eq!(get_template_in(d, &id).unwrap().name, "v20");
+        fs::remove_dir(checked_path(d, &id).unwrap().with_extension("json.tmp")).unwrap();
+        delete_template_in(d, &id).unwrap();
+        let history = list_history_in(d, &id).unwrap();
+        assert_eq!(history.len(), HISTORY_KEEP);
+        assert_eq!(history[0].source, HistorySource::Delete);
+        assert_eq!(get_version_in(d, &id, &history[0].version).unwrap().name, "v20");
+    }
+
+    #[test]
+    fn versions_advance_past_future_history_and_deleted_list_uses_latest_delete() {
+        let d = tempdir().unwrap();
+        let d = d.path();
+        let id = save_template_in(d, None, &t("First delete"), &SaveOrigin::default()).unwrap();
+        let future: DateTime<Utc> = "2099-12-31T23:59:59.999Z".parse().unwrap();
+        let past = future - chrono::Duration::days(1);
+        let deletion = SaveOrigin { source: HistorySource::Delete, note: String::new() };
+        archive(d, &id, &deletion, true, future).unwrap();
+        save_template_in(d, Some(&id), &t("Latest delete"), &SaveOrigin {
+            source: HistorySource::Restore, note: String::new(),
+        }).unwrap();
+        archive(d, &id, &deletion, true, past).unwrap();
+        let history = list_history_in(d, &id).unwrap();
+        assert_eq!(history[0].version, "21000101T000000000Z");
+        assert!(history[0].version > history[1].version);
+        let deleted = list_deleted_in(d).unwrap();
+        assert_eq!(deleted[0].version, history[0].version);
+        assert_eq!(deleted[0].name, "Latest delete");
+    }
+
+    #[test]
     fn pruning_keeps_the_newest_20() {
         let d = tempdir().unwrap();
         let d = d.path();
@@ -532,31 +598,30 @@ mod tests {
         let d = d.path();
         let id = save_template_in(d, None, &t("A"), &SaveOrigin::default()).unwrap();
         let now: DateTime<Utc> = "2026-10-30T14:22:33.123Z".parse().unwrap();
+        let base = "20261030T142233123Z";
+        let folder = d.join(HISTORY_DIR).join(&id);
+        fs::create_dir_all(&folder).unwrap();
+        // Unpaired metadata claims still use the existing suffix collision logic.
+        fs::write(folder.join(format!("{base}.meta.json")), "{}").unwrap();
+        fs::write(folder.join(format!("{base}-1.meta.json")), "{}").unwrap();
         for _ in 0..3 {
             archive(d, &id, &SaveOrigin::default(), false, now).unwrap();
         }
-        let base = "20261030T142233123Z";
-        let folder = d.join(".history").join(&id);
-        for suffix in ["", "-1", "-2"] {
-            assert!(folder.join(format!("{base}{suffix}.json")).exists());
-            assert!(folder.join(format!("{base}{suffix}.meta.json")).exists());
-        }
         assert_eq!(
-            list_history_in(d, &id)
-                .unwrap()
-                .iter()
-                .map(|e| e.version.clone())
-                .collect::<Vec<_>>(),
-            [format!("{base}-2"), format!("{base}-1"), base.into()]
+            list_history_in(d, &id).unwrap().iter().map(|e| e.version.clone()).collect::<Vec<_>>(),
+            ["20261030T142233125Z", "20261030T142233124Z", "20261030T142233123Z-2"]
         );
-        std::fs::copy(
-            folder.join(format!("{base}.json")),
-            folder.join(format!("{base}-10.json")),
-        )
-        .unwrap();
+        for version in ["20261030T142233125Z", "20261030T142233124Z", "20261030T142233123Z-2"] {
+            assert!(folder.join(format!("{version}.json")).exists());
+            assert!(folder.join(format!("{version}.meta.json")).exists());
+        }
+        for suffix in [2, 10] {
+            fs::copy(folder.join("20261030T142233125Z.json"),
+                folder.join(format!("20261030T142233125Z-{suffix}.json"))).unwrap();
+        }
         let h = list_history_in(d, &id).unwrap();
-        assert_eq!(h[0].version, format!("{base}-10"));
-        assert_eq!(h[1].version, format!("{base}-2"));
+        assert_eq!(h[0].version, "20261030T142233125Z-10");
+        assert_eq!(h[1].version, "20261030T142233125Z-2");
     }
     #[test]
     fn listing_skips_history() {
@@ -727,7 +792,10 @@ mod tests {
         let now: DateTime<Utc> = "2026-10-30T11:00:00Z".parse().unwrap();
         archive(dir, &id, &SaveOrigin::default(), false, now).unwrap();
         let folder = dir.join(HISTORY_DIR).join(&id);
-        assert!(folder.join("20261030T110000000Z.json").exists());
+        assert!(folder.join("20261030T121900001Z.json").exists());
+        // Archiving itself never prunes; the successful live operation does.
+        assert_eq!(fs::read_dir(&folder).unwrap().count(), 42);
+        prune_history(dir, &id);
         assert_eq!(fs::read_dir(folder).unwrap().count(), 40);
     }
 

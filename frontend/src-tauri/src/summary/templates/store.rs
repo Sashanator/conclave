@@ -1,5 +1,5 @@
 use super::defaults;
-use super::history::{copy_to_history, move_to_history, SaveOrigin, HISTORY_DIR};
+use super::history::{copy_to_history, move_to_history, prune_history, SaveOrigin, HISTORY_DIR};
 use super::types::Template;
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
@@ -134,6 +134,7 @@ pub fn save_template_in(dir: &Path, id: Option<&str>, template: &Template, origi
     let json = serde_json::to_string_pretty(template).map_err(|e| e.to_string())?;
     copy_to_history(dir, &id, origin)?;
     write_atomically(&checked_path(dir, &id)?, &json)?;
+    prune_history(dir, &id);
     info!("Saved template '{id}'");
     Ok(id)
 }
@@ -144,7 +145,9 @@ pub fn delete_template_in(dir: &Path, id: &str) -> Result<(), String> {
         return Err("The Standard template cannot be deleted".into());
     }
     checked_path(dir, id)?;
-    move_to_history(dir, id)
+    move_to_history(dir, id)?;
+    prune_history(dir, id);
+    Ok(())
 }
 
 /// Runs each seed batch once, in order. A batch writes only the files that are missing.

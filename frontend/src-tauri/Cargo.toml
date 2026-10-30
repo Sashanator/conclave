@@ -62,6 +62,7 @@ sha2 = "0.10"
 
 
 [dependencies]
+similar = "2"
 serde_json = "1.0"
 serde = { version = "1.0", features = ["derive"] }
 meeting-detector = { path = "../../crates/meeting-detector" }

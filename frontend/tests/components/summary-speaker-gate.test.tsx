@@ -166,7 +166,7 @@ mock.module('../../src/hooks/meeting-details/useMeetingData', () => ({
     isSaving: false,
     isSummaryDirty: dirty,
     setIsSummaryDirty: () => {},
-    saveAllChanges: async () => {},
+    saveAllChanges: async () => false,
     handleSaveSummary: async () => {},
     handleSummaryChange: () => {},
     updateMeetingTitle: () => {},

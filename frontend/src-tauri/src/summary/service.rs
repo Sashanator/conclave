@@ -117,6 +117,7 @@ fn build_summary_result_json(
     }
     Ok(serde_json::json!({
         "markdown": markdown,
+        "generated_markdown": markdown,
         "reasoning_stripped": reasoning_stripped || cleaned.reasoning_stripped,
         "summary_language": language.code,
         "language_fallback": language.fallback,
@@ -813,6 +814,13 @@ mod tests {
         let result = result_json("# Translated Title\n## Decisions\nDone", false, &english_choice(false)).unwrap();
 
         assert_eq!(result["markdown"], "## Decisions\nDone");
+    }
+
+    #[test]
+    fn result_json_stores_generated_markdown() {
+        let v = result_json("# T\n## A\nx", false, &english_choice(false)).unwrap();
+        assert_eq!(v["generated_markdown"], v["markdown"]);
+        assert_eq!(v["generated_markdown"], "## A\nx");
     }
 
     #[test]

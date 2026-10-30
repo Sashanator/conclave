@@ -132,8 +132,12 @@ fn archive(
     now: DateTime<Utc>,
 ) -> Result<(), String> {
     let source = checked_path(dir, id)?;
+    let source_metadata = fs::metadata(&source);
+    if moving && matches!(&source_metadata, Err(e) if e.kind() == io::ErrorKind::NotFound) {
+        return Err(format!("Template '{id}' not found"));
+    }
     let keep = || -> io::Result<()> {
-        let embedded = match fs::metadata(&source) {
+        let embedded = match source_metadata {
             Ok(_) => None,
             Err(e) if e.kind() == io::ErrorKind::NotFound && !moving => {
                 if id != STANDARD_TEMPLATE_ID {
@@ -171,12 +175,22 @@ fn archive(
             drop(file);
             let destination = folder.join(format!("{version}.json"));
             let saved = saved.and_then(|()| {
-                if let Some(json) = &embedded {
-                    fs::write(&destination, json)
-                } else if moving {
+                if moving {
                     fs::rename(&source, &destination)
                 } else {
-                    fs::copy(&source, &destination).map(|_| ())
+                    let copied = if let Some(json) = &embedded {
+                        fs::write(&destination, json)
+                    } else {
+                        fs::copy(&source, &destination).map(|_| ())
+                    };
+                    if copied.is_err() {
+                        if let Err(e) = fs::remove_file(&destination) {
+                            if e.kind() != io::ErrorKind::NotFound {
+                                warn!("Cannot remove failed history copy for '{id}' version '{version}'");
+                            }
+                        }
+                    }
+                    copied
                 }
             });
             if let Err(e) = saved {
@@ -185,7 +199,7 @@ fn archive(
                 }
                 return Err(e);
             }
-            if prune(&folder).is_err() {
+            if prune(&folder, &version).is_err() {
                 warn!("Cannot prune template history for '{id}'");
             }
             return Ok(());
@@ -198,8 +212,12 @@ fn archive(
     keep().map_err(|e| format!("Cannot keep an undo copy of '{id}': {e}"))
 }
 
-fn prune(folder: &Path) -> io::Result<()> {
-    for version in versions(folder)?.into_iter().skip(HISTORY_KEEP) {
+fn prune(folder: &Path, claimed: &str) -> io::Result<()> {
+    for version in versions(folder)?
+        .into_iter()
+        .filter(|version| version != claimed)
+        .skip(HISTORY_KEEP - 1)
+    {
         fs::remove_file(folder.join(format!("{version}.json")))?;
         match fs::remove_file(folder.join(format!("{version}.meta.json"))) {
             Ok(()) => {}
@@ -249,15 +267,12 @@ pub fn get_version_in(dir: &Path, id: &str, version: &str) -> Result<Template, S
     parse(&json)
 }
 
-pub fn list_deleted_in(dir: &Path) -> Vec<DeletedTemplate> {
+pub fn list_deleted_in(dir: &Path) -> Result<Vec<DeletedTemplate>, String> {
     let mut deleted = Vec::new();
     let entries = match fs::read_dir(dir.join(HISTORY_DIR)) {
         Ok(entries) => entries,
-        Err(e) if e.kind() == io::ErrorKind::NotFound => return deleted,
-        Err(_) => {
-            warn!("Cannot list deleted template history");
-            return deleted;
-        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(deleted),
+        Err(e) => return Err(format!("Cannot read template history: {e}")),
     };
     for entry in entries {
         let Ok(entry) = entry else {
@@ -307,8 +322,9 @@ pub fn list_deleted_in(dir: &Path) -> Vec<DeletedTemplate> {
             version: newest.version,
         });
     }
+    // shortcut: deleted list sorts by the version stamp, so a clock set back can misorder deletions; upgrade to sorting by saved_at if that matters.
     deleted.sort_by(|a, b| version_key(&b.version).cmp(&version_key(&a.version)));
-    deleted
+    Ok(deleted)
 }
 
 pub fn list_history(id: &str) -> Result<Vec<HistoryEntry>, String> {
@@ -318,7 +334,7 @@ pub fn get_version(id: &str, version: &str) -> Result<Template, String> {
     with_dir(|d| get_version_in(d, id, version))
 }
 pub fn list_deleted() -> Result<Vec<DeletedTemplate>, String> {
-    with_dir(|d| Ok(list_deleted_in(d)))
+    with_dir(list_deleted_in)
 }
 
 #[cfg(test)]
@@ -376,7 +392,7 @@ mod tests {
         assert_eq!(h[0].source, HistorySource::Delete);
         assert!(!h[0].saved_at.is_empty());
         assert_eq!(
-            list_deleted_in(d),
+            list_deleted_in(d).unwrap(),
             vec![DeletedTemplate {
                 id,
                 name: "Weekly Sync".into(),
@@ -405,7 +421,7 @@ mod tests {
             ),
             Ok(id.clone())
         );
-        assert!(list_deleted_in(d).is_empty());
+        assert!(list_deleted_in(d).unwrap().is_empty());
         let h = list_history_in(d, &id).unwrap();
         assert_eq!(h.len(), 1);
         assert_eq!(h[0].source, HistorySource::Delete);
@@ -599,7 +615,7 @@ mod tests {
             )
             .unwrap();
         }
-        let deleted = list_deleted_in(d);
+        let deleted = list_deleted_in(d).unwrap();
         assert_eq!(
             deleted.iter().map(|e| e.id.as_str()).collect::<Vec<_>>(),
             ["b", "a"]
@@ -611,9 +627,53 @@ mod tests {
             "{",
         )
         .unwrap();
-        assert_eq!(list_deleted_in(d)[0].name, "b");
+        assert_eq!(list_deleted_in(d).unwrap()[0].name, "b");
         assert!(list_history_in(d, "missing").unwrap().is_empty());
         assert!(delete_template_in(d, "missing").is_err());
+    }
+
+    #[test]
+    fn delete_missing_template_says_not_found() {
+        let dir = tempdir().unwrap();
+        let dir = dir.path();
+        assert_eq!(
+            delete_template_in(dir, "ghost"),
+            Err("Template 'ghost' not found".into())
+        );
+        assert!(!dir.join(".history").exists());
+    }
+
+    #[test]
+    fn clock_set_back_keeps_the_new_version() {
+        let dir = tempdir().unwrap();
+        let dir = dir.path();
+        let id = save_template_in(dir, None, &t("A"), &SaveOrigin::default()).unwrap();
+        let now: DateTime<Utc> = "2026-10-30T12:00:00Z".parse().unwrap();
+        for n in 0..20 {
+            archive(
+                dir,
+                &id,
+                &SaveOrigin::default(),
+                false,
+                now + chrono::Duration::minutes(n),
+            )
+            .unwrap();
+        }
+        let now: DateTime<Utc> = "2026-10-30T11:00:00Z".parse().unwrap();
+        archive(dir, &id, &SaveOrigin::default(), false, now).unwrap();
+        let folder = dir.join(HISTORY_DIR).join(&id);
+        assert!(folder.join("20261030T110000000Z.json").exists());
+        assert_eq!(fs::read_dir(folder).unwrap().count(), 40);
+    }
+
+    #[test]
+    fn unreadable_history_root_is_an_error() {
+        let dir = tempdir().unwrap();
+        let dir = dir.path();
+        fs::write(dir.join(HISTORY_DIR), "").unwrap();
+        assert!(save_template_in(dir, None, &t("Weekly Sync"), &SaveOrigin::default()).is_err());
+        assert!(list_deleted_in(dir).is_err());
+        assert!(!dir.join("weekly_sync.json").exists());
     }
 
     #[test]

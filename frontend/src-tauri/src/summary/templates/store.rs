@@ -7,6 +7,7 @@ use tracing::{info, warn};
 pub const STANDARD_TEMPLATE_ID: &str = "standard_meeting";
 const SEED_MARKER: &str = ".seeded-v1";
 const SEED_MARKER_V2: &str = ".seeded-v2";
+static TEMPLATE_WRITES: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 pub struct TemplateEntry { pub id: String, pub template: Template }
 pub struct TemplateListing { pub templates: Vec<TemplateEntry>, pub errors: Vec<String> }
@@ -93,25 +94,32 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), String> {
 }
 
 /// Every `<id>.json` file stem, parseable or not, so a new template never overwrites a file it could not read.
-fn taken_ids(dir: &Path) -> Vec<String> {
+fn taken_ids(dir: &Path) -> Result<Vec<String>, String> {
     let mut ids: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
         .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".json").map(str::to_string))
         .collect();
-    for entry in std::fs::read_dir(dir.join(HISTORY_DIR)).into_iter().flatten().flatten() {
-        if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
-            ids.push(entry.file_name().to_string_lossy().to_string());
+    match std::fs::read_dir(dir.join(HISTORY_DIR)) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                    ids.push(entry.file_name().to_string_lossy().to_string());
+                }
+            }
         }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Cannot read template history: {e}")),
     }
     ids.push(STANDARD_TEMPLATE_ID.into());
-    ids
+    Ok(ids)
 }
 
 pub fn save_template_in(dir: &Path, id: Option<&str>, template: &Template, origin: &SaveOrigin) -> Result<String, String> {
+    let _guard = TEMPLATE_WRITES.lock().unwrap_or_else(|p| p.into_inner());
     template.validate()?;
     let id = match id {
         Some(id) => { checked_path(dir, id)?; id.to_string() }
         None => {
-            new_template_id(&template.name, &taken_ids(dir))
+            new_template_id(&template.name, &taken_ids(dir)?)
         }
     };
     let json = serde_json::to_string_pretty(template).map_err(|e| e.to_string())?;
@@ -122,6 +130,7 @@ pub fn save_template_in(dir: &Path, id: Option<&str>, template: &Template, origi
 }
 
 pub fn delete_template_in(dir: &Path, id: &str) -> Result<(), String> {
+    let _guard = TEMPLATE_WRITES.lock().unwrap_or_else(|p| p.into_inner());
     if id == STANDARD_TEMPLATE_ID {
         return Err("The Standard template cannot be deleted".into());
     }

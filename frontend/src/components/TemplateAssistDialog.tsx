@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -22,6 +22,8 @@ export function TemplateAssistDialog(props: {
   onCreated: (r: AssistResult) => void;
   onAccepted: (merged: TemplateJson, note: string, base: TemplateJson) => void;
   checkStale?: boolean;
+  meeting?: { meetingId: string; hasEdits: boolean; transcriptTokens: number; includeTranscriptDefault: boolean };
+  confirm?: ReactNode | null;
 }): JSX.Element {
   const { open, onOpenChange, mode, onCreated } = props;
   const [proposal, setProposal] = useState<AssistResult | null>(null);
@@ -30,6 +32,9 @@ export function TemplateAssistDialog(props: {
   const [notice, setNotice] = useState<string | null>(null);
   const warnedRef = useRef<AssistResult | null>(null);
   const [text, setText] = useState('');
+  const [includeEdits, setIncludeEdits] = useState(false);
+  const [includeTranscript, setIncludeTranscript] = useState(false);
+  const canGenerate = !!text.trim() || !!(props.meeting?.hasEdits && includeEdits);
   const [running, setRunning] = useState(false);
   const [error, setError] = useState<ReturnType<typeof splitRawAnswer> | null>(null);
   const [model, setModel] = useState<ModelConfig | null>(null);
@@ -43,6 +48,8 @@ export function TemplateAssistDialog(props: {
     setRunning(false);
     setError(null);
     setText('');
+    setIncludeEdits(props.meeting?.hasEdits ?? false);
+    setIncludeTranscript(props.meeting?.includeTranscriptDefault ?? false);
     setProposal(null);
     setRefining(false);
     setRefinement('');
@@ -72,7 +79,7 @@ export function TemplateAssistDialog(props: {
   };
 
   const generate = async () => {
-    if (!open || runningRef.current || !text.trim() || (proposal && !refinement.trim())) return;
+    if (!open || runningRef.current || !canGenerate || (proposal && !refinement.trim())) return;
     const run = runRef.current;
     runningRef.current = true;
     setRunning(true);
@@ -80,6 +87,7 @@ export function TemplateAssistDialog(props: {
     try {
       const result = mode.kind === 'create' ? await draftTemplate(text)
         : await reviseTemplate({ templateId: mode.templateId, request: text,
+          ...(props.meeting ? { meetingId: props.meeting.meetingId, includeEdits, includeTranscript } : {}),
           ...(proposal ? { previous: proposal, refinement } : {}) });
       if (run !== runRef.current) return;
       if (mode.kind === 'create') {
@@ -110,7 +118,7 @@ export function TemplateAssistDialog(props: {
     setRunning(true);
     setError(null);
     try {
-      if (props.checkStale !== false) {
+      if (!props.meeting && props.checkStale !== false) {
         const saved = await invoke<TemplateJson>('api_get_template', { templateId: mode.templateId });
         if (run !== runRef.current) return;
         if (JSON.stringify(saved) !== JSON.stringify(base) && warnedRef.current !== proposal) {
@@ -121,7 +129,7 @@ export function TemplateAssistDialog(props: {
       }
       if (run !== runRef.current) return;
       props.onAccepted(merged, proposal.changes[0]?.note ?? '', base);
-      changeOpen(false);
+      if (!props.meeting) changeOpen(false);
     } catch (err) {
       if (run === runRef.current) setError(splitRawAnswer(err));
     } finally {
@@ -144,6 +152,7 @@ export function TemplateAssistDialog(props: {
           <DialogTitle>{mode.kind === 'create' ? 'Create with AI' : 'Improve template'}</DialogTitle>
           <DialogDescription>Generate a template draft to review and save.</DialogDescription>
         </DialogHeader>
+        {props.confirm ?? <>
         {proposal && mode.kind === 'improve' ? <TemplateDiffReview
           old={proposal.base ?? mode.saved} next={proposal.template}
           changes={proposal.changes} warnings={proposal.warnings} selectable busy={running}
@@ -160,8 +169,18 @@ export function TemplateAssistDialog(props: {
         </TemplateDiffReview> : <div className="space-y-2">
           <Label htmlFor="template-assist-request">{mode.kind === 'create'
             ? 'Describe the meeting and the notes you want, or paste an existing template (Notion etc.).'
-            : 'What should change?'}</Label>
+            : props.meeting ? 'What was wrong with this summary?' : 'What should change?'}</Label>
           <Textarea id="template-assist-request" rows={6} value={text} onChange={e => setText(e.target.value)} disabled={running} />
+          {props.meeting && <>
+            {props.meeting.hasEdits && <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={includeEdits} disabled={running} onChange={e => setIncludeEdits(e.target.checked)} />
+              Your edits to this summary will be included
+            </label>}
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={includeTranscript} disabled={running} onChange={e => setIncludeTranscript(e.target.checked)} />
+              {`Include the transcript (more accurate, costs more: ~${props.meeting.transcriptTokens.toLocaleString()} tokens)`}
+            </label>
+          </>}
           {model && <p className="text-xs text-muted-foreground">
             Uses: {model.model} ({PROVIDERS.find(p => p.id === model.provider)?.label ?? model.provider})
             {estimate !== null && ` · about $${estimate.toFixed(3)}`}
@@ -176,11 +195,12 @@ export function TemplateAssistDialog(props: {
           </div>}
         {!proposal && <DialogFooter>
           <Button variant="outline" onClick={() => changeOpen(false)}>Cancel</Button>
-          <Button onClick={generate} disabled={running || !text.trim()}>
+          <Button onClick={generate} disabled={running || !canGenerate}>
             {running && <Loader2 className="w-4 h-4 mr-1 animate-spin" />}
             Generate
           </Button>
         </DialogFooter>}
+        </>}
       </DialogContent>
     </Dialog>
   );

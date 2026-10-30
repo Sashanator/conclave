@@ -1,6 +1,10 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { TemplateDraft, TemplateJson } from '@/lib/template-draft';
 
+export type TemplateMeetingInfo = { templateId: string | null; hasEdits: boolean; transcriptTokens: number };
+export const getTemplateMeetingInfo = (meetingId: string) =>
+  invoke<TemplateMeetingInfo>('api_template_meeting_info', { meetingId });
+
 export type ChangeNote = { field: string; note: string };
 export type AssistResult = { template: TemplateJson; changes: ChangeNote[]; warnings: string[]; base?: TemplateJson | null };
 export type HistorySource = 'manual' | 'ai' | 'restore' | 'delete';
@@ -16,9 +20,9 @@ export const RAW_ANSWER_MARKER = '\n\nRaw answer:\n';
 export const draftTemplate = (description: string) =>
   invoke<AssistResult>('api_template_draft', { description });
 
-export function reviseTemplate(a: { templateId: string; request: string; previous?: AssistResult | null; refinement?: string | null }): Promise<AssistResult> {
+export function reviseTemplate(a: { templateId: string; request: string; previous?: AssistResult | null; refinement?: string | null; meetingId?: string | null; includeEdits?: boolean; includeTranscript?: boolean }): Promise<AssistResult> {
   return invoke<AssistResult>('api_template_revise', {
-    templateId: a.templateId, request: a.request, meetingId: null, includeEdits: false, includeTranscript: false,
+    templateId: a.templateId, request: a.request, meetingId: a.meetingId ?? null, includeEdits: a.includeEdits ?? false, includeTranscript: a.includeTranscript ?? false,
     previous: a.previous ?? null, refinement: a.refinement ?? null,
   });
 }

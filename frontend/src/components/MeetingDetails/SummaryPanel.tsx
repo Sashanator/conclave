@@ -5,6 +5,7 @@ import { BlockNoteSummaryView, BlockNoteSummaryViewRef } from '@/components/AISu
 import { EmptyStateSummary } from '@/components/EmptyStateSummary';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
+import { ImproveTemplateAction } from './ImproveTemplateAction';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
 import { MeetingCostLine } from './MeetingCostLine';
 import { ExtractionStatusLine } from './ExtractionStatusLine';
@@ -49,7 +50,7 @@ interface SummaryPanelProps {
   onSummaryChange: (summary: Summary) => void;
   onDirtyChange: (isDirty: boolean) => void;
   summaryError: string | null;
-  onRegenerateSummary: () => Promise<void>;
+  onRegenerateSummary: (templateId?: string) => Promise<void>;
   getSummaryStatusMessage: (status: 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error') => string;
   availableTemplates: Array<{ id: string, name: string }>;
   selectedTemplate: string | null;
@@ -97,6 +98,7 @@ export function SummaryPanel({
   onSummarizeNow,
   namesChanged = false,
 }: SummaryPanelProps) {
+  const [improveTemplateOpen, setImproveTemplateOpen] = useState(false);
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   // Bumped when task extraction finishes: its usage changes the meeting's cost line
   const [costRefresh, setCostRefresh] = useState(0);
@@ -308,6 +310,17 @@ export function SummaryPanel({
               languageSlot={transcripts.length > 0 || hasSummary ? languageSlot : undefined}
             />
           </div>
+
+          {hasSummary && !isSummaryLoading && currentTemplate && availableTemplates.some(t => t.id === currentTemplate.id) && (
+            <ImproveTemplateAction meetingId={meeting.id} templateId={currentTemplate.id}
+              templateExists={availableTemplates.some(t => t.id === currentTemplate.id)}
+              open={improveTemplateOpen} onOpenChange={setImproveTemplateOpen}
+              onRegenerate={id => {
+                if (shouldRegenerate(isSummaryDirty)) void onRegenerateSummary(id).catch(err => {
+                  toast.error(`Failed to regenerate summary: ${String(err)}`);
+                });
+              }} />
+          )}
 
           {hasSummary && !isSummaryLoading && (
             <div className="flex-shrink-0">

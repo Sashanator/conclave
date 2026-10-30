@@ -11,7 +11,7 @@ use crate::summary::metadata::{
 };
 use crate::summary::processor::{
     clean_llm_markdown_detailed, extract_meeting_name_from_markdown, generate_meeting_summary,
-    chunk_prompt_overhead_tokens, require_visible_markdown, rough_token_count,
+    chunk_prompt_overhead_tokens, require_visible_markdown, rough_token_count, MeetingInfo,
 };
 use crate::summary::template_choice::{
     auto_pick_answer_id, auto_pick_prompts, choice_to_store, choose_without_model, Choice,
@@ -20,7 +20,7 @@ use crate::summary::template_choice::{
 use crate::summary::templates;
 use crate::usage::{self, Purpose};
 use crate::ollama::metadata::ModelMetadataCache;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, Utc};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -348,6 +348,15 @@ impl SummaryService {
 
         let client = reqwest::Client::new();
         let meeting = MeetingsRepository::get_meeting_metadata(&pool, &meeting_id).await.ok().flatten();
+        let title_source = MeetingsRepository::get_title_source(&pool, &meeting_id)
+            .await
+            .unwrap_or_else(|e| {
+                warn!("Could not read title source for meeting {}: {}", meeting_id, e);
+                None
+            });
+        let meeting_info = meeting.as_ref().map(|m| {
+            meeting_info_for_prompt(&m.title, title_source.as_deref(), m.created_at.0)
+        });
         let title = meeting.as_ref().map(|m| m.title.clone()).unwrap_or_default();
         let folder = meeting.and_then(|m| m.folder_path).filter(|p| !p.trim().is_empty()).map(PathBuf::from);
         let stored = folder.as_deref().and_then(|f| read_template_choice_from_metadata(f).ok().flatten());
@@ -443,7 +452,7 @@ impl SummaryService {
             &custom_prompt,
             notes_block.as_deref(),
             prep_block.as_deref(),
-            None,
+            meeting_info.as_ref(),
             &dictionary,
             &template,
             language.name,
@@ -573,11 +582,45 @@ impl SummaryService {
 
 }
 
+pub(crate) fn meeting_info_for_prompt(
+    title: &str,
+    title_source: Option<&str>,
+    created_at: DateTime<Utc>,
+) -> MeetingInfo {
+    let title = title.trim();
+    MeetingInfo {
+        title: match title_source {
+            Some("calendar" | "user") if !title.is_empty() => Some(title.to_string()),
+            _ => None,
+        },
+        date: created_at.with_timezone(&Local).format("%Y-%m-%d").to_string(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::repositories::{test_pool, transcript::TranscriptsRepository};
     use crate::summary::llm_client::TokenUsage;
+
+    #[test]
+    fn meeting_info_for_prompt_sends_only_calendar_and_user_titles() {
+        let at = DateTime::parse_from_rfc3339("2026-10-29T12:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        for (title, source, expected) in [
+            (" X ", Some("calendar"), Some("X")),
+            (" X ", Some("user"), Some("X")),
+            (" X ", Some("default"), None),
+            (" X ", Some("summary"), None),
+            (" X ", None, None),
+            ("  ", Some("user"), None),
+        ] {
+            let info = meeting_info_for_prompt(title, source, at);
+            assert_eq!(info.title.as_deref(), expected);
+            assert_eq!(info.date, "2026-10-29");
+        }
+    }
 
     #[test]
     fn prep_material_budget_uses_only_tokens_left_after_transcript() {

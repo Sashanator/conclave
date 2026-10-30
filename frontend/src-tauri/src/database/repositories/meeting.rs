@@ -161,6 +161,16 @@ impl MeetingsRepository {
         Ok(meeting)
     }
 
+    pub async fn get_title_source(
+        pool: &SqlitePool,
+        meeting_id: &str,
+    ) -> Result<Option<String>, SqlxError> {
+        sqlx::query_scalar("SELECT title_source FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(pool)
+            .await
+    }
+
     /// Pins or unpins a meeting's audio ("Keep audio"). Returns false if the meeting does not exist.
     pub async fn set_keep_audio(pool: &SqlitePool, meeting_id: &str, keep: bool) -> Result<bool, SqlxError> {
         let r = sqlx::query("UPDATE meetings SET keep_audio = ? WHERE id = ?")
@@ -539,6 +549,20 @@ mod migration_tests {
             .execute(pool)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn get_title_source_reads_the_column() {
+        let pool = test_pool().await;
+        insert_titled(&pool, "C", "calendar").await;
+        assert_eq!(
+            MeetingsRepository::get_title_source(&pool, "C").await.unwrap(),
+            Some("calendar".to_string())
+        );
+        assert_eq!(
+            MeetingsRepository::get_title_source(&pool, "missing").await.unwrap(),
+            None
+        );
     }
 
     async fn title_source(pool: &SqlitePool, id: &str) -> (String, Option<String>, Option<String>) {

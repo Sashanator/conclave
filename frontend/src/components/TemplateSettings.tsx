@@ -283,7 +283,8 @@ export function TemplateSettings() {
             New template
           </Button>
           <Button variant="outline" size="sm" disabled={busy} onClick={() => {
-            if (startNew()) setAssist({ kind: 'create' });
+            if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+            setAssist({ kind: 'create' });
           }}>
             <Sparkles className="w-4 h-4 mr-1" />
             Create with AI

@@ -32,7 +32,7 @@ export function templateFromDraft(d: TemplateDraft): TemplateJson {
     ...(s.format !== undefined ? { format: s.format } : {}),
     // Never drop example_item_format on save (spec 6.3).
     ...(s.example_item_format !== undefined ? { example_item_format: s.example_item_format } : {}),
-    ...(s.item_format?.trim() && s.item_format !== s.example_item_format ? { item_format: s.item_format.trim() } : {}),
+    ...(s.item_format?.trim() && s.item_format.trim() !== s.example_item_format?.trim() ? { item_format: s.item_format.trim() } : {}),
   })) };
   if (d.description !== undefined) t.description = d.description;
   const keywords = d.title_keywords.split(',').map(k => k.trim()).filter(Boolean);

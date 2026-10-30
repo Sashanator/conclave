@@ -33,6 +33,13 @@ describe('template drafts', () => {
     expect(templateFromDraft(draft).sections[0]).toEqual({ title: 'A', instruction: 'i', example_item_format: '- x' });
   });
 
+  test('whitespace around the fallback does not introduce an item_format override', () => {
+    const t = { name: 'N', sections: [{ title: 'A', instruction: 'i', example_item_format: ' - x ' }] };
+    const draft = draftFromTemplate(t);
+    draft.sections[0].item_format = '  - x';
+    expect(templateFromDraft(draft)).toEqual(t);
+  });
+
   test('both fields loaded and unchanged round trip to the input', () => {
     const t = { name: 'N', sections: [{ title: 'A', instruction: 'i', item_format: '| A |', example_item_format: '| ex |' }] };
     expect(templateFromDraft(draftFromTemplate(t))).toEqual(t);

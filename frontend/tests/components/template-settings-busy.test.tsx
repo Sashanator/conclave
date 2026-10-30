@@ -239,6 +239,25 @@ describe('AI template draft persistence', () => {
     await flush();
   });
 
+  test('canceling Create with AI keeps the open template and its dirty draft', async () => {
+    const confirm = spyOn(window, 'confirm').mockImplementation(() => true);
+    try {
+      await act(async () => { button('Create with AI').props.onClick(); });
+      await act(async () => { button('Cancel').props.onClick(); });
+      expect(field('tpl-name', 'input').props.value).toBe('Standard');
+      expect(confirm).not.toHaveBeenCalled();
+      await type('tpl-name', 'input', 'Unsaved edit');
+      await act(async () => { button('Create with AI').props.onClick(); });
+      expect(confirm).toHaveBeenCalledWith('Discard unsaved changes?');
+      await act(async () => { button('Cancel').props.onClick(); });
+      expect(field('tpl-name', 'input').props.value).toBe('Unsaved edit');
+      expect(renderer!.root.findAll(n => n.type === 'button' && n.props['aria-current'] === 'true').map(n => n.children[0])).toEqual(['Standard']);
+      await act(async () => { button('Save').props.onClick(); });
+      expect(invoke.mock.calls.find(([c]) => c === 'api_save_template')?.[1]?.templateId).toBe('standard_meeting');
+      await act(async () => { pendingSave?.resolve('standard_meeting'); });
+    } finally { confirm.mockRestore(); }
+  });
+
   test('created draft stays unsaved, guards navigation and sends AI origin on first Save only', async () => {
     const confirm = spyOn(window, 'confirm').mockImplementation(() => false);
     try {

@@ -20,7 +20,7 @@ use crate::summary::template_choice::{
 use crate::summary::templates;
 use crate::usage::{self, Purpose};
 use crate::ollama::metadata::ModelMetadataCache;
-use chrono::{DateTime, Local, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
 use sqlx::SqlitePool;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -347,7 +347,13 @@ impl SummaryService {
         }
 
         let client = reqwest::Client::new();
-        let meeting = MeetingsRepository::get_meeting_metadata(&pool, &meeting_id).await.ok().flatten();
+        let meeting = match MeetingsRepository::get_meeting_metadata(&pool, &meeting_id).await {
+            Ok(meeting) => meeting,
+            Err(_) => {
+                warn!("Could not read meeting {}", meeting_id);
+                None
+            }
+        };
         let title_source = MeetingsRepository::get_title_source(&pool, &meeting_id)
             .await
             .unwrap_or_else(|e| {
@@ -605,9 +611,7 @@ mod tests {
 
     #[test]
     fn meeting_info_for_prompt_sends_only_calendar_and_user_titles() {
-        let at = DateTime::parse_from_rfc3339("2026-10-29T12:00:00Z")
-            .unwrap()
-            .with_timezone(&Utc);
+        let at = Local.with_ymd_and_hms(2026, 10, 29, 12, 0, 0).unwrap().with_timezone(&Utc);
         for (title, source, expected) in [
             (" X ", Some("calendar"), Some("X")),
             (" X ", Some("user"), Some("X")),

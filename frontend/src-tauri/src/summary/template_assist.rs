@@ -142,22 +142,26 @@ fn normalized_title(title: &str) -> String {
 }
 
 pub(crate) fn keep_hidden_fields(current: &Template, mut next: Template) -> Template {
-    if next.description.is_empty() {
+    let blank = |value: &Option<String>| value.as_deref().unwrap_or("").trim().is_empty();
+    if next.description.trim().is_empty() {
         next.description = current.description.clone();
     }
-    if next.prep.is_none() {
+    if blank(&next.prep) {
         next.prep = current.prep.clone();
     }
-    for section in &mut next.sections {
+    let same_count = current.sections.len() == next.sections.len();
+    for (index, section) in next.sections.iter_mut().enumerate() {
         let title = normalized_title(&section.title);
-        if let Some(old) = current.sections.iter().find(|s| normalized_title(&s.title) == title) {
-            if section.format.is_none() {
+        let old = current.sections.iter().find(|s| normalized_title(&s.title) == title)
+            .or_else(|| if same_count { current.sections.get(index) } else { None });
+        if let Some(old) = old {
+            if blank(&section.format) {
                 section.format = old.format.clone();
             }
-            if section.item_format.is_none() {
+            if blank(&section.item_format) {
                 section.item_format = old.item_format.clone();
             }
-            if section.example_item_format.is_none() {
+            if blank(&section.example_item_format) {
                 section.example_item_format = old.example_item_format.clone();
             }
         }
@@ -169,9 +173,12 @@ pub(crate) fn preservation_warnings(old: &Template, new: &Template, request: &st
     let request = request.to_lowercase();
     let mentions = |text: &str| request.contains(&text.trim().to_lowercase());
     let mut warnings = Vec::new();
+    let mut remaining_titles: Vec<_> = new.sections.iter().map(|s| normalized_title(&s.title)).collect();
     for section in &old.sections {
         let title = normalized_title(&section.title);
-        if !new.sections.iter().any(|s| normalized_title(&s.title) == title) && !mentions(&section.title) {
+        if let Some(index) = remaining_titles.iter().position(|t| *t == title) {
+            remaining_titles.remove(index);
+        } else if !mentions(&section.title) {
             warnings.push(format!("Section '{}' was removed.", section.title));
         }
     }
@@ -200,13 +207,21 @@ pub(crate) fn preservation_warnings(old: &Template, new: &Template, request: &st
             }
         }
     }
-    if old.name != new.name && !mentions("name") {
+    if old.name.trim() != new.name.trim() && !mentions("name") {
         warnings.push("The name changed.".into());
     }
     if old.fixed_language() != new.fixed_language() && !mentions("language") {
         warnings.push("The language changed.".into());
     }
-    if old.title_keywords != new.title_keywords && !mentions("keyword") {
+    let normalized_keywords = |keywords: &[String]| {
+        let mut keywords: Vec<_> = keywords.iter()
+            .map(|keyword| keyword.trim().to_lowercase())
+            .filter(|keyword| !keyword.is_empty())
+            .collect();
+        keywords.sort();
+        keywords
+    };
+    if normalized_keywords(&old.title_keywords) != normalized_keywords(&new.title_keywords) && !mentions("keyword") {
         warnings.push("The title keywords changed.".into());
     }
     warnings
@@ -409,14 +424,15 @@ mod tests {
 
         let mut explicit = next.clone();
         explicit.description = "New".into();
-        explicit.prep = Some(String::new());
+        explicit.prep = Some("New prep".into());
         explicit.sections[0].format = Some("paragraph".into());
-        explicit.sections[0].item_format = Some(String::new());
+        explicit.sections[0].item_format = Some("New item".into());
         explicit.sections[0].example_item_format = Some("Example".into());
         assert_eq!(keep_hidden_fields(&current, explicit.clone()), explicit);
 
         let mut unmatched = next;
         unmatched.sections[0].title = "Other".into();
+        unmatched.sections.push(unmatched.sections[0].clone());
         assert_eq!(keep_hidden_fields(&current, unmatched).sections[0].format, None);
     }
 
@@ -488,5 +504,79 @@ mod tests {
         added.title = "New section".into();
         new.sections.push(added);
         assert!(preservation_warnings(&old, &new, "x").is_empty());
+    }
+
+    #[test]
+    fn renamed_sections_keep_hidden_fields_by_position() {
+        let mut current = full_template();
+        let mut second = current.sections[0].clone();
+        second.title = "Risks".into();
+        second.format = Some("paragraph".into());
+        second.item_format = Some("Risk item".into());
+        second.example_item_format = Some("Risk example".into());
+        current.sections.push(second);
+        let mut next = current.clone();
+        for section in &mut next.sections {
+            section.format = None;
+            section.item_format = None;
+            section.example_item_format = None;
+        }
+        next.sections[0].title = "Renamed".into();
+        let kept = keep_hidden_fields(&current, next.clone());
+        for (saved, revised) in current.sections.iter().zip(&kept.sections) {
+            assert_eq!(revised.format, saved.format);
+            assert_eq!(revised.item_format, saved.item_format);
+            assert_eq!(revised.example_item_format, saved.example_item_format);
+        }
+        // A title match at another position takes precedence over the index.
+        next.sections[0].title = " risks ".into();
+        let kept = keep_hidden_fields(&current, next.clone());
+        assert_eq!(kept.sections[0].format, current.sections[1].format);
+        assert_eq!(kept.sections[0].item_format, current.sections[1].item_format);
+        assert_eq!(kept.sections[0].example_item_format, current.sections[1].example_item_format);
+        next.sections[0].title = "Renamed".into();
+        next.sections.pop();
+        let kept = keep_hidden_fields(&current, next);
+        assert_eq!(kept.sections[0].format, None);
+        assert_eq!(kept.sections[0].item_format, None);
+        assert_eq!(kept.sections[0].example_item_format, None);
+    }
+
+    #[test]
+    fn blank_hidden_fields_keep_saved_values() {
+        let current = full_template();
+        for blank in ["", " \t\n "] {
+            let mut next = current.clone();
+            next.description = blank.into();
+            next.prep = Some(blank.into());
+            next.sections[0].format = Some(blank.into());
+            next.sections[0].item_format = Some(blank.into());
+            next.sections[0].example_item_format = Some(blank.into());
+            assert_eq!(keep_hidden_fields(&current, next), current);
+        }
+    }
+
+    #[test]
+    fn duplicate_titles_do_not_hide_removed_sections() {
+        let mut old = full_template();
+        old.sections[0].title = "Notes".into();
+        old.sections.push(old.sections[0].clone());
+        let mut new = old.clone();
+        new.sections.pop();
+        new.sections[0].title = " notes ".into();
+        assert_eq!(preservation_warnings(&old, &new, "x"), vec!["Section 'Notes' was removed."]);
+        assert!(preservation_warnings(&old, &new, "drop notes").is_empty());
+    }
+
+    #[test]
+    fn cosmetic_name_and_keyword_changes_have_no_warnings() {
+        let mut old = full_template();
+        old.title_keywords = vec!["Interview".into(), " Hiring ".into(), "".into()];
+        let mut new = old.clone();
+        new.name = format!("  {} \t", old.name);
+        new.title_keywords = vec!["hiring".into(), " INTERVIEW ".into(), "  ".into()];
+        assert!(preservation_warnings(&old, &new, "x").is_empty());
+        new.title_keywords = vec!["Other".into()];
+        assert_eq!(preservation_warnings(&old, &new, "x"), vec!["The title keywords changed."]);
     }
 }

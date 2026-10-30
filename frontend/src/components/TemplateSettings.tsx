@@ -62,6 +62,8 @@ export function TemplateSettings() {
 
   const dirty = draft !== null && JSON.stringify(draft) !== savedJson;
   const problem = draft ? validateDraft(draft) : null;
+  // A restored deleted template opens under its old id before its file exists; History and Delete need the file.
+  const onDisk = currentId !== null && listing.templates.some(t => t.id === currentId);
 
   // Lets navigation elsewhere in the app confirm before discarding this draft
   useEffect(() => {
@@ -208,10 +210,15 @@ export function TemplateSettings() {
 
   const loadHistory = async () => {
     if (currentId === null) return;
+    const id = currentId;
+    const view = viewRef.current;
     setHistory(null);
     try {
-      setHistory(await templateHistory(currentId));
+      const entries = await templateHistory(id);
+      // The editor moved to another template while this was loading: its history is not ours to show.
+      if (viewRef.current === view) setHistory(entries);
     } catch (err) {
+      if (viewRef.current !== view) return;
       fail('Could not load the history')(err);
       setHistory('error');
     }
@@ -428,7 +435,7 @@ export function TemplateSettings() {
               </Button>
               <DropdownMenu onOpenChange={(open) => { if (open) void loadHistory(); }}>
                 <DropdownMenuTrigger asChild>
-                  <Button variant="outline" disabled={busy || currentId === null}>
+                  <Button variant="outline" disabled={busy || !onDisk}>
                     <History className="w-4 h-4 mr-1" />
                     History
                   </Button>
@@ -448,7 +455,7 @@ export function TemplateSettings() {
                 variant="outline"
                 className="text-destructive"
                 onClick={() => setConfirmDelete(true)}
-                disabled={busy || currentId === null || currentId === STANDARD_ID}
+                disabled={busy || !onDisk || currentId === STANDARD_ID}
                 title={currentId === STANDARD_ID ? 'The Standard template cannot be deleted' : undefined}
               >
                 <Trash2 className="w-4 h-4 mr-1" />

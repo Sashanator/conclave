@@ -40,23 +40,36 @@ const current = {
   sections: [{ title: 'Notes', instruction: 'Write notes' }], style: '',
 };
 const older = { ...current, name: 'Older name', style: 'Concise' };
-const listing = {
-  templates: [{ id: 'standard_meeting', name: 'Standard', use_when: null, has_keywords: false }],
-  errors: [],
-};
+const standard = { id: 'standard_meeting', name: 'Standard', use_when: null, has_keywords: false };
+const beta = { id: 'beta', name: 'Beta', use_when: null, has_keywords: false };
+const deletedEntries = [
+  { id: 'beta', name: 'Beta', deletedAt: '2026-10-27T10:00:00Z', version: '20261027T100000000Z' },
+  { id: 'standard_meeting', name: 'Standard', deletedAt: '2026-10-26T10:00:00Z', version: '20261026T100000000Z' },
+];
+// Per test: the templates on disk (a save adds its file) and whether the deleted-templates call fails.
+let listed: Array<typeof standard> = [standard];
+let deletedFails = false;
 const history = [
   { version: '20261030T100000000Z', savedAt: '2026-10-30T10:00:00Z', source: 'manual', note: '' },
   { version: '20261029T100000000Z', savedAt: '2026-10-29T10:00:00Z', source: 'ai', note: 'Make notes concise' },
   { version: '20261028T100000000Z', savedAt: '2026-10-28T10:00:00Z', source: 'restore', note: '' },
   { version: '20261027T100000000Z', savedAt: '2026-10-27T10:00:00Z', source: 'delete', note: '' },
 ];
-const invoke = mock(async (command: string, _args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'api_list_templates') return listing;
+const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
+  if (command === 'api_list_templates') return { templates: listed, errors: [] };
   if (command === 'api_get_template') return current;
   if (command === 'api_template_history') return history;
   if (command === 'api_template_version') return older;
-  if (command === 'api_deleted_templates') return [];
-  if (command === 'api_save_template') return 'standard_meeting';
+  if (command === 'api_deleted_templates') {
+    if (deletedFails) throw new Error('history folder unreadable');
+    return deletedEntries;
+  }
+  if (command === 'api_save_template') {
+    // Save returns the id it wrote; the file then exists, so the next listing includes it.
+    const id = (args?.templateId as string | null) ?? 'new_template';
+    if (!listed.some(t => t.id === id)) listed = [...listed, { id, name: 'Older name', use_when: null, has_keywords: false }];
+    return id;
+  }
   throw new Error(`Unexpected command: ${command}`);
 });
 const toast = { success: mock(() => {}), error: mock((_what: string, _opts?: unknown) => {}), info: mock(() => {}), warning: mock(() => {}) };
@@ -96,6 +109,10 @@ function historyItem(label: string): ReactTestInstance {
   return renderer!.root.findAll((n) => n.type === 'button' && text(n).endsWith(` · ${label}`))[0];
 }
 
+function deletedItem(name: string): ReactTestInstance {
+  return renderer!.root.findAll((n) => n.type === 'button' && text(n).startsWith(`${name} · `))[0];
+}
+
 function field(id: string, tag: 'input' | 'textarea'): ReactTestInstance {
   return renderer!.root.findAll((n) => n.type === tag && n.props.id === id)[0];
 }
@@ -110,6 +127,8 @@ describe('template history restore', () => {
   beforeEach(async () => {
     invoke.mockClear();
     toast.error.mockClear();
+    listed = [standard];
+    deletedFails = false;
     renderer?.unmount();
     renderer = null;
     await act(async () => {
@@ -158,5 +177,55 @@ describe('template history restore', () => {
     } finally {
       confirm.mockRestore();
     }
+  });
+
+  test('a deleted template whose id is free comes back under that id; History and Delete stay off until it is saved', async () => {
+    await act(async () => { button('Deleted templates').props.onClick(); });
+    await flush();
+    await act(async () => { deletedItem('Beta').props.onClick(); });
+    await flush();
+    expect(invoke.mock.calls.find(([command]) => command === 'api_template_version')?.[1])
+      .toEqual({ templateId: 'beta', version: '20261027T100000000Z' });
+    expect(field('tpl-name', 'input').props.value).toBe('Older name');
+    expect(invoke.mock.calls.some(([command]) => command === 'api_save_template')).toBe(false);
+    expect(button('History').props.disabled).toBe(true);
+    expect(button('Delete').props.disabled).toBe(true);
+
+    await act(async () => { button('Save').props.onClick(); });
+    await flush();
+    expect(invoke.mock.calls.find(([command]) => command === 'api_save_template')?.[1]).toEqual({
+      templateId: 'beta',
+      template: expect.objectContaining({ name: 'Older name' }),
+      origin: { source: 'restore', note: '' },
+    });
+    expect(button('History').props.disabled).toBe(false);
+    expect(button('Delete').props.disabled).toBe(false);
+  });
+
+  test('a deleted template whose id was taken in the refreshed listing comes back as a new template', async () => {
+    await act(async () => { button('Deleted templates').props.onClick(); });
+    await flush();
+    // Another template takes the id after the menu loaded; the restore refreshes the listing and sees it.
+    listed = [standard, beta];
+    await act(async () => { deletedItem('Beta').props.onClick(); });
+    await flush();
+    expect(button('History').props.disabled).toBe(true);
+
+    await act(async () => { button('Save').props.onClick(); });
+    await flush();
+    expect(invoke.mock.calls.find(([command]) => command === 'api_save_template')?.[1]).toEqual({
+      templateId: null,
+      template: expect.objectContaining({ name: 'Older name' }),
+      origin: { source: 'restore', note: '' },
+    });
+  });
+
+  test('a failed deleted-templates load shows the error in the menu and a toast, never an empty list', async () => {
+    deletedFails = true;
+    await act(async () => { button('Deleted templates').props.onClick(); });
+    await flush();
+    expect(toast.error.mock.calls.map(([what]) => what)).toContain('Could not load the deleted templates');
+    expect(renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Could not load the deleted templates')).toHaveLength(1);
+    expect(renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'None')).toHaveLength(0);
   });
 });

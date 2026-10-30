@@ -158,8 +158,11 @@ fn archive(
                     None => fs::read(&source)?,
                 };
                 // Failed save retries must not crowd real undo versions out of history.
-                if live == fs::read(folder.join(format!("{newest}.json")))? {
-                    return Ok(());
+                // An unreadable undo copy must not block the save: archive normally.
+                match fs::read(folder.join(format!("{newest}.json"))) {
+                    Ok(previous) if previous == live => return Ok(()),
+                    Ok(_) => {}
+                    Err(_) => warn!("Cannot compare template '{id}' version '{newest}' with its newest undo copy"),
                 }
             }
             let newest_stem = &newest[..19];
@@ -533,6 +536,25 @@ mod tests {
         assert!(delete_template_in(d, &id).is_err());
         assert!(d.join(format!("{id}.json")).exists());
     }
+
+    #[test]
+    fn unreadable_newest_undo_copy_does_not_block_a_save() {
+        let d = tempdir().unwrap();
+        let d = d.path();
+        let origin = SaveOrigin::default();
+        let id = save_template_in(d, None, &t("v0"), &origin).unwrap();
+        save_template_in(d, Some(&id), &t("v1"), &origin).unwrap();
+        let folder = d.join(HISTORY_DIR).join(&id);
+        let newest = versions(&folder).unwrap().remove(0);
+        // Replace the newest undo copy with a directory so reading it fails.
+        let newest_json = folder.join(format!("{newest}.json"));
+        fs::remove_file(&newest_json).unwrap();
+        fs::create_dir(&newest_json).unwrap();
+        save_template_in(d, Some(&id), &t("v2"), &origin).unwrap();
+        assert_eq!(get_template_in(d, &id).unwrap().name, "v2");
+        assert!(versions(&folder).unwrap().iter().any(|v| *v != newest));
+    }
+
     #[test]
     fn failed_live_writes_never_prune_existing_history() {
         let d = tempdir().unwrap();

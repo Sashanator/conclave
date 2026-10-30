@@ -111,9 +111,14 @@ fn pretty<T: Serialize>(value: &T) -> String {
     serde_json::to_string_pretty(value).expect("template types always serialize").replace("</", "<\\/")
 }
 
+/// The proposal as the prompt carries it: template and changes only (not the saved base or the warnings).
+fn previous_json(p: &AssistResult) -> String {
+    pretty(&json!({ "template": p.template, "changes": p.changes }))
+}
+
 pub(crate) fn build_prompts(input: &AssistInput) -> (String, String) {
     let current = input.current.map(pretty);
-    let previous = input.previous.map(|p| pretty(&json!({ "template": p.template, "changes": p.changes })));
+    let previous = input.previous.map(previous_json);
     let optional = [
         ("current_template", current.as_deref()),
         ("summary", input.summary),
@@ -315,10 +320,10 @@ where
         unreachable!("both attempts return or request a repair")
     }
     .await;
-    info!("template_assist: kind={}, template_id={:?}, request_chars={}, current_chars={}, previous_chars={}, refinement_chars={}, summary_chars={}, edits_chars={}, transcript_chars={}, attempts={}, elapsed_ms={}",
-        if input.current.is_some() { "revise" } else { "draft" }, input.template_id,
+    info!("template_assist: kind={}, template_id={:?}, meeting_id={:?}, request_chars={}, current_chars={}, previous_chars={}, refinement_chars={}, summary_chars={}, edits_chars={}, transcript_chars={}, attempts={}, elapsed_ms={}",
+        if input.current.is_some() { "revise" } else { "draft" }, input.template_id, input.meeting_id,
         input.request.chars().count(), input.current.map_or(0, |t| pretty(t).chars().count()),
-        input.previous.map_or(0, |p| pretty(p).chars().count()),
+        input.previous.map_or(0, |p| previous_json(p).chars().count()),
         input.refinement.map_or(0, |s| s.chars().count()), input.summary.map_or(0, |s| s.chars().count()),
         input.summary_edits.map_or(0, |s| s.chars().count()), input.transcript.map_or(0, |s| s.chars().count()),
         attempts, started.elapsed().as_millis());
@@ -343,6 +348,16 @@ pub(crate) fn check_input(
         return Err("The text is too long (limit 40,000 characters).".into());
     }
     Ok(())
+}
+
+/// Caps the proposal by the text the prompt sends, so a large saved base cannot make Refine fail.
+pub(crate) fn check_previous(previous: Option<&AssistResult>) -> Result<(), String> {
+    match previous {
+        Some(p) if previous_json(p).chars().count() > MAX_DESCRIPTION_CHARS => {
+            Err("The text is too long (limit 40,000 characters).".into())
+        }
+        _ => Ok(()),
+    }
 }
 
 fn target_error(error: String) -> String {
@@ -406,12 +421,7 @@ pub async fn api_template_revise<R: Runtime>(
         meeting_id.as_deref(),
         refinement.as_deref(),
     )?;
-    if let Some(previous) = &previous {
-        let serialized = serde_json::to_string(previous).map_err(|e| e.to_string())?;
-        if serialized.chars().count() > MAX_DESCRIPTION_CHARS {
-            return Err("The text is too long (limit 40,000 characters).".into());
-        }
-    }
+    check_previous(previous.as_ref())?;
     let state = app.try_state::<AppState>().ok_or("no database")?;
     let pool = state.db_manager.pool();
     let target = template_assist_settings::target(pool)
@@ -677,6 +687,30 @@ mod tests {
         assert_eq!(
             check_input("x", what, None, Some(&long)).unwrap_err(),
             too_long
+        );
+    }
+
+    #[test]
+    fn previous_cap_counts_the_sent_proposal_not_the_saved_base() {
+        let mut base = full_template();
+        base.sections[0].instruction = "i".repeat(45_000);
+        let mut proposal = base.clone();
+        proposal.sections[0].instruction = "small".into();
+        let result = AssistResult {
+            template: proposal,
+            changes: vec![],
+            warnings: vec![],
+            base: Some(base),
+        };
+        // The whole result would be over the cap; only the sent proposal counts.
+        assert!(serde_json::to_string(&result).unwrap().chars().count() > MAX_DESCRIPTION_CHARS);
+        assert!(check_previous(Some(&result)).is_ok());
+        assert!(check_previous(None).is_ok());
+        let mut big = result.clone();
+        big.template.sections[0].instruction = "i".repeat(40_001);
+        assert_eq!(
+            check_previous(Some(&big)).unwrap_err(),
+            "The text is too long (limit 40,000 characters)."
         );
     }
 

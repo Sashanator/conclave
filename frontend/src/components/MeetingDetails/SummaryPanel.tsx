@@ -278,7 +278,8 @@ export function SummaryPanel({
 
   const isSummaryLoading = summaryStatus === 'processing' || summaryStatus === 'summarizing' || summaryStatus === 'regenerating';
   const hasSummary = hasVisibleSummaryContent(aiSummary);
-  const canImproveTemplate = hasSummary && !isSummaryLoading && currentTemplate && availableTemplates.some(t => t.id === currentTemplate.id);
+  const templateExists = !!currentTemplate && availableTemplates.some(t => t.id === currentTemplate.id);
+  const canImproveTemplate = hasSummary && !isSummaryLoading && currentTemplate && templateExists;
   summaryExistsRef.current = hasSummary;
   summaryDirtyRef.current = isSummaryDirty;
 
@@ -346,12 +347,15 @@ export function SummaryPanel({
 
           {canImproveTemplate && currentTemplate && (
             <ImproveTemplateAction meetingId={meeting.id} templateId={currentTemplate.id}
-              templateExists={availableTemplates.some(t => t.id === currentTemplate.id)}
+              templateExists={templateExists}
               open={improveTemplateOpen} onOpenChange={setImproveTemplateOpen}
               onRegenerate={id => {
-                if (shouldRegenerate(isSummaryDirty)) void onRegenerateSummary(id).catch(err => {
+                if (!shouldRegenerate(isSummaryDirty)) return false;
+                setImproveTemplateOpen(false);
+                void onRegenerateSummary(id).catch(err => {
                   toast.error(`Failed to regenerate summary: ${String(err)}`);
                 });
+                return true;
               }} />
           )}
 

@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { TemplateAssistDialog } from '@/components/TemplateAssistDialog';
 import { getAssistSettings, getTemplateMeetingInfo, type TemplateMeetingInfo } from '@/lib/templateAssist';
 import type { TemplateJson } from '@/lib/template-draft';
@@ -13,7 +14,7 @@ type Loaded = { saved: TemplateJson; meeting: TemplateMeetingInfo; includeTransc
 
 export function ImproveTemplateAction(props: {
   meetingId: string; templateId: string; templateExists: boolean; open: boolean;
-  onOpenChange: (open: boolean) => void; onRegenerate: (templateId: string) => void;
+  onOpenChange: (open: boolean) => void; onRegenerate: (templateId: string) => boolean | void;
 }) {
   const { meetingId, templateId, templateExists, open, onOpenChange, onRegenerate } = props;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -23,6 +24,7 @@ export function ImproveTemplateAction(props: {
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
+  const regeneratingRef = useRef(false);
   const versionRef = useRef(0);
 
   useEffect(() => {
@@ -34,6 +36,7 @@ export function ImproveTemplateAction(props: {
     setSaved(false);
     setSaving(false);
     savingRef.current = false;
+    regeneratingRef.current = false;
     if (open && templateExists && templateId) {
       Promise.all([
         getTemplateMeetingInfo(meetingId),
@@ -87,7 +90,11 @@ export function ImproveTemplateAction(props: {
     <p>Regenerate this summary with the updated template</p>
     <div className="flex justify-end gap-2">
       <Button variant="outline" onClick={() => changeOpen(false)}>Close</Button>
-      <Button onClick={() => onRegenerate(templateId)}>Regenerate</Button>
+      <Button onClick={() => {
+        if (regeneratingRef.current) return;
+        regeneratingRef.current = true;
+        if (onRegenerate(templateId) === false) regeneratingRef.current = false;
+      }}>Regenerate</Button>
     </div>
   </div> : pending ? <div className="space-y-4 text-sm">
     <h3 className="font-medium">These changes will be saved:</h3>
@@ -103,10 +110,16 @@ export function ImproveTemplateAction(props: {
 
   return <>
     <Button variant="outline" size="sm" onClick={() => changeOpen(true)}>Improve template…</Button>
-    {open && !loaded && <div className="text-sm">
-      {error ? <p role="alert" className="text-destructive">{error}</p> : <p role="status">Loading template…</p>}
-      <Button variant="outline" size="sm" onClick={() => changeOpen(false)}>Close</Button>
-    </div>}
+    <Dialog open={open && !loaded} onOpenChange={changeOpen}>
+      <DialogContent>
+        <DialogHeader>
+          <DialogTitle>Improve template</DialogTitle>
+          <DialogDescription>Generate a template draft to review and save.</DialogDescription>
+        </DialogHeader>
+        {error ? <p role="alert" className="text-destructive">{error}</p> : <p role="status">Loading template…</p>}
+        <Button variant="outline" size="sm" onClick={() => changeOpen(false)}>Close</Button>
+      </DialogContent>
+    </Dialog>
     {open && loaded && <TemplateAssistDialog open={open} onOpenChange={changeOpen}
       mode={{ kind: 'improve', templateId, saved: loaded.saved }}
       meeting={{ meetingId, hasEdits: loaded.meeting.hasEdits, transcriptTokens: loaded.meeting.transcriptTokens,

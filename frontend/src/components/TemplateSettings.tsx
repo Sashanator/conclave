@@ -3,13 +3,14 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import { ArrowDown, ArrowUp, Copy, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { ArrowDown, ArrowUp, Copy, History, Plus, Sparkles, Trash2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { LANGUAGE_OPTIONS } from '@/lib/summary-languages';
 import { setUnsavedChanges } from '@/lib/unsaved-guard';
 import {
@@ -17,7 +18,11 @@ import {
   type TemplateDraft, type TemplateJson,
 } from '@/lib/template-draft';
 import { TemplateAssistDialog, type AssistMode } from '@/components/TemplateAssistDialog';
-import { originFor, type ChangeNote, type PendingOrigin } from '@/lib/templateAssist';
+import { TemplateDiffReview } from '@/components/TemplateDiffReview';
+import {
+  deletedTemplates, historyLabel, originFor, templateHistory, templateVersion,
+  type ChangeNote, type DeletedTemplate, type HistoryEntry, type PendingOrigin,
+} from '@/lib/templateAssist';
 
 const STANDARD_ID = 'standard_meeting';
 const DISCARD_PROMPT = 'Discard unsaved changes?';
@@ -46,6 +51,10 @@ export function TemplateSettings() {
   const [notes, setNotes] = useState<ChangeNote[] | null>(null);
   const pendingOrigin = useRef<PendingOrigin | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  // null = loading; 'error' = the load failed (never shown as an empty list).
+  const [history, setHistory] = useState<HistoryEntry[] | 'error' | null>(null);
+  const [deleted, setDeleted] = useState<DeletedTemplate[] | 'error' | null>(null);
+  const [review, setReview] = useState<{ old: TemplateJson; next: TemplateJson } | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
   // Bumped whenever the editor switches to another template; a response for an older view is ignored.
@@ -197,6 +206,66 @@ export function TemplateSettings() {
     }
   });
 
+  const loadHistory = async () => {
+    if (currentId === null) return;
+    setHistory(null);
+    try {
+      setHistory(await templateHistory(currentId));
+    } catch (err) {
+      fail('Could not load the history')(err);
+      setHistory('error');
+    }
+  };
+
+  const loadDeleted = async () => {
+    setDeleted(null);
+    try {
+      setDeleted(await deletedTemplates());
+    } catch (err) {
+      fail('Could not load the deleted templates')(err);
+      setDeleted('error');
+    }
+  };
+
+  // Opens a saved version beside the saved template. Nothing is written until Restore and Save.
+  const reviewVersion = (e: HistoryEntry) => runExclusive(async () => {
+    if (currentId === null || (dirty && !window.confirm(DISCARD_PROMPT))) return;
+    try {
+      const next = await templateVersion(currentId, e.version);
+      const old = await invoke<TemplateJson>('api_get_template', { templateId: currentId });
+      setReview({ old, next });
+    } catch (err) {
+      toast.error('Could not open this version', { description: String(err) });
+    }
+  });
+
+  // Restore fills the editor only; Save persists it with the restore origin.
+  const restoreVersion = (version: TemplateJson) => {
+    const d = draftFromTemplate(version);
+    setDraft(d);
+    setNotes(null);
+    pendingOrigin.current = { json: JSON.stringify(d), origin: { source: 'restore', note: '' } };
+    setReview(null);
+  };
+
+  const restoreDeleted = (entry: DeletedTemplate) => runExclusive(async () => {
+    if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+    try {
+      const version = await templateVersion(entry.id, entry.version);
+      const { templates } = await refresh();
+      const d = draftFromTemplate(version);
+      viewRef.current += 1;
+      // A reused id opens as a new template, so Save cannot overwrite the one that now holds it.
+      setCurrentId(templates.some(t => t.id === entry.id) ? null : entry.id);
+      setDraft(d);
+      setSavedJson('');
+      setNotes(null);
+      pendingOrigin.current = { json: JSON.stringify(d), origin: { source: 'restore', note: '' } };
+    } catch (err) {
+      toast.error('Could not restore the template', { description: String(err) });
+    }
+  });
+
   return (
     <div className="grid grid-cols-[16rem_1fr] gap-6">
       <div className="bg-card rounded-lg border border-border p-4 space-y-3 self-start">
@@ -234,6 +303,21 @@ export function TemplateSettings() {
             </li>
           ))}
         </ul>
+        <DropdownMenu onOpenChange={(open) => { if (open) void loadDeleted(); }}>
+          <DropdownMenuTrigger asChild>
+            <Button variant="outline" size="sm" disabled={busy}>Deleted templates</Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            {deleted === null && <DropdownMenuItem disabled>Loading…</DropdownMenuItem>}
+            {deleted === 'error' && <DropdownMenuItem disabled>Could not load the deleted templates</DropdownMenuItem>}
+            {Array.isArray(deleted) && deleted.length === 0 && <DropdownMenuItem disabled>None</DropdownMenuItem>}
+            {Array.isArray(deleted) && deleted.map(d => (
+              <DropdownMenuItem key={`${d.id}:${d.version}`} onSelect={() => void restoreDeleted(d)}>
+                {`${d.name} · ${new Date(d.deletedAt).toLocaleString()}`}
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
 
       <div className="bg-card rounded-lg border border-border p-6">
@@ -342,6 +426,24 @@ export function TemplateSettings() {
                 <Sparkles className="w-4 h-4 mr-1" />
                 Improve with AI
               </Button>
+              <DropdownMenu onOpenChange={(open) => { if (open) void loadHistory(); }}>
+                <DropdownMenuTrigger asChild>
+                  <Button variant="outline" disabled={busy || currentId === null}>
+                    <History className="w-4 h-4 mr-1" />
+                    History
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  {history === null && <DropdownMenuItem disabled>Loading…</DropdownMenuItem>}
+                  {history === 'error' && <DropdownMenuItem disabled>Could not load the history</DropdownMenuItem>}
+                  {Array.isArray(history) && history.length === 0 && <DropdownMenuItem disabled>No earlier versions</DropdownMenuItem>}
+                  {Array.isArray(history) && history.map(e => (
+                    <DropdownMenuItem key={e.version} onSelect={() => void reviewVersion(e)}>
+                      {`${new Date(e.savedAt).toLocaleString()} · ${historyLabel(e)}`}
+                    </DropdownMenuItem>
+                  ))}
+                </DropdownMenuContent>
+              </DropdownMenu>
               <Button
                 variant="outline"
                 className="text-destructive"
@@ -377,11 +479,23 @@ export function TemplateSettings() {
           pendingOrigin.current = { json: JSON.stringify(d), origin: { source: 'ai', note } };
         }}
       />}
+      {review && <Dialog open={true} onOpenChange={(open) => { if (!open) setReview(null); }}>
+        <DialogContent className="max-h-[85vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Restore an earlier version?</DialogTitle>
+            <DialogDescription>Restoring fills the editor. Nothing is saved until you press Save.</DialogDescription>
+          </DialogHeader>
+          <TemplateDiffReview
+            old={review.old} next={review.next} selectable={false} acceptLabel="Restore"
+            onAccept={restoreVersion} onDiscard={() => setReview(null)}
+          />
+        </DialogContent>
+      </Dialog>}
       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>Delete this template?</DialogTitle>
-            <DialogDescription>Its file is removed from your templates folder. This cannot be undone.</DialogDescription>
+            <DialogDescription>Its file moves to the template history. You can restore it from Deleted templates.</DialogDescription>
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmDelete(false)}>Cancel</Button>

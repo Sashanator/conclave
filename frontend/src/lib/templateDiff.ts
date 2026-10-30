@@ -150,7 +150,10 @@ export function matchSections(old: TemplateSection[], next: TemplateSection[]): 
 }
 
 function sectionText(s: TemplateSection): string {
-  return [s.title, s.instruction, s.item_format ?? s.example_item_format].filter(Boolean).join('\n\n');
+  return [s.title, s.instruction, s.item_format,
+    s.format === undefined ? undefined : `Format: ${s.format}`,
+    s.example_item_format === undefined ? undefined : `Example item format: ${s.example_item_format}`,
+  ].filter(Boolean).join('\n\n');
 }
 
 function sectionKey(pair: SectionPair): string {

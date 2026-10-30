@@ -1,6 +1,7 @@
 import { afterAll, afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import type { TemplateJson } from '../../src/lib/template-draft';
 import type { AssistResult } from '../../src/lib/templateAssist';
 
 const originals = { core: { ...await import('@tauri-apps/api/core') }, dialog: { ...await import('../../src/components/ui/dialog') } };
@@ -17,11 +18,15 @@ const result: AssistResult = {
   template: { name: 'Planning', sections: [{ title: 'Decisions', instruction: 'List decisions' }] },
   changes: [{ field: 'sections', note: 'Added decisions' }], warnings: [],
 };
+let saved: TemplateJson;
+let getSaved: () => Promise<TemplateJson>;
 let generate: () => Promise<AssistResult>;
 let config: unknown;
 let prices: unknown;
 let settings: unknown;
 const invoke = mock(async (command: string, _args?: unknown): Promise<unknown> => {
+  if (command === 'api_get_template') return getSaved();
+  if (command === 'api_template_revise') return generate();
   if (command === 'api_template_draft') return generate();
   if (command === 'template_assist_get_settings') return settings;
   if (command === 'api_get_model_config') return config;
@@ -42,6 +47,8 @@ async function click() { await act(async () => { button('Generate').props.onClic
 afterEach(() => { act(() => renderer?.unmount()); });
 beforeEach(() => {
   invoke.mockClear(); created.mockClear(); changed.mockClear();
+  saved = { name: 'Original', description: 'Keep me', sections: result.template.sections };
+  getSaved = async () => saved;
   generate = async () => result; config = undefined; prices = undefined; settings = undefined;
 });
 
@@ -108,4 +115,71 @@ test('Cancel invalidates a running request immediately and repeated Generate sta
   expect(changed).toHaveBeenCalledWith(false);
   await act(async () => { resolve(result); });
   expect(created).not.toHaveBeenCalled();
+});
+
+const accepted = mock((_merged: TemplateJson, _note: string, _base: TemplateJson) => {});
+async function improve(checkStale = true) {
+  accepted.mockClear();
+  await act(async () => { renderer = create(<TemplateAssistDialog {...props()}
+    mode={{ kind: 'improve', templateId: 'planning', saved }} onAccepted={accepted} checkStale={checkStale} />); });
+  await type('Keep decisions concise'); await click();
+}
+
+test('improve reviews selected fields, warns once per proposal, and returns its base and first note', async () => {
+  const base = { ...result.template, name: 'Before', description: 'Hidden description' };
+  generate = async () => ({ ...result, base, template: { ...base, name: 'After', style: 'Short' } });
+  await improve();
+  await act(async () => renderer.root.findByProps({ 'aria-label': 'Name' }).props.onChange({ target: { checked: false } }));
+  await act(async () => { button('Accept selected').props.onClick(); });
+  expect(accepted).not.toHaveBeenCalled();
+  expect(text(renderer.root)).toContain('The template changed since this proposal was made.');
+  await act(async () => { button('Accept selected').props.onClick(); });
+  expect(accepted).toHaveBeenCalledWith({ ...base, style: 'Short' }, 'Added decisions', base);
+  expect(changed).toHaveBeenCalledWith(false);
+});
+
+test('failed pre-Accept fetch applies nothing and shows an inline error', async () => {
+  await improve();
+  getSaved = async () => { throw new Error('Template deleted'); };
+  await act(async () => { button('Accept selected').props.onClick(); });
+  expect(text(renderer.root.findByProps({ role: 'alert' }))).toContain('Template deleted');
+  expect(accepted).not.toHaveBeenCalled();
+});
+
+test('refine keeps original request, sends previous, and resets the stale warning', async () => {
+  getSaved = async () => ({ ...saved, name: 'Changed elsewhere' });
+  await improve();
+  await act(async () => { button('Accept selected').props.onClick(); });
+  await act(async () => { button('Ask for a different change').props.onClick(); });
+  await type('Add owners');
+  generate = async () => ({ ...result, template: { ...result.template, style: 'Owners' } });
+  await click();
+  const calls = invoke.mock.calls.filter(([c]) => c === 'api_template_revise');
+  expect(calls[1][1]).toEqual({
+    templateId: 'planning', request: 'Keep decisions concise', previous: result, refinement: 'Add owners',
+    meetingId: null, includeEdits: false, includeTranscript: false,
+  });
+  await act(async () => { button('Accept selected').props.onClick(); });
+  expect(accepted).not.toHaveBeenCalled();
+  expect(text(renderer.root)).toContain('The template changed since this proposal was made.');
+});
+
+test('meeting caller can skip the stale fetch', async () => {
+  await improve(false);
+  await act(async () => { button('Accept selected').props.onClick(); });
+  expect(invoke.mock.calls.filter(([c]) => c === 'api_get_template')).toHaveLength(0);
+  expect(accepted).toHaveBeenCalledWith(expect.anything(), 'Added decisions', saved);
+});
+
+test('Discard during refinement drops its late result', async () => {
+  await improve();
+  await act(async () => { button('Ask for a different change').props.onClick(); });
+  await type('Add owners');
+  let resolve!: (r: AssistResult) => void;
+  generate = () => new Promise(res => { resolve = res; });
+  await click();
+  await act(async () => { button('Discard').props.onClick(); });
+  await act(async () => { resolve(result); });
+  expect(changed).toHaveBeenCalledWith(false);
+  expect(accepted).not.toHaveBeenCalled();
 });

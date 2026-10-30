@@ -53,6 +53,10 @@ const invoke = mock(async (command: string, _args?: Record<string, unknown>): Pr
       pendingSave = { resolve };
     });
   }
+  if (command === 'api_template_revise') return {
+    base: template, template: { ...template, name: 'Improved', style: 'Concise' },
+    changes: [{ field: 'style', note: 'Make notes concise' }], warnings: [],
+  };
   if (command === 'api_template_draft') return { template: { ...template, name: 'AI draft' }, changes: [{ field: 'name', note: 'Created a meeting template' }], warnings: [] };
   if (command === 'api_delete_template') return undefined;
   throw new Error(`Unexpected command: ${command}`);
@@ -274,5 +278,44 @@ describe('AI template draft persistence', () => {
       await flush();
       expect(text(renderer!.root)).not.toContain('What I did');
     } finally { confirm.mockRestore(); }
+  });
+});
+
+async function improveWithAI() {
+  await act(async () => { button('Improve with AI').props.onClick(); });
+  await type('template-assist-request', 'textarea', 'Make it concise');
+  await act(async () => { button('Generate').props.onClick(); });
+  await act(async () => renderer!.root.findByProps({ 'aria-label': 'Name' }).props.onChange({ target: { checked: false } }));
+  await act(async () => { button('Accept selected').props.onClick(); });
+}
+
+describe('improve draft persistence', () => {
+  beforeEach(async () => {
+    renderer?.unmount(); invoke.mockClear(); pendingSave = null; holdBeta = false; failBeta = false;
+    await act(async () => { renderer = create(<TemplateSettings />); });
+    await flush();
+  });
+
+  test('dirty disables Improve with its tooltip; accepting selected changes remains unsaved and Save records AI origin', async () => {
+    expect(button('Improve with AI').props.disabled).toBe(false);
+    await improveWithAI();
+    expect(field('tpl-name', 'input').props.value).toBe('Standard');
+    expect(field('tpl-style', 'textarea').props.value).toBe('Concise');
+    expect(button('Improve with AI').props.disabled).toBe(true);
+    expect(button('Improve with AI').props.title).toBe('Save or discard your changes first');
+    expect(invoke.mock.calls.filter(([c]) => c === 'api_save_template')).toHaveLength(0);
+    await act(async () => { button('Save').props.onClick(); });
+    const save = invoke.mock.calls.find(([c]) => c === 'api_save_template');
+    expect(save?.[1]?.origin).toEqual({ source: 'ai', note: 'Make notes concise' });
+    expect(save?.[1]?.templateId).toBe('standard_meeting');
+    await act(async () => { pendingSave?.resolve('standard_meeting'); });
+  });
+
+  test('a hand edit after accepting makes the next Save manual', async () => {
+    await improveWithAI();
+    await type('tpl-name', 'input', 'My notes');
+    await act(async () => { button('Save').props.onClick(); });
+    expect(invoke.mock.calls.find(([c]) => c === 'api_save_template')?.[1]?.origin).toEqual({ source: 'manual', note: '' });
+    await act(async () => { pendingSave?.resolve('standard_meeting'); });
   });
 });

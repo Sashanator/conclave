@@ -167,6 +167,16 @@ export function TemplateSettings() {
     }
   });
 
+  const improve = () => runExclusive(async () => {
+    if (dirty || currentId === null) return;
+    try {
+      const saved = await invoke<TemplateJson>('api_get_template', { templateId: currentId });
+      if (saved) setAssist({ kind: 'improve', templateId: currentId, saved });
+    } catch (err) {
+      fail('Could not open the template assistant')(err);
+    }
+  });
+
   const remove = () => runExclusive(async () => {
     if (!currentId) return;
     setConfirmDelete(false);
@@ -327,6 +337,11 @@ export function TemplateSettings() {
                 <Copy className="w-4 h-4 mr-1" />
                 Duplicate
               </Button>
+              <Button variant="outline" onClick={improve} disabled={busy || dirty || currentId === null}
+                title={dirty ? 'Save or discard your changes first' : undefined}>
+                <Sparkles className="w-4 h-4 mr-1" />
+                Improve with AI
+              </Button>
               <Button
                 variant="outline"
                 className="text-destructive"
@@ -356,7 +371,11 @@ export function TemplateSettings() {
           setNotes(r.changes);
           pendingOrigin.current = { json: JSON.stringify(d), origin: { source: 'ai', note: r.changes[0]?.note ?? '' } };
         }}
-        onAccepted={() => {}}
+        onAccepted={(merged, note, _base) => {
+          const d = draftFromTemplate(merged);
+          setDraft(d);
+          pendingOrigin.current = { json: JSON.stringify(d), origin: { source: 'ai', note } };
+        }}
       />}
       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <DialogContent>

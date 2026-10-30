@@ -140,11 +140,11 @@ describe('diffItems', () => {
     expect(diffItems(after, before).find(i => i.key === 'style')).toMatchObject({ old: 'Style', next: '' });
   });
 
-  test('section text prefers item_format and falls back to example_item_format', () => {
+  test('section text displays both item formats so neither change is hidden', () => {
     const before = { ...A, example_item_format: 'Legacy' };
     const after = { ...A, item_format: 'Current', example_item_format: 'Legacy' };
     expect(diffItems({ ...old, sections: [before] }, { ...old, sections: [after] })[0]).toMatchObject({
-      old: 'Итоги\n\nПодведи итоги.\n\nLegacy', next: 'Итоги\n\nПодведи итоги.\n\nCurrent',
+      old: 'Итоги\n\nПодведи итоги.\n\nExample item format: Legacy', next: 'Итоги\n\nПодведи итоги.\n\nCurrent\n\nExample item format: Legacy',
     });
   });
 });
@@ -206,4 +206,14 @@ describe('mergeSelected', () => {
       expect(after.sections.includes(section)).toBe(false);
     }
   });
+});
+
+test('hidden section fields have visible diffs even when item_format is present', () => {
+  const before = { name: 'Notes', sections: [{ title: 'Notes', instruction: 'List', item_format: 'Item', format: 'old format', example_item_format: 'old example' }] };
+  const after = { ...before, sections: [{ ...before.sections[0], format: 'new format', example_item_format: 'new example' }] };
+  const item = diffItems(before, after)[0];
+  expect(item.parts?.filter(p => p.kind === 'del').map(p => p.text).join('')).toContain('old');
+  expect(item.next).toContain('new format');
+  expect(item.next).toContain('new example');
+  expect(mergeSelected(before, after, new Set([item.key]))).toEqual(after);
 });

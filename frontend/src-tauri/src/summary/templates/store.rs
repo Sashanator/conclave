@@ -95,9 +95,18 @@ fn write_atomically(path: &Path, contents: &str) -> Result<(), String> {
 
 /// Every `<id>.json` file stem, parseable or not, so a new template never overwrites a file it could not read.
 fn taken_ids(dir: &Path) -> Result<Vec<String>, String> {
-    let mut ids: Vec<String> = std::fs::read_dir(dir).into_iter().flatten().flatten()
-        .filter_map(|e| e.file_name().to_string_lossy().strip_suffix(".json").map(str::to_string))
-        .collect();
+    let mut ids = Vec::new();
+    match std::fs::read_dir(dir) {
+        Ok(entries) => {
+            for entry in entries.flatten() {
+                if let Some(id) = entry.file_name().to_string_lossy().strip_suffix(".json") {
+                    ids.push(id.to_string());
+                }
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("Cannot read templates: {e}")),
+    }
     match std::fs::read_dir(dir.join(HISTORY_DIR)) {
         Ok(entries) => {
             for entry in entries.flatten() {
@@ -344,6 +353,15 @@ mod tests {
         assert_eq!(get_template_in(dir.path(), STANDARD_TEMPLATE_ID).unwrap().name, "Standard Meeting Notes");
         std::fs::write(dir.path().join("standard_meeting.json"), "{ broken").unwrap();
         assert_eq!(get_template_in(dir.path(), STANDARD_TEMPLATE_ID).unwrap().name, "Standard Meeting Notes");
+    }
+
+    #[test]
+    fn phase_review_taken_ids_reports_directory_read_errors() {
+        let dir = tempdir().unwrap();
+        let file = dir.path().join("not_a_directory");
+        std::fs::write(&file, "").unwrap();
+        let error = taken_ids(&file).unwrap_err();
+        assert!(error.starts_with("Cannot read templates:"));
     }
 
     #[test]

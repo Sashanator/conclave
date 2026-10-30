@@ -171,9 +171,22 @@ fn archive(
                 Err(e) if e.kind() == io::ErrorKind::AlreadyExists => continue,
                 Err(e) => return Err(e),
             };
+            let destination = folder.join(format!("{version}.json"));
+            match destination.try_exists() {
+                Ok(true) => {
+                    drop(file);
+                    fs::remove_file(&meta_path)?;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(e) => {
+                    drop(file);
+                    fs::remove_file(&meta_path)?;
+                    return Err(e);
+                }
+            }
             let saved = file.write_all(&meta);
             drop(file);
-            let destination = folder.join(format!("{version}.json"));
             let saved = saved.and_then(|()| {
                 if moving {
                     fs::rename(&source, &destination)
@@ -306,12 +319,9 @@ pub fn list_deleted_in(dir: &Path) -> Result<Vec<DeletedTemplate>, String> {
                 continue;
             }
         };
-        let Some(newest) = history.into_iter().next() else {
+        let Some(newest) = history.into_iter().find(|e| e.source == HistorySource::Delete) else {
             continue;
         };
-        if newest.source != HistorySource::Delete {
-            continue;
-        }
         let name = get_version_in(dir, &id, &newest.version)
             .map(|t| t.name)
             .unwrap_or_else(|_| id.clone());
@@ -401,6 +411,51 @@ mod tests {
             }]
         );
     }
+    #[test]
+    fn phase_review_deleted_template_survives_clock_rollback() {
+        let d = tempdir().unwrap();
+        let d = d.path();
+        let id = save_template_in(d, None, &t("A"), &SaveOrigin::default()).unwrap();
+        let later: DateTime<Utc> = "2026-10-30T14:22:33.123Z".parse().unwrap();
+        let earlier: DateTime<Utc> = "2026-10-29T14:22:33.123Z".parse().unwrap();
+        archive(d, &id, &SaveOrigin::default(), false, later).unwrap();
+        assert!(list_deleted_in(d).unwrap().is_empty());
+        archive(d, &id, &SaveOrigin {
+            source: HistorySource::Delete,
+            note: String::new(),
+        }, true, earlier).unwrap();
+        let history = list_history_in(d, &id).unwrap();
+        assert_eq!(history[0].source, HistorySource::Manual);
+        let deleted = list_deleted_in(d).unwrap();
+        assert_eq!(deleted.len(), 1);
+        assert_eq!(deleted[0].id, id);
+        assert_eq!(deleted[0].version, history[1].version);
+        assert_eq!(deleted[0].deleted_at, earlier.to_rfc3339());
+    }
+
+    #[test]
+    fn phase_review_orphan_history_json_is_never_overwritten() {
+        for moving in [false, true] {
+            let d = tempdir().unwrap();
+            let d = d.path();
+            let id = save_template_in(d, None, &t("A"), &SaveOrigin::default()).unwrap();
+            let now: DateTime<Utc> = "2026-10-30T14:22:33.123Z".parse().unwrap();
+            archive(d, &id, &SaveOrigin::default(), false, now).unwrap();
+            let folder = d.join(HISTORY_DIR).join(&id);
+            let base = "20261030T142233123Z";
+            let orphan = folder.join(format!("{base}.json"));
+            let original = fs::read(&orphan).unwrap();
+            fs::remove_file(folder.join(format!("{base}.meta.json"))).unwrap();
+            fs::write(checked_path(d, &id).unwrap(), serde_json::to_vec(&t("B")).unwrap()).unwrap();
+            archive(d, &id, &SaveOrigin::default(), moving, now).unwrap();
+            assert!(fs::read(&orphan).unwrap() == original);
+            assert!(!folder.join(format!("{base}.meta.json")).exists());
+            assert!(folder.join(format!("{base}-1.json")).exists());
+            assert!(folder.join(format!("{base}-1.meta.json")).exists());
+            assert_eq!(checked_path(d, &id).unwrap().exists(), !moving);
+        }
+    }
+
     #[test]
     fn restore_of_a_deleted_id_uses_save_with_the_id() {
         let d = tempdir().unwrap();
@@ -586,12 +641,22 @@ mod tests {
         let id = save_template_in(d, None, &t("A"), &SaveOrigin::default()).unwrap();
         let now: DateTime<Utc> = "2026-10-30T14:22:33.123Z".parse().unwrap();
         let folder = d.join(HISTORY_DIR).join(&id);
-        fs::create_dir_all(folder.join("20261030T142233123Z.json")).unwrap();
+        // Every destination must be occupied now that an individual collision is retried.
+        for suffix in 0..=999 {
+            let version = if suffix == 0 {
+                "20261030T142233123Z".to_string()
+            } else {
+                format!("20261030T142233123Z-{suffix}")
+            };
+            fs::create_dir_all(folder.join(format!("{version}.json"))).unwrap();
+        }
         for moving in [false, true] {
             assert!(archive(d, &id, &SaveOrigin::default(), moving, now)
                 .unwrap_err()
                 .contains("undo copy"));
-            assert!(!folder.join("20261030T142233123Z.meta.json").exists());
+            assert!(fs::read_dir(&folder).unwrap().all(|entry| {
+                !entry.unwrap().file_name().to_string_lossy().ends_with(".meta.json")
+            }));
             assert_eq!(get_template_in(d, &id).unwrap().name, "A");
         }
     }

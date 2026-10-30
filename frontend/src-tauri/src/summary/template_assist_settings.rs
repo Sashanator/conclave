@@ -109,8 +109,6 @@ pub fn save<R: Runtime>(
 }
 
 /// The LLM target for a template assist call, from the saved override or the summary model.
-// Phase 2's assist commands call this; until then it has no caller.
-#[allow(dead_code)]
 pub(crate) async fn target(pool: &SqlitePool) -> Result<LlmTarget, String> {
     let s = current();
     target_with_override(pool, s.provider, s.model).await

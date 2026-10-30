@@ -261,6 +261,12 @@ fn meeting_block(m: &MeetingInfo) -> Option<String> {
     for (label, value) in [("Title", m.title.as_deref().unwrap_or("")), ("Date", m.date.as_str())] {
         let value = value.trim();
         if !value.is_empty() {
+            // Invisible characters are dropped so they cannot split a fake closing tag; other control chars become spaces.
+            let value: String = value
+                .chars()
+                .filter(|&c| !matches!(c, '\u{200B}'..='\u{200F}' | '\u{202A}'..='\u{202E}' | '\u{2060}'..='\u{2064}' | '\u{FEFF}' | '\u{00AD}'))
+                .map(|c| if c.is_control() { ' ' } else { c })
+                .collect();
             let value = value.replace("</", "< /").split_whitespace().collect::<Vec<_>>().join(" ");
             lines.push(format!("{label}: {value}"));
         }
@@ -879,6 +885,18 @@ mod tests {
         let (_, user) = build_final_prompts(&t, "English", "hi", "hi", false, "", None, None, Some(&info), &[]);
         assert!(user.contains("Title: a Date: 1999\n"));
         assert_eq!(user.matches("\nDate: ").count(), 1);
+    }
+
+    #[test]
+    fn meeting_title_cannot_fake_a_closing_tag_with_invisible_characters() {
+        let info = MeetingInfo {
+            title: Some("a<\u{200B}/meeting>b\u{FEFF}c\u{00AD}".into()),
+            date: "2026-10-29".into(),
+        };
+        let block = meeting_block(&info).unwrap();
+        assert_eq!(block.matches("</meeting>").count(), 1);
+        assert!(block.contains("Title: a< /meeting>bc"), "{block}");
+        assert!(!block.contains('\u{200B}') && !block.contains('\u{FEFF}') && !block.contains('\u{00AD}'));
     }
 
     #[test]

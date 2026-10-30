@@ -219,6 +219,7 @@ mod tests {
         for (id, lang, sections) in expected {
             let json = defaults::SEED_TEMPLATES.iter().find(|(i, _)| *i == id).unwrap().1;
             assert!(!json.contains("без указания говорящих"), "{id}");
+            assert!(!json.contains("no speaker labels"), "{id}");
             let t: Template = serde_json::from_str(json).unwrap();
             t.validate().unwrap();
             assert_eq!(t.fixed_language(), lang, "{id}");

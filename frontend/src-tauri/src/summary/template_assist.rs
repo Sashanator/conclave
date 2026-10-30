@@ -110,6 +110,100 @@ pub(crate) fn build_prompts(input: &AssistInput) -> (String, String) {
     (system_prompt(input.current.is_some()), blocks.join("\n\n"))
 }
 
+pub(crate) fn parse_reply(raw: &str) -> Result<(Template, Vec<ChangeNote>), String> {
+    #[derive(Deserialize)]
+    struct Reply {
+        template: Template,
+        #[serde(default)]
+        changes: Vec<ChangeNote>,
+    }
+
+    let (start, end) = raw
+        .find('{')
+        .zip(raw.rfind('}'))
+        .filter(|(start, end)| start <= end)
+        .ok_or_else(|| "The answer has no JSON object".to_string())?;
+    let reply = serde_json::from_str::<Reply>(&raw[start..=end])
+        .map_err(|e| format!("The answer is not a valid template: {e}"))?;
+    reply.template.validate()?;
+    Ok((reply.template, reply.changes))
+}
+
+fn normalized_title(title: &str) -> String {
+    title.split_whitespace().collect::<Vec<_>>().join(" ").to_lowercase()
+}
+
+pub(crate) fn keep_hidden_fields(current: &Template, mut next: Template) -> Template {
+    if next.description.is_empty() {
+        next.description = current.description.clone();
+    }
+    if next.prep.is_none() {
+        next.prep = current.prep.clone();
+    }
+    for section in &mut next.sections {
+        let title = normalized_title(&section.title);
+        if let Some(old) = current.sections.iter().find(|s| normalized_title(&s.title) == title) {
+            if section.format.is_none() {
+                section.format = old.format.clone();
+            }
+            if section.item_format.is_none() {
+                section.item_format = old.item_format.clone();
+            }
+            if section.example_item_format.is_none() {
+                section.example_item_format = old.example_item_format.clone();
+            }
+        }
+    }
+    next
+}
+
+pub(crate) fn preservation_warnings(old: &Template, new: &Template, request: &str) -> Vec<String> {
+    let request = request.to_lowercase();
+    let mentions = |text: &str| request.contains(&text.trim().to_lowercase());
+    let mut warnings = Vec::new();
+    for section in &old.sections {
+        let title = normalized_title(&section.title);
+        if !new.sections.iter().any(|s| normalized_title(&s.title) == title) && !mentions(&section.title) {
+            warnings.push(format!("Section '{}' was removed.", section.title));
+        }
+    }
+
+    // Use character counts rather than byte lengths for multilingual templates.
+    let shrink = |before: &str, after: &str| {
+        let before = before.trim().chars().count() as u128;
+        let after = after.trim().chars().count() as u128;
+        if before > 0 && after * 10 < before * 7 {
+            Some(((before - after) * 100 + before / 2) / before)
+        } else {
+            None
+        }
+    };
+    if let Some(percent) = shrink(old.context.as_deref().unwrap_or(""), new.context.as_deref().unwrap_or("")) {
+        warnings.push(format!("Context is {percent}% shorter."));
+    }
+    if let Some(percent) = shrink(old.style.as_deref().unwrap_or(""), new.style.as_deref().unwrap_or("")) {
+        warnings.push(format!("Style is {percent}% shorter."));
+    }
+    for section in &old.sections {
+        let title = normalized_title(&section.title);
+        if let Some(next) = new.sections.iter().find(|s| normalized_title(&s.title) == title) {
+            if let Some(percent) = shrink(&section.instruction, &next.instruction) {
+                warnings.push(format!("Instruction of '{}' is {percent}% shorter.", section.title));
+            }
+        }
+    }
+    if old.name != new.name && !mentions("name") {
+        warnings.push("The name changed.".into());
+    }
+    if old.fixed_language() != new.fixed_language() && !mentions("language") {
+        warnings.push("The language changed.".into());
+    }
+    if old.title_keywords != new.title_keywords && !mentions("keyword") {
+        warnings.push("The title keywords changed.".into());
+    }
+    warnings
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,5 +317,134 @@ mod tests {
         let (_, user) = build_prompts(&AssistInput { current: Some(&t), ..draft("x") });
         assert_eq!(user.matches("</current_template>").count(), 1);
         assert!(user.contains("< /current_template>"));
+    }
+
+    #[test]
+    fn parses_fenced_json() {
+        let (template, changes) = parse_reply("```json\n{\"template\":{\"name\":\"N\",\"sections\":[{\"title\":\"A\",\"instruction\":\"B\"}]},\"changes\":[{\"field\":\"name\",\"note\":\"n\"}]}\n```").unwrap();
+        assert_eq!(template.name, "N");
+        assert_eq!(changes, vec![ChangeNote { field: "name".into(), note: "n".into() }]);
+    }
+
+    #[test]
+    fn parses_json_inside_prose() {
+        let (template, _) = parse_reply("Here you go:\n{\"template\":{\"name\":\"N\",\"sections\":[{\"title\":\"A\",\"instruction\":\"B\"}]}}\nHope this helps.").unwrap();
+        assert_eq!(template.name, "N");
+    }
+
+    #[test]
+    fn ignores_unknown_fields_and_missing_changes() {
+        let (_, changes) = parse_reply(r#"{"template":{"name":"N","color":"red","sections":[{"title":"A","instruction":"B","emoji":"x"}]},"extra":1}"#).unwrap();
+        assert!(changes.is_empty());
+    }
+
+    #[test]
+    fn invalid_template_is_an_error() {
+        assert!(parse_reply(r#"{"template":{"name":"N","sections":[]}}"#).unwrap_err().contains("at least one section"));
+        for raw in ["no json", "} {", "{", "}", ""] {
+            assert_eq!(parse_reply(raw).unwrap_err(), "The answer has no JSON object");
+        }
+        for raw in ["{broken}", r#"{"template":{}}"#] {
+            assert!(parse_reply(raw).unwrap_err().starts_with("The answer is not a valid template: "));
+        }
+    }
+
+    #[test]
+    fn hidden_fields_survive_a_revision() {
+        let mut current = full_template();
+        current.description = "d".into();
+        current.prep = Some("p".into());
+        current.sections[0].title = "Risks and issues".into();
+        current.validate().unwrap();
+        let (next, _) = parse_reply(r#"{"template":{"name":"N","sections":[{"title":" risks   AND issues ","instruction":"B"}]}}"#).unwrap();
+        let kept = keep_hidden_fields(&current, next.clone());
+        assert_eq!(kept.description, "d");
+        assert_eq!(kept.prep, Some("p".into()));
+        assert_eq!(kept.sections[0].format, current.sections[0].format);
+        assert_eq!(kept.sections[0].item_format, current.sections[0].item_format);
+        assert_eq!(kept.sections[0].example_item_format, current.sections[0].example_item_format);
+        kept.validate().unwrap();
+
+        let mut explicit = next.clone();
+        explicit.description = "New".into();
+        explicit.prep = Some(String::new());
+        explicit.sections[0].format = Some("paragraph".into());
+        explicit.sections[0].item_format = Some(String::new());
+        explicit.sections[0].example_item_format = Some("Example".into());
+        assert_eq!(keep_hidden_fields(&current, explicit.clone()), explicit);
+
+        let mut unmatched = next;
+        unmatched.sections[0].title = "Other".into();
+        assert_eq!(keep_hidden_fields(&current, unmatched).sections[0].format, None);
+    }
+
+    #[test]
+    fn warns_on_removed_section() {
+        let mut old = full_template();
+        old.sections[0].title = "A".into();
+        let mut new = old.clone();
+        let mut removed = old.sections[0].clone();
+        removed.title = "B".into();
+        old.sections.push(removed);
+        new.sections[0].title = " a ".into();
+        assert_eq!(preservation_warnings(&old, &new, "shorter"), vec!["Section 'B' was removed."]);
+        assert!(preservation_warnings(&old, &new, "drop section b").is_empty());
+    }
+
+    #[test]
+    fn warns_on_shrunk_text() {
+        let mut old = full_template();
+        old.context = Some(format!("  {}  ", "я".repeat(100)));
+        old.style = Some("s".repeat(100));
+        old.sections[0].instruction = "i".repeat(100);
+        let mut new = old.clone();
+        new.context = Some("я".repeat(55));
+        new.style = Some("s".repeat(55));
+        new.sections[0].title = " strengths ".into();
+        new.sections[0].instruction = "i".repeat(55);
+        assert_eq!(preservation_warnings(&old, &new, "shorter"), vec![
+            "Context is 45% shorter.", "Style is 45% shorter.",
+            "Instruction of 'Strengths' is 45% shorter.",
+        ]);
+        for length in [70, 75] {
+            new.context = Some("я".repeat(length));
+            new.style = Some("s".repeat(length));
+            new.sections[0].instruction = "i".repeat(length);
+            assert!(preservation_warnings(&old, &new, "x").is_empty());
+        }
+        new.context = None;
+        new.style = None;
+        assert_eq!(preservation_warnings(&old, &new, "x"), vec!["Context is 100% shorter.", "Style is 100% shorter."]);
+        old.context = Some("a".repeat(3));
+        new.context = Some("a".into());
+        assert_eq!(preservation_warnings(&old, &new, "x")[0], "Context is 67% shorter.");
+    }
+
+    #[test]
+    fn warns_on_name_language_keywords() {
+        let old = full_template();
+        let mut new = old.clone();
+        new.name = "New".into();
+        new.language = Some("ru".into());
+        new.title_keywords = vec!["New".into()];
+        assert_eq!(preservation_warnings(&old, &new, "x"), vec![
+            "The name changed.", "The language changed.", "The title keywords changed.",
+        ]);
+        assert!(preservation_warnings(&old, &new, "rename it, new language and keywords").is_empty());
+        let mut automatic = old.clone();
+        automatic.language = None;
+        let mut explicit_auto = automatic.clone();
+        explicit_auto.language = Some(" AUTO ".into());
+        assert!(preservation_warnings(&automatic, &explicit_auto, "x").is_empty());
+    }
+
+    #[test]
+    fn clean_change_has_no_warnings() {
+        let old = full_template();
+        let mut new = old.clone();
+        let mut added = old.sections[0].clone();
+        added.title = "New section".into();
+        new.sections.push(added);
+        assert!(preservation_warnings(&old, &new, "x").is_empty());
     }
 }

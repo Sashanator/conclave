@@ -29,7 +29,10 @@ import { ThemeProvider, useTheme } from '@/contexts/ThemeContext'
 import { THEME_INIT_SCRIPT } from '@/lib/theme'
 import { CopilotProvider, writeLiveSideTab } from '@/contexts/CopilotContext'
 import { writeFlag } from '@/lib/meeting-page-layout'
+import { installBrowserPreview } from '@/lib/browser-preview'
 
+
+installBrowserPreview()
 
 const sourceSans3 = Source_Sans_3({
   subsets: ['latin'],

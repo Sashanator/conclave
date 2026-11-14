@@ -98,3 +98,4 @@ frontend/src-tauri/binaries/
 
 # GitNexus index, regenerated per checkout.
 .gitnexus/
+.playwright-mcp/

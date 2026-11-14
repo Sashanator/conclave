@@ -5,6 +5,7 @@
     "main": "electron/main.js",
     "scripts": {
         "dev": "next dev -p 3118",
+        "dev:preview": "NEXT_TELEMETRY_DISABLED=1 NEXT_PUBLIC_BROWSER_PREVIEW=1 next dev -p 3118",
         "build": "next build",
         "export": "next export",
         "start": "next start -p 3118",
@@ -106,6 +107,7 @@
         }
     },
     "devDependencies": {
+        "@axe-core/playwright": "4.14.0",
         "@happy-dom/global-registrator": "20.14.5",
         "@tailwindcss/container-queries": "^0.1.1",
         "@tailwindcss/typography": "^0.5.15",
@@ -118,6 +120,7 @@
         "@types/react-test-renderer": "18.3.1",
         "autoprefixer": "^10.0.1",
         "concurrently": "^8.2.2",
+        "playwright": "1.64.1",
         "postcss": "^8",
         "react-test-renderer": "18.3.1",
         "tailwindcss": "^3.4.1",

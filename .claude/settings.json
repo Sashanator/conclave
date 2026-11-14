@@ -1,7 +1,9 @@
 {
   "env": {
     "CLAUDE_CODE_AUTO_COMPACT_WINDOW": "400000",
-    "MAX_MCP_OUTPUT_TOKENS": "10000"
+    "MAX_MCP_OUTPUT_TOKENS": "10000",
+    "DO_NOT_TRACK": "1",
+    "IMPECCABLE_HOOK_DISABLED": "1"
   },
   "model": "opus",
   "disableClaudeAiConnectors": true,
@@ -19,7 +21,9 @@
     "typescript-lsp@claude-plugins-official": true,
     "rust-analyzer-lsp@claude-plugins-official": true,
     "gitnexus@s-harness": true,
-    "all@s-harness": true
+    "all@s-harness": true,
+    "ui-ux-pro-max@ui-ux-pro-max-skill": true,
+    "impeccable@impeccable": true
   },
   "extraKnownMarketplaces": {
     "ponytail": {
@@ -44,6 +48,18 @@
       "source": {
         "source": "github",
         "repo": "Sashanator/s-harness"
+      }
+    },
+    "ui-ux-pro-max-skill": {
+      "source": {
+        "source": "github",
+        "repo": "nextlevelbuilder/ui-ux-pro-max-skill"
+      }
+    },
+    "impeccable": {
+      "source": {
+        "source": "github",
+        "repo": "pbakaus/impeccable"
       }
     }
   },

@@ -17,6 +17,7 @@ Download the newer `…-setup.exe` from the Releases page and run it. It upgrade
 - `%APPDATA%\com.conclave.app`: the meetings database, settings and downloaded models.
 - `%APPDATA%\Conclave`: custom summary templates, notification settings and a fallback model folder.
 - `%USERPROFILE%\Music\conclave-recordings` (falls back to Documents if Music is unavailable): recordings.
+- `%LOCALAPPDATA%\com.conclave.app\logs\`: the log file (warnings, errors and crash messages; up to 5 MB, plus one older file). Attach it when reporting a problem.
 
 ## Uninstall
 

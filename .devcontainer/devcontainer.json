@@ -7,13 +7,17 @@
     }
   },
   "features": {
+    "./docker-nft": {},
     // Docker-in-Docker: an isolated Docker daemon inside the devcontainer (runs the container privileged)
     "ghcr.io/devcontainers/features/docker-in-docker:2": {
       "moby": false
     },
     // GitHub CLI (auth: `gh auth login`; the login is shared by all projects via the gh-config volume)
     "ghcr.io/devcontainers/features/github-cli:1": {},
-    "ghcr.io/devcontainers/features/rust:1": { "version": "stable", "targets": "x86_64-pc-windows-msvc" }
+    "ghcr.io/devcontainers/features/rust:1": {
+      "version": "stable",
+      "targets": "x86_64-pc-windows-msvc"
+    }
   },
   // Add the project's app ports here
   "forwardPorts": [],
@@ -21,7 +25,14 @@
   "containerUser": "node",
   // Host side, on every window open: exports the host X cookie as a wildcard entry (any display number) so
   // xclip can use VS Code's forwarded X socket for CLI image paste. Needs xauth on the host. Never commit the file.
-  "initializeCommand": "umask 077; xauth nlist \"$DISPLAY\" | awk '{print \"ffff 0000  0000\", $(NF-3), $(NF-2), $(NF-1), $NF}' | xauth -f .devcontainer/.Xauthority nmerge - || true",
+  "initializeCommand": {
+    "projectSetup": "umask 077; xauth nlist \"$DISPLAY\" | awk '{print \"ffff 0000  0000\", $(NF-3), $(NF-2), $(NF-1), $NF}' | xauth -f .devcontainer/.Xauthority nmerge - || true",
+    "projectNetwork": [
+      "sh",
+      "-c",
+      "test -f /etc/systemd/system/devcontainers.slice && (docker network inspect dev-conclave >/dev/null 2>&1 || docker network create --driver bridge --label devcontainer.project=conclave --opt com.docker.network.bridge.host_binding_ipv4=127.0.0.1 dev-conclave >/dev/null)"
+    ]
+  },
   // Installs the default Claude Code plugins + MCP servers and indexes the repo with GitNexus and registers it with Codex
   "postCreateCommand": "bash .devcontainer/setup-agents.sh",
   "postStartCommand": "ln -sf /workspace/.devcontainer/.Xauthority ~/.Xauthority && node /workspace/.devcontainer/claude-title-sync.js & bash /workspace/.devcontainer/gitnexus.sh start || printf '%s\\n' 'GitNexus watcher failed; inspect ~/.cache/s-harness-gitnexus/*/watcher.log' >&2",
@@ -29,7 +40,16 @@
   // Codex lives under /usr/local, but root's npm prefix is node's npm-global, hence the prefix override. A failed update never blocks opening.
   "postAttachCommand": "claude update || true; sudo env NPM_CONFIG_PREFIX=/usr/local codex update || true; sudo agy update || true",
   "runArgs": [
-    "--add-host=host.docker.internal:host-gateway"
+    "--add-host=host.docker.internal:host-gateway",
+    "-v",
+    "/run/user/1000/pulse:/run/pulse-host",
+    "--network=dev-conclave",
+    "--cpus=4",
+    "--memory=8g",
+    "--memory-reservation=2g",
+    "--memory-swap=9g",
+    "--pids-limit=4096",
+    "--cgroup-parent=devcontainers.slice"
   ],
   "workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=delegated",
   "workspaceFolder": "/workspace",
@@ -39,7 +59,7 @@
     // Shared by all projects: log in once
     "source=antigravity-auth,target=/home/node/.gemini,type=volume", // agy OAuth token + config
     "source=gh-config,target=/home/node/.config/gh,type=volume", // GitHub CLI login
-    "source=${localEnv:HOME}/.codex/auth.json,target=/home/node/.codex/auth.json,type=bind", // Codex login from the host
+    "source=${localEnv:HOME}/.codex,target=/home/node/.codex,type=bind", // Shared Codex configuration and login from the host
     // Per project: every project lives at /workspace, so shared state would collide
     "source=gitnexus-registry-${devcontainerId},target=/home/node/.gitnexus,type=volume", // GitNexus repository registry
     "source=bashhistory-${devcontainerId},target=/commandhistory,type=volume"
@@ -50,13 +70,13 @@
     "POWERLEVEL9K_DISABLE_GITSTATUS": "true",
     // Local builds use half the cores so the VM stays responsive (CI is unaffected).
     "CARGO_BUILD_JOBS": "4",
-    "CMAKE_BUILD_PARALLEL_LEVEL": "4"
+    "CMAKE_BUILD_PARALLEL_LEVEL": "4",
+    "PULSE_SERVER": "unix:/run/pulse-host/native",
+    "AUDIODRIVER": "pulseaudio"
   },
   "customizations": {
     "vscode": {
       "extensions": [
-        "anthropic.claude-code",
-        "openai.chatgpt",
         "cweijan.vscode-office"
       ],
       "settings": {

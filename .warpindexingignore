@@ -1,0 +1,29 @@
+# Dependencies and generated caches
+**/node_modules/
+**/.pnpm-store/
+**/.venv/
+**/venv/
+**/__pycache__/
+**/.pytest_cache/
+**/.mypy_cache/
+**/.ruff_cache/
+**/.gitnexus/
+**/.codebase-memory/
+**/.codegraph/
+
+# Duplicate checkouts and agent runtime data (keep agent configuration indexed)
+**/.claude/worktrees/
+**/.claude/harness-migration-backup/
+**/.claude/plugins/marketplaces/
+**/.claude/projects/
+**/.claude/debug/
+**/.claude/session-env/
+**/.worktrees/
+
+# Build and test artifacts
+**/target/
+**/dist/
+**/.next/
+**/coverage/
+**/playwright-report/
+**/test-results/

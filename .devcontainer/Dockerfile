@@ -80,16 +80,31 @@ RUN apt-get update \
 RUN mkdir -p /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.gitnexus /home/node/.cache \
     && chown -R node:node /home/node/.claude /home/node/.codex /home/node/.gemini /home/node/.gitnexus /home/node/.cache
 
+# Route ALSA through PulseAudio so mic/audio works inside the container
+RUN printf 'pcm.!default {\n    type pulse\n}\n\nctl.!default {\n    type pulse\n}\n' > /home/node/.asoundrc \
+    && chown node:node /home/node/.asoundrc
+
 # Tauri 2 / Conclave Linux build dependencies (local cargo check/test; Windows is built in CI)
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential cmake pkg-config clang libclang-dev \
         libwebkit2gtk-4.1-dev libayatana-appindicator3-dev librsvg2-dev libxdo-dev libssl-dev \
         libasound2-dev libpulse-dev \
     && rm -rf /var/lib/apt/lists/*
+
+# ALSA + PulseAudio utilities for microphone access inside the container
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        alsa-utils \
+        libasound2-plugins \
+        pulseaudio-utils \
+        sox \
+        libsox-fmt-pulse \
+    && rm -rf /var/lib/apt/lists/*
 # Bun runs the frontend tests (bun:test); actionlint checks workflows locally (saves CI minutes)
 RUN npm install -g --prefix /usr/local bun@1.2.21 \
     && curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/v1.7.7/scripts/download-actionlint.bash | bash -s -- 1.7.7 /usr/local/bin
 # pnpm 9.15.9 is the version the frontend docs require; pnpm 12 rejects the committed lockfile
 RUN npm install -g --prefix /usr/local pnpm@9.15.9
+RUN ln -sf /usr/local/lib/node_modules/pnpm/bin/pnpm.cjs /usr/local/share/npm-global/bin/pnpm \
+    && ln -sf /usr/local/lib/node_modules/pnpm/bin/pnpx.cjs /usr/local/share/npm-global/bin/pnpx
 
 WORKDIR /workspace

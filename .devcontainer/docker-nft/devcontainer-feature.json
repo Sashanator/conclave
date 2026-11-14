@@ -1,0 +1,6 @@
+{
+  "id": "docker-nft",
+  "version": "1.0.0",
+  "name": "Docker nftables compatibility",
+  "installsAfter": ["ghcr.io/devcontainers/features/docker-in-docker"]
+}

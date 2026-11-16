@@ -2,6 +2,7 @@
 // Tauri backend. Never active in a Tauri window (it has __TAURI_INTERNALS__) or a production build (NODE_ENV check
 // folds this whole file away). Commands not listed here resolve null and warn once; add data here as screens need it.
 import { mockIPC } from '@tauri-apps/api/mocks';
+import type { MeetingRow } from './meetings';
 
 const meetings = [
   { id: 'preview-1', title: 'Weekly product sync', created_at: '2026-11-10T09:00:00Z', updated_at: '2026-11-10T09:45:00Z' },
@@ -32,6 +33,32 @@ const summary = {
   markdown: '## Summary\n\nThe team agreed the release is on track.\n\n## Action items\n\n- Test the audio device switch on Windows (owner: Sam)\n- Move the redesign review to Thursday',
 };
 
+// Week-relative times, so the table shows this week's rows whatever day the preview runs.
+const monday = (h: number, m = 0) => {
+  const d = new Date();
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  d.setHours(h, m, 0, 0);
+  return d.toISOString();
+};
+
+const meetingRows = (): MeetingRow[] => {
+  const base: MeetingRow = {
+    id: '', title: '', titleSource: 'default', templateId: null, emoji: null, reviewed: false, gist: null,
+    startedAt: null, endedAt: null, createdAt: monday(8), calendarUid: null, calendarStart: null, calendarEnd: null,
+    calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0,
+  };
+  return [
+    { ...base, id: 'preview-4', title: 'Release planning', reviewed: true, gist: 'Release is on track; the audio switch is the open risk.', startedAt: monday(10), endedAt: monday(10, 45), hasTranscript: true, hasSummary: true, createdAt: monday(9, 55) },
+    { ...base, id: 'preview-5', title: 'Candidate interview', templateId: 'interview', emoji: '🧑‍💻', startedAt: monday(9), endedAt: monday(9, 50), hasTranscript: true, hasSummary: true, createdAt: monday(9) },
+    { ...base, id: 'preview-6', title: 'Untitled · Mon 14:02', startedAt: monday(14, 2), endedAt: monday(14, 20), hasTranscript: true, createdAt: monday(14, 2) },
+    { ...base, id: 'preview-7', title: 'Design review', titleSource: 'calendar', templateId: '1-1', emoji: '🤝', calendarUid: 'preview-uid-7', calendarStart: monday(11), calendarEnd: monday(11, 30), prepPoints: 2 },
+    { ...base, id: 'preview-8', title: 'Budget check', titleSource: 'calendar', calendarUid: 'preview-uid-8', calendarStart: monday(13), calendarEnd: monday(13, 30), calendarCancelledAt: monday(12), prepPoints: 1 },
+    { ...base, id: 'preview-9', title: 'Vendor call', titleSource: 'calendar', calendarUid: 'preview-uid-9', calendarStart: monday(15), calendarEnd: monday(15, 45), prepPoints: 3 },
+    { ...base, id: 'preview-1', title: 'Weekly product sync', reviewed: true, startedAt: '2026-11-10T09:00:00Z', endedAt: '2026-11-10T09:45:00Z', createdAt: '2026-11-10T09:00:00Z', hasTranscript: true, hasSummary: true },
+    { ...base, id: 'preview-2', title: 'Interview: backend engineer', reviewed: true, startedAt: '2026-11-11T14:00:00Z', endedAt: '2026-11-11T14:50:00Z', createdAt: '2026-11-11T14:00:00Z', hasTranscript: true, hasSummary: true },
+  ];
+};
+
 const handlers: Record<string, (args: any) => unknown> = {
   get_onboarding_status: () => ({ completed: true, current_step: 4, model_status: { parakeet: 'downloaded' } }),
   check_first_launch: () => false,
@@ -41,7 +68,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   api_get_transcript_config: () => ({ provider: 'localWhisper', model: 'large-v3' }),
   get_audio_devices: () => [{ name: 'Preview mic', device_type: 'Input' }, { name: 'Preview speakers', device_type: 'Output' }],
   get_ollama_models: () => [],
-  api_list_templates: () => ({ templates: [{ id: 'standard_meeting', name: 'Standard meeting' }], errors: [] }),
+  api_list_templates: () => ({ templates: [{ id: 'standard_meeting', name: 'Standard meeting', emoji: null }, { id: '1-1', name: '1:1', emoji: '🤝' }, { id: 'interview', name: 'Interview', emoji: '🧑‍💻' }], errors: [] }),
   get_meeting_audio: () => ({ path: null }),
   get_meeting_notes: () => [],
   speakers_get_settings: () => ({ enabled: false, models_ready: false }),
@@ -61,6 +88,15 @@ const handlers: Record<string, (args: any) => unknown> = {
   feed_unread_count: () => 0,
   feed_list: () => [],
   api_get_meetings: () => meetings,
+  api_list_meeting_rows: () => meetingRows(),
+  api_save_meeting_view: () => null,
+  api_delete_meeting_view: () => null,
+  api_set_meeting_reviewed: () => null,
+  api_set_meeting_template: () => null,
+  api_delete_meeting: () => ({ folder_warning: null }),
+  api_search_transcripts: ({ query }) => (/plan/i.test(query)
+    ? [{ meetingId: 'preview-4', title: 'Release planning', source: 'transcript', snippet: 'Let us start with the release plan for next week.', transcriptId: 't-0', audioStart: 0, totalInMeeting: 1 }]
+    : []),
   api_get_meeting_metadata: ({ meetingId }) => meetings.find((m) => m.id === meetingId) ?? meetings[0],
   api_get_meeting_transcripts: () => ({ transcripts, total_count: transcripts.length, has_more: false }),
   api_get_summary: ({ meetingId }) => ({

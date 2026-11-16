@@ -28,7 +28,7 @@
   - **RUST:** `. "$HOME/.cargo/env"; export CARGO_TARGET_DIR=/workspace/target; cd /workspace && flock /workspace/.superpowers/cargo.lock nice -n 10 cargo test -p meetily --lib <filter> -j 4`. Run each filter separately, then once without a filter. Each worktree needs `frontend/out` (`pnpm run build`) and `mkdir -p frontend/src-tauri/binaries && touch frontend/src-tauri/binaries/llama-helper-x86_64-unknown-linux-gnu`.
   - **FE:** `cd /workspace/frontend && pnpm exec tsc --noEmit && bun test <file>`, then the full `bun test` and `pnpm run build`. Record the baseline failures before Task 14.
   - **A11Y:** `pnpm run dev:preview` in the background, then `node frontend/scripts/a11y-check.mjs http://localhost:3118 / /settings` must exit 0.
-  - **SCRIPTS:** `node --test scripts/`; `bash -n` / `node --check` / `actionlint` / JSON parse on changed files; `bash scripts/check-no-phone-home.sh` (the "guard").
+  - **SCRIPTS:** `node --test scripts/*.test.mjs`; `bash -n` / `node --check` / `actionlint` / JSON parse on changed files; `bash scripts/check-no-phone-home.sh` (the "guard").
   - **PHASE:** `flock … cargo test --workspace --exclude llama-helper -j 4`, the full FE gate, and the guard.
   - **WINCI** (at a push checkpoint): `gh workflow run ci.yml -f full=true --ref safe-updates` (`ci.yml:53-95`). The app crate can't be checked for Windows on Linux.
 - **Secrets:** Never log or return a value. Format keyring errors as `{e}`, never `{e:?}`, because `BadEncoding`'s Debug prints the bytes. Errors name the secret. The token goes only to `api.github.com`. Every message leaving `updates/` passes through `github::scrub`.
@@ -313,7 +313,7 @@ The guard/config task comes first, because the old guard denies the plugin and t
 **Files:**
 - **`frontend/src-tauri/tauri.conf.json`:** `:80` becomes `"createUpdaterArtifacts": true`. Add top-level `"plugins": { "updater": { "pubkey": "<CONCLAVE_UPDATER_PUBKEY>", "windows": { "installMode": "passive" } } }`. No `endpoints`; no `updater:*` capability. `requireSignedVersion` stays `false` (the default): tauri-cli 2.11.1 puts no version in the trusted comment (`updater_signature.rs:132`), so `true` would reject every update.
 - **`scripts/check-no-phone-home.sh`:** The line 2 comment becomes "…telemetry, a foreign updater, Meetily-owned hosts…". Patterns: drop `plugin-updater`, `tauri_plugin_updater` and `createUpdaterArtifacts` (lines 12–14, 16); keep `releases/latest/download/latest\.json`; change `updater:default` to `"updater:`; add `\.pubkey\(` and `"endpoints"[[:space:]]*:`. Add `CONCLAVE_UPDATER_PUBKEY='<value>'` near the top. Add checks after the `PATTERNS` loop. Each sets `fail=1`, and a grep exit ≥2 fails closed: A `"pubkey"` hit without the Conclave value prints `FOREIGN updater pubkey:`. A `\.endpoints\(` hit outside `frontend/src-tauri/src/updates/` prints `updater endpoints outside src/updates:`. In each `src/updates/*.rs`, the lines before the first `#[cfg(test)]` (`awk '/#\[cfg\(test\)\]/{exit} {print}'`) are scanned. Every `https?://[^"[:space:]]+` must start with `https://api.github.com/repos/Sashanator/conclave/`, or it prints `FOREIGN URL in src/updates:`.
-- **`.github/workflows/ci.yml:25`:** the step is named `Guard (no telemetry / foreign updater / Meetily hosts)`. Add a step after it, `Script tests`, running `node --test scripts/` (no workflow runs these today, so the guard and release-script tests would never run in CI).
+- **`.github/workflows/ci.yml:25`:** the step is named `Guard (no telemetry / foreign updater / Meetily hosts)`. Add a step after it, `Script tests`, running `node --test scripts/*.test.mjs` (no workflow runs these today, so the guard and release-script tests would never run in CI).
 - **Create `scripts/check-no-phone-home.test.mjs`** (`node:test`, like `set-version.test.mjs`). A `fixture(overrides)` helper builds a temp root: `frontend/src/a.ts`; `src-tauri/src/lib.rs`; `src-tauri/src/updates/mod.rs`, with `.endpoints(vec![url])` and the Conclave API URL; `Cargo.toml` with `tauri-plugin-updater`; `tauri.conf.json` with the real pubkey.
 
   It copies the script into the root and runs it there.
@@ -473,7 +473,7 @@ It is reached only after a successful DB open, so a failed open means no start-u
 - `:64` becomes "No PostHog, no analytics, and no Meetily-owned URLs except the Parakeet model host and the build-time ffmpeg-binaries download, both listed in `docs/network-calls.md`. The only update channel is the Conclave-owned updater: the user's private repo, the user's signing key, a read-only token, and an explicit user click." The rest of the bullet stays.
 - `:43`: delete "The app has no updater." Add "Every tag needs a `## vX.Y.Z — date` section in `CHANGELOG.md` (release and update notes). The build signs the installer with the `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` secrets and uploads `latest.json` (API asset URL) while the release is a draft."
 - `:29` scripts row: add `changelog-section.mjs`, `latest-json.mjs` (release notes and update manifest).
-- `:36-41`: add `` `node --test scripts/` (release and guard script tests) ``.
+- `:36-41`: add `` `node --test scripts/*.test.mjs` (release and guard script tests) ``.
 
 **Steps:**
 - [ ] Edit, then run the guard. `git diff --stat` must show only these two files.

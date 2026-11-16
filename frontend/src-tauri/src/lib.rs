@@ -63,6 +63,9 @@ mod speakers;
 mod practice;
 mod usage;
 mod prep;
+mod secrets;
+mod backup;
+mod updates;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
@@ -601,6 +604,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -646,6 +650,9 @@ pub fn run() {
             };
 
             log::info!("Application setup complete");
+
+            // Before anything reads or migrates user data: a pre-upgrade backup, or the user's Continue/Quit.
+            backup::run_at_startup(_app.handle());
 
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
@@ -750,12 +757,14 @@ pub fn run() {
                 database::setup::report_open_failure(_app.handle(), &e);
                 return Ok(());
             }
+            // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
+            tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
+            // Moves plain-text secrets into Credential Manager and compacts the DB; runs before any background starter holds a reader.
+            tauri::async_runtime::block_on(secrets::migrate::run_at_startup(_app.handle()));
             // Dictate that was on comes back only now: its model load needs the database.
             dictate::apply_after_db_ready(_app.handle());
             // A practice session left running by a crash is closed as interrupted.
             tauri::async_runtime::spawn(practice::commands::recover_at_startup(_app.handle().clone()));
-            // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
-            tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {
@@ -767,6 +776,8 @@ pub fn run() {
             knowledge::extract::start_worker(_app.handle().clone());
             // The scheduler: calendar refresh, briefs and the daily feed prune. It waits for the database too.
             knowledge::scheduler::start(_app.handle().clone());
+            // Update check ~30 s after launch (no modal; the prompt waits for idle).
+            updates::start_check(_app.handle().clone());
 
             // Copy the shipped templates into the user's templates folder once; deleted ones stay deleted.
             match summary::templates::seed_templates() {
@@ -987,6 +998,9 @@ pub fn run() {
             // Database and Models path commands
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            backup::commands::backup_now,
+            backup::commands::backup_list,
+            backup::commands::backup_open_folder,
             whisper_engine::commands::open_models_folder,
             // Onboarding commands
             onboarding::get_onboarding_status,
@@ -1044,6 +1058,12 @@ pub fn run() {
             knowledge::calendar::calendar_disconnect,
             knowledge::calendar::calendar_status,
             knowledge::calendar::calendar_title_now,
+            updates::updates_get_status,
+            updates::updates_set_token,
+            updates::updates_remove_token,
+            updates::updates_set_check_on_start,
+            updates::updates_check,
+            updates::updates_install,
             prep::upcoming::prep_overview,
             prep::store::prep_get,
             prep::store::prep_for_meeting,

@@ -26,7 +26,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
 | `crates/meeting-detector/` | Windows meeting detection: pure rules (`classify.rs`), the watch loop (`runner.rs`), the Win32 layer (`windows.rs`), and the `conclave-probe` diagnostic binary. |
 | `crates/dictate-input/` | Windows dictation input layer: pure hotkey state machine and paste decisions, the WH_KEYBOARD_LL hook, private clipboard paste |
 | `llama-helper/` | Sidecar for the local LLM (bundled; not used for summaries in v1) |
-| `scripts/` | `check-no-phone-home.sh` (CI guard), `set-version.mjs` (release version stamp) |
+| `scripts/` | `check-no-phone-home.sh` (CI guard), `set-version.mjs` (release version stamp), `changelog-section.mjs`, `latest-json.mjs` (release notes and update manifest) |
 | `.github/workflows/` | `ci.yml` (PR checks), `release.yml` (installer on `v*` tags) |
 | `backend/` | Archived Meetily Python backend. Unsupported; do not touch. |
 
@@ -39,8 +39,9 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
   - `cargo check -p meeting-detector --target x86_64-pc-windows-msvc --tests --bins`
   - `cargo check -p dictate-input --target x86_64-pc-windows-msvc --tests`
   - `bash scripts/check-no-phone-home.sh`, and `actionlint` for workflows
+  - `node --test scripts/*.test.mjs` (release and guard script tests)
 - **Verified only on Windows:** the Windows-only Rust code, through GitHub Actions on `windows-latest`. CI minutes are scarce (about 3,000 per month, Windows counts double): verify locally, push only at checkpoints, and run the full Windows app tests only by manual dispatch (`gh workflow run ci.yml -f full=true`).
-- **Releases:** tag `vX.Y.Z` → `release.yml` builds an unsigned NSIS `Conclave_X.Y.Z_x64-setup.exe` (CUDA build: `--features cuda`, sm_89) and publishes it on the private repo. `cudart64_12.dll` (~0.5 MB), `onnxruntime.dll`, `onnxruntime_providers_shared.dll` and `DirectML.dll` (ONNX Runtime 1.22.0, DirectML build, from api.nuget.org and SHA-pinned in `frontend/src-tauri/build/onnxruntime.rs`) are bundled next to the exe. cuBLAS and the driver are delay-loaded from the user's own CUDA 12 toolkit (`CUDA_SETUP.md`). The build runs on `windows-2022` (nvcc 12.8 rejects the VS 2026 on `windows-latest`). Releases are drafts until the delay-load check and the no-CUDA smoke test pass. The app has no updater.
+- **Releases:** tag `vX.Y.Z` → `release.yml` builds an unsigned NSIS `Conclave_X.Y.Z_x64-setup.exe` (CUDA build: `--features cuda`, sm_89) and publishes it on the private repo. `cudart64_12.dll` (~0.5 MB), `onnxruntime.dll`, `onnxruntime_providers_shared.dll` and `DirectML.dll` (ONNX Runtime 1.22.0, DirectML build, from api.nuget.org and SHA-pinned in `frontend/src-tauri/build/onnxruntime.rs`) are bundled next to the exe. cuBLAS and the driver are delay-loaded from the user's own CUDA 12 toolkit (`CUDA_SETUP.md`). The build runs on `windows-2022` (nvcc 12.8 rejects the VS 2026 on `windows-latest`). Releases are drafts until the delay-load check and the no-CUDA smoke test pass. Every tag needs a `## vX.Y.Z — date` section in `CHANGELOG.md` (release and update notes). The build signs the installer with the `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` secrets and uploads `latest.json` (API asset URL) while the release is a draft. A local `tauri build` also needs `TAURI_SIGNING_PRIVATE_KEY` (and `_PASSWORD`) set, because `createUpdaterArtifacts` is on; without them the bundle step fails.
 
 ## Agent environment
 
@@ -61,7 +62,7 @@ Facts the `harness@s-harness` agents read from this file:
 
 ## Invariants (do not break)
 
-- **No telemetry and no phone-home.** No PostHog, no analytics, no updater, and no Meetily-owned URLs except the Parakeet model host and the build-time ffmpeg-binaries download, both listed in `docs/network-calls.md`. `scripts/check-no-phone-home.sh` enforces this in CI. Allowed outbound calls are listed in `docs/network-calls.md`.
+- **No telemetry and no phone-home.** No PostHog, no analytics, and no Meetily-owned URLs except the Parakeet model host and the build-time ffmpeg-binaries download, both listed in `docs/network-calls.md`. The only update channel is the Conclave-owned updater: the user's private repo, the user's signing key, a read-only token, and an explicit user click. `scripts/check-no-phone-home.sh` enforces this in CI. Allowed outbound calls are listed in `docs/network-calls.md`.
 - **App identity is `Conclave` / `com.conclave.app`.** Data folders are named `Conclave`, never `Meetily`. The only user-visible "Meetily" is the MIT credit in About.
 - **Rename only what users see.** Internal crate, module and folder names stay as Meetily had them unless code is being touched anyway.
 - **Never commit secrets:** `.claude/` (except `settings.json`), `.env*`, `.devcontainer/.Xauthority`.

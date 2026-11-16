@@ -14,6 +14,7 @@ const originals = {
   recents: { ...await import('../../src/hooks/useRecentLanguages') },
   preferences: { ...await import('../../src/lib/summary-language-preferences') },
   sonner: { ...await import('sonner') },
+  core: { ...await import('@tauri-apps/api/core') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
@@ -27,6 +28,7 @@ afterAll(() => {
   mock.module('../../src/hooks/useRecentLanguages', () => originals.recents);
   mock.module('../../src/lib/summary-language-preferences', () => originals.preferences);
   mock.module('sonner', () => originals.sonner);
+  mock.module('@tauri-apps/api/core', () => originals.core);
 });
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
@@ -54,6 +56,8 @@ mock.module('../../src/lib/summary-language-preferences', () => ({
   saveMeetingSummaryLanguage: saveLanguage,
 }));
 mock.module('sonner', () => ({ toast: { info: () => {}, error: () => {}, warning: () => {} } }));
+// SummaryPanel's real children call invoke; an earlier file may have left them bound to its own invoke mock.
+mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke: async () => null }));
 
 const { SummaryPanel } = await import('../../src/components/MeetingDetails/SummaryPanel');
 

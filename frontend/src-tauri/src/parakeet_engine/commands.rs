@@ -380,6 +380,7 @@ pub async fn parakeet_download_model<R: Runtime>(
     app_handle: AppHandle<R>,
     model_name: String,
 ) -> Result<(), String> {
+    let _busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::ModelDownload);
     let engine = {
         let guard = PARAKEET_ENGINE.lock().unwrap();
         guard.as_ref().cloned()

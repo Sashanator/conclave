@@ -228,7 +228,14 @@ pub async fn open_database_folder(app: AppHandle) -> Result<(), String> {
             .map_err(|e| format!("Failed to create directory: {}", e))?;
     }
 
-    let folder_path = app_data_dir.to_string_lossy().to_string();
+    open_folder(&app_data_dir)?;
+    info!("Opened database folder: {}", app_data_dir.display());
+    Ok(())
+}
+
+/// Opens `path` in the system file explorer.
+pub(crate) fn open_folder(path: &std::path::Path) -> Result<(), String> {
+    let folder_path = path.to_string_lossy().to_string();
 
     #[cfg(target_os = "windows")]
     {
@@ -253,7 +260,5 @@ pub async fn open_database_folder(app: AppHandle) -> Result<(), String> {
             .spawn()
             .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
-
-    info!("Opened database folder: {}", folder_path);
     Ok(())
 }

@@ -4,6 +4,9 @@ import type { UseTranscriptRecoveryReturn } from '../../src/hooks/useTranscriptR
 
 const originalCore = { ...await import('@tauri-apps/api/core') };
 const originalSonner = { ...await import('sonner') };
+const originalIndexedDB = { ...await import('../../src/services/indexedDBService') };
+const originalStorage = { ...await import('../../src/services/storageService') };
+const originalPreferences = { ...await import('../../src/lib/summary-language-preferences') };
 
 // What `recover_audio_from_checkpoints` does in a given test; set per test.
 let recoverAudio: () => Promise<unknown> = async () => ({ status: 'success', chunk_count: 2, estimated_duration_seconds: 60, message: 'ok' });
@@ -38,6 +41,9 @@ mock.module('../../src/lib/summary-language-preferences', () => ({ applyPinnedSu
 const { useTranscriptRecovery } = await import('../../src/hooks/useTranscriptRecovery');
 
 afterAll(() => {
+  mock.module('../../src/services/indexedDBService', () => originalIndexedDB);
+  mock.module('../../src/services/storageService', () => originalStorage);
+  mock.module('../../src/lib/summary-language-preferences', () => originalPreferences);
   mock.module('@tauri-apps/api/core', () => originalCore);
   mock.module('sonner', () => originalSonner);
 });

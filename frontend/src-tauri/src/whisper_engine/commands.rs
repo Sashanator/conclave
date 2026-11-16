@@ -423,6 +423,7 @@ pub async fn whisper_download_model(
     app_handle: tauri::AppHandle,
     model_name: String,
 ) -> Result<(), String> {
+    let _busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::ModelDownload);
     let engine = {
         let guard = WHISPER_ENGINE.lock().unwrap();
         guard.as_ref().cloned()

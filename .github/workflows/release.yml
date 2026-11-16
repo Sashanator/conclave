@@ -26,6 +26,20 @@ jobs:
         shell: bash
         run: node scripts/set-version.mjs "${GITHUB_REF_NAME#v}"
 
+      - name: Release notes from CHANGELOG.md
+        id: notes
+        if: github.ref_type == 'tag'
+        shell: bash
+        run: |
+          node scripts/changelog-section.mjs "${GITHUB_REF_NAME#v}" > "$RUNNER_TEMP/notes.md"
+          {
+            echo 'body<<CONCLAVE_NOTES_EOF'
+            cat "$RUNNER_TEMP/notes.md"
+            echo
+            echo 'Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 toolkit (cuBLAS) — see CUDA_SETUP.md in the repo; without it Whisper runs on CPU. To update: in Conclave open Settings → General → Updates and click Update (needs a read-only GitHub token), or quit Conclave from the tray icon (right-click → Quit) and run this setup; no uninstall needed, meetings, settings and models are kept. Summaries use your own cloud LLM key: Settings → Summary (default Claude Haiku 5.5).'
+            echo 'CONCLAVE_NOTES_EOF'
+          } >> "$GITHUB_OUTPUT"
+
       - uses: pnpm/action-setup@v4
         with:
           version: 9.15.9
@@ -37,7 +51,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: cargo 1.100 puts build script OUT_DIR under build/<pkg>/<hash>, and ort-sys 2.0.0-rc.10 (copy-dylibs) then copies into a missing build/examples
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: x86_64-pc-windows-msvc
 
@@ -119,12 +134,14 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           CMAKE_CUDA_ARCHITECTURES: '89'
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           projectPath: frontend
           args: --target x86_64-pc-windows-msvc --bundles nsis --features cuda ${{ steps.portability.outputs.args }}
           tagName: ${{ github.ref_type == 'tag' && github.ref_name || '' }}
           releaseName: ${{ github.ref_type == 'tag' && format('Conclave {0}', github.ref_name) || '' }}
-          releaseBody: 'New in 1.0.4: Dictate has its own microphone setting (Dictate → Microphone; "Same as Meetings" by default). If the Dictate microphone is turned off or unplugged, Dictate now switches to another microphone within a few seconds, as recordings do. Fixes: the rename and delete buttons show again when you hover a meeting in the sidebar, and the sidebar shows the real app version. Unsigned build: on first install choose "More info → Run anyway". GPU transcription needs the CUDA 12 toolkit (cuBLAS) — see CUDA_SETUP.md in the repo; without it Whisper runs on CPU. To update: quit Conclave from the tray icon (right-click → Quit), uninstall the old version in Windows Settings → Apps and leave ''delete app data'' unticked (meetings, settings and models are kept), then run this setup. Summaries use your own cloud LLM key: Settings → Summary (default Claude Haiku 5.5).'
+          releaseBody: ${{ steps.notes.outputs.body }}
           releaseDraft: true
           includeUpdaterJson: false
 
@@ -197,6 +214,19 @@ jobs:
             }
           }
           Write-Host "OK: app stayed up 20s without CUDA on PATH; bundled ONNX Runtime and DirectML loaded"
+
+      - name: Upload latest.json to the draft
+        if: github.ref_type == 'tag'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ver="${GITHUB_REF_NAME#v}"; exe="Conclave_${ver}_x64-setup.exe"
+          sig="target/x86_64-pc-windows-msvc/release/bundle/nsis/${exe}.sig"
+          [ -s "$sig" ] || { echo "::error::missing updater signature $sig"; exit 1; }
+          url=$(gh release view "$GITHUB_REF_NAME" --json assets -q ".assets[] | select(.name == \"$exe\") | .apiUrl")
+          node scripts/latest-json.mjs "$ver" "$RUNNER_TEMP/notes.md" "$sig" "$url" > "$RUNNER_TEMP/latest.json"
+          gh release upload "$GITHUB_REF_NAME" "$RUNNER_TEMP/latest.json" --clobber
 
       - name: Publish release (only after the checks above pass)
         if: github.ref_type == 'tag'

@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard (no telemetry / updater / Meetily hosts)
+      - name: Guard (no telemetry / foreign updater / Meetily hosts)
         shell: bash
         run: bash scripts/check-no-phone-home.sh
 
@@ -40,6 +40,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.21
+
+      - name: Script tests
+        run: node --test scripts/*.test.mjs
 
       - name: Frontend (install, typecheck, test, build)
         working-directory: frontend
@@ -68,7 +71,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: cargo 1.100 puts build script OUT_DIR under build/<pkg>/<hash>, and ort-sys 2.0.0-rc.10 (copy-dylibs) then copies into a missing build/examples
+      - uses: dtolnay/rust-toolchain@1.99.1
 
       - uses: swatinem/rust-cache@v2
         with:
@@ -114,7 +118,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: cargo 1.100 puts build script OUT_DIR under build/<pkg>/<hash>, and ort-sys 2.0.0-rc.10 (copy-dylibs) then copies into a missing build/examples
+      - uses: dtolnay/rust-toolchain@1.99.1
 
       - uses: swatinem/rust-cache@v2
         with:

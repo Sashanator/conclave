@@ -76,6 +76,10 @@ impl DatabaseManager {
         match Self::new(&tauri_db_path, &backend_db_path).await {
             Ok(db_manager) => {
                 log::info!("Database opened successfully");
+                // After migrations only: a failed open must leave the old version recorded.
+                if let Err(e) = crate::backup::write_last_run(app_data_dir, env!("CARGO_PKG_VERSION")) {
+                    log::warn!("could not record the last-run version: {e}");
+                }
                 Ok(db_manager)
             }
             Err(e) => {
@@ -199,5 +203,14 @@ mod tests {
         let err = DatabaseManager::open_in_data_dir(dir.path()).await.err().expect("a damaged database must not open");
         assert!(err.to_string().contains("malformed"), "unexpected error: {err}");
         assert_eq!(fs::read(&wal).unwrap(), b"committed transactions");
+        assert!(!dir.path().join(crate::backup::LAST_RUN_FILE).exists());
+    }
+
+    #[tokio::test]
+    async fn open_writes_last_run_after_migrations() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = DatabaseManager::open_in_data_dir(dir.path()).await.unwrap();
+        db.pool.close().await;
+        assert_eq!(crate::backup::read_last_run(dir.path()).as_deref(), Some(env!("CARGO_PKG_VERSION")));
     }
 }

@@ -75,7 +75,13 @@ struct PronInput {
 
 /// Runs the report for one session. The claim makes a second run for the same session a no-op.
 /// `hold` keeps Whisper loaded across the hand-off from the session; the job releases it when done.
-pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String, hold: ModelHold) {
+/// `_busy` is taken by the caller before the spawn, so no gap reads idle; it drops on every exit.
+pub async fn run<R: Runtime>(
+    app: AppHandle<R>,
+    session_id: String,
+    hold: ModelHold,
+    _busy: crate::updates::busy::BusyGuard,
+) {
     let pool = app.state::<AppState>().db_manager.pool().clone();
     match claim_for_report(&pool, &session_id).await {
         Ok(true) => {}

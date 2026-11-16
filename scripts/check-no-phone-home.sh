@@ -127,15 +127,17 @@ done <<< "$out"
 if [ -n "$ep" ]; then echo "updater endpoints outside src/updates:"; printf '%s' "$ep"; fail=1; fi
 
 # Every URL in non-test updates code must stay inside the Conclave repo API. Scanning skips only
-# `#[cfg(test)] mod name {` (up to the next column-0 `}`), then resumes; any other cfg(test) item is still scanned.
+# `#[cfg(test)] mod name {` (until its braces balance), then resumes; any other cfg(test) item is still scanned.
 H='https://api.github.com/'
 if [ -d "$UPD" ]; then
   while IFS= read -r -d '' f; do
     urls=$(awk '
-      skip {if ($0 == "}") skip = 0; next}
-      /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*mod [A-Za-z_0-9]+[[:space:]]*\{[[:space:]]*$/ {if (held != "") print held; held = ""; skip = 1; next}
+      function depth_change(l,  o, c) {sub(/\/\/.*/, "", l); o = gsub(/\{/, "{", l); c = gsub(/\}/, "}", l); return o - c}
+      {sub(/\r$/, "")}
+      skip {depth += depth_change($0); if (depth <= 0) skip = 0; next}
+      /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*mod [A-Za-z_0-9]+[[:space:]]*\{[[:space:]]*$/ {if (held != "") print held; held = ""; skip = 1; depth = depth_change($0); next}
       /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*$/ {if (held != "") print held; held = $0; next}
-      held != "" && /^[[:space:]]*(pub[[:space:]]+)?mod [A-Za-z_0-9]+[[:space:]]*\{[[:space:]]*$/ {held = ""; skip = 1; next}
+      held != "" && /^[[:space:]]*(pub[[:space:]]+)?mod [A-Za-z_0-9]+[[:space:]]*\{[[:space:]]*$/ {held = ""; skip = 1; depth = depth_change($0); next}
       {if (held != "") print held; held = ""; print}
       END {if (held != "") print held}' "$f" | grep_or_die -noiE 'https?://[^"[:space:]]+') || exit 1
     while IFS= read -r u; do

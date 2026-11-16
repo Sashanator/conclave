@@ -183,3 +183,16 @@ test('fails_with_spaced_endpoints_and_pubkey_calls', () => {
 
 test('fails_with_dotdot_segments_in_conclave_url', () =>
   fails({ [MOD]: 'const U: &str = "https://api.github.com/repos/Sashanator/conclave/../../evil/x";\n' }, /FOREIGN URL/));
+
+test('test_module_end_is_found_by_brace_depth', () => {
+  const after = `${EVIL}`;
+  // trailing comment on the closing brace
+  fails({ [MOD]: `#[cfg(test)]\nmod tests {\n}  // end tests\n${after}` }, /FOREIGN URL/);
+  // CRLF line endings
+  fails({ [MOD]: `#[cfg(test)]\r\nmod tests {\r\n    const U: &str = "x";\r\n}\r\n${after}` }, /FOREIGN URL/);
+  // nested, indented test module inside an outer module
+  fails({ [MOD]: `pub mod outer {\n    #[cfg(test)]\n    mod t {\n        fn f() { if true {} }\n    }\n    ${after}}\n` }, /FOREIGN URL/);
+  // and URLs inside a nested/CRLF test module are still ignored
+  const ok = run({ [MOD]: `const A: &str = "${API}";\r\n#[cfg(test)]\r\nmod t {\r\n  fn f() { if true {} } // }\r\n  const U: &str = "https://evil.example/x";\r\n}\r\n` });
+  assert.equal(ok.code, 0, ok.out);
+});

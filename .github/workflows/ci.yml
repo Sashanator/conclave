@@ -22,7 +22,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Guard (no telemetry / updater / Meetily hosts)
+      - name: Guard (no telemetry / foreign updater / Meetily hosts)
         shell: bash
         run: bash scripts/check-no-phone-home.sh
 
@@ -40,6 +40,9 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.2.21
+
+      - name: Script tests
+        run: node --test scripts/*.test.mjs
 
       - name: Frontend (install, typecheck, test, build)
         working-directory: frontend

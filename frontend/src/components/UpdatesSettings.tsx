@@ -47,7 +47,7 @@ export function UpdatesSettings() {
     setBusy(true); setTokenMsg(null);
     try { setTokenMsg(testMessage(await updatesCheck())); }
     catch (e) { setTokenMsg({ text: String(e), error: true }); }
-    finally { setBusy(false); }
+    finally { setBusy(false); await loadStatus(); }
   };
   const removeToken = async () => {
     setBusy(true); setTokenMsg(null);
@@ -55,13 +55,15 @@ export function UpdatesSettings() {
     catch (e) { setTokenMsg({ text: String(e), error: true }); }
     finally { setBusy(false); }
   };
+  const [toggling, setToggling] = useState(false);
   const toggle = async (enabled: boolean) => {
+    setToggling(true);
     setStatus((s) => s && { ...s, checkOnStart: enabled });
     try { await updatesSetCheckOnStart(enabled); }
     catch (e) {
       setStatus((s) => s && { ...s, checkOnStart: !enabled });
       toast.error('Could not save the setting', { description: String(e) });
-    }
+    } finally { setToggling(false); }
   };
   const check = async () => {
     setChecking(true); setCheckMsg(null);
@@ -107,7 +109,7 @@ export function UpdatesSettings() {
             {tokenMsg && line(tokenMsg)}
             <p className="text-xs text-muted-foreground">{TOKEN_HELP}</p>
             <div className="flex items-center gap-3">
-              <Switch checked={status.checkOnStart} onCheckedChange={toggle} aria-label="Check for updates on start" />
+              <Switch checked={status.checkOnStart} onCheckedChange={toggle} disabled={toggling} aria-label="Check for updates on start" />
               <span className="text-sm">Check for updates on start</span>
             </div>
             <Button size="sm" onClick={check} disabled={checking}>Check for updates</Button>

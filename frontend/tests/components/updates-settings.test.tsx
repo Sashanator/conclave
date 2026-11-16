@@ -115,6 +115,7 @@ describe('UpdatesSettings', () => {
     await mount();
     await press('Test');
     expect(allText()).toContain('Works');
+    expect(countOf('updates_get_status')).toBe(2);
   });
 
   test('Test shows the GitHub error', async () => {
@@ -147,6 +148,19 @@ describe('UpdatesSettings', () => {
     await flush();
     expect(sw().props['aria-checked']).toBe(false);
     expect(toast.error.mock.calls[0][0]).toBe('Could not save the setting');
+  });
+
+  test('switch is disabled while its save runs', async () => {
+    await mount();
+    const sw = () => renderer!.root.find((n) => n.type === 'button' && n.props['aria-label'] === 'Check for updates on start');
+    let release: () => void = () => {};
+    const gate = new Promise<void>((r) => { release = r; });
+    invoke.mockImplementationOnce(async () => { await gate; return null; });
+    let p: Promise<void> | undefined;
+    await act(async () => { p = sw().props.onClick(); });
+    expect(sw().props.disabled).toBe(true);
+    await act(async () => { release(); await p; });
+    expect(sw().props.disabled).toBe(false);
   });
 
   test('Check for updates shows an available update', async () => {

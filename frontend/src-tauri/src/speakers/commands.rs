@@ -73,10 +73,11 @@ pub async fn speakers_set_enabled<R: Runtime>(app: AppHandle<R>, enabled: bool) 
     settings::save_enabled(&app, enabled)?;
     let _ = app.emit("speaker-settings-changed", json!({}));
     if enabled {
+        let busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::ModelDownload);
         tauri::async_runtime::spawn(async move {
             let ready = tokio::task::spawn_blocking(models::models_ready).await.unwrap_or(false);
             if !ready {
-                download(app).await;
+                download(app, busy).await;
             }
         });
     }
@@ -86,17 +87,17 @@ pub async fn speakers_set_enabled<R: Runtime>(app: AppHandle<R>, enabled: bool) 
 /// Starts the model download and returns at once. A second request while one runs is ignored.
 #[tauri::command]
 pub async fn speakers_download_models<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
-    tauri::async_runtime::spawn(download(app));
+    let busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::ModelDownload);
+    tauri::async_runtime::spawn(download(app, busy));
     Ok(())
 }
 
-async fn download<R: Runtime>(app: AppHandle<R>) {
+async fn download<R: Runtime>(app: AppHandle<R>, _busy: crate::updates::busy::BusyGuard) {
     // Shared, taken before the flag: a deletion that starts first is refused, and one after sees the download.
     let _model_files = job::MODEL_LOCK.read().await;
     if DOWNLOADING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return;
     }
-    let _busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::ModelDownload);
     let _ = app.emit("speaker-settings-changed", json!({}));
     // Shared: deletion waits for the download, and the download waits for no one.
     let result = fetch_models(&app).await;

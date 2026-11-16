@@ -162,4 +162,20 @@ mod tests {
             ]
         );
     }
+
+    #[tokio::test]
+    async fn guard_taken_before_spawn_is_held_until_the_task_ends() {
+        let before = held(BusyReason::PracticeReport);
+        let busy = hold(BusyReason::PracticeReport);
+        let (tx, rx) = tokio::sync::oneshot::channel::<()>();
+        let task = tokio::spawn(async move {
+            let _busy = busy;
+            let _ = rx.await;
+        });
+        // Held with the task not yet run, and while it waits.
+        assert_eq!(held(BusyReason::PracticeReport), before + 1);
+        tx.send(()).unwrap();
+        task.await.unwrap();
+        assert_eq!(held(BusyReason::PracticeReport), before);
+    }
 }

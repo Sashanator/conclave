@@ -797,7 +797,8 @@ pub async fn practice_retry_report<R: Runtime>(
     if !matches!(row.report_status.as_str(), "failed" | "pending") {
         return Err(NOT_RETRYABLE.to_string());
     }
-    tauri::async_runtime::spawn(report_job::run(app, session_id, hold_model()));
+    let busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::PracticeReport);
+    tauri::async_runtime::spawn(report_job::run(app, session_id, hold_model(), busy));
     Ok(())
 }
 

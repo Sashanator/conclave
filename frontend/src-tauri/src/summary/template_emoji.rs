@@ -5,7 +5,7 @@
 use crate::knowledge::extract::UNTRUSTED;
 use crate::summary::llm_target::complete;
 use crate::summary::templates::{
-    get_template_in, save_template_in, valid_emoji, HistorySource, SaveOrigin, Template,
+    set_emoji_if_unset_in, valid_emoji, Template,
 };
 use crate::summary::{template_assist_settings, templates};
 use crate::usage::{self, Purpose};
@@ -29,23 +29,12 @@ pub(crate) fn emoji_prompts(t: &Template) -> (String, String) {
 /// The reply must be exactly one emoji token: no text, no markup, at most 32 bytes.
 pub(crate) fn parse_emoji_reply(raw: &str) -> Option<String> {
     let s = raw.trim();
-    (valid_emoji(s) && !s.contains('<')).then(|| s.to_string())
+    valid_emoji(s).then(|| s.to_string())
 }
 
-/// Re-reads the file and saves only if the emoji is still unset. Ok(false): nothing to do.
+/// Ok(false): nothing to do (emoji already set, or the template is gone).
 pub(crate) async fn apply_suggestion_in(dir: &Path, id: &str, emoji: &str) -> Result<bool, String> {
-    let mut t = match get_template_in(dir, id) {
-        Ok(t) => t,
-        Err(_) if !dir.join(format!("{id}.json")).exists() => return Ok(false),
-        Err(e) => return Err(e),
-    };
-    if t.emoji.is_some() {
-        return Ok(false);
-    }
-    t.emoji = Some(emoji.to_string());
-    let origin = SaveOrigin { source: HistorySource::Ai, note: "emoji suggestion".into() };
-    save_template_in(dir, Some(id), &t, &origin)?;
-    Ok(true)
+    set_emoji_if_unset_in(dir, id, emoji)
 }
 
 async fn suggest_inner<R: Runtime>(app: &AppHandle<R>, id: &str) -> Result<(), String> {
@@ -81,6 +70,7 @@ pub(crate) async fn suggest<R: Runtime>(app: AppHandle<R>, id: String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::summary::templates::{get_template_in, save_template_in, SaveOrigin};
     use tempfile::tempdir;
 
     fn custom(emoji: Option<&str>) -> Template {

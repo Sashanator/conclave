@@ -42,10 +42,39 @@ pub struct Template {
     pub style: Option<String>,
 }
 
-/// One emoji (or a short sequence): trimmed, non-empty, at most 32 bytes, no ASCII, whitespace or control chars.
+fn emoji_base(c: char) -> bool {
+    matches!(c as u32,
+        0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2190..=0x21FF | 0x231A..=0x23FF | 0x24C2
+        | 0x25AA..=0x25FE | 0x2600..=0x27BF | 0x2934 | 0x2935 | 0x2B00..=0x2BFF | 0x3030 | 0x303D | 0x3297 | 0x3299
+        | 0x1F000..=0x1FAFF)
+}
+
+/// Exactly one emoji: a base pictograph with optional VS16, skin tone, keycap and tags, joined by ZWJ; or one
+/// flag (two regional indicators). Text, several emoji, dashes and other symbols are rejected. At most 32 bytes.
+/// shortcut: a hand-made range table, not full Unicode emoji data; refresh it if new blocks appear.
 pub fn valid_emoji(s: &str) -> bool {
     let s = s.trim();
-    !s.is_empty() && s.len() <= 32 && !s.chars().any(|c| c.is_ascii() || c.is_whitespace() || c.is_control())
+    if s.is_empty() || s.len() > 32 { return false; }
+    let (mut clusters, mut after_zwj, mut regional) = (0, false, 0);
+    for c in s.chars() {
+        let cp = c as u32;
+        if c.is_alphanumeric() || c.is_ascii() || c.is_whitespace() || c.is_control() { return false; }
+        match cp {
+            0x200D => { if clusters == 0 || after_zwj { return false; } after_zwj = true; continue; }
+            0xFE0F | 0x20E3 | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F => {
+                if clusters == 0 || after_zwj { return false; }
+                continue;
+            }
+            0x1F1E6..=0x1F1FF => {
+                regional += 1;
+                if regional == 2 && !after_zwj && clusters == 1 { regional = 0; continue; }
+            }
+            _ if emoji_base(c) => regional = 0,
+            _ => return false,
+        }
+        if after_zwj { after_zwj = false; } else { clusters += 1; }
+    }
+    clusters == 1 && !after_zwj
 }
 
 pub fn builtin_emoji(id: &str) -> Option<&'static str> {
@@ -162,6 +191,16 @@ mod tests {
         assert!(with(Some("📝")).validate().is_ok());
         assert!(with(Some("📝 Notes")).validate().is_err());
         assert!(with(Some("ab")).validate().is_err());
+    }
+
+    #[test]
+    fn valid_emoji_means_exactly_one_emoji() {
+        for ok in ["📝", "👩\u{200D}💻", "👍🏽", "🇩🇪", "❤\u{FE0F}", "🎓"] {
+            assert!(valid_emoji(ok), "{ok}");
+        }
+        for bad in ["Заметки", "中文", "📝🎯📅", "—", "", "a", "📝x", "\u{200D}", "📝\u{200D}"] {
+            assert!(!valid_emoji(bad), "{bad}");
+        }
     }
 
     #[test]

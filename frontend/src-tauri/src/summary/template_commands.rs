@@ -64,8 +64,8 @@ pub async fn api_save_template<R: tauri::Runtime>(
     origin: Option<SaveOrigin>,
 ) -> Result<String, String> {
     let origin = checked_origin(origin)?;
-    let id = templates::save_template(template_id.as_deref(), &template, &origin)?;
-    if template.emoji.is_none() && templates::builtin_emoji(&id).is_none() {
+    let (id, emoji) = templates::save_template_keeping_emoji(template_id.as_deref(), &template, &origin)?;
+    if emoji.is_none() && templates::builtin_emoji(&id).is_none() {
         tauri::async_runtime::spawn(crate::summary::template_emoji::suggest(app, id.clone()));
     }
     Ok(id)

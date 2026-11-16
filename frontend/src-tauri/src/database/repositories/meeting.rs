@@ -329,100 +329,139 @@ impl MeetingsRepository {
     }
 }
 
+/// Days a dismissed calendar occurrence is remembered.
+pub(crate) const DISMISS_KEEP_DAYS: i64 = 30;
+
+/// What both deletes remove: the recording's data. Tasks survive with the meeting link cleared iff they are
+/// not dismissed and are mine or edited; the rest go. Notes, prep, usage and the row are the caller's call.
+async fn delete_recording_data(tx: &mut SqliteConnection, meeting_id: &str) -> Result<(), SqlxError> {
+    // Explicit, not only the FK cascade: these tables have no FK or the FK is not enforced everywhere.
+    for sql in [
+        "DELETE FROM transcript_chunks WHERE meeting_id = ?",
+        "DELETE FROM summary_processes WHERE meeting_id = ?",
+        "DELETE FROM meeting_speakers WHERE meeting_id = ?",
+        "DELETE FROM speaker_jobs WHERE meeting_id = ?",
+        "UPDATE voiceprints SET source_meeting_id = NULL WHERE source_meeting_id = ?",
+        "UPDATE tasks SET meeting_id = NULL, at = NULL WHERE meeting_id = ? AND status <> 'dismissed' AND (owner = 'me' OR edited = 1)",
+        "DELETE FROM tasks WHERE meeting_id = ?",
+        "DELETE FROM meeting_extracts WHERE meeting_id = ?",
+        "DELETE FROM transcripts WHERE meeting_id = ?",
+    ] {
+        sqlx::query(sql).bind(meeting_id).execute(&mut *tx).await?;
+    }
+    // A brief's feed item goes with it. The brief goes with its previous meeting.
+    let brief_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM briefs WHERE previous_meeting_id = ?")
+        .bind(meeting_id)
+        .fetch_all(&mut *tx)
+        .await?;
+    for (brief_id,) in &brief_ids {
+        feed::delete_for_target(&mut *tx, "brief", brief_id).await?;
+    }
+    sqlx::query("DELETE FROM briefs WHERE previous_meeting_id = ?")
+        .bind(meeting_id)
+        .execute(&mut *tx)
+        .await?;
+    Ok(())
+}
+
+impl MeetingsRepository {
+    /// "Delete recording": removes what the recording produced; the meeting, its prep and notes stay.
+    pub async fn delete_recording(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
+        if meeting_id.trim().is_empty() {
+            return Err(SqlxError::Protocol("meeting_id cannot be empty".to_string()));
+        }
+        let mut tx = pool.begin().await?; // dropped without commit on error = rollback
+        let exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&mut *tx)
+            .await?;
+        if exists.is_none() {
+            return Ok(false);
+        }
+        delete_recording_data(&mut tx, meeting_id).await?;
+        sqlx::query(
+            "UPDATE meetings SET started_at = NULL, ended_at = NULL, gist = NULL, folder_path = NULL, reviewed = 0, updated_at = ? WHERE id = ?",
+        )
+        .bind(Utc::now())
+        .bind(meeting_id)
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await?;
+        Ok(true)
+    }
+}
+
 async fn delete_meeting_with_transaction(
     transaction: &mut SqliteConnection,
     meeting_id: &str,
 ) -> Result<bool, SqlxError> {
-    // Check if meeting exists
-    let meeting_exists: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM meetings WHERE id = ?")
-        .bind(meeting_id)
-        .fetch_optional(&mut *transaction)
-        .await?;
-
-    if meeting_exists.is_none() {
+    let key: Option<(Option<String>, Option<String>, Option<String>)> =
+        sqlx::query_as("SELECT calendar_uid, calendar_start, calendar_original_start FROM meetings WHERE id = ?")
+            .bind(meeting_id)
+            .fetch_optional(&mut *transaction)
+            .await?;
+    let Some((uid, start, original_start)) = key else {
         error!("Meeting {} not found for deletion", meeting_id);
         return Ok(false);
-    }
+    };
 
-    // Delete from related tables in proper order
-    // 1. Delete from transcript_chunks
-    sqlx::query("DELETE FROM transcript_chunks WHERE meeting_id = ?")
-        .bind(meeting_id)
-        .execute(&mut *transaction)
-        .await?;
+    delete_recording_data(&mut *transaction, meeting_id).await?;
 
-    // 2. Delete from summary_processes
-    sqlx::query("DELETE FROM summary_processes WHERE meeting_id = ?")
-        .bind(meeting_id)
-        .execute(&mut *transaction)
-        .await?;
-
-    // Explicit, not only the FK cascade (spec §5.4).
+    // Explicit: notes and usage rows are deleted here, not only by the FK.
     sqlx::query("DELETE FROM meeting_notes WHERE meeting_id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;
-
-    // Explicit, not only the FK (spec §9)
-    sqlx::query("DELETE FROM meeting_speakers WHERE meeting_id = ?")
-        .bind(meeting_id)
-        .execute(&mut *transaction)
-        .await?;
-
-    // Explicit, not only the FK (spec §9)
-    sqlx::query("DELETE FROM speaker_jobs WHERE meeting_id = ?")
-        .bind(meeting_id)
-        .execute(&mut *transaction)
-        .await?;
-
-    // Explicit, not only the FK (spec §9)
-    sqlx::query("UPDATE voiceprints SET source_meeting_id = NULL WHERE source_meeting_id = ?")
-        .bind(meeting_id)
-        .execute(&mut *transaction)
-        .await?;
-
-    // Explicit: llm_usage has no FK, so its rows are deleted here only.
     sqlx::query("DELETE FROM llm_usage WHERE meeting_id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;
-
-    // Explicit: tasks and extracts have no FK, so they are deleted here only. Manual tasks (NULL meeting) stay.
-    sqlx::query("DELETE FROM tasks WHERE meeting_id = ?")
+    sqlx::query("DELETE FROM meeting_preps WHERE meeting_id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;
 
-    sqlx::query("DELETE FROM meeting_extracts WHERE meeting_id = ?")
+    if let (Some(uid), Some(start)) = (uid.as_deref(), start.as_deref()) {
+        // The event's brief goes unless another meeting shares the occurrence. Briefs store `Z`, meetings `+00:00`.
+        let shared: Option<(i64,)> = sqlx::query_as(
+            "SELECT 1 FROM meetings WHERE id <> ? AND calendar_uid = ? AND datetime(calendar_start) = datetime(?)",
+        )
         .bind(meeting_id)
-        .execute(&mut *transaction)
+        .bind(uid)
+        .bind(start)
+        .fetch_optional(&mut *transaction)
         .await?;
-
-    // 3. Delete from transcripts
-    sqlx::query("DELETE FROM transcripts WHERE meeting_id = ?")
-        .bind(meeting_id)
-        .execute(&mut *transaction)
-        .await?;
-
-    // Explicit: a brief's feed item goes with it, in this transaction (spec 6.2). The brief goes with its previous meeting.
-    let brief_ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM briefs WHERE previous_meeting_id = ?")
-        .bind(meeting_id)
-        .fetch_all(&mut *transaction)
-        .await?;
-    for (brief_id,) in &brief_ids {
-        feed::delete_for_target(&mut *transaction, "brief", brief_id).await?;
+        if shared.is_none() {
+            let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM briefs WHERE event_uid = ? AND datetime(event_start) = datetime(?)")
+                .bind(uid)
+                .bind(start)
+                .fetch_all(&mut *transaction)
+                .await?;
+            for (id,) in &ids {
+                feed::delete_for_target(&mut *transaction, "brief", id).await?;
+                sqlx::query("DELETE FROM briefs WHERE id = ?").bind(id).execute(&mut *transaction).await?;
+            }
+        }
     }
-    sqlx::query("DELETE FROM briefs WHERE previous_meeting_id = ?")
-        .bind(meeting_id)
+    if let Some(uid) = uid.as_deref() {
+        if let Some(occurrence) = original_start.as_deref().or(start.as_deref()) {
+            sqlx::query("INSERT OR REPLACE INTO dismissed_occurrences (calendar_uid, original_start, dismissed_at) VALUES (?, ?, ?)")
+                .bind(uid)
+                .bind(occurrence)
+                .bind(Utc::now())
+                .execute(&mut *transaction)
+                .await?;
+        }
+    }
+    sqlx::query("DELETE FROM dismissed_occurrences WHERE datetime(dismissed_at) < datetime(?)")
+        .bind(Utc::now() - chrono::Duration::days(DISMISS_KEEP_DAYS))
         .execute(&mut *transaction)
         .await?;
 
-    // 4. Finally, delete the meeting
     let result = sqlx::query("DELETE FROM meetings WHERE id = ?")
         .bind(meeting_id)
         .execute(&mut *transaction)
         .await?;
-
     Ok(result.rows_affected() > 0)
 }
 
@@ -551,40 +590,130 @@ mod migration_tests {
         assert_eq!((for_m, left), (0, 2));
     }
 
-    #[tokio::test]
-    async fn delete_meeting_deletes_tasks_and_extract() {
-        let pool = test_pool().await;
-        insert_meeting(&pool, "M").await;
-        insert_meeting(&pool, "N").await;
-        sqlx::query(
-            "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES \
-             ('t1', 'M', 'open', 'me', 'open', 'auto', 0, 't'), ('t2', 'M', 'done', 'me', 'done', 'auto', 0, 't'), \
-             ('t3', 'M', 'edited', 'me', 'open', 'auto', 1, 't'), ('t4', NULL, 'manual', 'me', 'open', 'manual', 0, 't'), \
-             ('t5', 'N', 'other', 'me', 'open', 'auto', 0, 't')",
+    async fn exec(pool: &SqlitePool, sql: &str) {
+        sqlx::query(sql).execute(pool).await.unwrap();
+    }
+
+    async fn ids(pool: &SqlitePool, sql: &str) -> Vec<String> {
+        let rows: Vec<(String,)> = sqlx::query_as(sql).fetch_all(pool).await.unwrap();
+        rows.into_iter().map(|r| r.0).collect()
+    }
+
+    async fn seed_tasks(pool: &SqlitePool) {
+        insert_meeting(pool, "M").await;
+        insert_meeting(pool, "N").await;
+        exec(
+            pool,
+            "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, at, created_at) VALUES \
+             ('t1', 'M', 'open', 'me', 'open', 'auto', 0, 5.0, 't'), ('t2', 'M', 'done', 'me', 'done', 'auto', 0, 6.0, 't'), \
+             ('t3', 'M', 'edited', 'me', 'open', 'auto', 1, 7.0, 't'), ('t4', NULL, 'manual', 'me', 'open', 'manual', 0, NULL, 't'), \
+             ('t5', 'N', 'other', 'me', 'open', 'auto', 0, 8.0, 't'), \
+             ('tu', 'M', 'unassigned', 'unassigned', 'open', 'auto', 0, 1.0, 't'), \
+             ('te', 'M', 'unassigned edited', 'unassigned', 'open', 'auto', 1, 2.0, 't'), \
+             ('tx', 'M', 'dismissed', 'me', 'dismissed', 'auto', 1, 3.0, 't')",
         )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
+        .await;
+        exec(
+            pool,
             "INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, extracted_at) VALUES \
              ('M', '[]', '[]', 'done', 't'), ('N', '[]', '[]', 'done', 't')",
         )
-        .execute(&pool)
-        .await
-        .unwrap();
+        .await;
+    }
+
+    #[tokio::test]
+    async fn kept_tasks_survive_both_deletes() {
+        for recording_only in [false, true] {
+            let pool = test_pool().await;
+            seed_tasks(&pool).await;
+            if recording_only {
+                assert!(MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+            } else {
+                assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
+            }
+            assert_eq!(ids(&pool, "SELECT id FROM tasks ORDER BY id").await, ["t1", "t2", "t3", "t4", "t5", "te"]);
+            assert_eq!(ids(&pool, "SELECT id FROM tasks WHERE meeting_id IS NULL AND at IS NULL ORDER BY id").await, ["t1", "t2", "t3", "t4", "te"]);
+            assert_eq!(ids(&pool, "SELECT id FROM tasks WHERE meeting_id = 'N' AND at = 8.0").await, ["t5"]);
+            assert_eq!(ids(&pool, "SELECT meeting_id FROM meeting_extracts").await, ["N"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn delete_recording_keeps_meeting_prep_notes() {
+        let pool = test_pool().await;
+        exec(&pool, "INSERT INTO meetings (id, title, created_at, updated_at, template_id, reviewed, gist, started_at, ended_at, folder_path) VALUES ('M', 'Title', 't', 't', 'x', 1, 'g', 's', 'e', '/f')").await;
+        exec(&pool, "INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('tr', 'M', 'hi', 't')").await;
+        exec(&pool, "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at) VALUES ('M', 'completed', 't', 't')").await;
+        exec(&pool, "INSERT INTO transcript_chunks (meeting_id, meeting_name, transcript_text, model, model_name, chunk_size, overlap, created_at) VALUES ('M', 'n', 'x', 'm', 'm', 1, 1, 't')").await;
+        exec(&pool, "INSERT INTO people (id,name,is_self,created_at) VALUES ('p1','Anna',0,'t')").await;
+        exec(&pool, "INSERT INTO meeting_speakers (meeting_id,idx,person_id,name,centroid,seconds) VALUES ('M',1,'p1','Anna',NULL,10.0)").await;
+        exec(&pool, "INSERT INTO speaker_jobs (meeting_id,status,run_token,updated_at) VALUES ('M','done','tok','t')").await;
+        exec(&pool, "INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, extracted_at) VALUES ('M', '[]', '[]', 'done', 't')").await;
+        exec(&pool, "INSERT INTO voiceprints (id,person_id,source_meeting_id,source_idx,vector,seconds,created_at) VALUES ('v1','p1','M',1,x'00',1.0,'t')").await;
+        exec(&pool, "INSERT INTO meeting_notes (meeting_id, notes_markdown, created_at, updated_at) VALUES ('M', 'my notes', 't', 't')").await;
+        exec(&pool, "INSERT INTO meeting_preps (event_uid, event_start, created_at, updated_at, meeting_id) VALUES ('u', 's', 't', 't', 'M')").await;
+        exec(&pool, "INSERT INTO llm_usage (at, provider, model, purpose, meeting_id) VALUES ('t', 'p', 'm', 'x', 'M')").await;
+
+        assert!(MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+        assert!(!MeetingsRepository::delete_recording(&pool, "nope").await.unwrap());
+
+        for (table, want) in [
+            ("meetings", 1), ("meeting_notes", 1), ("meeting_preps", 1), ("llm_usage", 1), ("transcripts", 0),
+            ("summary_processes", 0), ("transcript_chunks", 0), ("meeting_speakers", 0), ("speaker_jobs", 0), ("meeting_extracts", 0),
+        ] {
+            let (n,): (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}")).fetch_one(&pool).await.unwrap();
+            assert_eq!(n, want, "{table}");
+        }
+        let row: (String, Option<String>, i64, Option<String>, Option<String>, Option<String>, Option<String>) =
+            sqlx::query_as("SELECT title, template_id, reviewed, gist, started_at, ended_at, folder_path FROM meetings WHERE id = 'M'")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
+        assert_eq!(row, ("Title".into(), Some("x".into()), 0, None, None, None, None));
+        let (source,): (Option<String>,) = sqlx::query_as("SELECT source_meeting_id FROM voiceprints WHERE id = 'v1'").fetch_one(&pool).await.unwrap();
+        assert_eq!(source, None);
+    }
+
+    #[tokio::test]
+    async fn delete_meeting_removes_prep_and_brief() {
+        let pool = test_pool().await;
+        // The brief stores `Z`, the meeting `+00:00`.
+        exec(&pool, "INSERT INTO meetings (id, title, created_at, updated_at, calendar_uid, calendar_start) VALUES ('M', 't', 't', 't', 'u', '2026-10-29T12:00:00+00:00'), ('S', 't', 't', 't', 'v', '2026-10-29T12:00:00+00:00'), ('S2', 't', 't', 't', 'v', '2026-10-29T12:00:00Z')").await;
+        exec(&pool, "INSERT INTO meeting_preps (event_uid, event_start, created_at, updated_at, meeting_id) VALUES ('u', 's', 't', 't', 'M')").await;
+        exec(&pool, "INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) VALUES \
+            ('b1', 'u', '2026-10-29T12:00:00Z', 'One', 'x', 'Z', '{}', 't'), ('b2', 'v', '2026-10-29T12:00:00Z', 'Two', 'x', 'Z', '{}', 't')").await;
+        exec(&pool, "INSERT INTO feed_items (id, kind, title, target_id, created_at) VALUES ('f1', 'brief', 'B', 'b1', 't'), ('f2', 'brief', 'B', 'b2', 't')").await;
 
         assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
+        assert_eq!(ids(&pool, "SELECT id FROM briefs").await, ["b2"]);
+        assert_eq!(ids(&pool, "SELECT id FROM feed_items").await, ["f2"]);
+        assert!(ids(&pool, "SELECT event_uid FROM meeting_preps").await.is_empty());
 
-        let left_tasks: Vec<(String,)> = sqlx::query_as("SELECT id FROM tasks ORDER BY id")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-        let left_extracts: Vec<(String,)> = sqlx::query_as("SELECT meeting_id FROM meeting_extracts")
-            .fetch_all(&pool)
-            .await
-            .unwrap();
-        assert_eq!(left_tasks, vec![("t4".to_string(),), ("t5".to_string(),)]);
-        assert_eq!(left_extracts, vec![("N".to_string(),)]);
+        // Another meeting shares the key (different spelling): the brief stays.
+        assert!(MeetingsRepository::delete_meeting(&pool, "S").await.unwrap());
+        assert_eq!(ids(&pool, "SELECT id FROM briefs").await, ["b2"]);
+    }
+
+    #[tokio::test]
+    async fn delete_meeting_dismisses_calendar_occurrence() {
+        let pool = test_pool().await;
+        exec(&pool, "INSERT INTO meetings (id, title, created_at, updated_at, calendar_uid, calendar_start, calendar_original_start) VALUES \
+            ('A', 't', 't', 't', 'u', 'start', 'orig'), ('B', 't', 't', 't', 'u2', 'start2', NULL), ('C', 't', 't', 't', NULL, 'start3', NULL)").await;
+        let old = Utc::now() - chrono::Duration::days(31);
+        let recent = Utc::now() - chrono::Duration::days(29);
+        for (uid, at) in [("old", old), ("recent", recent)] {
+            sqlx::query("INSERT INTO dismissed_occurrences (calendar_uid, original_start, dismissed_at) VALUES (?, 'x', ?)")
+                .bind(uid)
+                .bind(at)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for id in ["A", "B", "C"] {
+            assert!(MeetingsRepository::delete_meeting(&pool, id).await.unwrap());
+        }
+        let rows = ids(&pool, "SELECT calendar_uid || '|' || original_start FROM dismissed_occurrences ORDER BY 1").await;
+        assert_eq!(rows, ["recent|x", "u2|start2", "u|orig"]);
     }
 
     const TITLE_SOURCE_VERSION: i64 = 20261022000003;

@@ -866,25 +866,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deleting_a_meeting_keeps_its_prep() {
+    async fn deleting_a_recording_keeps_the_prep_and_deleting_the_meeting_removes_it() {
         let pool = test_pool().await;
         linked_meeting(&pool).await;
         let prep = seed(&pool, vec![]).await;
+        sqlx::query("UPDATE meeting_preps SET meeting_id = 'M'").execute(&pool).await.unwrap();
         assert_eq!(for_meeting(&pool, "M").await.unwrap(), Some(prep.clone()));
-        assert!(MeetingsRepository::delete_meeting(&pool, "M")
-            .await
-            .unwrap());
-        assert_eq!(
-            get(&pool, &prep.event_uid, &prep.event_start)
-                .await
-                .unwrap(),
-            Some(prep)
-        );
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM meeting_preps")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count, 1);
+        assert!(MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+        assert_eq!(for_meeting(&pool, "M").await.unwrap(), Some(prep.clone()));
+        assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
+        assert_eq!(get(&pool, &prep.event_uid, &prep.event_start).await.unwrap(), None);
     }
 
     #[tokio::test]

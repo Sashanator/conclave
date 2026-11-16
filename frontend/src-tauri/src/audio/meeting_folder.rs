@@ -289,9 +289,34 @@ pub async fn delete_meeting_and_folder(
     if !MeetingsRepository::delete_meeting(pool, meeting_id).await? {
         return Ok(None);
     }
+    Ok(Some(remove_folder_after_delete(pool, meeting_id, folder_path, recordings_base, remove).await))
+}
+
+/// "Delete recording": the DB reset first (the meeting, prep and notes stay), then the folder, with the same contract.
+pub async fn delete_recording_and_audio(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+    recordings_base: &Path,
+    remove: Remover<'_>,
+) -> Result<Option<Option<String>>, sqlx::Error> {
+    use crate::database::repositories::meeting::MeetingsRepository;
+    let folder_path = MeetingsRepository::get_meeting_metadata(pool, meeting_id).await?.and_then(|m| m.folder_path);
+    if !MeetingsRepository::delete_recording(pool, meeting_id).await? {
+        return Ok(None);
+    }
+    Ok(Some(remove_folder_after_delete(pool, meeting_id, folder_path, recordings_base, remove).await))
+}
+
+async fn remove_folder_after_delete(
+    pool: &sqlx::SqlitePool,
+    meeting_id: &str,
+    folder_path: Option<String>,
+    recordings_base: &Path,
+    remove: Remover<'_>,
+) -> Option<String> {
     let warning = match folder_path {
         None => None,
-        // The row is already gone, so a failed check must keep the folder and say so.
+        // The DB part is already committed, so a failed check must keep the folder and say so.
         Some(p) => match used_by_another_meeting(pool, meeting_id, &p).await {
             Ok(false) => delete_meeting_folder(&p, recordings_base, remove).err(),
             Ok(true) => Some(format!("Recording folder kept: another meeting uses it ({p})")),
@@ -302,7 +327,7 @@ pub async fn delete_meeting_and_folder(
     if warning.is_some() {
         warn!("Meeting {meeting_id} deleted, recording folder kept");
     }
-    Ok(Some(warning))
+    warning
 }
 
 #[derive(Debug, Serialize)]
@@ -589,6 +614,39 @@ mod tests {
         assert!(outside.path().exists());
         assert!(bin.names().is_empty());
         assert!(delete_meeting_and_folder(&pool, "m1", b.path(), &|p| bin.remove(p)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_recording_recycles_the_folder_and_keeps_the_meeting() {
+        let pool = crate::database::repositories::test_pool().await;
+        let b = base();
+        let m = b.path().join("Standup_2026-10-15_10-00");
+        fs::create_dir(&m).unwrap();
+        fs::write(m.join("metadata.json"), "{}").unwrap();
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        meeting(&pool, "a", &m).await;
+        let bin = FakeBin::new();
+        assert_eq!(delete_recording_and_audio(&pool, "a", b.path(), &|p| bin.remove(p)).await.unwrap(), Some(None));
+        assert!(!bin.names().is_empty());
+        let (n, f): (i64, Option<String>) = sqlx::query_as("SELECT COUNT(*), MAX(folder_path) FROM meetings").fetch_one(&pool).await.unwrap();
+        assert_eq!((n, f), (1, None));
+        assert!(delete_recording_and_audio(&pool, "nope", b.path(), &|p| bin.remove(p)).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn delete_recording_keeps_a_folder_another_meeting_uses() {
+        let pool = crate::database::repositories::test_pool().await;
+        let b = base();
+        let m = b.path().join("Standup_2026-10-15_10-00");
+        fs::create_dir(&m).unwrap();
+        fs::write(m.join("audio.mp4"), "x").unwrap();
+        meeting(&pool, "a", &m).await;
+        meeting(&pool, "b", &m).await;
+        let bin = FakeBin::new();
+        let w = delete_recording_and_audio(&pool, "a", b.path(), &|p| bin.remove(p)).await.unwrap().unwrap().unwrap();
+        assert!(w.contains("another meeting"));
+        assert!(m.join("audio.mp4").exists());
+        assert!(bin.names().is_empty());
     }
 
     #[tokio::test]

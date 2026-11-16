@@ -1,6 +1,6 @@
 //! Pre-upgrade and manual backups of the user's data folder (file copies + a manifest).
 use crate::database::manager::DB_FILE_NAME;
-use anyhow::{anyhow, bail, Context};
+use anyhow::{bail, Context};
 use chrono::{DateTime, Local};
 use log::warn;
 use serde::{Deserialize, Serialize};
@@ -76,27 +76,33 @@ fn created(m: &Manifest) -> Option<DateTime<chrono::FixedOffset>> {
 }
 
 /// Real child dirs of `kind_dir` whose manifest parses with `kind`, newest first.
-fn entries(kind_dir: &Path, kind: &str) -> Vec<(PathBuf, Manifest)> {
-    let Ok(rd) = fs::read_dir(kind_dir) else { return vec![] };
-    let mut v: Vec<_> = rd
-        .flatten()
-        .filter_map(|e| {
-            let p = e.path();
-            let m = read_manifest(&p)?;
-            (m.kind == kind && created(&m).is_some()).then_some((p, m))
-        })
-        .collect();
+/// A missing `kind_dir` is an empty list; any other read error is returned.
+fn entries(kind_dir: &Path, kind: &str) -> anyhow::Result<Vec<(PathBuf, Manifest)>> {
+    let rd = match fs::read_dir(kind_dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(vec![]),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", kind_dir.display())),
+    };
+    let mut v = Vec::new();
+    for e in rd {
+        let p = e.with_context(|| format!("reading {}", kind_dir.display()))?.path();
+        if let Some(m) = read_manifest(&p) {
+            if m.kind == kind && created(&m).is_some() {
+                v.push((p, m));
+            }
+        }
+    }
     v.sort_by(|a, b| (created(&b.1), &b.0).cmp(&(created(&a.1), &a.0)));
-    v
+    Ok(v)
 }
 
-pub fn list_backups(data_dir: &Path) -> Vec<BackupInfo> {
-    let mut v: Vec<_> = [PRE_UPGRADE, MANUAL]
-        .iter()
-        .flat_map(|k| entries(&data_dir.join(BACKUPS_DIR).join(k), k))
-        .collect();
+pub fn list_backups(data_dir: &Path) -> anyhow::Result<Vec<BackupInfo>> {
+    let mut v = Vec::new();
+    for k in [PRE_UPGRADE, MANUAL] {
+        v.extend(entries(&data_dir.join(BACKUPS_DIR).join(k), k)?);
+    }
     v.sort_by(|a, b| (created(&b.1), &b.0).cmp(&(created(&a.1), &a.0)));
-    v.into_iter()
+    Ok(v.into_iter()
         .map(|(p, m)| BackupInfo {
             kind: m.kind,
             created_at: m.created_at,
@@ -105,11 +111,15 @@ pub fn list_backups(data_dir: &Path) -> Vec<BackupInfo> {
             size_bytes: m.size_bytes,
             path: p.to_string_lossy().into_owned(),
         })
-        .collect()
+        .collect())
 }
 
-fn prune(kind_dir: &Path, kind: &str, keep: usize) -> anyhow::Result<()> {
-    for (p, _) in entries(kind_dir, kind).into_iter().skip(keep) {
+/// Keeps the `keep` newest; `protect` (the backup just made) is never deleted, even if the clock put it last.
+fn prune(kind_dir: &Path, kind: &str, keep: usize, protect: Option<&Path>) -> anyhow::Result<()> {
+    let all = entries(kind_dir, kind)?;
+    let others: Vec<_> = all.into_iter().filter(|(p, _)| Some(p.as_path()) != protect).collect();
+    let keep_others = if protect.is_some() { keep.saturating_sub(1) } else { keep };
+    for (p, _) in others.into_iter().skip(keep_others) {
         fs::remove_dir_all(&p).with_context(|| format!("removing old backup {}", p.display()))?;
     }
     Ok(())
@@ -194,7 +204,7 @@ pub fn pre_upgrade_backup(data_dir: &Path, templates: Option<&Path>, current: &s
         return Ok(None);
     }
     let kind_dir = data_dir.join(BACKUPS_DIR).join(PRE_UPGRADE);
-    if entries(&kind_dir, PRE_UPGRADE).iter().any(|(_, m)| m.from_version == last && m.version == current) {
+    if entries(&kind_dir, PRE_UPGRADE)?.iter().any(|(_, m)| m.from_version == last && m.version == current) {
         return Ok(None);
     }
     let now = Local::now();
@@ -203,7 +213,7 @@ pub fn pre_upgrade_backup(data_dir: &Path, templates: Option<&Path>, current: &s
         now.format("%Y-%m-%d_%H%M"),
         last.as_ref().map_or("unknown".to_string(), |l| format!("v{l}"))
     );
-    let dir = new_backup_dir(&kind_dir, &name)?;
+    let dir = new_backup_dir(&kind_dir, &name).context("pre-upgrade backup failed")?;
     let result = (|| -> anyhow::Result<BackupInfo> {
         let files = copy_all(data_dir, templates, &dir)?;
         let m = Manifest {
@@ -226,7 +236,7 @@ pub fn pre_upgrade_backup(data_dir: &Path, templates: Option<&Path>, current: &s
     })();
     match result {
         Ok(info) => {
-            if let Err(e) = prune(&kind_dir, PRE_UPGRADE, KEEP_PRE_UPGRADE) {
+            if let Err(e) = prune(&kind_dir, PRE_UPGRADE, KEEP_PRE_UPGRADE, Some(&dir)) {
                 warn!("backup: prune failed: {e:#}");
             }
             Ok(Some(info))
@@ -235,7 +245,7 @@ pub fn pre_upgrade_backup(data_dir: &Path, templates: Option<&Path>, current: &s
             if let Err(re) = fs::remove_dir_all(&dir) {
                 warn!("backup: could not remove partial {}: {re}", dir.display());
             }
-            Err(anyhow!("pre-upgrade backup failed: {e:#}"))
+            Err(e.context("pre-upgrade backup failed"))
         }
     }
 }
@@ -371,7 +381,7 @@ mod tests {
         manifest(&kd, "other", PRE_UPGRADE, "2020-01-01T10:00:00+00:00");
         fs::create_dir_all(kd.join("nomanifest")).unwrap();
         w(&kd.join("plain.txt"), "x");
-        prune(&kd, MANUAL, KEEP_MANUAL).unwrap();
+        prune(&kd, MANUAL, KEEP_MANUAL, None).unwrap();
         for i in 3..=7 {
             assert!(kd.join(format!("m{i}")).exists());
         }
@@ -391,6 +401,25 @@ mod tests {
         assert!(!kd.join("old1").exists() && !kd.join("old2").exists());
     }
     #[test]
+    fn clock_behind_keeps_new_backup_and_prunes_oldest() {
+        let d = tempdir().unwrap();
+        w(&d.path().join(DB_FILE_NAME), "db");
+        let kd = d.path().join(BACKUPS_DIR).join(PRE_UPGRADE);
+        for i in 1..=3 {
+            manifest(&kd, &format!("f{i}"), PRE_UPGRADE, &format!("2099-01-0{i}T10:00:00+00:00"));
+        }
+        let i = pre_upgrade_backup(d.path(), None, "1.1.0").unwrap().unwrap();
+        assert!(Path::new(&i.path).exists());
+        assert!(!kd.join("f1").exists() && kd.join("f2").exists() && kd.join("f3").exists());
+    }
+    #[test]
+    fn unreadable_backup_folder_is_an_error_not_empty() {
+        let d = tempdir().unwrap();
+        w(&d.path().join(BACKUPS_DIR).join(MANUAL), "a file, not a dir");
+        assert!(list_backups(d.path()).is_err());
+        assert!(list_backups(tempdir().unwrap().path()).unwrap().is_empty());
+    }
+    #[test]
     fn list_backups_newest_first_both_kinds() {
         let d = tempdir().unwrap();
         let b = d.path().join(BACKUPS_DIR);
@@ -398,7 +427,7 @@ mod tests {
         manifest(&b.join(MANUAL), "b", MANUAL, "2026-01-03T10:00:00+00:00");
         manifest(&b.join(MANUAL), "c", MANUAL, "2026-01-02T10:00:00+00:00");
         w(&b.join(MANUAL).join("bad").join(MANIFEST_FILE), "{not json");
-        let l = list_backups(d.path());
+        let l = list_backups(d.path()).unwrap();
         let kinds: Vec<_> = l.iter().map(|i| (i.kind.as_str(), i.created_at.as_str())).collect();
         assert_eq!(kinds, [(MANUAL, "2026-01-03T10:00:00+00:00"), (MANUAL, "2026-01-02T10:00:00+00:00"), (PRE_UPGRADE, "2026-01-01T10:00:00+00:00")]);
     }

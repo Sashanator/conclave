@@ -86,14 +86,14 @@ mod tests {
     fn may_migrate_does_not_ask_when_backup_succeeds() {
         let d = data_dir();
         assert!(may_migrate(d.path(), None, "1.0.0", |_| panic!("must not ask")));
-        assert_eq!(list_backups(d.path()).len(), 1);
+        assert_eq!(list_backups(d.path()).unwrap().len(), 1);
     }
 
     #[test]
     fn may_migrate_does_not_ask_when_nothing_to_do() {
         let d = data_dir();
         assert!(may_migrate(d.path(), None, "0.9.0", |_| panic!("must not ask")));
-        assert!(list_backups(d.path()).is_empty());
+        assert!(list_backups(d.path()).unwrap().is_empty());
     }
 
     // An invalid version makes the backup fail without touching the disk.

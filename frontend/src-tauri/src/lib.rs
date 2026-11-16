@@ -63,6 +63,7 @@ mod speakers;
 mod practice;
 mod usage;
 mod prep;
+mod secrets;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};

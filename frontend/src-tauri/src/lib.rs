@@ -63,6 +63,9 @@ mod speakers;
 mod practice;
 mod usage;
 mod prep;
+mod secrets;
+mod backup;
+mod updates;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
@@ -647,6 +650,9 @@ pub fn run() {
 
             log::info!("Application setup complete");
 
+            // Before anything reads or migrates user data: a pre-upgrade backup, or the user's Continue/Quit.
+            backup::run_at_startup(_app.handle());
+
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);
@@ -750,12 +756,14 @@ pub fn run() {
                 database::setup::report_open_failure(_app.handle(), &e);
                 return Ok(());
             }
+            // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
+            tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
+            // Moves plain-text secrets into Credential Manager and compacts the DB; runs before any background starter holds a reader.
+            tauri::async_runtime::block_on(secrets::migrate::run_at_startup(_app.handle()));
             // Dictate that was on comes back only now: its model load needs the database.
             dictate::apply_after_db_ready(_app.handle());
             // A practice session left running by a crash is closed as interrupted.
             tauri::async_runtime::spawn(practice::commands::recover_at_startup(_app.handle().clone()));
-            // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
-            tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {
@@ -987,6 +995,9 @@ pub fn run() {
             // Database and Models path commands
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            backup::commands::backup_now,
+            backup::commands::backup_list,
+            backup::commands::backup_open_folder,
             whisper_engine::commands::open_models_folder,
             // Onboarding commands
             onboarding::get_onboarding_status,

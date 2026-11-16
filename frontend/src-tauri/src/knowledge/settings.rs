@@ -7,6 +7,7 @@ use crate::copilot;
 use crate::copilot::settings::PROVIDERS;
 use crate::summary::llm_target::{target_with_override, LlmTarget};
 use chrono::{DateTime, Utc};
+use crate::secrets::{self, read_or_plain, SecretStore};
 use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
@@ -370,12 +371,43 @@ pub(crate) fn set_calendar_url<R: Runtime>(
 ) -> Result<(), String> {
     let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
     let s = with_calendar_url(current(), url);
-    write_calendar_at(&calendar_path(app)?, s.calendar_url.as_deref())?;
+    save_calendar_url(secrets::store(), &calendar_path(app)?, s.calendar_url.as_deref())?;
     set_cache(s);
     Ok(())
 }
 
-fn calendar_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+/// Save: store first, then empty the plain file, so a stale file never outlives a newer store value.
+/// Disconnect: empty the file first, so a failed clear can't bring the old URL back after a restart.
+fn save_calendar_url(
+    store: &dyn SecretStore,
+    path: &Path,
+    url: Option<&str>,
+) -> Result<(), String> {
+    match url {
+        Some(u) => {
+            store.set(secrets::CALENDAR_URL, u).map_err(|e| e.to_string())?;
+            write_calendar_at(path, None)
+        }
+        None => {
+            write_calendar_at(path, None)?;
+            store.delete(secrets::CALENDAR_URL).map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// Store value first; the plain file is the fallback. Never logs a value.
+fn load_calendar_url(store: &dyn SecretStore, path: &Path) -> Option<String> {
+    let plain = read_calendar_at(path).unwrap_or_else(|problem| {
+        warn!("knowledge: calendar file unreadable, treated as unset: {problem}");
+        None
+    });
+    read_or_plain(store, secrets::CALENDAR_URL, plain).unwrap_or_else(|e| {
+        warn!("knowledge: secret calendarUrl unreadable, treated as unset: {e}");
+        None
+    })
+}
+
+pub(crate) fn calendar_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .resolve(CALENDAR_FILE, BaseDirectory::AppData)
         .map_err(|e| e.to_string())
@@ -387,7 +419,7 @@ struct CalendarFile {
 }
 
 /// Writes to a temp file and renames it over the old one, so a crash cannot leave half a file.
-fn write_calendar_at(path: &Path, url: Option<&str>) -> Result<(), String> {
+pub(crate) fn write_calendar_at(path: &Path, url: Option<&str>) -> Result<(), String> {
     let bytes = serde_json::to_vec(&CalendarFile {
         calendar_url: url.map(str::to_string),
     })
@@ -405,7 +437,7 @@ fn write_calendar_at(path: &Path, url: Option<&str>) -> Result<(), String> {
 }
 
 /// A missing file is no URL. A broken file is an error that never carries its content.
-fn read_calendar_at(path: &Path) -> Result<Option<String>, String> {
+pub(crate) fn read_calendar_at(path: &Path) -> Result<Option<String>, String> {
     let bytes = match fs::read(path) {
         Ok(bytes) => bytes,
         Err(e) if e.kind() == ErrorKind::NotFound => return Ok(None),
@@ -460,8 +492,8 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     };
     FILE_LOADED.store(loaded, Ordering::SeqCst);
     let (mut s, save) = startup_plan(raw, loaded, copilot::settings::current().alert_words);
-    s.calendar_url = match calendar_path(app).and_then(|path| read_calendar_at(&path)) {
-        Ok(url) => url,
+    s.calendar_url = match calendar_path(app) {
+        Ok(path) => load_calendar_url(secrets::store(), &path),
         Err(problem) => {
             warn!("knowledge: calendar file unreadable, treated as unset: {problem}");
             None
@@ -704,6 +736,52 @@ mod tests {
         write_calendar_at(&path, None).unwrap();
         assert_eq!(read_calendar_at(&path).unwrap(), None);
         assert!(!dir.path().join("calendar.tmp").exists());
+    }
+
+    #[test]
+    fn calendar_url_saved_to_store_and_file_cleared() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("calendar.json");
+        write_calendar_at(&path, Some("https://old.example/x")).unwrap();
+        let store = secrets::MemoryStore::default();
+        save_calendar_url(&store, &path, Some("https://a.example/x")).unwrap();
+        assert_eq!(
+            store.get(secrets::CALENDAR_URL).unwrap().as_deref(),
+            Some("https://a.example/x")
+        );
+        assert_eq!(read_calendar_at(&path).unwrap(), None);
+        assert!(save_calendar_url(&crate::secrets::FailingStore, &path, Some("u"))
+            .unwrap_err()
+            .contains("calendarUrl"));
+    }
+
+    #[test]
+    fn calendar_disconnect_deletes_store_entry() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("calendar.json");
+        let store = secrets::MemoryStore::default();
+        store.set(secrets::CALENDAR_URL, "https://a.example/x").unwrap();
+        write_calendar_at(&path, Some("https://old.example/x")).unwrap();
+        save_calendar_url(&store, &path, None).unwrap();
+        assert_eq!(store.get(secrets::CALENDAR_URL).unwrap(), None);
+        assert_eq!(read_calendar_at(&path).unwrap(), None);
+    }
+
+    #[test]
+    fn calendar_url_store_wins_then_file_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("calendar.json");
+        let store = secrets::MemoryStore::default();
+        assert_eq!(load_calendar_url(&store, &path), None);
+        write_calendar_at(&path, Some("b")).unwrap();
+        store.set(secrets::CALENDAR_URL, "a").unwrap();
+        assert_eq!(load_calendar_url(&store, &path).as_deref(), Some("a"));
+        let empty = secrets::MemoryStore::default();
+        assert_eq!(load_calendar_url(&empty, &path).as_deref(), Some("b"));
+        let failing = crate::secrets::FailingStore;
+        assert_eq!(load_calendar_url(&failing, &path).as_deref(), Some("b"));
+        fs::remove_file(&path).unwrap();
+        assert_eq!(load_calendar_url(&failing, &path), None);
     }
 
     #[test]

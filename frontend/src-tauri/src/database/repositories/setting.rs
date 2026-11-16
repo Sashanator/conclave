@@ -222,9 +222,17 @@ impl SettingsRepository {
         pool: &SqlitePool,
         provider: &str,
     ) -> std::result::Result<Option<String>, sqlx::Error> {
+        Self::get_transcript_api_key_in(secrets::store(), pool, provider).await
+    }
+
+    async fn get_transcript_api_key_in(
+        store: &dyn secrets::SecretStore,
+        pool: &SqlitePool,
+        provider: &str,
+    ) -> std::result::Result<Option<String>, sqlx::Error> {
         let api_key_column = match provider {
-            "localWhisper" => "whisperApiKey",
-            "parakeet" => return Ok(None), // Parakeet doesn't need an API key
+            // Local engines use no key; skip the store so an unreadable store can't break the config.
+            "localWhisper" | "parakeet" => return Ok(None),
             "deepgram" => "deepgramApiKey",
             "elevenLabs" => "elevenLabsApiKey",
             "groq" => "groqApiKey",
@@ -241,22 +249,27 @@ impl SettingsRepository {
             api_key_column
         );
         let plain: Option<String> = sqlx::query_scalar(&query).fetch_optional(pool).await?;
-        read_or_plain(secrets::store(), &transcript_name(api_key_column), plain).map_err(store_err)
+        read_or_plain(store, &transcript_name(api_key_column), plain).map_err(store_err)
     }
 
     pub async fn delete_api_key(
         pool: &SqlitePool,
         provider: &str,
     ) -> std::result::Result<(), sqlx::Error> {
+        Self::delete_api_key_in(secrets::store(), pool, provider).await
+    }
+
+    async fn delete_api_key_in(
+        store: &dyn secrets::SecretStore,
+        pool: &SqlitePool,
+        provider: &str,
+    ) -> std::result::Result<(), sqlx::Error> {
         // Custom OpenAI uses JSON config - clear the entire config
         if provider == "custom-openai" {
-            secrets::store()
-                .delete(secrets::CUSTOM_OPENAI_API_KEY)
-                .map_err(store_err)?;
             sqlx::query("UPDATE settings SET customOpenAIConfig = NULL WHERE id = '1'")
                 .execute(pool)
                 .await?;
-            return Ok(());
+            return store.delete(secrets::CUSTOM_OPENAI_API_KEY).map_err(store_err);
         }
 
         let api_key_column = match provider {
@@ -273,14 +286,13 @@ impl SettingsRepository {
             }
         };
 
-        secrets::store().delete(api_key_column).map_err(store_err)?;
+        // Clear the plain column first so a failed UPDATE can't bring an old plain value back.
         let query = format!(
             "UPDATE settings SET {} = NULL WHERE id = '1'",
             api_key_column
         );
         sqlx::query(&query).execute(pool).await?;
-
-        Ok(())
+        store.delete(api_key_column).map_err(store_err)
     }
 
     // ===== CUSTOM OPENAI CONFIG METHODS =====
@@ -481,8 +493,28 @@ mod secret_tests {
         let name = transcript_name("whisperApiKey");
         assert_eq!(name, "transcript.whisperApiKey");
         assert_eq!(secrets::store().get(&name).unwrap().as_deref(), Some("w1"));
+        // Local Whisper uses no key, so reads skip the store.
         let got = SettingsRepository::get_transcript_api_key(&pool, "localWhisper").await.unwrap();
-        assert_eq!(got.as_deref(), Some("w1"));
+        assert_eq!(got, None);
+    }
+
+    #[tokio::test]
+    async fn local_whisper_read_ignores_failing_store_but_cloud_errors() {
+        let pool = test_pool().await;
+        let f = &secrets::FailingStore;
+        let got = SettingsRepository::get_transcript_api_key_in(f, &pool, "localWhisper").await;
+        assert_eq!(got.unwrap(), None);
+        assert!(SettingsRepository::get_transcript_api_key_in(f, &pool, "groq").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn delete_clears_column_even_when_store_fails() {
+        let pool = test_pool().await;
+        sqlx::query("INSERT INTO settings (id, provider, model, whisperModel, openaiApiKey) VALUES ('1','openai','m','w','plainkey')")
+            .execute(&pool).await.unwrap();
+        let r = SettingsRepository::delete_api_key_in(&secrets::FailingStore, &pool, "openai").await;
+        assert!(r.is_err());
+        assert_eq!(plain(&pool, "settings", "openaiApiKey").await, None);
     }
 
     #[tokio::test]

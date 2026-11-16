@@ -28,6 +28,8 @@ Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src`, plus t
 | localhost:11434 test fixtures | `src-tauri/src/summary/service.rs:798-990` (inside `mod tests`, from `:689`) | Cache-key test values, not requests | Not a call |
 | ollama.com | `src/components/ModelSettingsModal.tsx:739,1236` (`open_external_url`, opens the user's browser) | "Download Ollama" link | Allowed (Ollama download page; user-initiated, see Reported to user) |
 | github.com/Sashanator/conclave | `src/app/page.tsx:78` (`open_external_url`, opens the user's browser) | "Open guide" button on the CUDA-missing warning, opens `CUDA_SETUP.md` | Allowed (own repo; user-initiated) |
+| api.github.com | src-tauri/src/updates/github.rs (LATEST_RELEASE_URL); src-tauri/src/updates/mod.rs (find_update, via tauri-plugin-updater) | Release lookup (releases/latest) and download of latest.json and the installer through API asset URLs; only when the user saved a GitHub token, on start (setting, default on) or a click. The token is sent only here | Allowed (own private repo; user's token) |
+| release-assets.githubusercontent.com | redirect target of the API asset download (reqwest strips Authorization on the cross-host redirect) | Download of latest.json and the signed installer | Allowed (GitHub asset host; no token) |
 | localhost:8000 | `src-tauri/src/summary/mod.rs:16` (doc comment); `src/components/ModelSettingsModal.tsx:956` (placeholder) | Example for the user-configured OpenAI-compatible endpoint | Allowed (user-configured) |
 | x.yy.zz:11434 | `src/components/ModelSettingsModal.tsx:1134` | Example text only | Not a call |
 | custom.example | `src-tauri/src/summary/service.rs:991` (inside `mod tests`) | Cache-key test value | Not a call |
@@ -84,7 +86,9 @@ These run while the installer is built, not when Conclave runs. They are not in 
 | cdn.pyke.io | `ort-sys` build script (`ort-sys-2.0.0-rc.10/dist.txt`, `build.rs` `real_main`), reached through `ort`'s default `download-binaries` on Windows; URL `https://cdn.pyke.io/0/pyke:ort-rs/ms@1.22.0/x86_64-pc-windows-msvc.tgz` | `ort-sys`'s prebuilt ONNX Runtime 1.22.0 tarball, fetched in the CI build only. Hash-checked by ort-sys (SHA-256 `540d19b3…190d`); extracted to the cargo cache and copied to `OUT_DIR`; not bundled, not used by Conclave | Allowed (build-time only); to be removed by the later fix: set `ORT_SKIP_DOWNLOAD=1` or `ORT_LIB_LOCATION` in the Windows build. Not yet applied |
 | fonts.googleapis.com (via `next/font/google`) | `src/app/layout.tsx:4` | Source Sans 3 font, fetched by Next.js at build time and self-hosted | Allowed (build-time only) |
 
-## Removed (updater tooling)
+## Removed (Meetily updater tooling)
+
+The Meetily updater (Meetily endpoint and signing key) stays removed. Since 2026-11-16 the only updater is Conclave's own (spec `2026-11-16-conclave-safe-updates-design.md` §6.2); `scripts/check-no-phone-home.sh` fails on any other pubkey or endpoint.
 
 - `scripts/generate-update-manifest-github.js`
 - `scripts/test-update-locally.js`
@@ -104,4 +108,4 @@ These run while the installer is built, not when Conclave runs. They are not in 
 - **ollama.com/download.** Kept as the "Download Ollama" link, as the brief's template lists it. The Global Constraints allowed list names only localhost Ollama, so the user should confirm.
 - **Parakeet v3 host `meetily.towardsgeneralintelligence.com`.** Meetily-owned. Kept as the Parakeet v3 model host (the spec allows existing model hosts), contacted only on a Parakeet model download.
 - **ffmpeg-binaries host `github.com/Zackriya-Solutions/ffmpeg-binaries`.** Meetily-owned, used only at build time to bundle ffmpeg. Kept for Phase 0, not changed.
-- **Signing gate in `frontend/build.ps1`.** Lines 12-50 required `TAURI_SIGNING_PRIVATE_KEY`, which conflicted with the "no TAURI_SIGNING_* secrets" constraint. Removed in Task 8 (no signing secrets).
+- **Signing gate in `frontend/build.ps1`.** Lines 12-50 required `TAURI_SIGNING_PRIVATE_KEY`, which conflicted with the "no TAURI_SIGNING_* secrets" constraint. Removed in Task 8 (no signing secrets). Superseded 2026-11-16: release builds now sign updater artifacts with the user's own `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` secrets.

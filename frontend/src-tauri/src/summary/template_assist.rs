@@ -6,7 +6,7 @@ use crate::state::AppState;
 use crate::summary::llm_client::{reject_truncated, LLMProvider, LlmCompletion};
 use crate::summary::llm_target::{complete, LlmTarget};
 use crate::summary::processor::rough_token_count;
-use crate::summary::templates::Template;
+use crate::summary::templates::{valid_emoji, Template};
 use crate::summary::{template_assist_settings, templates};
 use crate::usage::{self, Purpose};
 use log::info;
@@ -186,7 +186,7 @@ summaries ignore it.";
 const WRITING: &str = "Writing rules: put rules shared by all sections in `context`. Give each section one purpose. \
 Make instructions imperative and specific. Do not repeat the same text in `context` and `style`. Keep the user's own \
 wording, names, terms and numbers verbatim. Write in the language of the user's material unless asked otherwise. Set \
-`language` only when the material says the meeting is in one language.";
+`language` only when the material says the meeting is in one language. Set `emoji` to one emoji that fits this kind of meeting.";
 
 const REVISION: &str = "This is a revision of an existing template. Minimal edits: Change only what the request needs. \
 Never shorten, reword or drop unrelated text. Keep section order unless asked. Keep `name` unless asked. Keep every other field and section you were not asked to change, including `description`, `prep`, `title_keywords`, `item_format` and `example_item_format`, exactly as given.";
@@ -295,8 +295,13 @@ pub(crate) fn parse_reply(raw: &str) -> Result<(Template, Vec<ChangeNote>), Stri
         .ok_or_else(|| "The answer has no JSON object".to_string())?;
     let reply = serde_json::from_str::<Reply>(&raw[start..=end])
         .map_err(|e| format!("The answer is not a valid template: {e}"))?;
-    reply.template.validate()?;
-    Ok((reply.template, reply.changes))
+    let mut template = reply.template;
+    // A bad emoji is dropped, not a failure.
+    if template.emoji.as_deref().is_some_and(|e| !e.is_empty() && !valid_emoji(e)) {
+        template.emoji = None;
+    }
+    template.validate()?;
+    Ok((template, reply.changes))
 }
 
 fn normalized_title(title: &str) -> String {
@@ -307,6 +312,9 @@ pub(crate) fn keep_hidden_fields(current: &Template, mut next: Template) -> Temp
     let blank = |value: &Option<String>| value.as_deref().unwrap_or("").trim().is_empty();
     if next.description.trim().is_empty() {
         next.description = current.description.clone();
+    }
+    if blank(&next.emoji) {
+        next.emoji = current.emoji.clone();
     }
     if blank(&next.prep) {
         next.prep = current.prep.clone();
@@ -1125,6 +1133,7 @@ mod tests {
     fn full_template() -> Template {
         Template {
             name: "Interview".into(),
+            emoji: Some("🤝".into()),
             description: "Old".into(),
             use_when: Some("Hiring calls".into()),
             title_keywords: vec!["Interview".into()],
@@ -1284,6 +1293,21 @@ mod tests {
     }
 
     #[test]
+    fn bad_emoji_is_dropped_not_a_failure() {
+        let (t, _) = parse_reply(r#"{"template":{"name":"N","emoji":"Notes 📝","sections":[{"title":"A","instruction":"B"}]}}"#).unwrap();
+        assert_eq!(t.emoji, None);
+        let (t, _) = parse_reply(r#"{"template":{"name":"N","emoji":"📝","sections":[{"title":"A","instruction":"B"}]}}"#).unwrap();
+        assert_eq!(t.emoji.as_deref(), Some("📝"));
+    }
+
+    #[test]
+    fn keep_hidden_fields_keeps_emoji_when_omitted() {
+        let current = full_template();
+        let next = Template { emoji: None, ..current.clone() };
+        assert_eq!(keep_hidden_fields(&current, next).emoji.as_deref(), Some("🤝"));
+    }
+
+    #[test]
     fn ignores_unknown_fields_and_missing_changes() {
         let (_, changes) = parse_reply(r#"{"template":{"name":"N","color":"red","sections":[{"title":"A","instruction":"B","emoji":"x"}]},"extra":1}"#).unwrap();
         assert!(changes.is_empty());
@@ -1317,6 +1341,7 @@ mod tests {
         kept.validate().unwrap();
 
         let mut explicit = next.clone();
+        explicit.emoji = Some("🎯".into());
         explicit.description = "New".into();
         explicit.prep = Some("New prep".into());
         explicit.sections[0].format = Some("paragraph".into());

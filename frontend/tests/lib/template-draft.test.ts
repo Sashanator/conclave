@@ -2,6 +2,15 @@ import { describe, expect, test } from 'bun:test';
 import { draftFromTemplate, emptyDraft, templateFromDraft, validateDraft } from '@/lib/template-draft';
 
 describe('template drafts', () => {
+  test('emoji: kept, missing is null, null omitted, cleared writes empty', () => {
+    const t = { name: 'N', sections: [{ title: 'A', instruction: 'i' }] };
+    expect(draftFromTemplate({ ...t, emoji: '🤝' }).emoji).toBe('🤝');
+    expect(draftFromTemplate(t).emoji).toBeNull();
+    expect('emoji' in templateFromDraft(draftFromTemplate(t))).toBe(false);
+    expect(templateFromDraft(draftFromTemplate({ ...t, emoji: '🤝' })).emoji).toBe('🤝');
+    expect(templateFromDraft({ ...draftFromTemplate({ ...t, emoji: '🤝' }), emoji: '' }).emoji).toBe('');
+  });
+
   test('round trip keeps hidden fields', () => {
     const t = { name: 'N', description: 'D', sections: [{ title: 'A', instruction: 'i', format: 'list', example_item_format: '- x' }] };
     const draft = draftFromTemplate(t);

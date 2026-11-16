@@ -13,6 +13,7 @@ One JSON file per template. The file name without `.json` is the template id; id
 | Field | Type | Meaning |
 |---|---|---|
 | `name` | string, required | Display name |
+| `emoji` | string, optional | One emoji shown before meetings of this kind |
 | `description` | string, optional (was required) | Kept for old files; the editor does not show it |
 | `use_when` | string, optional | One line for auto-pick, e.g. "1-on-1 with my HoD Rasulov about work tasks" |
 | `title_keywords` | string[], optional | Case-insensitive substrings matched against the meeting title |

@@ -44,7 +44,27 @@ pub fn meeting_date_sql(alias: &str) -> String {
     format!("COALESCE({p}started_at, {p}calendar_start, {p}created_at)")
 }
 
+/// "Untitled · Mon 14:02": the title of a meeting created by hand without one.
+pub fn default_meeting_title(now: chrono::NaiveDateTime) -> String {
+    format!("Untitled · {}", now.format("%a %H:%M"))
+}
+
 impl MeetingsRepository {
+    /// Inserts an empty meeting (no recording yet) and returns its id. A blank title gets the default one.
+    pub async fn create_meeting(pool: &SqlitePool, title: Option<&str>, now_local: chrono::NaiveDateTime) -> Result<String, SqlxError> {
+        let given = title.map(str::trim).filter(|t| !t.is_empty());
+        let (title, source) = match given {
+            Some(t) => (t.chars().take(200).collect::<String>(), "user"),
+            None => (default_meeting_title(now_local), "default"),
+        };
+        let id = format!("meeting-{}", uuid::Uuid::new_v4());
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO meetings (id, title, title_source, reviewed, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)")
+            .bind(&id).bind(title).bind(source).bind(&now).bind(&now)
+            .execute(pool).await?;
+        Ok(id)
+    }
+
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
         let sql = format!("SELECT * FROM meetings ORDER BY julianday({}) DESC, rowid DESC", meeting_date_sql(""));
         let meetings = sqlx::query_as::<_, MeetingModel>(&sql).fetch_all(pool).await?;
@@ -888,5 +908,38 @@ mod meeting_date_tests {
         let d = MeetingsRepository::meeting_date(&pool, "cal").await.unwrap().unwrap();
         assert_eq!(d.to_rfc3339(), "2026-11-07T10:00:00+00:00");
         assert!(MeetingsRepository::meeting_date(&pool, "nope").await.unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod create_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+    use chrono::NaiveDate;
+
+    fn at() -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(14, 2, 0).unwrap()
+    }
+
+    #[test]
+    fn default_title_has_weekday_and_time() {
+        assert_eq!(default_meeting_title(at()), "Untitled · Mon 14:02");
+    }
+
+    #[tokio::test]
+    async fn create_meeting_titles() {
+        let pool = test_pool().await;
+        let long = "x".repeat(300);
+        for (input, title, src) in [
+            (None, "Untitled · Mon 14:02".to_string(), "default"),
+            (Some("  "), "Untitled · Mon 14:02".to_string(), "default"),
+            (Some(" Board "), "Board".to_string(), "user"),
+            (Some(long.as_str()), "x".repeat(200), "user"),
+        ] {
+            let id = MeetingsRepository::create_meeting(&pool, input, at()).await.unwrap();
+            let row: (String, String, i64, Option<String>) =
+                sqlx::query_as("SELECT title, title_source, reviewed, started_at FROM meetings WHERE id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+            assert_eq!((row.0, row.1.as_str(), row.2, row.3), (title, src, 0, None));
+        }
     }
 }

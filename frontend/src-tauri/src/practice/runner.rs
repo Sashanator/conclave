@@ -648,7 +648,8 @@ impl<R: Runtime> Runner<R> {
         drop(self.speak_tx);
         // The report job takes over the Whisper hold, so the model stays loaded across the hand-off.
         let hold = self.hold.take().unwrap_or_else(hold_model);
-        tauri::async_runtime::spawn(report_job::run(self.app.clone(), self.session_id.clone(), hold));
+        let busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::PracticeReport);
+        tauri::async_runtime::spawn(report_job::run(self.app.clone(), self.session_id.clone(), hold, busy));
         release_slot(&self.session_id);
     }
 }

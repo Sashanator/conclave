@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
-# Fails if telemetry, the updater, Meetily-owned hosts or Meetily data paths reappear in product code.
+# Fails if telemetry, a foreign updater, Meetily-owned hosts or Meetily data paths reappear in product code.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+
+# The only updater key the app may ship (tauri.conf.json plugins.updater.pubkey).
+CONCLAVE_UPDATER_PUBKEY='dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDJDN0RGM0M1MDI2ODY3MjcKUldRbloyZ0N4Zk45TEUvSWdVYlo0dWFTWlNWYWZYbDVMMWhHWWVTMGN2V1dRTzhNWGRSL0NpTWEK'
 
 PATTERNS=(
   'posthog'
@@ -9,11 +12,10 @@ PATTERNS=(
   '@/lib/analytics'
   'src/lib/analytics'
   'Analytics(Provider|ConsentSwitch|DataModal)'
-  'plugin-updater'
-  'tauri_plugin_updater'
-  'updater:default'
+  '"updater:'
+  '\.pubkey\('
+  '"endpoints"[[:space:]]*:'
   'releases/latest/download/latest\.json'
-  'createUpdaterArtifacts"[[:space:]]*:[[:space:]]*(true|"v1Compatible")'
   'zackriya\.com'
   'github\.com/your-org'
   'github\.com/Zackriya-Solutions'
@@ -64,6 +66,36 @@ for p in "${PATTERNS[@]}"; do
     echo "FORBIDDEN pattern '$p':"; printf '%s' "$hits"; fail=1
   fi
 done
+
+# Updater checks. grep: 0 = matches, 1 = none, >=2 = error (fail closed).
+UPD=frontend/src-tauri/src/updates
+grep_or_die() { # args: grep options and operands; prints matches, exits 1 on grep error
+  local out rc
+  out=$(grep "$@" 2>"$errf"); rc=$?
+  if [ "$rc" -ge 2 ]; then echo "phone-home guard: grep failed (exit $rc):" >&2; cat "$errf" >&2; exit 1; fi
+  printf '%s' "$out"
+}
+
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  case "$line" in *"$CONCLAVE_UPDATER_PUBKEY"*) ;; *) echo "FOREIGN updater pubkey: $line"; fail=1 ;; esac
+done <<< "$(grep_or_die -rnIE '"pubkey"' "${paths[@]}")"
+
+# Skip updates/ in the first pass: it is the only place allowed to call .endpoints(.
+ep=$(grep_or_die -rnIE '\.endpoints\(' --exclude-dir=updates frontend/src-tauri/src)
+if [ -n "$ep" ]; then echo "updater endpoints outside src/updates:"; echo "$ep"; fail=1; fi
+
+# Every URL in non-test updates code must stay inside the Conclave repo API.
+if [ -d "$UPD" ]; then
+  for f in "$UPD"/*.rs; do
+    [ -e "$f" ] || continue
+    urls=$(awk '/#\[cfg\(test\)\]/{exit} {print}' "$f" | grep_or_die -noE 'https?://[^"[:space:]]+')
+    while IFS= read -r u; do
+      [ -n "$u" ] || continue
+      case "${u#*:}" in https://api.github.com/repos/Sashanator/conclave/*) ;; *) echo "FOREIGN URL in src/updates: $f:$u"; fail=1 ;; esac
+    done <<< "$urls"
+  done
+fi
 
 if [ "$fail" -ne 0 ]; then exit 1; fi
 echo "phone-home guard: clean"

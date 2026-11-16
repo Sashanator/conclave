@@ -653,8 +653,10 @@ mod tests {
     async fn setup_merge() -> (SqlitePool, tempfile::TempDir, PathBuf, PathBuf, String) {
         let pool = test_pool().await;
         let base = tempfile::tempdir().unwrap();
-        let old = base.path().join("old");
-        let new = base.path().join("new");
+        // Windows runners give 8.3 short temp paths; the code under test canonicalizes, so compare long ones.
+        let root = dunce::canonicalize(base.path()).unwrap();
+        let old = root.join("old");
+        let new = root.join("new");
         fs::create_dir(&old).unwrap();
         fs::create_dir(&new).unwrap();
         fs::write(old.join("audio.mp4"), vec![1; 100]).unwrap();

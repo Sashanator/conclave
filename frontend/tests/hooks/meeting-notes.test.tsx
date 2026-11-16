@@ -3,6 +3,7 @@ import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingNote } from '../../src/types';
 
 const originalCore = { ...await import('@tauri-apps/api/core') };
+const originalSonner = { ...await import('sonner') };
 type Request = {
   command: string;
   args: Record<string, unknown>;
@@ -18,6 +19,7 @@ const toastError = mock((_message: string, _options?: unknown) => {});
 mock.module('sonner', () => ({ toast: { error: toastError } }));
 const { useMeetingNotes } = await import('../../src/hooks/useMeetingNotes');
 afterAll(() => {
+  mock.module('sonner', () => originalSonner);
   mock.module('@tauri-apps/api/core', () => originalCore);
 });
 

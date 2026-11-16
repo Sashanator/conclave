@@ -32,6 +32,12 @@ describe('updates lib', () => {
     expect(installError('bad signature')).toBe('Update failed: bad signature. Nothing was changed.');
   });
 
+  test('installError does not double the period', () => {
+    const text = installError('Conclave is already up to date.');
+    expect(text).toContain('up to date. Nothing was changed.');
+    expect(text).not.toContain('..');
+  });
+
   test('progressLabel percent, done and unknown total', () => {
     expect(progressLabel({ downloaded: 50, total: 100 })).toBe('Downloading… 50%');
     expect(progressLabel({ downloaded: 100, total: 100 })).toBe('Installing… Conclave will restart.');

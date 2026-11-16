@@ -43,7 +43,7 @@ export function installError(e: unknown): string {
   const s = String(e);
   return s.startsWith('busy: ')
     ? `Conclave is busy (${s.slice('busy: '.length)}). Update when it finishes.`
-    : `Update failed: ${s}. Nothing was changed.`;
+    : `Update failed: ${s.trim().replace(/\.$/, '')}. Nothing was changed.`;
 }
 
 export function progressLabel(p: UpdateProgress): string {

@@ -41,7 +41,7 @@ Download the newer `…-setup.exe` from the Releases page and run it. It upgrade
 - `%APPDATA%\com.conclave.app\backups\pre-upgrade\<date>_v<old>-to-v<new>\` for an automatic backup. If you are coming from a version before v1.2.0, the folder is `<date>_unknown-to-v<new>` instead.
 - `%APPDATA%\com.conclave.app\backups\manual\<date>_v<version>\` for a manual backup.
 
-Each backup folder has a `backup.json` file that describes it. Conclave keeps the last 3 automatic backups and the last 5 manual ones. Click **Open backups folder** in Settings to open the folder.
+Each backup folder has a `backup.json` file that describes it. Conclave keeps the last 3 automatic backups and the last 5 manual ones. Click **Open backups folder** in Settings to open the folder. A backup folder with no `backup.json` is an incomplete backup (for example, the PC lost power during the copy). Conclave never deletes it; delete it by hand.
 
 **If the backup fails:** Conclave does not change anything and shows this dialog: "Couldn't back up your data before upgrading. Continue without a backup, or quit?" Quit leaves everything as it was. The next start tries the backup again.
 

@@ -172,16 +172,43 @@ pub(crate) async fn move_plain_secrets(
     report
 }
 
-/// Checkpoint + VACUUM so cleared values leave the DB file; only when something was cleared.
-pub(crate) async fn compact_if_cleared(pool: &SqlitePool, cleared: usize) -> Result<bool> {
-    if cleared == 0 {
+const COMPACT_MARKER: &str = "compact-pending";
+
+/// A TRUNCATE checkpoint that could not finish (a reader held the WAL) returns busy = 1 without erroring.
+async fn checkpoint(pool: &SqlitePool) -> Result<()> {
+    let busy: i64 = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").fetch_one(pool).await?.try_get(0)?;
+    if busy != 0 {
+        return Err(anyhow!("wal checkpoint busy"));
+    }
+    Ok(())
+}
+
+/// Checkpoint + VACUUM so cleared values leave the DB file. Runs when something was cleared or an earlier
+/// compaction failed (marker file); a failure leaves the marker so the next start retries.
+pub(crate) async fn compact_if_cleared(pool: &SqlitePool, cleared: usize, marker_dir: &Path) -> Result<bool> {
+    let marker = marker_dir.join(COMPACT_MARKER);
+    if cleared == 0 && !marker.exists() {
         return Ok(false);
     }
-    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(pool).await?;
-    sqlx::query("VACUUM").execute(pool).await?;
-    // In WAL mode VACUUM lands in the -wal file; fold it into the main file.
-    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(pool).await?;
-    Ok(true)
+    let r: Result<()> = async {
+        checkpoint(pool).await?;
+        sqlx::query("VACUUM").execute(pool).await?;
+        // In WAL mode VACUUM lands in the -wal file; fold it into the main file.
+        checkpoint(pool).await
+    }
+    .await;
+    match r {
+        Ok(()) => {
+            let _ = std::fs::remove_file(&marker);
+            Ok(true)
+        }
+        Err(e) => {
+            if let Err(we) = std::fs::write(&marker, b"") {
+                warn!("secrets: compaction marker not written, no retry next start: {we}");
+            }
+            Err(e)
+        }
+    }
 }
 
 pub async fn run_at_startup(app: &tauri::AppHandle) {
@@ -199,8 +226,13 @@ pub async fn run_at_startup(app: &tauri::AppHandle) {
         }
     };
     info!("secrets: move checked, {} not moved, {} cleared", report.not_moved.len(), report.cleared);
-    if let Err(e) = compact_if_cleared(pool, report.cleared).await {
-        warn!("secrets: compaction failed, cleared values may remain in free pages: {e}");
+    match app.path().app_data_dir() {
+        Ok(dir) => {
+            if let Err(e) = compact_if_cleared(pool, report.cleared, &dir).await {
+                warn!("secrets: compaction failed, cleared values may remain in free pages; retrying next start: {e}");
+            }
+        }
+        Err(e) => warn!("secrets: app data dir unavailable, compaction skipped: {e}"),
     }
     if !report.not_moved.is_empty() {
         // The notice can be suppressed by the user's notification settings, so name the secrets in the log too.
@@ -403,7 +435,21 @@ mod tests {
     async fn compaction_runs_only_when_something_was_cleared() {
         let dir = tempfile::tempdir().unwrap();
         let m = db(dir.path()).await;
-        assert!(!compact_if_cleared(m.pool(), 0).await.unwrap());
+        assert!(!compact_if_cleared(m.pool(), 0, dir.path()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn failed_compaction_leaves_marker_and_next_start_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let m = db(dir.path()).await;
+        let marker = dir.path().join(COMPACT_MARKER);
+        m.pool().close().await;
+        assert!(compact_if_cleared(m.pool(), 1, dir.path()).await.is_err());
+        assert!(marker.exists());
+        let m2 = db(dir.path()).await;
+        // cleared == 0, but the marker forces a retry; success removes it.
+        assert!(compact_if_cleared(m2.pool(), 0, dir.path()).await.unwrap());
+        assert!(!marker.exists());
     }
 
     #[tokio::test]
@@ -414,7 +460,7 @@ mod tests {
         let store = MemoryStore::default();
         let r = move_plain_secrets(m.pool(), &cal(dir.path(), None), &store).await;
         assert_eq!(r.cleared, 1);
-        assert!(compact_if_cleared(m.pool(), r.cleared).await.unwrap());
+        assert!(compact_if_cleared(m.pool(), r.cleared, dir.path()).await.unwrap());
         for entry in std::fs::read_dir(dir.path()).unwrap() {
             let p = entry.unwrap().path();
             let name = p.file_name().unwrap().to_string_lossy().to_string();

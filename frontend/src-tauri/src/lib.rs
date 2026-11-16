@@ -756,14 +756,14 @@ pub fn run() {
                 database::setup::report_open_failure(_app.handle(), &e);
                 return Ok(());
             }
+            // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
+            tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
+            // Moves plain-text secrets into Credential Manager and compacts the DB; runs before any background starter holds a reader.
+            tauri::async_runtime::block_on(secrets::migrate::run_at_startup(_app.handle()));
             // Dictate that was on comes back only now: its model load needs the database.
             dictate::apply_after_db_ready(_app.handle());
             // A practice session left running by a crash is closed as interrupted.
             tauri::async_runtime::spawn(practice::commands::recover_at_startup(_app.handle().clone()));
-            // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
-            tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
-            // Plain-text secrets move into Credential Manager (verified, then cleared); blocks so no IPC races it.
-            tauri::async_runtime::block_on(secrets::migrate::run_at_startup(_app.handle()));
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {

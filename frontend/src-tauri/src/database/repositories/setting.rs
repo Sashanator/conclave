@@ -118,19 +118,27 @@ impl SettingsRepository {
         pool: &SqlitePool,
         provider: &str,
     ) -> std::result::Result<Option<String>, sqlx::Error> {
+        Self::get_api_key_in(secrets::store(), pool, provider).await
+    }
+
+    async fn get_api_key_in(
+        store: &dyn secrets::SecretStore,
+        pool: &SqlitePool,
+        provider: &str,
+    ) -> std::result::Result<Option<String>, sqlx::Error> {
         // Custom OpenAI uses JSON config - extract API key from there
         if provider == "custom-openai" {
-            let config = Self::get_custom_openai_config(pool).await?;
+            let config = Self::get_custom_openai_config_in(store, pool).await?;
             return Ok(config.and_then(|c| c.api_key));
         }
 
         let api_key_column = match provider {
             "openai" => "openaiApiKey",
-            "ollama" => "ollamaApiKey",
             "groq" => "groqApiKey",
             "claude" => "anthropicApiKey",
             "openrouter" => "openRouterApiKey",
-            "builtin-ai" => return Ok(None), // No API key needed
+            // No key needed (nothing reads ollamaApiKey), so a store error must not fail Settings.
+            "ollama" | "builtin-ai" => return Ok(None),
             _ => {
                 return Err(sqlx::Error::Protocol(
                     format!("Invalid provider: {}", provider).into(),
@@ -143,7 +151,7 @@ impl SettingsRepository {
             api_key_column
         );
         let plain: Option<String> = sqlx::query_scalar(&query).fetch_optional(pool).await?;
-        read_or_plain(secrets::store(), api_key_column, plain).map_err(store_err)
+        read_or_plain(store, api_key_column, plain).map_err(store_err)
     }
 
     pub async fn get_transcript_config(
@@ -306,6 +314,13 @@ impl SettingsRepository {
     pub async fn get_custom_openai_config(
         pool: &SqlitePool,
     ) -> std::result::Result<Option<CustomOpenAIConfig>, sqlx::Error> {
+        Self::get_custom_openai_config_in(secrets::store(), pool).await
+    }
+
+    async fn get_custom_openai_config_in(
+        store: &dyn secrets::SecretStore,
+        pool: &SqlitePool,
+    ) -> std::result::Result<Option<CustomOpenAIConfig>, sqlx::Error> {
         use sqlx::Row;
 
         let row = sqlx::query(
@@ -330,12 +345,16 @@ impl SettingsRepository {
                             format!("Invalid JSON in customOpenAIConfig: {}", e).into()
                         ))?;
 
+                    // A keyless endpoint (LM Studio) must still load when the store is unreadable.
                     config.api_key = read_or_plain(
-                        secrets::store(),
+                        store,
                         secrets::CUSTOM_OPENAI_API_KEY,
                         config.api_key.take(),
                     )
-                    .map_err(store_err)?;
+                    .unwrap_or_else(|e| {
+                        log::warn!("secrets: {} unreadable, loading endpoint without key: {e}", secrets::CUSTOM_OPENAI_API_KEY);
+                        None
+                    });
 
                     Ok(Some(config))
                 } else {
@@ -505,6 +524,20 @@ mod secret_tests {
         let got = SettingsRepository::get_transcript_api_key_in(f, &pool, "localWhisper").await;
         assert_eq!(got.unwrap(), None);
         assert!(SettingsRepository::get_transcript_api_key_in(f, &pool, "groq").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn keyless_providers_load_when_store_fails() {
+        let pool = test_pool().await;
+        let f = &secrets::FailingStore;
+        assert_eq!(SettingsRepository::get_api_key_in(f, &pool, "ollama").await.unwrap(), None);
+        assert!(SettingsRepository::get_api_key_in(f, &pool, "openai").await.is_err());
+        sqlx::query("INSERT INTO settings (id, provider, model, whisperModel, customOpenAIConfig) VALUES ('1','custom-openai','m','w','{\"endpoint\":\"http://h:1\",\"model\":\"m\"}')")
+            .execute(&pool).await.unwrap();
+        let c = SettingsRepository::get_custom_openai_config_in(f, &pool).await.unwrap().unwrap();
+        assert_eq!(c.endpoint, "http://h:1");
+        assert_eq!(c.api_key, None);
+        assert_eq!(SettingsRepository::get_api_key_in(f, &pool, "custom-openai").await.unwrap(), None);
     }
 
     #[tokio::test]

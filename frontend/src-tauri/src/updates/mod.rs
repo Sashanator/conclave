@@ -8,12 +8,13 @@ use busy::BusyReason;
 use serde::Serialize;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
-use tauri::{AppHandle, Emitter, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tauri_plugin_updater::{Update, UpdaterExt};
 
 const POLL: Duration = Duration::from_secs(5);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
 /// A stalled connection fails after this long without bytes; the download itself has no total limit.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 const STARTUP_DELAY: Duration = Duration::from_secs(30);
 
@@ -76,17 +77,32 @@ async fn find_update<R: Runtime>(
     let fail = |e: String| format!("Couldn't read the update file: {}", github::scrub(&e, token));
     let mut b = app
         .updater_builder()
-        .configure_client(|c| c.read_timeout(STALL_TIMEOUT))
-        // Windows install ends the process without RunEvent::Exit: stop the sidecar and flush the DB first.
-        .on_before_exit(|| {
-            let h = std::thread::spawn(|| {
-                tauri::async_runtime::block_on(async {
-                    if let Err(e) = crate::summary::summary_engine::force_shutdown_sidecar().await {
-                        log::error!("updates: sidecar shutdown before install failed: {e}");
-                    }
-                })
-            });
-            let _ = h.join();
+        .configure_client(|c| c.connect_timeout(CONNECT_TIMEOUT).read_timeout(STALL_TIMEOUT))
+        // Replaces the plugin's default hook, and Windows install ends the process without RunEvent::Exit:
+        // stop the sidecar, flush the DB (bounded), then do Tauri's own cleanup (tray, windows).
+        .on_before_exit({
+            let app = app.clone();
+            move || {
+                let a = app.clone();
+                let h = std::thread::spawn(move || {
+                    tauri::async_runtime::block_on(async {
+                        if let Err(e) = crate::summary::summary_engine::force_shutdown_sidecar().await {
+                            log::error!("updates: sidecar shutdown before install failed: {e}");
+                        }
+                        if let Some(st) = a.try_state::<crate::state::AppState>() {
+                            match tokio::time::timeout(Duration::from_secs(5), st.db_manager.cleanup()).await {
+                                Ok(Ok(())) => {}
+                                Ok(Err(e)) => log::error!("updates: database cleanup before install failed: {e}"),
+                                Err(_) => log::error!("updates: database cleanup before install timed out"),
+                            }
+                        }
+                    })
+                });
+                if h.join().is_err() {
+                    log::error!("updates: cleanup before install panicked");
+                }
+                app.cleanup_before_exit();
+            }
         })
         .endpoints(vec![url])
         .map_err(|e| fail(e.to_string()))?

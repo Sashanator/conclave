@@ -250,8 +250,8 @@ pub(crate) async fn meeting_cost_for(pool: &SqlitePool, meeting_id: &str) -> sql
 
 async fn talk_rows(pool: &SqlitePool) -> sqlx::Result<Vec<TalkRow>> {
     // The type comes from the completed summary; one summary row per meeting.
-    sqlx::query_as::<_, TalkRow>(
-        "SELECT m.id, m.title, m.created_at, json_extract(p.result, '$.template_id') AS template_id, \
+    let sql = format!(
+        "SELECT m.id, m.title, {} AS created_at, json_extract(p.result, '$.template_id') AS template_id, \
          json_extract(p.result, '$.template_name') AS template_name, \
          COALESCE(SUM(CASE WHEN s.idx = 0 THEN s.seconds END), 0.0) AS self_seconds, \
          SUM(s.seconds) AS total_seconds \
@@ -259,9 +259,9 @@ async fn talk_rows(pool: &SqlitePool) -> sqlx::Result<Vec<TalkRow>> {
          JOIN meeting_speakers s ON s.meeting_id = m.id \
          LEFT JOIN summary_processes p ON p.meeting_id = m.id AND p.status = 'completed' \
          GROUP BY m.id",
-    )
-    .fetch_all(pool)
-    .await
+        crate::database::repositories::meeting::meeting_date_sql("m"),
+    );
+    sqlx::query_as::<_, TalkRow>(&sql).fetch_all(pool).await
 }
 
 fn type_shares(rows: &[&TalkRow]) -> Vec<TypeShare> {
@@ -627,5 +627,28 @@ mod tests {
         assert_eq!(untyped_meetings.len(), 1);
         assert_eq!(untyped_meetings[0].meeting_id, "m3");
         assert_eq!(untyped_meetings[0].date, "2026-10-19");
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn the_stats_day_is_the_meeting_date() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        exec(&pool, "INSERT INTO meeting_speakers (meeting_id, idx, name, seconds) VALUES ('moved', 0, 'Me', 5.0)").await;
+        let rows = talk_rows(&pool).await.unwrap();
+        assert_eq!(rows[0].created_at.to_rfc3339(), "2026-11-09T10:00:00+00:00");
     }
 }

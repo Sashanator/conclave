@@ -37,13 +37,28 @@ impl Default for TitleOrigin {
     }
 }
 
+/// The one SQL expression for "which date a meeting has" (spec 6.1). `alias` is the meetings table alias ("" for none).
+/// The columns mix formats (space and T separators), so compare and order through `julianday(..)`, never as text.
+pub fn meeting_date_sql(alias: &str) -> String {
+    let p = if alias.is_empty() { String::new() } else { format!("{alias}.") };
+    format!("COALESCE({p}started_at, {p}calendar_start, {p}created_at)")
+}
+
 impl MeetingsRepository {
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
-        let meetings =
-            sqlx::query_as::<_, MeetingModel>("SELECT * FROM meetings ORDER BY created_at DESC")
-                .fetch_all(pool)
-                .await?;
+        let sql = format!("SELECT * FROM meetings ORDER BY julianday({}) DESC, rowid DESC", meeting_date_sql(""));
+        let meetings = sqlx::query_as::<_, MeetingModel>(&sql).fetch_all(pool).await?;
         Ok(meetings)
+    }
+
+    /// The meeting's date (`meeting_date_sql`); `None` when there is no such meeting.
+    pub async fn meeting_date(pool: &SqlitePool, id: &str) -> Result<Option<DateTime<Utc>>, SqlxError> {
+        let sql = format!("SELECT {} FROM meetings WHERE id = ?", meeting_date_sql(""));
+        Ok(sqlx::query_as::<_, (crate::database::models::DateTimeUtc,)>(&sql)
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .map(|(d,)| d.0))
     }
 
     pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
@@ -831,3 +846,39 @@ mod redesign_migration_tests {
     }
 }
 
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+
+    #[test]
+    fn the_expression_follows_the_alias() {
+        assert_eq!(meeting_date_sql("m"), "COALESCE(m.started_at, m.calendar_start, m.created_at)");
+        assert_eq!(meeting_date_sql(""), "COALESCE(started_at, calendar_start, created_at)");
+    }
+
+    #[tokio::test]
+    async fn meetings_order_and_date_follow_started_at_then_calendar_then_created() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "mid", "2026-11-05 10:00:00.000+00:00", None, None).await;
+        row(&pool, "cal", "2026-11-02 10:00:00.000+00:00", None, Some("2026-11-07T10:00:00+00:00")).await;
+        // Same day, mixed formats: the T-format 09:00 is earlier than the space-format 10:00 (text order would say later).
+        row(&pool, "t9", "2026-10-20 08:00:00.000+00:00", Some("2026-10-20T09:00:00.000+00:00"), None).await;
+        row(&pool, "s10", "2026-10-20 10:00:00.000+00:00", None, None).await;
+        let ids: Vec<String> = MeetingsRepository::get_meetings(&pool).await.unwrap().into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["moved", "cal", "mid", "s10", "t9"]);
+        let d = MeetingsRepository::meeting_date(&pool, "moved").await.unwrap().unwrap();
+        assert_eq!(d.to_rfc3339(), "2026-11-09T10:00:00+00:00");
+        let d = MeetingsRepository::meeting_date(&pool, "cal").await.unwrap().unwrap();
+        assert_eq!(d.to_rfc3339(), "2026-11-07T10:00:00+00:00");
+        assert!(MeetingsRepository::meeting_date(&pool, "nope").await.unwrap().is_none());
+    }
+}

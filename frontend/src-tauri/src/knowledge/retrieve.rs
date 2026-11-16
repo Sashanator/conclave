@@ -355,10 +355,11 @@ struct Lines {
 }
 
 async fn load_meetings(pool: &SqlitePool) -> Result<HashMap<String, Meta>, sqlx::Error> {
-    let rows: Vec<(String, String, DateTimeUtc, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT m.id, m.title, m.created_at, json_extract(s.result, '$.template_id'), json_extract(s.result, '$.template_name'), json_extract(s.result, '$.markdown')
+    let rows: Vec<(String, String, DateTimeUtc, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(&format!(
+        "SELECT m.id, m.title, {} AS created_at, json_extract(s.result, '$.template_id'), json_extract(s.result, '$.template_name'), json_extract(s.result, '$.markdown')
          FROM meetings m LEFT JOIN summary_processes s ON s.meeting_id = m.id AND s.status = 'completed'",
-    )
+        crate::database::repositories::meeting::meeting_date_sql("m"),
+    ))
     .fetch_all(pool)
     .await?;
     Ok(rows.into_iter().map(|(id, title, created_at, template_id, template_name, summary)| {
@@ -818,5 +819,27 @@ mod tests {
         let lines: Vec<&str> = hits.iter().filter(|e| e.source == "transcript").flat_map(|e| e.text.lines()).collect();
         let unique: HashSet<&str> = lines.iter().copied().collect();
         assert_eq!(unique.len(), lines.len());
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn ask_day_follows_the_meeting_date() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T12:00:00.000+00:00"), None).await;
+        let meta = load_meetings(&pool).await.unwrap();
+        assert_eq!(meta["moved"].when.to_rfc3339(), "2026-11-09T12:00:00+00:00");
     }
 }

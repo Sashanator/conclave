@@ -58,7 +58,7 @@ struct MeetingRow {
 
 /// Every meeting that has a folder. Read once per call; a read failure is an error, never a partial list.
 async fn load_meetings(pool: &SqlitePool) -> Result<Vec<MeetingRow>, String> {
-    sqlx::query_as("SELECT id, title, created_at, folder_path, keep_audio FROM meetings WHERE folder_path IS NOT NULL ORDER BY created_at")
+    sqlx::query_as("SELECT id, title, COALESCE(ended_at, created_at) AS created_at, folder_path, keep_audio FROM meetings WHERE folder_path IS NOT NULL ORDER BY julianday(COALESCE(ended_at, created_at))")
         .fetch_all(pool)
         .await
         .map_err(|e| e.to_string())
@@ -512,5 +512,48 @@ mod tests {
         fs::create_dir(&f).unwrap();
         std::os::unix::fs::symlink(target.path(), f.join(".checkpoints")).unwrap();
         assert!(audio_paths(&f).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+    use chrono::{Duration, TimeZone};
+
+    fn now() -> DateTime<Utc> { Utc.with_ymd_and_hms(2026, 12, 1, 0, 0, 0).unwrap() }
+
+    fn folder(base: &Path, name: &str) -> PathBuf {
+        let f = base.join(name);
+        std::fs::create_dir_all(&f).unwrap();
+        std::fs::write(f.join("audio.mp4"), vec![0u8; 10]).unwrap();
+        f
+    }
+
+    async fn insert(pool: &SqlitePool, id: &str, created_days_ago: i64, ended: Option<DateTime<Utc>>, f: &Path) {
+        let created = (now() - Duration::days(created_days_ago)).format("%Y-%m-%d %H:%M:%S%.f+00:00").to_string();
+        let ended = ended.map(|e| e.format("%Y-%m-%dT%H:%M:%S%.3f+00:00").to_string());
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, folder_path, ended_at) VALUES (?, 'M', ?, ?, ?, ?)")
+            .bind(id).bind(&created).bind(&created).bind(f.to_string_lossy().to_string()).bind(ended)
+            .execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn age_counts_from_ended_at_never_from_row_creation() {
+        let pool = test_pool().await;
+        let b = tempfile::tempdir().unwrap();
+        // Made 40 days ago but ended 3 days ago: recent audio, never offered.
+        insert(&pool, "recent", 40, Some(now() - Duration::days(3)), &folder(b.path(), "recent")).await;
+        assert!(list_old_audio(&pool, Some(30), now(), false, b.path()).await.unwrap().is_empty());
+        // Ended 40 days ago: offered, and the offer's date is the end.
+        insert(&pool, "old", 41, Some(now() - Duration::days(40)), &folder(b.path(), "old")).await;
+        let list = list_old_audio(&pool, Some(30), now(), false, b.path()).await.unwrap();
+        assert_eq!(list.len(), 1);
+        assert_eq!(list[0].meeting_id, "old");
+        assert!(list[0].created_at.starts_with("2026-10-22"), "{}", list[0].created_at);
+        // No ended_at (never saved as a recording): falls back to created_at.
+        insert(&pool, "legacy", 40, None, &folder(b.path(), "legacy")).await;
+        let ids: Vec<_> = list_old_audio(&pool, Some(30), now(), false, b.path()).await.unwrap().into_iter().map(|o| o.meeting_id).collect();
+        assert!(ids.contains(&"legacy".to_string()) && !ids.contains(&"recent".to_string()));
     }
 }

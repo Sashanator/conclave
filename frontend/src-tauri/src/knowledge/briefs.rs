@@ -82,11 +82,12 @@ struct Past {
 
 /// Meetings with a completed summary of this template and a matching title, newest first.
 async fn matching_meetings(pool: &SqlitePool, template_id: &str, title: &str) -> Result<Vec<Past>, String> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT m.id, m.title, m.created_at FROM meetings m JOIN summary_processes s ON s.meeting_id = m.id \
+    let d = crate::database::repositories::meeting::meeting_date_sql("m");
+    let rows: Vec<(String, String, String)> = sqlx::query_as(&format!(
+        "SELECT m.id, m.title, {d} FROM meetings m JOIN summary_processes s ON s.meeting_id = m.id \
          WHERE s.status = 'completed' AND CASE WHEN json_valid(s.result) THEN json_extract(s.result, '$.template_id') END = ? \
-         ORDER BY m.created_at DESC",
-    )
+         ORDER BY julianday({d}) DESC",
+    ))
     .bind(template_id)
     .fetch_all(pool)
     .await
@@ -626,5 +627,32 @@ mod tests {
         let _flight = extract::hold_in_flight("ivan-queued");
         assert_eq!(make_brief(app.handle(), &pool, &occ, &one_on_one, &|| at(10, 30)).await.unwrap(), None);
         assert_eq!(brief_rows(&pool).await, 0);
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn the_previous_meeting_is_the_one_with_the_latest_meeting_date() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "mid", "2026-11-05 10:00:00.000+00:00", None, None).await;
+        for id in ["moved", "mid"] {
+            exec(&pool, &format!("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('{id}', 'completed', 't', 't', '{{\"template_id\":\"one_on_one\"}}')")).await;
+        }
+        let got = matching_meetings(&pool, "one_on_one", "T").await.unwrap();
+        assert_eq!(got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["moved", "mid"]);
+        assert_eq!(got[0].created_at, "2026-11-09T10:00:00.000+00:00");
     }
 }

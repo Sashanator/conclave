@@ -15,11 +15,11 @@ GPU (NVIDIA) transcription needs cuBLAS from a CUDA 12 toolkit on your PC: see [
 ### In the app
 
 1. Create a fine-grained GitHub token with read-only **Contents** access to this repository only.
-2. Paste it in **Settings → General → Updates → GitHub token**, then click **Test**. Conclave stores the token in Windows Credential Manager.
+2. Paste it in **Settings → General → Updates → GitHub token**, click **Save**, then click **Test**. Conclave stores the token in Windows Credential Manager.
 3. Conclave checks for a new version about 30 seconds after it starts. The switch for this is on by default. You can also click **Check for updates** at any time.
 4. When a new version is available, a dialog shows "Conclave vX.Y.Z is available" with the release notes.
    - **Update** downloads the new version, verifies its signature, installs it with a progress bar and restarts Conclave.
-   - **Later** closes the dialog. Conclave asks again at the next start.
+   - **Later** closes the dialog. Conclave asks again at the next start or the next check.
 5. Conclave never asks or installs during a recording or its save, a Practice session or report, a summary being generated, or a model download.
 6. If the check at start-up fails, Conclave shows nothing. The reason is in the status line in Settings.
 

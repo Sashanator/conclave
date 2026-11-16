@@ -31,8 +31,8 @@ export function UpdateDialog() {
       setError(null);
       setProgress(null);
       setOpen(true);
-    }).catch(() => {});
-    sub<UpdateProgress>(UPDATES_PROGRESS_EVENT, (p) => { if (installingRef.current) setProgress(p); }).catch(() => {});
+    }).catch((e) => console.error('update dialog: could not subscribe', e));
+    sub<UpdateProgress>(UPDATES_PROGRESS_EVENT, (p) => { if (installingRef.current) setProgress(p); }).catch((e) => console.error('update dialog: could not subscribe', e));
     return () => { cancelled = true; unlisteners.forEach((un) => un()); };
   }, []);
 

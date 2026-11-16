@@ -122,7 +122,8 @@ pub(crate) async fn for_meeting(
     pool: &SqlitePool,
     meeting_id: &str,
 ) -> Result<Option<MeetingPrep>, String> {
-    sqlx::query("SELECT p.* FROM meeting_preps p JOIN meetings m ON m.calendar_uid = p.event_uid AND m.calendar_start = p.event_start WHERE m.id = ?")
+    // Calendar preps not yet adopted (meeting_id NULL) are still found through the meeting's calendar link.
+    sqlx::query("SELECT p.* FROM meeting_preps p WHERE p.meeting_id = ?1 OR (p.meeting_id IS NULL AND EXISTS (SELECT 1 FROM meetings m WHERE m.id = ?1 AND m.calendar_uid = p.event_uid AND m.calendar_start = p.event_start)) ORDER BY p.meeting_id IS NULL LIMIT 1")
         .bind(meeting_id).fetch_optional(pool).await.map_err(|e| e.to_string())?
         .map(decode).transpose()
 }
@@ -137,10 +138,38 @@ pub(crate) async fn list_all(pool: &SqlitePool) -> Result<Vec<MeetingPrep>, Stri
         .collect()
 }
 
+// `clause` is always one of this file's literals, never user input.
+async fn one(
+    conn: &mut SqliteConnection,
+    clause: &str,
+    first: &str,
+    second: Option<&str>,
+) -> Result<Option<MeetingPrep>, String> {
+    let sql = format!("SELECT * FROM meeting_preps WHERE {clause}");
+    let mut query = sqlx::query(&sql).bind(first);
+    if let Some(s) = second {
+        query = query.bind(s);
+    }
+    query.fetch_optional(conn).await.map_err(|e| e.to_string())?.map(decode).transpose()
+}
+
 pub(crate) async fn save(
     pool: &SqlitePool,
     event_uid: &str,
     event_start: &str,
+    event_title: &str,
+    material: &str,
+    template_id: Option<&str>,
+    items: Vec<PrepItem>,
+) -> Result<MeetingPrep, String> {
+    save_prep(pool, None, Some((event_uid, event_start)), event_title, material, template_id, items).await
+}
+
+/// Upserts by calendar event, by meeting id, or both. A calendar prep (no meeting id yet) is adopted, never duplicated.
+pub(crate) async fn save_prep(
+    pool: &SqlitePool,
+    meeting_id: Option<&str>,
+    event: Option<(&str, &str)>,
     event_title: &str,
     material: &str,
     template_id: Option<&str>,
@@ -174,15 +203,23 @@ pub(crate) async fn save(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| e.to_string())?;
-    let current =
-        sqlx::query("SELECT * FROM meeting_preps WHERE event_uid = ? AND event_start = ?")
-            .bind(event_uid)
-            .bind(event_start)
-            .fetch_optional(&mut *tx)
-            .await
-            .map_err(|e| e.to_string())?
-            .map(decode)
-            .transpose()?;
+    let by_event = match event {
+        Some((uid, start)) => one(&mut tx, "event_uid = ? AND event_start = ?", uid, Some(start)).await?,
+        None => None,
+    };
+    let by_meeting = match meeting_id {
+        Some(id) => one(&mut tx, "meeting_id = ?", id, None).await?,
+        None => None,
+    };
+    if event.is_none() && meeting_id.is_none() {
+        return Err("A prep needs a meeting or a calendar event".into());
+    }
+    // Two different rows would need a merge; refuse rather than overwrite either.
+    let current = match (by_event, by_meeting) {
+        (Some(e), Some(m)) if e.id != m.id => return Err("Another prep already belongs to this meeting".into()),
+        (Some(e), _) => Some(e),
+        (None, m) => m,
+    };
     let mut seen = std::collections::HashSet::new();
     for item in &mut items {
         // A repeated id would share one stored tick, and tick() only reaches the first copy.
@@ -211,12 +248,21 @@ pub(crate) async fn save(
         .map_or(now.as_str(), |old| old.updated_at.as_str());
     let title: String = event_title.chars().take(MAX_EVENT_TITLE_CHARS).collect();
     let items_json = serde_json::to_string(&items).map_err(|e| e.to_string())?;
-    sqlx::query("INSERT INTO meeting_preps (event_uid, event_start, event_title, material, template_id, items_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(event_uid, event_start) DO UPDATE SET event_title = excluded.event_title, material = excluded.material, template_id = excluded.template_id, items_json = excluded.items_json, updated_at = excluded.updated_at")
-        .bind(event_uid).bind(event_start).bind(title).bind(material).bind(template_id).bind(items_json).bind(&now).bind(updated_at)
-        .execute(&mut *tx).await.map_err(|e| e.to_string())?;
-    let row = sqlx::query("SELECT * FROM meeting_preps WHERE event_uid = ? AND event_start = ?")
-        .bind(event_uid)
-        .bind(event_start)
+    let (uid, start) = event.unzip();
+    let id = match &current {
+        Some(old) => {
+            // An existing link is kept; event and meeting columns are only filled while empty.
+            sqlx::query("UPDATE meeting_preps SET event_title = ?, material = ?, template_id = ?, items_json = ?, updated_at = ?, meeting_id = COALESCE(meeting_id, ?), event_uid = COALESCE(event_uid, ?), event_start = COALESCE(event_start, ?) WHERE id = ?")
+                .bind(title).bind(material).bind(template_id).bind(items_json).bind(updated_at).bind(meeting_id).bind(uid).bind(start).bind(old.id)
+                .execute(&mut *tx).await.map_err(|e| e.to_string())?;
+            old.id
+        }
+        None => sqlx::query("INSERT INTO meeting_preps (meeting_id, event_uid, event_start, event_title, material, template_id, items_json, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)")
+            .bind(meeting_id).bind(uid).bind(start).bind(title).bind(material).bind(template_id).bind(items_json).bind(&now).bind(updated_at)
+            .execute(&mut *tx).await.map_err(|e| e.to_string())?.last_insert_rowid(),
+    };
+    let row = sqlx::query("SELECT * FROM meeting_preps WHERE id = ?")
+        .bind(id)
         .fetch_one(&mut *tx)
         .await
         .map_err(|e| e.to_string())?;
@@ -392,17 +438,23 @@ pub async fn prep_for_meeting(
 #[tauri::command]
 pub async fn prep_save(
     state: State<'_, AppState>,
-    event_uid: String,
-    event_start: String,
+    event_uid: Option<String>,
+    event_start: Option<String>,
     event_title: String,
     material: String,
     template_id: Option<String>,
     items: Vec<PrepItem>,
+    meeting_id: Option<String>,
 ) -> Result<MeetingPrep, String> {
-    save(
+    let event = match (event_uid.as_deref(), event_start.as_deref()) {
+        (Some(uid), Some(start)) => Some((uid, start)),
+        (None, None) => None,
+        _ => return Err("A calendar event needs both a uid and a start".into()),
+    };
+    save_prep(
         state.db_manager.pool(),
-        &event_uid,
-        &event_start,
+        meeting_id.as_deref(),
+        event,
         &event_title,
         &material,
         template_id.as_deref(),
@@ -866,6 +918,28 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn prep_saved_for_meeting_without_event() {
+        let pool = test_pool().await;
+        let calendar = seed(&pool, vec![item("c", "calendar")]).await;
+        let id = MeetingsRepository::create_meeting(&pool, None, chrono::NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(14, 2, 0).unwrap()).await.unwrap();
+        let other = MeetingsRepository::create_meeting(&pool, None, chrono::NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(14, 3, 0).unwrap()).await.unwrap();
+        save_prep(&pool, Some(&id), None, "Hand made", "", None, vec![item("a", "first")]).await.unwrap();
+        let second = save_prep(&pool, Some(&id), None, "Hand made", "", None, vec![item("b", "second")]).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM meeting_preps WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert_eq!(count, 1);
+        assert_eq!(second.event_uid, None);
+        assert_eq!(for_meeting(&pool, &id).await.unwrap().unwrap().items[0].text, "second");
+        assert_eq!(for_meeting(&pool, &other).await.unwrap(), None);
+        assert_eq!(get(&pool, "u", "2026-10-29T12:00:00Z").await.unwrap(), Some(calendar.clone()));
+        // Saving a meeting with the calendar event adopts that prep; a second meeting cannot take it.
+        let adopted = save_prep(&pool, Some(&other), Some(("u", "2026-10-29T12:00:00Z")), "Event", "", None, vec![item("c", "calendar")]).await.unwrap();
+        assert_eq!(adopted.id, calendar.id);
+        assert_eq!(for_meeting(&pool, &other).await.unwrap().unwrap().id, calendar.id);
+        assert!(save_prep(&pool, Some(&id), Some(("u", "2026-10-29T12:00:00Z")), "Event", "", None, vec![]).await.is_err());
+        assert!(save_prep(&pool, None, None, "x", "", None, vec![]).await.is_err());
+    }
+
+    #[tokio::test]
     async fn deleting_a_meeting_keeps_its_prep() {
         let pool = test_pool().await;
         linked_meeting(&pool).await;
@@ -875,7 +949,7 @@ mod tests {
             .await
             .unwrap());
         assert_eq!(
-            get(&pool, &prep.event_uid, &prep.event_start)
+            get(&pool, prep.event_uid.as_deref().unwrap(), prep.event_start.as_deref().unwrap())
                 .await
                 .unwrap(),
             Some(prep)
@@ -931,7 +1005,7 @@ mod tests {
             save(
                 &pool,
                 "u",
-                &prep.event_start,
+                prep.event_start.as_deref().unwrap(),
                 "Event",
                 "",
                 Some("../bad"),
@@ -969,7 +1043,7 @@ mod tests {
         let saved = save(
             &pool,
             "u",
-            &prep.event_start,
+            prep.event_start.as_deref().unwrap(),
             &"я".repeat(MAX_EVENT_TITLE_CHARS + 1),
             "",
             None,
@@ -980,7 +1054,7 @@ mod tests {
         assert_eq!(saved.id, prep.id);
         assert_eq!(saved.created_at, prep.created_at);
         assert_eq!(saved.updated_at, approved.updated_at);
-        assert_eq!(saved.event_title.chars().count(), MAX_EVENT_TITLE_CHARS);
+        assert_eq!(saved.event_title.unwrap().chars().count(), MAX_EVENT_TITLE_CHARS);
         let (after, updated) = apply_chat(
             &pool,
             prep.id,
@@ -1028,11 +1102,11 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
-        assert!(get(&pool, "u", &prep.event_start).await.is_err());
+        assert!(get(&pool, "u", prep.event_start.as_deref().unwrap()).await.is_err());
         assert!(get_by_id(&pool, prep.id).await.is_err());
         assert!(list_all(&pool).await.is_err());
         assert!(
-            save(&pool, "u", &prep.event_start, "Event", "", None, vec![])
+            save(&pool, "u", prep.event_start.as_deref().unwrap(), "Event", "", None, vec![])
                 .await
                 .is_err()
         );

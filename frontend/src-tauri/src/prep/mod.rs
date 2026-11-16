@@ -42,9 +42,9 @@ pub struct ProposedItem {
 #[serde(rename_all = "camelCase")]
 pub struct MeetingPrep {
     pub id: i64,
-    pub event_uid: String,
-    pub event_start: String,
-    pub event_title: String,
+    pub event_uid: Option<String>,
+    pub event_start: Option<String>,
+    pub event_title: Option<String>,
     pub template_id: Option<String>,
     pub material: String,
     pub chat: Vec<ChatMessage>,

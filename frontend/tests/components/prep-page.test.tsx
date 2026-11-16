@@ -90,7 +90,7 @@ async function click(name: string) { await act(async () => { await button(name).
 beforeEach(() => {
   renderer?.unmount(); renderer = null;
   stored = structuredClone(initial); limit = 100; failSave = false; failSend = false; missingPrep = false; pauseSave = null; failTemplates = false; mintedId = 0;
-  overview = { connected: true, upcoming: [{ uid: 'e1', title: 'Planning', start: initial.eventStart, end: initial.eventStart, templateId: null, templateName: null, prep: { id: 1, approved: false } }], other: [] };
+  overview = { connected: true, upcoming: [{ uid: 'e1', title: 'Planning', start: initial.eventStart!, end: initial.eventStart!, templateId: null, templateName: null, prep: { id: 1, approved: false } }], other: [] };
   invoke.mockClear(); toastError.mockClear();
 });
 describe('Prep page', () => {
@@ -102,7 +102,7 @@ describe('Prep page', () => {
   });
   test('lists events by day with General fallback and orphans', async () => {
     overview.upcoming.push({ ...overview.upcoming[0], uid: 'e2', title: 'Review meeting', start: '2026-11-02T10:00:00Z', templateName: 'Review', prep: { id: 2, approved: true } });
-    overview.other.push({ id: 3, eventUid: 'gone', eventStart: initial.eventStart, eventTitle: 'Old event', approved: false, reason: 'not_in_calendar' });
+    overview.other.push({ id: 3, eventUid: 'gone', eventStart: initial.eventStart!, eventTitle: 'Old event', approved: false, reason: 'not_in_calendar' });
     await mount(false);
     const content = text(renderer!.root);
     for (const expected of ['2026-11-01', '2026-11-02', 'General', 'Review', 'draft', 'Approved', 'Past and orphaned preps', 'event no longer in calendar']) expect(content).toContain(expected);
@@ -110,7 +110,7 @@ describe('Prep page', () => {
   });
   for (const directLink of [false, true]) test(`unreadable prep can be deleted without loading an editor (direct link: ${directLink})`, async () => {
     overview.upcoming = [];
-    overview.other = [{ id: 1, eventUid: 'e1', eventStart: initial.eventStart, eventTitle: 'Broken prep', approved: false, reason: 'unreadable' }];
+    overview.other = [{ id: 1, eventUid: 'e1', eventStart: initial.eventStart!, eventTitle: 'Broken prep', approved: false, reason: 'unreadable' }];
     const originalConfirm = window.confirm;
     window.confirm = () => true;
     try {
@@ -148,7 +148,7 @@ describe('Prep page', () => {
     expect(button('Suggest')).toBeUndefined();
     expect(calls('prep_send')).toHaveLength(0);
     expect(calls('prep_save')).toHaveLength(0);
-    expect(calls('prep_get')[0][1]).toEqual({ eventUid: 'e1', eventStart: initial.eventStart });
+    expect(calls('prep_get')[0][1]).toEqual({ eventUid: 'e1', eventStart: initial.eventStart! });
     await change('Material', 'Notes');
     await click('Suggest');
     expect(calls('prep_send')).toEqual([['prep_send', { prepId: 1, message: SUGGEST_MESSAGE }]]);

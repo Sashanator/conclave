@@ -46,7 +46,7 @@ mock.module('@tauri-apps/api/event', () => ({ ...originals.event, listen: async 
 mock.module('sonner', () => ({ ...originals.sonner, toast: { ...originals.sonner.toast, error: errorToast } }));
 const recording = { isRecording: true, isSaving: false, activeDuration: 12 };
 const tx = {
-  calendarLink: { uid: fixture().eventUid, start: fixture().eventStart } as { uid: string; start: string } | null,
+  calendarLink: { uid: fixture().eventUid!, start: fixture().eventStart! } as { uid: string; start: string } | null,
   notes: [], addNote: mock(() => {}), updateNote: mock(() => {}), deleteNote: mock(() => {}),
 };
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recording, useRecordingState: () => recording }));
@@ -78,7 +78,7 @@ beforeEach(() => {
   load = async () => result;
   tick = async () => ({ ...fixture(), items: fixture().items.map((i) => ({ ...i, ticked: true })) });
   recording.isRecording = true;
-  tx.calendarLink = { uid: fixture().eventUid, start: fixture().eventStart };
+  tx.calendarLink = { uid: fixture().eventUid!, start: fixture().eventStart! };
   invoke.mockClear();
   errorToast.mockClear();
 });
@@ -88,7 +88,7 @@ test('no prep, no tab; stored prep falls back to notes without changing storage'
   result = null;
   localStorage.setItem(LIVE_SIDE_TAB_KEY, 'prep');
   const r = await render();
-  expect(invoke).toHaveBeenCalledWith('prep_get', { eventUid: fixture().eventUid, eventStart: fixture().eventStart });
+  expect(invoke).toHaveBeenCalledWith('prep_get', { eventUid: fixture().eventUid!, eventStart: fixture().eventStart! });
   expect(prepTab(r)).toBeUndefined();
   expect(tabs(r)[0].props['aria-selected']).toBe(true);
   expect(localStorage.getItem(LIVE_SIDE_TAB_KEY)).toBe('prep');
@@ -101,7 +101,7 @@ test('tab shows the counter, kind tags, draft label and encoded Open in Prep lin
   expect(json(r)).toContain('draft');
   expect(json(r)).toContain('clarification');
   const link = r.root.findAll((n) => n.type === 'a' && textOf(n) === 'Open in Prep')[0];
-  expect(link.props.href).toBe(`/prep?${new URLSearchParams({ event: fixture().eventUid, start: fixture().eventStart })}`);
+  expect(link.props.href).toBe(`/prep?${new URLSearchParams({ event: fixture().eventUid!, start: fixture().eventStart! })}`);
   // Switching tabs keeps the existing note input and checklist mounted.
   const noteInput = r.root.findByProps({ 'aria-label': 'New note' });
   await act(async () => { tabs(r)[0].props.onClick(); });
@@ -170,7 +170,7 @@ test('live fetch runs once per link strings and clears when recording stops', as
 test('no calendar link or no recording does not fetch prep', async () => {
   tx.calendarLink = null;
   await render();
-  tx.calendarLink = { uid: fixture().eventUid, start: fixture().eventStart };
+  tx.calendarLink = { uid: fixture().eventUid!, start: fixture().eventStart! };
   recording.isRecording = false;
   await render();
   expect(invoke.mock.calls.filter(([command]) => command === 'prep_get')).toHaveLength(0);

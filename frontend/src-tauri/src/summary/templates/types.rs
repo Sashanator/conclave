@@ -42,39 +42,62 @@ pub struct Template {
     pub style: Option<String>,
 }
 
-fn emoji_base(c: char) -> bool {
-    matches!(c as u32,
-        0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2190..=0x21FF | 0x231A..=0x23FF | 0x24C2
-        | 0x25AA..=0x25FE | 0x2600..=0x27BF | 0x2934 | 0x2935 | 0x2B00..=0x2BFF | 0x3030 | 0x303D | 0x3297 | 0x3299
-        | 0x1F000..=0x1FAFF)
+const VS16: u32 = 0xFE0F;
+
+/// Symbols that are text by default: an emoji only when followed by VS16.
+fn needs_vs16(cp: u32) -> bool {
+    matches!(cp, 0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x2199 | 0x21A9 | 0x21AA | 0x24C2
+        | 0x25AA | 0x25AB | 0x25B6 | 0x25C0 | 0x25FB..=0x25FE | 0x2B05..=0x2B07)
 }
 
-/// Exactly one emoji: a base pictograph with optional VS16, skin tone, keycap and tags, joined by ZWJ; or one
-/// flag (two regional indicators). Text, several emoji, dashes and other symbols are rejected. At most 32 bytes.
-/// shortcut: a hand-made range table, not full Unicode emoji data; refresh it if new blocks appear.
+fn emoji_base(cp: u32) -> bool {
+    needs_vs16(cp) || matches!(cp,
+        0x231A | 0x231B | 0x2328 | 0x23CF | 0x23E9..=0x23F3 | 0x23F8..=0x23FA | 0x2600..=0x2604 | 0x260E | 0x2611
+        | 0x2614 | 0x2615 | 0x2618 | 0x261D | 0x2620 | 0x2622 | 0x2623 | 0x2626 | 0x262A | 0x262E | 0x262F
+        | 0x2638..=0x263A | 0x2640 | 0x2642 | 0x2648..=0x2653 | 0x265F | 0x2660 | 0x2663 | 0x2665 | 0x2666
+        | 0x2668 | 0x267B | 0x267E | 0x267F | 0x2692..=0x2697 | 0x2699 | 0x269B | 0x269C | 0x26A0 | 0x26A1
+        | 0x26A7 | 0x26AA | 0x26AB | 0x26B0 | 0x26B1 | 0x26BD | 0x26BE | 0x26C4 | 0x26C5 | 0x26C8 | 0x26CE
+        | 0x26CF | 0x26D1 | 0x26D3 | 0x26D4 | 0x26E9 | 0x26EA | 0x26F0..=0x26F5 | 0x26F7..=0x26FA | 0x26FD
+        | 0x2702 | 0x2705 | 0x2708..=0x270D | 0x270F | 0x2712 | 0x2714 | 0x2716 | 0x271D | 0x2721 | 0x2728
+        | 0x2733 | 0x2734 | 0x2744 | 0x2747 | 0x274C | 0x274E | 0x2753..=0x2755 | 0x2757 | 0x2763 | 0x2764
+        | 0x2795..=0x2797 | 0x27A1 | 0x27B0 | 0x27BF | 0x2934 | 0x2935 | 0x2B1B | 0x2B1C | 0x2B50 | 0x2B55
+        | 0x3030 | 0x303D | 0x3297 | 0x3299 | 0x1F000..=0x1FAFF)
+}
+
+fn skin(cp: u32) -> bool { (0x1F3FB..=0x1F3FF).contains(&cp) }
+fn regional(cp: u32) -> bool { (0x1F1E6..=0x1F1FF).contains(&cp) }
+
+/// Parses one element at `i` (keycap, flag, or pictograph with VS16 / one skin tone / tags); returns the next index.
+fn emoji_element(c: &[u32], i: usize) -> Option<usize> {
+    let cp = *c.get(i)?;
+    if matches!(cp, 0x30..=0x39 | 0x23 | 0x2A) {
+        return (c.get(i + 1) == Some(&VS16) && c.get(i + 2) == Some(&0x20E3)).then_some(i + 3);
+    }
+    if regional(cp) {
+        return c.get(i + 1).copied().filter(|&n| regional(n)).map(|_| i + 2);
+    }
+    if !emoji_base(cp) { return None; }
+    let mut j = i + 1;
+    let vs = c.get(j) == Some(&VS16);
+    if vs { j += 1; }
+    if needs_vs16(cp) && !vs { return None; }
+    if !vs && c.get(j).is_some_and(|&n| skin(n)) { j += 1; }
+    while c.get(j).is_some_and(|n| (0xE0020..=0xE007F).contains(n)) { j += 1; }
+    Some(j)
+}
+
+/// Exactly one emoji: a keycap, a flag, or pictographs joined by ZWJ (each with optional VS16, one skin tone or
+/// tags). Text, several emoji, arrows and other plain symbols are rejected. At most 32 bytes.
+/// shortcut: a hand-made table, not full Unicode emoji data; refresh it if new emoji blocks appear.
 pub fn valid_emoji(s: &str) -> bool {
     let s = s.trim();
     if s.is_empty() || s.len() > 32 { return false; }
-    let (mut clusters, mut after_zwj, mut regional) = (0, false, 0);
-    for c in s.chars() {
-        let cp = c as u32;
-        if c.is_alphanumeric() || c.is_ascii() || c.is_whitespace() || c.is_control() { return false; }
-        match cp {
-            0x200D => { if clusters == 0 || after_zwj { return false; } after_zwj = true; continue; }
-            0xFE0F | 0x20E3 | 0x1F3FB..=0x1F3FF | 0xE0020..=0xE007F => {
-                if clusters == 0 || after_zwj { return false; }
-                continue;
-            }
-            0x1F1E6..=0x1F1FF => {
-                regional += 1;
-                if regional == 2 && !after_zwj && clusters == 1 { regional = 0; continue; }
-            }
-            _ if emoji_base(c) => regional = 0,
-            _ => return false,
-        }
-        if after_zwj { after_zwj = false; } else { clusters += 1; }
+    let c: Vec<u32> = s.chars().map(|c| c as u32).collect();
+    let Some(mut i) = emoji_element(&c, 0) else { return false };
+    while c.get(i) == Some(&0x200D) {
+        match emoji_element(&c, i + 1) { Some(n) => i = n, None => return false }
     }
-    clusters == 1 && !after_zwj
+    i == c.len()
 }
 
 pub fn builtin_emoji(id: &str) -> Option<&'static str> {
@@ -195,10 +218,12 @@ mod tests {
 
     #[test]
     fn valid_emoji_means_exactly_one_emoji() {
-        for ok in ["📝", "👩\u{200D}💻", "👍🏽", "🇩🇪", "❤\u{FE0F}", "🎓"] {
+        for ok in ["📝", "👩\u{200D}💻", "👍🏽", "🇩🇪", "❤\u{FE0F}", "🎓", "1\u{FE0F}\u{20E3}", "#\u{FE0F}\u{20E3}",
+            "*\u{FE0F}\u{20E3}", "✅", "☕", "❤", "✍\u{FE0F}", "⬆\u{FE0F}", "🗓\u{FE0F}", "🫠",
+            "👨\u{200D}👩\u{200D}👧\u{200D}👦", "🧑🏽\u{200D}🚀", "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}", "©\u{FE0F}"] {
             assert!(valid_emoji(ok), "{ok}");
         }
-        for bad in ["Заметки", "中文", "📝🎯📅", "—", "", "a", "📝x", "\u{200D}", "📝\u{200D}"] {
+        for bad in ["Заметки", "中文", "📝🎯📅", "—", "", "a", "📝x", "\u{200D}", "📝\u{200D}", "→", "★", "©", "🇩", "📝🏽🏽", "1", "#", "1\u{FE0F}", "⬆"] {
             assert!(!valid_emoji(bad), "{bad}");
         }
     }

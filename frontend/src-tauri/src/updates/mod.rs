@@ -13,6 +13,8 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 const POLL: Duration = Duration::from_secs(5);
 const CHECK_TIMEOUT: Duration = Duration::from_secs(30);
+/// A stalled connection fails after this long without bytes; the download itself has no total limit.
+const STALL_TIMEOUT: Duration = Duration::from_secs(60);
 const STARTUP_DELAY: Duration = Duration::from_secs(30);
 
 #[derive(Serialize, Clone)]
@@ -74,6 +76,18 @@ async fn find_update<R: Runtime>(
     let fail = |e: String| format!("Couldn't read the update file: {}", github::scrub(&e, token));
     let mut b = app
         .updater_builder()
+        .configure_client(|c| c.read_timeout(STALL_TIMEOUT))
+        // Windows install ends the process without RunEvent::Exit: stop the sidecar and flush the DB first.
+        .on_before_exit(|| {
+            let h = std::thread::spawn(|| {
+                tauri::async_runtime::block_on(async {
+                    if let Err(e) = crate::summary::summary_engine::force_shutdown_sidecar().await {
+                        log::error!("updates: sidecar shutdown before install failed: {e}");
+                    }
+                })
+            });
+            let _ = h.join();
+        })
         .endpoints(vec![url])
         .map_err(|e| fail(e.to_string()))?
         .header("Authorization", format!("Bearer {token}"))
@@ -125,13 +139,19 @@ pub(crate) async fn announce_once(
 }
 
 static ANNOUNCING: AtomicBool = AtomicBool::new(false);
+/// The newest announcement; read at emit time so a waiting task never shows an older version.
+static LATEST: std::sync::Mutex<Option<UpdateAvailable>> = std::sync::Mutex::new(None);
 
 fn announce<R: Runtime>(app: &AppHandle<R>, version: String, notes: Option<String>) {
+    *LATEST.lock().unwrap_or_else(|e| e.into_inner()) = Some(UpdateAvailable { version, notes });
     let app = app.clone();
     tauri::async_runtime::spawn(async move {
         announce_once(&ANNOUNCING, busy::current, POLL, || {
-            if let Err(e) = app.emit("update-available", UpdateAvailable { version, notes }) {
-                log::warn!("updates: couldn't announce the update: {e}");
+            let latest = LATEST.lock().unwrap_or_else(|e| e.into_inner()).clone();
+            if let Some(u) = latest {
+                if let Err(e) = app.emit("update-available", u) {
+                    log::warn!("updates: couldn't announce the update: {e}");
+                }
             }
         })
         .await;
@@ -256,8 +276,13 @@ pub fn start_check<R: Runtime>(app: AppHandle<R>) {
                 return;
             }
         }
-        if !matches!(token(), Ok(Some(_))) {
-            return;
+        match token() {
+            Ok(Some(_)) => {}
+            Ok(None) => return,
+            Err(e) => {
+                log::warn!("updates: start-up check skipped: {e}");
+                return;
+            }
         }
         let r = run_check(&app).await;
         if r.status == "error" {
@@ -345,5 +370,18 @@ mod tests {
             announce_once(&flag, busy, p, || emits.set(emits.get() + 1)),
         );
         assert_eq!(emits.get(), 1);
+    }
+
+    #[tokio::test]
+    async fn startup_announce_never_emits_while_busy() {
+        let emitted = Cell::new(false);
+        let flag = AtomicBool::new(false);
+        let r = tokio::time::timeout(
+            Duration::from_millis(50),
+            announce_once(&flag, || Some(BusyReason::Recording), Duration::from_millis(1), || emitted.set(true)),
+        )
+        .await;
+        assert!(r.is_err());
+        assert!(!emitted.get());
     }
 }

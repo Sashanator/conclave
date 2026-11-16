@@ -90,6 +90,13 @@ pub(crate) async fn apply_extraction(
         .execute(&mut *tx)
         .await?;
     }
+    if let Some(gist) = &ex.gist {
+        sqlx::query("UPDATE meetings SET gist = ? WHERE id = ?")
+            .bind(gist)
+            .bind(meeting_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     let written = set_extract(
         &mut *tx,
         meeting_id,
@@ -377,6 +384,7 @@ mod tests {
             tasks,
             decisions: vec!["Ship it".to_string()],
             requests: vec![],
+            gist: None,
         }
     }
 
@@ -431,6 +439,20 @@ mod tests {
                 ("E", "open", 0),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn apply_extraction_writes_gist() {
+        let pool = crate::database::repositories::test_pool().await;
+        insert_meeting(&pool, "M").await;
+        sqlx::query("UPDATE meetings SET gist = 'fallback' WHERE id = 'M'").execute(&pool).await.unwrap();
+        let mut ex = extraction(vec![]);
+        assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        let gist = || sqlx::query_scalar::<_, Option<String>>("SELECT gist FROM meetings WHERE id = 'M'").fetch_one(&pool);
+        assert_eq!(gist().await.unwrap().as_deref(), Some("fallback"));
+        ex.gist = Some("New gist".to_string());
+        assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        assert_eq!(gist().await.unwrap().as_deref(), Some("New gist"));
     }
 
     #[tokio::test]

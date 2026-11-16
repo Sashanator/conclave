@@ -86,6 +86,8 @@ pub struct Extraction {
     pub tasks: Vec<ExtractedTask>,
     pub decisions: Vec<String>,
     pub requests: Vec<String>,
+    #[serde(default)]
+    pub gist: Option<String>,
 }
 
 /// One model reply and the provider and model it came from, for the usage log.
@@ -96,7 +98,7 @@ pub(crate) struct Reply {
 }
 
 const SYSTEM: &str = "You extract tasks, decisions and requests from one meeting summary.\n\
-Return only JSON matching {\"tasks\":[{\"text\":\"...\",\"owner\":\"me\" or \"unassigned\",\"due\":\"...\",\"at\":seconds}],\"decisions\":[\"...\"],\"requests\":[\"...\"]}. \
+Return only JSON matching {\"tasks\":[{\"text\":\"...\",\"owner\":\"me\" or \"unassigned\",\"due\":\"...\",\"at\":seconds}],\"decisions\":[\"...\"],\"requests\":[\"...\"],\"gist\":\"one sentence, at most 160 characters, what the meeting was about\"}. \
 Leave out \"due\" and \"at\" when unknown. No other text.\n\
 \"me\", \"I\", \"я\", \"мне\", \"мой\" and the names the user gives all mean the user.\n\
 Include a task only if its owner is the user, or it has no owner. A task with no owner is \"me\" only if the user's own lines show they took it on; otherwise it is \"unassigned\".\n\
@@ -201,6 +203,8 @@ pub fn parse_extraction(raw: &str) -> Result<Extraction, String> {
         tasks,
         decisions: clipped(ex.decisions),
         requests: clipped(ex.requests),
+        // First line only: the gist is one line.
+        gist: ex.gist.as_deref().and_then(|g| cut_gist(g.trim().lines().next().unwrap_or(""))),
     })
 }
 
@@ -590,6 +594,19 @@ mod tests {
         assert_eq!(minutes(4), 80);
         assert_eq!(minutes(5), 120);
         assert_eq!(minutes(u32::MAX), 120);
+    }
+
+    #[test]
+    fn gist_is_first_line_trimmed_and_bounded() {
+        let g = |j: &str| parse_extraction(&format!(r#"{{"tasks":[],"decisions":[],"requests":[],"gist":{j}}}"#));
+        assert_eq!(g(r#""  Agreed to ship.\nextra ""#).unwrap().gist.as_deref(), Some("Agreed to ship."));
+        assert_eq!(g(r#""""#).unwrap().gist, None);
+        assert_eq!(g("null").unwrap().gist, None);
+        assert_eq!(parse_extraction(r#"{"tasks":[],"decisions":[],"requests":[]}"#).unwrap().gist, None);
+        assert!(g("5").is_err());
+        let long = format!("\"{}\"", "я".repeat(300));
+        assert_eq!(g(&long).unwrap().gist.unwrap().chars().count(), GIST_MAX_CHARS);
+        assert_eq!(parse_extraction(VALID).unwrap().gist, None);
     }
 
     const VALID: &str = r#"{"tasks":[{"text":"Send the deck","owner":"me","at":62.5}],"decisions":["Ship"],"requests":[]}"#;

@@ -7,6 +7,8 @@ use std::sync::OnceLock;
 
 use anyhow::anyhow;
 
+pub(crate) mod migrate;
+
 pub const GITHUB_UPDATE_TOKEN: &str = "githubUpdateToken";
 pub const CALENDAR_URL: &str = "calendarUrl";
 pub const CUSTOM_OPENAI_API_KEY: &str = "customOpenAIConfig.apiKey";

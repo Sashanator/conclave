@@ -757,6 +757,8 @@ pub fn run() {
             tauri::async_runtime::spawn(practice::commands::recover_at_startup(_app.handle().clone()));
             // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
             tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
+            // Plain-text secrets move into Credential Manager (verified, then cleared); blocks so no IPC races it.
+            tauri::async_runtime::block_on(secrets::migrate::run_at_startup(_app.handle()));
 
             // Leftover temp audio goes before the worker starts. Jobs that were running or waiting wait again under new tokens.
             if let Ok(data) = _app.path().app_data_dir() {

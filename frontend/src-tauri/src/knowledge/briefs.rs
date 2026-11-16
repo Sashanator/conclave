@@ -68,6 +68,15 @@ pub(crate) fn start_key(start: DateTime<Utc>) -> String {
     start.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+/// A stored meeting date (space or T separator, any offset, or a bare legacy time read as UTC) as an instant.
+pub(crate) fn parse_date(s: &str) -> Option<DateTime<Utc>> {
+    let t = s.replacen(' ', "T", 1);
+    DateTime::parse_from_rfc3339(&t)
+        .map(|d| d.with_timezone(&Utc))
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(&t, "%Y-%m-%dT%H:%M:%S%.f").map(|n| n.and_utc()))
+        .ok()
+}
+
 /// The feed and toast line, with the start in local time.
 fn brief_line(occ: &Occurrence) -> String {
     format!("Brief: {} at {}", occ.title, occ.start.with_timezone(&Local).format("%H:%M"))
@@ -231,7 +240,10 @@ pub(crate) async fn get(pool: &SqlitePool, id: &str) -> Result<Option<BriefConte
     let mut meeting_ids: Vec<String> = matching_meetings(pool, &template_id, &title)
         .await?
         .into_iter()
-        .filter(|p| p.created_at <= stored.content.previous_date)
+        .filter(|p| match (parse_date(&p.created_at), parse_date(&stored.content.previous_date)) {
+            (Some(a), Some(b)) => a <= b,
+            _ => p.created_at <= stored.content.previous_date,
+        })
         .map(|p| p.id)
         .collect();
     // The previous meeting stays even while its summary is regenerated and it does not match right now.
@@ -642,6 +654,16 @@ mod meeting_date_tests {
             .execute(pool).await.unwrap();
     }
     async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[test]
+    fn dates_in_both_formats_compare_as_instants() {
+        let space = parse_date("2026-11-09 10:00:00.000+00:00").unwrap();
+        let t = parse_date("2026-11-09T09:00:00.000+00:00").unwrap();
+        assert!(t < space); // as text, 'T' sorts after ' ' and would say the opposite
+        assert_eq!(parse_date("2026-11-09T12:00:00+02:00"), parse_date("2026-11-09T10:00:00Z"));
+        assert_eq!(parse_date("2026-10-05 12:00:00").unwrap().to_rfc3339(), "2026-10-05T12:00:00+00:00");
+        assert!(parse_date("d").is_none());
+    }
 
     #[tokio::test]
     async fn the_previous_meeting_is_the_one_with_the_latest_meeting_date() {

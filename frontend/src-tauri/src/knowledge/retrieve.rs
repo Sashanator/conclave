@@ -76,7 +76,7 @@ fn valid_day(raw: Option<&str>) -> Option<String> {
 /// Excerpts that pass the plan's filters, ranked by distinct keywords hit, then newer meeting.
 /// With keywords, each keyword's matches are excerpts. With filters only, the summaries of the matching
 /// meetings come first, then (with `person`) that person's lines. A plan with neither returns nothing.
-pub async fn retrieve(pool: &SqlitePool, plan: &SearchPlan) -> Result<Vec<Excerpt>, sqlx::Error> {
+pub async fn retrieve(pool: &SqlitePool, plan: &SearchPlan, scope: Option<&[String]>) -> Result<Vec<Excerpt>, sqlx::Error> {
     let mut kws: Vec<String> = plan.keywords.iter().map(|k| k.trim().to_lowercase()).filter(|k| !k.is_empty()).collect();
     kws.sort();
     kws.dedup();
@@ -84,12 +84,15 @@ pub async fn retrieve(pool: &SqlitePool, plan: &SearchPlan) -> Result<Vec<Excerp
     let from = plan.from.as_deref().and_then(|d| d.parse::<NaiveDate>().ok());
     let to = plan.to.as_deref().and_then(|d| d.parse::<NaiveDate>().ok());
     let person = plan.person.as_deref().map(|p| p.trim().to_lowercase()).filter(|p| !p.is_empty());
-    let filtered = !plan.types.is_empty() || from.is_some() || to.is_some() || person.is_some();
+    let filtered = scope.is_some() || !plan.types.is_empty() || from.is_some() || to.is_some() || person.is_some();
     if keywords.is_empty() && !filtered {
         return Ok(Vec::new());
     }
 
-    let meetings = load_meetings(pool).await?;
+    let mut meetings = load_meetings(pool).await?;
+    if let Some(ids) = scope {
+        meetings.retain(|id, _| ids.contains(id));
+    }
     let speakers = match &person {
         Some(p) => person_speakers(pool, p).await?,
         None => HashMap::new(),
@@ -562,7 +565,7 @@ mod tests {
         meeting(&pool, "Old", "2026-10-01", vec![seg("Обсудили бюджет", 0.0, None)]).await;
         meeting(&pool, "Newer", "2026-10-21", vec![seg("Сроки сдвинули", 0.0, None)]).await;
         meeting(&pool, "New", "2026-10-20", vec![seg("Обсудили бюджет и сроки", 0.0, None)]).await;
-        let hits = retrieve(&pool, &plan(&["бюджет", "сроки"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет", "сроки"]), None).await.unwrap();
         let order: Vec<&str> = hits.iter().map(|e| e.meeting_title.as_str()).collect();
         assert_eq!(order, ["New", "Newer", "Old"]);
         let ids: Vec<&str> = hits.iter().map(|e| e.id.as_str()).collect();
@@ -584,21 +587,21 @@ mod tests {
         name(&pool, &call, 1, "Анна").await;
 
         // Type matches the template id or name, case-insensitively
-        let hits = retrieve(&pool, &SearchPlan { types: vec!["WEEKLY_REVIEW".into()], ..plan(&["бюджет"]) }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { types: vec!["WEEKLY_REVIEW".into()], ..plan(&["бюджет"]) }, None).await.unwrap();
         assert_eq!(titles(&hits), ["Review"]);
-        let hits = retrieve(&pool, &SearchPlan { types: vec!["standard meeting".into()], ..plan(&["бюджет"]) }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { types: vec!["standard meeting".into()], ..plan(&["бюджет"]) }, None).await.unwrap();
         assert_eq!(titles(&hits), ["Sync"]);
 
         // Dates are local days, inclusive
-        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-10".into()), to: Some("2026-10-15".into()), ..plan(&["бюджет"]) }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-10".into()), to: Some("2026-10-15".into()), ..plan(&["бюджет"]) }, None).await.unwrap();
         assert_eq!(titles(&hits), ["Review", "Встреча с Иваном"]);
 
         // Person: speaker name, case-folded, or the meeting title
-        let hits = retrieve(&pool, &SearchPlan { person: Some("АННА".into()), ..plan(&["бюджет"]) }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { person: Some("АННА".into()), ..plan(&["бюджет"]) }, None).await.unwrap();
         assert_eq!(titles(&hits), ["Call", "Sync"]);
-        let hits = retrieve(&pool, &SearchPlan { person: Some("иваном".into()), ..plan(&["бюджет"]) }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { person: Some("иваном".into()), ..plan(&["бюджет"]) }, None).await.unwrap();
         assert_eq!(titles(&hits), ["Встреча с Иваном"]);
-        let hits = retrieve(&pool, &SearchPlan { person: Some("анна".into()), from: Some("2026-10-10".into()), ..plan(&["бюджет"]) }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { person: Some("анна".into()), from: Some("2026-10-10".into()), ..plan(&["бюджет"]) }, None).await.unwrap();
         assert_eq!(titles(&hits), ["Call"]);
     }
 
@@ -614,7 +617,7 @@ mod tests {
             seg("Шестая", 220.0, Some(1)),
         ]).await;
         name(&pool, &id, 1, "Анна").await;
-        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет"]), None).await.unwrap();
         assert_eq!(hits.len(), 1);
         let e = &hits[0];
         assert_eq!(e.source, "transcript");
@@ -625,13 +628,30 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn scope_limits_retrieval() {
+        let pool = test_pool().await;
+        let id_a = meeting(&pool, "A", "2026-10-05", vec![seg("Обсудили бюджет", 0.0, None)]).await;
+        summary(&pool, &id_a, "standard_meeting", "Standard meeting", "Итоги встречи").await;
+        meeting(&pool, "B", "2026-10-06", vec![seg("Снова бюджет", 0.0, None)]).await;
+        assert_eq!(retrieve(&pool, &plan(&["бюджет"]), None).await.unwrap().len(), 2);
+        let scope = vec![id_a.clone()];
+        let hits = retrieve(&pool, &plan(&["бюджет"]), Some(scope.as_slice())).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].meeting_id, id_a);
+        // A scoped plan without keywords or filters lists only the scoped meeting's summary
+        let hits = retrieve(&pool, &SearchPlan::default(), Some(scope.as_slice())).await.unwrap();
+        assert!(!hits.is_empty());
+        assert!(hits.iter().all(|h| h.meeting_id == id_a));
+    }
+
+    #[tokio::test]
     async fn caps_count_and_chars() {
         // Count cap: 35 matches, 30 kept with ids E1..E30
         let pool = test_pool().await;
         for i in 0..35 {
             meeting(&pool, &format!("M{i:02}"), "2026-10-05", vec![seg(&format!("бюджет {i}"), 0.0, None)]).await;
         }
-        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет"]), None).await.unwrap();
         assert_eq!(hits.len(), ASK_MAX_EXCERPTS);
         assert_eq!(hits[0].id, "E1");
         assert_eq!(hits[ASK_MAX_EXCERPTS - 1].id, "E30");
@@ -641,7 +661,7 @@ mod tests {
         for i in 0..25 {
             meeting(&pool, &format!("L{i:02}"), "2026-10-05", vec![seg(&format!("параметр {}", "я".repeat(2000)), 0.0, None)]).await;
         }
-        let hits = retrieve(&pool, &plan(&["параметр"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["параметр"]), None).await.unwrap();
         let total: usize = hits.iter().map(|e| e.text.chars().count()).sum();
         assert!(total <= ASK_MAX_EXCERPT_CHARS);
         assert_eq!(hits.len(), 19);
@@ -652,7 +672,7 @@ mod tests {
             let id = meeting(&pool, &format!("S{i:02}"), "2026-10-05", vec![seg("x", 0.0, None)]).await;
             summary(&pool, &id, "standard_meeting", "Standard meeting", &"я".repeat(3000)).await;
         }
-        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-01".into()), ..Default::default() }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-01".into()), ..Default::default() }, None).await.unwrap();
         let total: usize = hits.iter().map(|e| e.text.chars().count()).sum();
         assert_eq!(hits.len(), ASK_MAX_EXCERPTS);
         assert!(total <= ASK_MAX_EXCERPT_CHARS);
@@ -662,11 +682,11 @@ mod tests {
     async fn empty_plan_empty_result() {
         let pool = test_pool().await;
         meeting(&pool, "M", "2026-10-05", vec![seg("бюджет", 0.0, None)]).await;
-        assert!(retrieve(&pool, &SearchPlan::default()).await.unwrap().is_empty());
-        assert!(retrieve(&pool, &plan(&["   "])).await.unwrap().is_empty());
+        assert!(retrieve(&pool, &SearchPlan::default(), None).await.unwrap().is_empty());
+        assert!(retrieve(&pool, &plan(&["   "]), None).await.unwrap().is_empty());
         // Filters alone return summaries, and this meeting has none
         let filters_only = SearchPlan { person: Some("Анна".into()), types: vec!["Standard meeting".into()], ..Default::default() };
-        assert!(retrieve(&pool, &filters_only).await.unwrap().is_empty());
+        assert!(retrieve(&pool, &filters_only, None).await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -686,19 +706,19 @@ mod tests {
         summary(&pool, &call, "standard_meeting", "Standard meeting", "# Итоги\nАнна ответила").await;
 
         // Type only: that template's summary
-        let hits = retrieve(&pool, &SearchPlan { types: vec!["weekly review".into()], ..Default::default() }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { types: vec!["weekly review".into()], ..Default::default() }, None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!((hits[0].source.as_str(), hits[0].text.as_str()), ("summary", "# Итоги\nСогласовали"));
 
         // Dates only: every summary in range, newest meeting first
-        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-01".into()), to: Some("2026-10-31".into()), ..Default::default() }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-01".into()), to: Some("2026-10-31".into()), ..Default::default() }, None).await.unwrap();
         let order: Vec<(&str, &str)> = hits.iter().map(|e| (e.meeting_title.as_str(), e.source.as_str())).collect();
         assert_eq!(order, [("Call", "summary"), ("Review", "summary"), ("Sync", "summary")]);
         let ids: Vec<&str> = hits.iter().map(|e| e.id.as_str()).collect();
         assert_eq!(ids, ["E1", "E2", "E3"]);
 
         // Person only: the summaries of meetings they are in, and their lines with context
-        let hits = retrieve(&pool, &SearchPlan { person: Some("АННА".into()), ..Default::default() }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { person: Some("АННА".into()), ..Default::default() }, None).await.unwrap();
         let order: Vec<(&str, &str)> = hits.iter().map(|e| (e.meeting_title.as_str(), e.source.as_str())).collect();
         // Summaries first, newest meeting first; then the person's lines
         assert_eq!(order, [("Call", "summary"), ("Sync", "summary"), ("Call", "transcript"), ("Sync", "transcript")]);
@@ -713,7 +733,7 @@ mod tests {
         meeting(&pool, "Квартал", "2026-10-20", vec![seg("квартал и бюджет", 0.0, None)]).await;
         meeting(&pool, "Созвон", "2026-10-01", vec![seg("бюджет", 0.0, None)]).await;
         // "квартал и бюджет" scores 2; the title hit scores 1 and is newer than "Созвон", which also scores 1
-        let hits = retrieve(&pool, &plan(&["бюджет", "квартал"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет", "квартал"]), None).await.unwrap();
         let order: Vec<&str> = hits.iter().map(|e| e.meeting_title.as_str()).collect();
         assert_eq!(order, ["Квартал", "Бюджетный план", "Созвон"]);
         assert_eq!((hits[1].source.as_str(), hits[1].text.as_str()), ("summary", "# Итоги\nСогласовали план"));
@@ -724,7 +744,7 @@ mod tests {
         let pool = test_pool().await;
         let id = meeting(&pool, "Бюджет", "2026-10-05", vec![seg("Пусто", 0.0, None)]).await;
         summary(&pool, &id, "standard_meeting", "Standard meeting", &format!("# Итоги\n{}", "я".repeat(3000))).await;
-        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет"]), None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source, "summary");
         assert_eq!(hits[0].text.chars().count(), ASK_MAX_EXCERPT_CHARS / ASK_MAX_EXCERPTS);
@@ -736,7 +756,7 @@ mod tests {
         let pool = test_pool().await;
         let id = meeting(&pool, "Sync", "2026-10-05", vec![seg("Пусто", 0.0, None)]).await;
         summary(&pool, &id, "standard_meeting", "Standard meeting", &format!("бюджет {}", "я".repeat(3000))).await;
-        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет"]), None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source, "summary");
         assert_eq!(hits[0].text.chars().count(), SUMMARY_SHARE_CHARS);
@@ -750,7 +770,7 @@ mod tests {
         // The keyword sits past the excerpt share, so a window cut from the start would miss it
         let markdown = format!("# Итоги\n{}бюджет{}", "я".repeat(3000), "я".repeat(3000));
         summary(&pool, &id, "standard_meeting", "Standard meeting", &markdown).await;
-        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет"]), None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source, "summary");
         assert_eq!(hits[0].text.chars().count(), SUMMARY_SHARE_CHARS);
@@ -765,7 +785,7 @@ mod tests {
         let json = serde_json::json!([{ "id": "n1", "at": 1.0, "text": text }]).to_string();
         sqlx::query("INSERT INTO meeting_notes (meeting_id, notes_json, created_at, updated_at) VALUES (?, ?, '2026-10-05T00:00:00Z', '2026-10-05T00:00:00Z')")
             .bind(&id).bind(json).execute(&pool).await.unwrap();
-        let hits = retrieve(&pool, &plan(&["бюджет"])).await.unwrap();
+        let hits = retrieve(&pool, &plan(&["бюджет"]), None).await.unwrap();
         assert_eq!(hits.len(), 1);
         assert_eq!(hits[0].source, "notes");
         assert_eq!(hits[0].text.chars().count(), SUMMARY_SHARE_CHARS);
@@ -790,7 +810,7 @@ mod tests {
         let pool = test_pool().await;
         let id = meeting(&pool, "Legacy", "2026-10-05", vec![seg("бюджет", 0.0, None)]).await;
         sqlx::query("UPDATE meetings SET created_at = '2026-10-05 12:00:00' WHERE id = ?").bind(&id).execute(&pool).await.unwrap();
-        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-05".into()), to: Some("2026-10-05".into()), ..plan(&["бюджет"]) }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { from: Some("2026-10-05".into()), to: Some("2026-10-05".into()), ..plan(&["бюджет"]) }, None).await.unwrap();
         assert_eq!(titles(&hits), ["Legacy"]);
         assert_eq!(hits[0].date, "2026-10-05");
     }
@@ -809,7 +829,7 @@ mod tests {
         name(&pool, &new, 1, "Анна").await;
         summary(&pool, &new, "standard_meeting", "Standard meeting", "# Итоги\nКоротко").await;
 
-        let hits = retrieve(&pool, &SearchPlan { person: Some("анна".into()), ..Default::default() }).await.unwrap();
+        let hits = retrieve(&pool, &SearchPlan { person: Some("анна".into()), ..Default::default() }, None).await.unwrap();
         // Every meeting is represented, and the newest contributes a few lines, not all forty
         assert_eq!(titles(&hits), ["Mid", "New", "Old"]);
         let new_text: String = hits.iter().filter(|e| e.meeting_title == "New" && e.source == "transcript").map(|e| e.text.as_str()).collect::<Vec<_>>().join("\n");

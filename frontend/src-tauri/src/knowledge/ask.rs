@@ -214,7 +214,7 @@ where
 }
 
 /// The Ask flow after the input checks: plan, retrieve, answer. `call` makes one model call (system, user).
-pub async fn run<F, Fut>(pool: &SqlitePool, target: &LlmTarget, question: &str, history: &[Turn], call: F) -> Result<AskAnswer, String>
+pub async fn run<F, Fut>(pool: &SqlitePool, target: &LlmTarget, question: &str, history: &[Turn], scope: Option<&[String]>, call: F) -> Result<AskAnswer, String>
 where
     F: Fn(String, String) -> Fut,
     Fut: Future<Output = Result<LlmCompletion, String>>,
@@ -235,7 +235,7 @@ where
     let (system, user) = plan_prompts(question, history, &today, &types, &people);
     let raw = model(pool, target, ASK_PLAN_TIMEOUT_SECS, &call, system, user).await?;
     let plan = plan_or_fallback(&raw, question);
-    let excerpts = retrieve(pool, &plan).await.map_err(|_| "Could not search your meetings".to_string())?;
+    let excerpts = retrieve(pool, &plan, scope).await.map_err(|_| "Could not search your meetings".to_string())?;
     info!("ask: {} excerpts from {} keywords", excerpts.len(), plan.keywords.len());
     if excerpts.is_empty() {
         return Ok(AskAnswer { text: NOT_FOUND.to_string(), citations: Vec::new() });
@@ -251,7 +251,7 @@ where
     Ok(AskAnswer { text, citations })
 }
 
-async fn ask<R: Runtime>(app: &AppHandle<R>, question: &str, history: &[Turn]) -> Result<AskAnswer, String> {
+async fn ask<R: Runtime>(app: &AppHandle<R>, question: &str, history: &[Turn], scope: Option<&[String]>) -> Result<AskAnswer, String> {
     let state = app.try_state::<AppState>().ok_or("no database")?;
     let pool = state.db_manager.pool();
     let target = settings::target(pool).await.map_err(|_| SET_MODEL.to_string())?;
@@ -260,7 +260,7 @@ async fn ask<R: Runtime>(app: &AppHandle<R>, question: &str, history: &[Turn]) -
         return Err("Built-in AI is not supported for Ask".to_string());
     }
     let target_ref = &target;
-    run(pool, &target, question, history, |system, user| async move {
+    run(pool, &target, question, history, scope, |system, user| async move {
         complete(target_ref, &system, &user, None, None).await
     })
     .await
@@ -272,13 +272,14 @@ pub async fn ask_meetings<R: Runtime>(
     request_id: u64,
     question: String,
     history: Vec<Turn>,
+    meeting_ids: Option<Vec<String>>,
 ) -> Result<AskAnswer, String> {
     let (question, history) = prepare(&question, &history)?;
     // The work waits for the slot, so a refused Ask never reaches the model.
     let (go, gate) = tokio::sync::oneshot::channel::<()>();
     let work = tokio::spawn(async move {
         gate.await.map_err(|_| "Cancelled".to_string())?;
-        ask(&app, &question, &history).await
+        ask(&app, &question, &history, meeting_ids.as_deref()).await
     });
     let _slot = SLOT.begin(request_id, work.abort_handle())?;
     let _ = go.send(());
@@ -428,7 +429,7 @@ mod tests {
 
         let pool = test_pool().await;
         let calls = AtomicUsize::new(0);
-        let answer = run(&pool, &target(), "budget?", &[], |_, _| {
+        let answer = run(&pool, &target(), "budget?", &[], None, |_, _| {
             calls.fetch_add(1, Ordering::SeqCst);
             async { Ok(reply("not json at all")) }
         })
@@ -442,7 +443,7 @@ mod tests {
     async fn empty_retrieval_returns_not_found_without_second_call() {
         let pool = test_pool().await;
         let calls = AtomicUsize::new(0);
-        let answer = run(&pool, &target(), "budget?", &[], |_, _| {
+        let answer = run(&pool, &target(), "budget?", &[], None, |_, _| {
             calls.fetch_add(1, Ordering::SeqCst);
             async { Ok(reply(r#"{"keywords":["budget"]}"#)) }
         })
@@ -456,6 +457,23 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(rows, 1, "the plan call is recorded");
+    }
+
+    #[tokio::test]
+    async fn empty_scope_is_not_found_without_answer_call() {
+        let pool = test_pool().await;
+        let lines = vec![seg("We agreed the budget is 5k", 12.5)];
+        TranscriptsRepository::save_transcript(&pool, "Quarterly plan", &lines, None, &[], false, &crate::database::repositories::meeting::TitleOrigin::default()).await.unwrap();
+        let calls = AtomicUsize::new(0);
+        let answer = run(&pool, &target(), "budget?", &[], Some(&[]), |_, _| {
+            calls.fetch_add(1, Ordering::SeqCst);
+            async { Ok(reply(r#"{"keywords":["budget"]}"#)) }
+        })
+        .await
+        .unwrap();
+        assert_eq!(answer.text, NOT_FOUND);
+        assert!(answer.citations.is_empty());
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "only the plan call, no answer call");
     }
 
     #[tokio::test]
@@ -485,7 +503,7 @@ mod tests {
         let lines = vec![seg("We agreed the budget is 5k", 12.5)];
         TranscriptsRepository::save_transcript(&pool, "Quarterly plan", &lines, None, &[], false, &crate::database::repositories::meeting::TitleOrigin::default()).await.unwrap();
         let seen = Mutex::new(Vec::new());
-        let answer = run(&pool, &target(), "What is the budget?", &[], |_system, user| {
+        let answer = run(&pool, &target(), "What is the budget?", &[], None, |_system, user| {
             seen.lock().unwrap().push(user);
             let content = if seen.lock().unwrap().len() == 1 {
                 r#"{"keywords":["budget"]}"#

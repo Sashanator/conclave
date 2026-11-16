@@ -39,7 +39,7 @@ It is an **independent fork of Meetily v0.4.1** (github.com/Zackriya-Solutions/m
   - `cargo check -p meeting-detector --target x86_64-pc-windows-msvc --tests --bins`
   - `cargo check -p dictate-input --target x86_64-pc-windows-msvc --tests`
   - `bash scripts/check-no-phone-home.sh`, and `actionlint` for workflows
-  - `node --test 'scripts/*.test.mjs'` (release and guard script tests)
+  - `node --test scripts/*.test.mjs` (release and guard script tests)
 - **Verified only on Windows:** the Windows-only Rust code, through GitHub Actions on `windows-latest`. CI minutes are scarce (about 3,000 per month, Windows counts double): verify locally, push only at checkpoints, and run the full Windows app tests only by manual dispatch (`gh workflow run ci.yml -f full=true`).
 - **Releases:** tag `vX.Y.Z` → `release.yml` builds an unsigned NSIS `Conclave_X.Y.Z_x64-setup.exe` (CUDA build: `--features cuda`, sm_89) and publishes it on the private repo. `cudart64_12.dll` (~0.5 MB), `onnxruntime.dll`, `onnxruntime_providers_shared.dll` and `DirectML.dll` (ONNX Runtime 1.22.0, DirectML build, from api.nuget.org and SHA-pinned in `frontend/src-tauri/build/onnxruntime.rs`) are bundled next to the exe. cuBLAS and the driver are delay-loaded from the user's own CUDA 12 toolkit (`CUDA_SETUP.md`). The build runs on `windows-2022` (nvcc 12.8 rejects the VS 2026 on `windows-latest`). Releases are drafts until the delay-load check and the no-CUDA smoke test pass. Every tag needs a `## vX.Y.Z — date` section in `CHANGELOG.md` (release and update notes). The build signs the installer with the `TAURI_SIGNING_PRIVATE_KEY`/`_PASSWORD` secrets and uploads `latest.json` (API asset URL) while the release is a draft.
 

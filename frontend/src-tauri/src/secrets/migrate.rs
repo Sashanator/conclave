@@ -44,7 +44,14 @@ fn copy_verified(store: &dyn SecretStore, name: &str, plain: &str) -> Result<()>
     store.set(name, plain)?;
     match store.get(name)? {
         Some(back) if back == plain => Ok(()),
-        _ => Err(anyhow!("secret {name}: read-back did not match")),
+        _ => {
+            // Drop the bad copy, or the next start would treat it as the winner and clear the real plain value.
+            let msg = match store.delete(name) {
+                Ok(()) => String::new(),
+                Err(e) => format!("; removing it also failed: {e}"),
+            };
+            Err(anyhow!("secret {name}: read-back did not match{msg}"))
+        }
     }
 }
 
@@ -172,6 +179,8 @@ pub(crate) async fn compact_if_cleared(pool: &SqlitePool, cleared: usize) -> Res
     }
     sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(pool).await?;
     sqlx::query("VACUUM").execute(pool).await?;
+    // In WAL mode VACUUM lands in the -wal file; fold it into the main file.
+    sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)").execute(pool).await?;
     Ok(true)
 }
 
@@ -194,6 +203,8 @@ pub async fn run_at_startup(app: &tauri::AppHandle) {
         warn!("secrets: compaction failed, cleared values may remain in free pages: {e}");
     }
     if !report.not_moved.is_empty() {
+        // The notice can be suppressed by the user's notification settings, so name the secrets in the log too.
+        warn!("secrets: not moved to Credential Manager: {}", report.not_moved.join(", "));
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
             for _ in 0..60 {
@@ -230,7 +241,8 @@ mod tests {
             self.0.lock().unwrap().insert(n.to_string());
             Ok(())
         }
-        fn delete(&self, _: &str) -> Result<()> {
+        fn delete(&self, n: &str) -> Result<()> {
+            self.0.lock().unwrap().remove(n);
             Ok(())
         }
     }
@@ -304,10 +316,17 @@ mod tests {
         let m = db(dir.path()).await;
         seed(m.pool()).await;
         let cp = cal(dir.path(), None);
-        let r = move_plain_secrets(m.pool(), &cp, &LyingStore(Default::default())).await;
+        let store = LyingStore(Default::default());
+        let r = move_plain_secrets(m.pool(), &cp, &store).await;
         assert_eq!(r.cleared, 0);
         assert!(r.not_moved.contains(&"openaiApiKey".to_string()));
         assert_eq!(val(m.pool(), "SELECT openaiApiKey FROM settings").await.as_deref(), Some("o"));
+        assert_eq!(store.get("openaiApiKey").unwrap(), None);
+        // a second start must not mistake the bad copy for the winner
+        let r2 = move_plain_secrets(m.pool(), &cp, &store).await;
+        assert_eq!(r2.cleared, 0);
+        assert_eq!(val(m.pool(), "SELECT openaiApiKey FROM settings").await.as_deref(), Some("o"));
+        assert_eq!(store.get("openaiApiKey").unwrap(), None);
     }
 
     #[tokio::test]

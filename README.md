@@ -60,7 +60,7 @@ Each backup folder has a `backup.json` file that describes it. Conclave keeps th
 
 Your keys stay in Windows Credential Manager, so a restore with the current version needs nothing else.
 
-**Downgrade:** If you reinstall a version older than v1.2.0, paste your keys into Settings again.
+**Downgrade:** If you reinstall a version older than v1.2.0, paste your keys into Settings again. After you upgrade again, re-enter any API key or calendar link you changed while on the older version, because Conclave keeps the copy it already stored in Windows Credential Manager. If you go back to an older version and then reinstall the same version you had before, Conclave does not make a new automatic backup for that step; click **Back up now** in Settings first.
 
 ## Uninstall
 

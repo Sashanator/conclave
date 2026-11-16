@@ -1,20 +1,20 @@
 export interface TemplateSectionJson { title: string; instruction: string; format?: string; item_format?: string; example_item_format?: string }
 export interface TemplateJson {
-  name: string; description?: string; use_when?: string; title_keywords?: string[]; language?: string;
+  name: string; emoji?: string; description?: string; use_when?: string; title_keywords?: string[]; language?: string;
   context?: string; prep?: string; sections: TemplateSectionJson[]; style?: string;
 }
 export interface TemplateDraft {
-  name: string; description?: string; use_when: string; title_keywords: string; language: string; context: string; prep: string;
+  name: string; emoji: string | null; description?: string; use_when: string; title_keywords: string; language: string; context: string; prep: string;
   sections: Array<{ title: string; instruction: string; item_format?: string; format?: string; example_item_format?: string }>; style: string;
 }
 
 export const emptyDraft = (): TemplateDraft => ({
-  name: '', use_when: '', title_keywords: '', language: 'auto', context: '', prep: '', sections: [{ title: '', instruction: '' }], style: '',
+  name: '', emoji: null, use_when: '', title_keywords: '', language: 'auto', context: '', prep: '', sections: [{ title: '', instruction: '' }], style: '',
 });
 
 export function draftFromTemplate(t: TemplateJson): TemplateDraft {
   return {
-    name: t.name, ...(t.description !== undefined ? { description: t.description } : {}),
+    name: t.name, emoji: t.emoji ?? null, ...(t.description !== undefined ? { description: t.description } : {}),
     use_when: t.use_when ?? '', title_keywords: (t.title_keywords ?? []).join(', '),
     language: t.language || 'auto', context: t.context ?? '', prep: t.prep ?? '', style: t.style ?? '',
     sections: t.sections.map(s => ({
@@ -34,6 +34,8 @@ export function templateFromDraft(d: TemplateDraft): TemplateJson {
     ...(s.example_item_format !== undefined ? { example_item_format: s.example_item_format } : {}),
     ...(s.item_format?.trim() && s.item_format.trim() !== s.example_item_format?.trim() ? { item_format: s.item_format.trim() } : {}),
   })) };
+  // null = never set (omit); '' = cleared on purpose, so a built-in default does not come back.
+  if (d.emoji !== null) t.emoji = d.emoji.trim();
   if (d.description !== undefined) t.description = d.description;
   const keywords = d.title_keywords.split(',').map(k => k.trim()).filter(Boolean);
   if (d.use_when.trim()) t.use_when = d.use_when.trim();

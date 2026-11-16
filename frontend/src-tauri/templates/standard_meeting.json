@@ -1,5 +1,6 @@
 {
   "name": "Standard Meeting Notes",
+  "emoji": "📝",
   "use_when": "General meeting when no other template fits",
   "sections": [
     {

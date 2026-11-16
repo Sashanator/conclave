@@ -18,6 +18,9 @@ pub struct TemplateSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Template {
     pub name: String,
+    /// One emoji shown before meetings of this kind; `Some("")` means cleared on purpose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
     /// Kept so Meetily-era files parse; not shown in the editor.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
@@ -39,6 +42,27 @@ pub struct Template {
     pub style: Option<String>,
 }
 
+/// One emoji (or a short sequence): trimmed, non-empty, at most 32 bytes, no ASCII, whitespace or control chars.
+pub fn valid_emoji(s: &str) -> bool {
+    let s = s.trim();
+    !s.is_empty() && s.len() <= 32 && !s.chars().any(|c| c.is_ascii() || c.is_whitespace() || c.is_control())
+}
+
+pub fn builtin_emoji(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "standard_meeting" => "📝",
+        "german_lessons" => "🎓",
+        "interview" => "🤝",
+        "one_to_one" => "👥",
+        "one_two_one_rasulov" => "🧭",
+        "rasulov_lpr" => "🎯",
+        "portfolio_meetings" => "📊",
+        "scrum_of_scrums" => "🔄",
+        "delivery_management" => "🚚",
+        _ => return None,
+    })
+}
+
 fn non_blank(s: &Option<String>) -> Option<&str> {
     s.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
@@ -47,6 +71,11 @@ impl Template {
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("Template name cannot be empty".into());
+        }
+        if let Some(e) = self.emoji.as_deref() {
+            if !e.is_empty() && !valid_emoji(e) {
+                return Err("Emoji must be a single emoji".into());
+            }
         }
         if self.sections.is_empty() {
             return Err("Template must have at least one section".into());
@@ -125,9 +154,30 @@ mod tests {
         TemplateSection { title: title.into(), instruction: instruction.into(), format: None, item_format: None, example_item_format: None }
     }
 
+    #[test]
+    fn emoji_validation() {
+        let with = |e: Option<&str>| Template { emoji: e.map(String::from), ..template() };
+        assert!(with(None).validate().is_ok());
+        assert!(with(Some("")).validate().is_ok());
+        assert!(with(Some("📝")).validate().is_ok());
+        assert!(with(Some("📝 Notes")).validate().is_err());
+        assert!(with(Some("ab")).validate().is_err());
+    }
+
+    #[test]
+    fn every_bundled_template_has_its_builtin_emoji() {
+        use crate::summary::templates::defaults::{SEED_TEMPLATES, SEED_TEMPLATES_V2};
+        for (id, json) in SEED_TEMPLATES.iter().chain(SEED_TEMPLATES_V2.iter()) {
+            let t: Template = serde_json::from_str(json).unwrap();
+            assert!(valid_emoji(t.emoji.as_deref().unwrap_or("")), "{id}");
+            assert_eq!(t.emoji.as_deref(), builtin_emoji(id), "{id}");
+        }
+    }
+
     fn template() -> Template {
         Template {
             name: "1-2-1".into(),
+            emoji: None,
             description: String::new(),
             use_when: Some("1-on-1 with my HoD".into()),
             title_keywords: vec!["1-2-1".into()],

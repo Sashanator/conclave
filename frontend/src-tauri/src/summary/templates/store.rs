@@ -1,6 +1,6 @@
 use super::defaults;
 use super::history::{copy_to_history, move_to_history, prune_history, SaveOrigin, HISTORY_DIR};
-use super::types::Template;
+use super::types::{builtin_emoji, Template};
 use std::path::{Path, PathBuf};
 use tracing::{info, warn};
 
@@ -43,6 +43,14 @@ pub(super) fn parse(json: &str) -> Result<Template, String> {
     Ok(t)
 }
 
+/// Older seeded files have no emoji; a built-in id gets its default. `Some("")` stays cleared.
+fn with_default_emoji(id: &str, mut t: Template) -> Template {
+    if t.emoji.is_none() {
+        t.emoji = builtin_emoji(id).map(str::to_string);
+    }
+    t
+}
+
 pub fn get_template_in(dir: &Path, id: &str) -> Result<Template, String> {
     let path = checked_path(dir, id)?;
     let read = std::fs::read_to_string(&path).map_err(|e| format!("Template '{id}' not found: {e}")).and_then(|j| parse(&j));
@@ -53,6 +61,7 @@ pub fn get_template_in(dir: &Path, id: &str) -> Result<Template, String> {
         }
         other => other,
     }
+    .map(|t| with_default_emoji(id, t))
 }
 
 pub fn list_templates_in(dir: &Path) -> TemplateListing {
@@ -67,7 +76,7 @@ pub fn list_templates_in(dir: &Path) -> TemplateListing {
                 continue;
             }
             match std::fs::read_to_string(entry.path()).map_err(|e| e.to_string()).and_then(|j| parse(&j)) {
-                Ok(template) => templates.push(TemplateEntry { id: id.to_string(), template }),
+                Ok(template) => templates.push(TemplateEntry { id: id.to_string(), template: with_default_emoji(id, template) }),
                 Err(e) => {
                     warn!("Skipping template file {file}: {e}");
                     errors.push(format!("{file}: {e}"));
@@ -281,6 +290,20 @@ mod tests {
         delete_template_in(dir.path(), "interview").unwrap();
         assert!(!seed_templates_in(dir.path()).unwrap(), "must not seed v2 twice");
         assert!(get_template_in(dir.path(), "interview").is_err(), "a deleted seed stays deleted");
+    }
+
+    #[test]
+    fn listing_fills_builtin_emoji_and_keeps_cleared() {
+        let dir = tempdir().unwrap();
+        let write = |id: &str, emoji: &str| std::fs::write(dir.path().join(format!("{id}.json")),
+            format!(r#"{{"name":"{id}",{emoji}"sections":[{{"title":"A","instruction":"B"}}]}}"#)).unwrap();
+        write("interview", "");
+        write("mine", r#""emoji":"","#);
+        let list = list_templates_in(dir.path()).templates;
+        let emoji = |id: &str| list.iter().find(|e| e.id == id).unwrap().template.emoji.clone();
+        assert_eq!(emoji("interview").as_deref(), Some("🤝"));
+        assert_eq!(emoji("mine").as_deref(), Some(""));
+        assert_eq!(get_template_in(dir.path(), "interview").unwrap().emoji.as_deref(), Some("🤝"));
     }
 
     #[test]

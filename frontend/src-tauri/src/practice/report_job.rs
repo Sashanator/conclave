@@ -88,6 +88,7 @@ pub async fn run<R: Runtime>(app: AppHandle<R>, session_id: String, hold: ModelH
             return;
         }
     }
+    let _busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::PracticeReport);
     publish(&app, &session_id, "waiting");
     wait_while_recording().await;
     store(&app, &pool, &session_id, "running", None, None).await;

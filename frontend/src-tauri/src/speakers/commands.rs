@@ -96,6 +96,7 @@ async fn download<R: Runtime>(app: AppHandle<R>) {
     if DOWNLOADING.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
         return;
     }
+    let _busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::ModelDownload);
     let _ = app.emit("speaker-settings-changed", json!({}));
     // Shared: deletion waits for the download, and the download waits for no one.
     let result = fetch_models(&app).await;

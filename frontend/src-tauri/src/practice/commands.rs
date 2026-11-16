@@ -144,6 +144,10 @@ fn claim(token: CancellationToken) -> Result<StartGuard, String> {
     Ok(StartGuard)
 }
 
+pub(crate) fn session_active() -> bool {
+    !matches!(*slot(), Slot::Idle)
+}
+
 fn running_id() -> Option<String> {
     match &*slot() {
         Slot::Running { id, .. } => Some(id.clone()),
@@ -345,6 +349,7 @@ pub async fn practice_new_questions(state: State<'_, AppState>, setup_id: String
 
 #[tauri::command]
 pub async fn practice_download_voices<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
+    let _busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::ModelDownload);
     let mut last = None;
     models::ensure_voices(|done, total| {
         let percent = if total == 0 { 100 } else { done * 100 / total };

@@ -526,6 +526,7 @@ pub async fn api_process_transcript<R: Runtime>(
         SummaryService::register_cancellation_token(&m_id, started_at);
     let meeting_id_clone = m_id.clone();
     tauri::async_runtime::spawn(async move {
+        let _busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::Summary);
         SummaryService::process_transcript_background(
             app,
             pool,

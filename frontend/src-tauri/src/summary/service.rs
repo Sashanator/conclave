@@ -365,7 +365,10 @@ impl SummaryService {
         if user_title_cutoff.is_none() {
             warn!("Could not read the title migration time for meeting {}", meeting_id);
         }
-        let meeting_date = MeetingsRepository::meeting_date(&pool, &meeting_id).await.ok().flatten();
+        let meeting_date = MeetingsRepository::meeting_date(&pool, &meeting_id).await.unwrap_or_else(|e| {
+            warn!("Could not read the date of meeting {}: {}", meeting_id, e);
+            None
+        });
         let meeting_info = meeting.as_ref().map(|m| {
             meeting_info_for_prompt(&m.title, title_source.as_deref(), m.created_at.0, meeting_date.unwrap_or(m.created_at.0), user_title_cutoff)
         });

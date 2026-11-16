@@ -159,4 +159,17 @@ mod redesign_backfill_tests {
         let bad: Option<String> = sqlx::query_scalar("SELECT meeting_id FROM meeting_preps WHERE event_uid='ux'").fetch_one(&pool).await.unwrap();
         assert!(bad.is_none());
     }
+
+    #[tokio::test]
+    async fn backfill_continues_past_a_failed_gist() {
+        let pool = test_pool().await;
+        for id in ["a", "b"] {
+            exec(&pool, &format!("INSERT INTO meetings (id,title,created_at,updated_at) VALUES ('{id}','T','c','u')")).await;
+            exec(&pool, &format!("INSERT INTO summary_processes (meeting_id,status,created_at,updated_at,result) VALUES ('{id}','completed','t','t','{{\"markdown\":\"We agreed.\"}}')")).await;
+        }
+        exec(&pool, "CREATE TRIGGER boom BEFORE UPDATE OF gist ON meetings WHEN NEW.id='a' BEGIN SELECT RAISE(ABORT,'boom'); END").await;
+        assert!(run(&pool).await.unwrap_err().to_string().contains("1 item"));
+        let g: Vec<(String, Option<String>)> = sqlx::query_as("SELECT id, gist FROM meetings ORDER BY id").fetch_all(&pool).await.unwrap();
+        assert_eq!(g, vec![("a".into(), None), ("b".into(), Some("We agreed.".into()))]);
+    }
 }

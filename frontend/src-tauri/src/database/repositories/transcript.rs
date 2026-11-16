@@ -406,8 +406,8 @@ pub async fn search_all(pool: &SqlitePool, query: &str) -> Result<Vec<SearchHit>
 
     // Newest meetings first; ties broken by id so the order is stable
     let mut ordered: Vec<(String, String)> = created.into_iter().collect();
-    // shortcut: the date text is compared with the space separator turned into T (both stored formats are UTC), which is exact to the second.
-    let key = |s: &str| s.replacen(' ', "T", 1);
+    // Parsed, so mixed separators and offsets order by instant; an unparseable date sorts oldest.
+    let key = |s: &str| crate::knowledge::briefs::parse_date(s);
     ordered.sort_by(|a, b| key(&b.1).cmp(&key(&a.1)).then_with(|| a.0.cmp(&b.0)));
     ordered.truncate(SEARCH_MEETINGS);
 

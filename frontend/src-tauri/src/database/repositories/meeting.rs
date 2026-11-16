@@ -44,7 +44,27 @@ pub fn meeting_date_sql(alias: &str) -> String {
     format!("COALESCE({p}started_at, {p}calendar_start, {p}created_at)")
 }
 
+/// "Untitled · Mon 14:02": the title of a meeting created by hand without one.
+pub fn default_meeting_title(now: chrono::NaiveDateTime) -> String {
+    format!("Untitled · {}", now.format("%a %H:%M"))
+}
+
 impl MeetingsRepository {
+    /// Inserts an empty meeting (no recording yet) and returns its id. A blank title gets the default one.
+    pub async fn create_meeting(pool: &SqlitePool, title: Option<&str>, now_local: chrono::NaiveDateTime) -> Result<String, SqlxError> {
+        let given = title.map(str::trim).filter(|t| !t.is_empty());
+        let (title, source) = match given {
+            Some(t) => (t.chars().take(200).collect::<String>(), "user"),
+            None => (default_meeting_title(now_local), "default"),
+        };
+        let id = format!("meeting-{}", uuid::Uuid::new_v4());
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO meetings (id, title, title_source, reviewed, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)")
+            .bind(&id).bind(title).bind(source).bind(&now).bind(&now)
+            .execute(pool).await?;
+        Ok(id)
+    }
+
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
         let sql = format!("SELECT * FROM meetings ORDER BY julianday({}) DESC, rowid DESC", meeting_date_sql(""));
         let meetings = sqlx::query_as::<_, MeetingModel>(&sql).fetch_all(pool).await?;
@@ -789,21 +809,21 @@ mod redesign_migration_tests {
         exec(&pool, "INSERT INTO meetings (id,title,created_at,updated_at,calendar_uid,calendar_start) VALUES ('cal','Cal','2026-11-02T10:00:00+00:00','2026-11-02T10:00:00+00:00','u1','2026-11-20T09:00:00+00:00')").await;
         exec(&pool, "INSERT INTO transcripts (id,meeting_id,transcript,timestamp,audio_end_time) VALUES ('t1','old','a','x',1200.0),('t2','old','b','x',2700.0),('t3','legacy','c','x',NULL)").await;
         exec(&pool, "INSERT INTO summary_processes (meeting_id,status,created_at,updated_at,result) VALUES ('old','completed','t','t','{\"markdown\":\"## Summary\\nWe agreed. More.\",\"template_id\":\"interview\"}'),('legacy','completed','t','t','not json')").await;
+        exec(&pool, "INSERT INTO meeting_preps (event_uid,event_start,event_title,created_at,updated_at) VALUES ('u4','2026-11-23T09:00:00+00:00','T','c','u')").await;
         for (uid, start) in [("u1", "2026-11-20T09:00:00+00:00"), ("u2", "2026-11-21T09:00:00+00:00"), ("u3", "2026-11-22T09:00:00+00:00")] {
             sqlx::query("INSERT INTO meeting_preps (event_uid,event_start,event_title,template_id,material,chat_json,items_json,approved_at,created_at,updated_at) VALUES (?,?,'T','one_on_one','mat','[{\"a\":1}]','[{\"b\":2}]','2026-11-15T00:00:00Z','c','u')")
                 .bind(uid).bind(start).execute(&pool).await.unwrap();
         }
         exec(&pool, "DELETE FROM meeting_preps WHERE event_uid='u3'").await;
-        exec(&pool, "INSERT INTO meeting_preps (event_uid,event_start,event_title,created_at,updated_at) VALUES ('u4','2026-11-23T09:00:00+00:00','T','c','u')").await;
         exec(&pool, "INSERT INTO meetings (id,title,created_at,updated_at) VALUES ('frac','Frac','2026-11-01T10:00:00.123456789+00:00','2026-11-01T10:00:00.123456789+00:00')").await;
         exec(&pool, "INSERT INTO transcripts (id,meeting_id,transcript,timestamp,audio_end_time) VALUES ('t4','frac','a','x',300.0),('t5','frac','b','x',600.0)").await;
         type Prep = (i64, Option<String>, Option<String>, Option<String>, Option<String>, String, String, String, Option<String>, String, String);
         let prep_sql = "SELECT id,event_uid,event_start,event_title,template_id,material,chat_json,items_json,approved_at,created_at,updated_at FROM meeting_preps ORDER BY id";
         let before: Vec<Prep> = sqlx::query_as(prep_sql).fetch_all(&pool).await.unwrap();
         assert_eq!(before.len(), 3);
-        assert!(before[2].4.is_none() && before[2].8.is_none());
+        assert!(before[0].4.is_none() && before[0].8.is_none()); // u4: NULL template_id and approved_at
         let (seq_before,): (i64,) = sqlx::query_as("SELECT seq FROM sqlite_sequence WHERE name='meeting_preps'").fetch_one(&pool).await.unwrap();
-        assert!(seq_before >= before[2].0);
+        assert!(seq_before > before[2].0); // u3 was the newest row when deleted
 
         Migrator::new(Path::new("./migrations")).await.unwrap().run(&pool).await.unwrap();
 
@@ -888,5 +908,38 @@ mod meeting_date_tests {
         let d = MeetingsRepository::meeting_date(&pool, "cal").await.unwrap().unwrap();
         assert_eq!(d.to_rfc3339(), "2026-11-07T10:00:00+00:00");
         assert!(MeetingsRepository::meeting_date(&pool, "nope").await.unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod create_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+    use chrono::NaiveDate;
+
+    fn at() -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(14, 2, 0).unwrap()
+    }
+
+    #[test]
+    fn default_title_has_weekday_and_time() {
+        assert_eq!(default_meeting_title(at()), "Untitled · Mon 14:02");
+    }
+
+    #[tokio::test]
+    async fn create_meeting_titles() {
+        let pool = test_pool().await;
+        let long = "x".repeat(300);
+        for (input, title, src) in [
+            (None, "Untitled · Mon 14:02".to_string(), "default"),
+            (Some("  "), "Untitled · Mon 14:02".to_string(), "default"),
+            (Some(" Board "), "Board".to_string(), "user"),
+            (Some(long.as_str()), "x".repeat(200), "user"),
+        ] {
+            let id = MeetingsRepository::create_meeting(&pool, input, at()).await.unwrap();
+            let row: (String, String, i64, Option<String>) =
+                sqlx::query_as("SELECT title, title_source, reviewed, started_at FROM meetings WHERE id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+            assert_eq!((row.0, row.1.as_str(), row.2, row.3), (title, src, 0, None));
+        }
     }
 }

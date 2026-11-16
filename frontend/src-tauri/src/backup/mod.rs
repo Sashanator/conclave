@@ -7,6 +7,9 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod startup;
+pub use startup::*;
+
 pub const LAST_RUN_FILE: &str = "last-run-version";
 pub const BACKUPS_DIR: &str = "backups";
 pub const MANIFEST_FILE: &str = "backup.json";

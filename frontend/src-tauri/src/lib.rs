@@ -649,6 +649,9 @@ pub fn run() {
 
             log::info!("Application setup complete");
 
+            // Before anything reads or migrates user data: a pre-upgrade backup, or the user's Continue/Quit.
+            backup::run_at_startup(_app.handle());
+
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);

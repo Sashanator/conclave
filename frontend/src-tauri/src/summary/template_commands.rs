@@ -57,13 +57,18 @@ fn checked_origin(origin: Option<SaveOrigin>) -> Result<SaveOrigin, String> {
 }
 
 #[tauri::command]
-pub async fn api_save_template(
+pub async fn api_save_template<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     template_id: Option<String>,
     template: Template,
     origin: Option<SaveOrigin>,
 ) -> Result<String, String> {
     let origin = checked_origin(origin)?;
-    templates::save_template(template_id.as_deref(), &template, &origin)
+    let id = templates::save_template(template_id.as_deref(), &template, &origin)?;
+    if template.emoji.is_none() && templates::builtin_emoji(&id).is_none() {
+        tauri::async_runtime::spawn(crate::summary::template_emoji::suggest(app, id.clone()));
+    }
+    Ok(id)
 }
 
 #[tauri::command]

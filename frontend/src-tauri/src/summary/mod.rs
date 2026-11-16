@@ -42,6 +42,7 @@ pub mod service;
 pub mod summary_engine;
 pub mod template_assist;
 pub mod template_assist_settings;
+pub(crate) mod template_emoji;
 pub mod template_commands;
 pub mod templates;
 pub mod user_notes;

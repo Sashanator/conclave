@@ -109,6 +109,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   api_set_meeting_reviewed: () => null,
   api_set_meeting_template: () => null,
   api_delete_meeting: () => ({ folder_warning: null }),
+  api_delete_recording: () => ({ folder_warning: null }),
   api_search_transcripts: ({ query }) => (/plan/i.test(query)
     ? [{ meetingId: 'preview-4', title: 'Release planning', source: 'transcript', snippet: 'Let us start with the release plan for next week.', transcriptId: 't-0', audioStart: 0, totalInMeeting: 1 }]
     : []),

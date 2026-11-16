@@ -32,6 +32,7 @@ fn store_error_kind(e: &tauri_plugin_store::Error) -> String {
     match e {
         Error::Io(e) => format!("io {:?}", e.kind()),
         Error::Json(e) => format!("json {:?}", e.classify()),
+        Error::Deserialize(_) => "invalid JSON".to_string(),
         _ => "other".to_string(),
     }
 }
@@ -106,6 +107,8 @@ mod tests {
         assert_eq!(store_problem(false, Err(io())), None);
         assert_eq!(store_problem(true, Ok(())), None);
         assert_eq!(store_problem(true, Err(io())), Some("io InvalidData".to_string()));
+        let de = StoreError::Deserialize("x".into());
+        assert_eq!(store_problem(true, Err(de)), Some("invalid JSON".to_string()));
         let json = serde_json::from_str::<u8>("\"x\"").unwrap_err();
         assert_eq!(store_problem(true, Err(StoreError::Json(json))), Some("json Data".to_string()));
     }

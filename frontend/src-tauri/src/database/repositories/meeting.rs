@@ -748,3 +748,86 @@ mod migration_tests {
         assert_eq!((text.as_str(), start, idx, sentences), ("hi", Some(1.5), None, None));
     }
 }
+
+#[cfg(test)]
+mod redesign_migration_tests {
+    use super::*;
+    use sqlx::migrate::Migrator;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::path::Path;
+
+    const REDESIGN_VERSION: i64 = 20261116000001;
+
+    async fn exec(pool: &SqlitePool, sql: &str) {
+        sqlx::query(sql).execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn redesign_migration_on_previous_schema() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let mut m = Migrator::new(Path::new("./migrations")).await.unwrap();
+        let all = m.migrations.clone();
+        m.migrations = all.iter().filter(|x| x.version < REDESIGN_VERSION).cloned().collect::<Vec<_>>().into();
+        m.run(&pool).await.unwrap();
+
+        exec(&pool, "INSERT INTO meetings (id,title,created_at,updated_at) VALUES ('old','Old','2026-11-01T10:00:00+00:00','2026-11-01T10:00:00+00:00'),('legacy','Legacy','2026-10-05 12:00:00','2026-10-05 12:00:00')").await;
+        exec(&pool, "INSERT INTO meetings (id,title,created_at,updated_at,calendar_uid,calendar_start) VALUES ('cal','Cal','2026-11-02T10:00:00+00:00','2026-11-02T10:00:00+00:00','u1','2026-11-20T09:00:00+00:00')").await;
+        exec(&pool, "INSERT INTO transcripts (id,meeting_id,transcript,timestamp,audio_end_time) VALUES ('t1','old','a','x',1200.0),('t2','old','b','x',2700.0),('t3','legacy','c','x',NULL)").await;
+        exec(&pool, "INSERT INTO summary_processes (meeting_id,status,created_at,updated_at,result) VALUES ('old','completed','t','t','{\"markdown\":\"## Summary\\nWe agreed. More.\",\"template_id\":\"interview\"}'),('legacy','completed','t','t','not json')").await;
+        for (uid, start) in [("u1", "2026-11-20T09:00:00+00:00"), ("u2", "2026-11-21T09:00:00+00:00"), ("u3", "2026-11-22T09:00:00+00:00")] {
+            sqlx::query("INSERT INTO meeting_preps (event_uid,event_start,event_title,template_id,material,chat_json,items_json,approved_at,created_at,updated_at) VALUES (?,?,'T','one_on_one','mat','[{\"a\":1}]','[{\"b\":2}]','2026-11-15T00:00:00Z','c','u')")
+                .bind(uid).bind(start).execute(&pool).await.unwrap();
+        }
+        exec(&pool, "DELETE FROM meeting_preps WHERE event_uid='u3'").await;
+        type Prep = (i64, Option<String>, Option<String>, Option<String>, Option<String>, String, String, String, Option<String>, String, String);
+        let prep_sql = "SELECT id,event_uid,event_start,event_title,template_id,material,chat_json,items_json,approved_at,created_at,updated_at FROM meeting_preps ORDER BY id";
+        let before: Vec<Prep> = sqlx::query_as(prep_sql).fetch_all(&pool).await.unwrap();
+        assert_eq!(before.len(), 2);
+        let (seq_before,): (i64,) = sqlx::query_as("SELECT seq FROM sqlite_sequence WHERE name='meeting_preps'").fetch_one(&pool).await.unwrap();
+        assert!(seq_before > before[1].0);
+
+        Migrator::new(Path::new("./migrations")).await.unwrap().run(&pool).await.unwrap();
+
+        let (n_unreviewed,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings WHERE reviewed <> 1").fetch_one(&pool).await.unwrap();
+        assert_eq!(n_unreviewed, 0);
+        type Row = (Option<String>, Option<String>, Option<String>, String);
+        let row = |id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, Row>("SELECT template_id, started_at, ended_at, created_at FROM meetings WHERE id=?")
+                    .bind(id).fetch_one(&pool).await.unwrap()
+            }
+        };
+        let old = row("old").await;
+        assert_eq!(old.0.as_deref(), Some("interview"));
+        assert_eq!(old.2.as_deref(), Some(old.3.as_str()));
+        let started = chrono::DateTime::parse_from_rfc3339(old.1.as_deref().unwrap()).unwrap();
+        assert_eq!(started.with_timezone(&Utc).to_rfc3339(), "2026-11-01T09:15:00+00:00");
+        let legacy = row("legacy").await;
+        assert_eq!(legacy.0, None);
+        assert_eq!(legacy.1.as_deref(), Some(legacy.3.as_str()));
+
+        let after: Vec<Prep> = sqlx::query_as(prep_sql).fetch_all(&pool).await.unwrap();
+        assert_eq!(after, before);
+        let (linked,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_preps WHERE meeting_id IS NOT NULL").fetch_one(&pool).await.unwrap();
+        assert_eq!(linked, 0);
+        let (seq_after,): (i64,) = sqlx::query_as("SELECT seq FROM sqlite_sequence WHERE name='meeting_preps'").fetch_one(&pool).await.unwrap();
+        assert_eq!(seq_after, seq_before);
+        let (leftover,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sqlite_sequence WHERE name='meeting_preps_new'").fetch_one(&pool).await.unwrap();
+        assert_eq!(leftover, 0);
+
+        let ins = "INSERT INTO meeting_preps (created_at,updated_at,meeting_id) VALUES ('c','u',?)";
+        sqlx::query(ins).bind("cal").execute(&pool).await.unwrap();
+        let (new_id,): (i64,) = sqlx::query_as("SELECT MAX(id) FROM meeting_preps").fetch_one(&pool).await.unwrap();
+        assert!(new_id > seq_before);
+        sqlx::query(ins).bind("old").execute(&pool).await.unwrap(); // second NULL-event prep
+        assert!(sqlx::query(ins).bind("cal").execute(&pool).await.is_err());
+
+        let views: Vec<(String, i64, i64)> = sqlx::query_as("SELECT id, position, builtin FROM meeting_views ORDER BY position").fetch_all(&pool).await.unwrap();
+        assert_eq!(views, vec![("all".into(), 0, 1), ("week".into(), 1, 1), ("unreviewed".into(), 2, 1)]);
+        let dis = "INSERT INTO dismissed_occurrences (calendar_uid,original_start,dismissed_at) VALUES ('u1','s','n')";
+        exec(&pool, dis).await;
+        assert!(sqlx::query(dis).execute(&pool).await.is_err());
+    }
+}
+

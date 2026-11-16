@@ -4,11 +4,8 @@
 use log::warn;
 use std::time::Duration;
 
-pub const OWNER: &str = "Sashanator";
-pub const REPO: &str = "conclave";
 pub const LATEST_RELEASE_URL: &str =
     "https://api.github.com/repos/Sashanator/conclave/releases/latest";
-pub const ASSET_PREFIX: &str = "https://api.github.com/repos/Sashanator/conclave/releases/assets/";
 pub const NETWORK_MESSAGE: &str = "Couldn't reach GitHub. Check your internet connection.";
 
 /// Exact match: https, api.github.com, no port/userinfo/query/fragment, `/repos/<owner>/<repo>/releases/assets/<digits>`.

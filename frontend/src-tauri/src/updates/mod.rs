@@ -83,6 +83,7 @@ async fn find_update<R: Runtime>(
         .on_before_exit({
             let app = app.clone();
             move || {
+                HOOK_RAN.store(true, Ordering::SeqCst);
                 let a = app.clone();
                 let h = std::thread::spawn(move || {
                     tauri::async_runtime::block_on(async {
@@ -234,6 +235,8 @@ pub async fn updates_check<R: Runtime>(app: AppHandle<R>) -> Result<UpdateCheckR
     Ok(run_check(&app).await)
 }
 
+/// Set once the before-exit hook has run: from then on the app is half shut down.
+static HOOK_RAN: AtomicBool = AtomicBool::new(false);
 static INSTALLING: AtomicBool = AtomicBool::new(false);
 
 struct InstallGuard;
@@ -253,6 +256,7 @@ pub async fn updates_install<R: Runtime>(app: AppHandle<R>) -> Result<(), String
         return Err("An update is already being installed.".into());
     }
     let _guard = InstallGuard;
+    HOOK_RAN.store(false, Ordering::SeqCst);
     busy_err()?;
     let token = token()?.ok_or("Updates are not set up: add a GitHub token in Settings.")?;
     // No timeout: an 80 MB download must not be cut off.
@@ -273,10 +277,31 @@ pub async fn updates_install<R: Runtime>(app: AppHandle<R>) -> Result<(), String
             || {},
         )
         .await
-        .map_err(|e| format!("Download failed: {}", github::scrub(&e.to_string(), &token)))?;
+        .map_err(|e| update_error(&e, &token, "Download failed: "))?;
     // A recording may have started during the download; the bytes are dropped.
     busy_err()?;
-    update.install(bytes).map_err(|e| github::scrub(&e.to_string(), &token))
+    if let Err(e) = update.install(bytes) {
+        let m = update_error(&e, &token, "");
+        if HOOK_RAN.swap(false, Ordering::SeqCst) {
+            // The hook already stopped the sidecar and closed the DB: restart rather than run half shut down.
+            let note = format!("Install failed: {}. Conclave restarted.", m.trim_end_matches('.'));
+            log::error!("updates: {note}");
+            settings::record_check(&app, &github::scrub(&note, &token));
+            app.restart();
+        }
+        return Err(m);
+    }
+    Ok(())
+}
+
+const SIGNATURE_MESSAGE: &str = "The update's signature doesn't match. It was not installed.";
+
+fn update_error(e: &tauri_plugin_updater::Error, token: &str, prefix: &str) -> String {
+    use tauri_plugin_updater::Error;
+    match e {
+        Error::Minisign(_) | Error::SignatureUtf8(_) => SIGNATURE_MESSAGE.to_string(),
+        _ => format!("{prefix}{}", github::scrub(&e.to_string(), token)),
+    }
 }
 
 /// Checks ~30 s after launch, never with a modal. Errors reach the user through `lastCheck`.

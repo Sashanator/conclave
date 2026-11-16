@@ -376,18 +376,23 @@ pub(crate) fn set_calendar_url<R: Runtime>(
     Ok(())
 }
 
-/// Store first, then empty the plain file, so a stale file never outlives a newer store value.
+/// Save: store first, then empty the plain file, so a stale file never outlives a newer store value.
+/// Disconnect: empty the file first, so a failed clear can't bring the old URL back after a restart.
 fn save_calendar_url(
     store: &dyn SecretStore,
     path: &Path,
     url: Option<&str>,
 ) -> Result<(), String> {
     match url {
-        Some(u) => store.set(secrets::CALENDAR_URL, u),
-        None => store.delete(secrets::CALENDAR_URL),
+        Some(u) => {
+            store.set(secrets::CALENDAR_URL, u).map_err(|e| e.to_string())?;
+            write_calendar_at(path, None)
+        }
+        None => {
+            write_calendar_at(path, None)?;
+            store.delete(secrets::CALENDAR_URL).map_err(|e| e.to_string())
+        }
     }
-    .map_err(|e| e.to_string())?;
-    write_calendar_at(path, None)
 }
 
 /// Store value first; the plain file is the fallback. Never logs a value.
@@ -756,8 +761,10 @@ mod tests {
         let path = dir.path().join("calendar.json");
         let store = secrets::MemoryStore::default();
         store.set(secrets::CALENDAR_URL, "https://a.example/x").unwrap();
+        write_calendar_at(&path, Some("https://old.example/x")).unwrap();
         save_calendar_url(&store, &path, None).unwrap();
         assert_eq!(store.get(secrets::CALENDAR_URL).unwrap(), None);
+        assert_eq!(read_calendar_at(&path).unwrap(), None);
     }
 
     #[test]

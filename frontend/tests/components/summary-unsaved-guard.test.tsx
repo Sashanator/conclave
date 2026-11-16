@@ -28,7 +28,9 @@ mock.module('../../src/contexts/ThemeContext', () => ({ useTheme: () => ({ resol
 mock.module('../../src/lib/blocknote-markdown', () => ({ blocksToMarkdownSafely: async () => ({ markdown: '# Notes' }) }));
 // The lazily loaded editor is replaced by a stub that the test drives through its onChange prop.
 mock.module('next/dynamic', () => ({ default: () => (() => null) }));
-const { BlockNoteSummaryView } = await import('../../src/components/AISummary/BlockNoteSummaryView');
+// A query suffix gives a fresh module instance: an earlier test file may have loaded the real one before these mocks.
+// @ts-expect-error tsc cannot resolve the query suffix
+const { BlockNoteSummaryView } = (await import('../../src/components/AISummary/BlockNoteSummaryView?isolated')) as typeof import('../../src/components/AISummary/BlockNoteSummaryView');
 
 const realConfirm = window.confirm;
 const block = { id: 'b1', type: 'paragraph', props: {}, content: [{ type: 'text', text: 'Action', styles: {} }], children: [] };

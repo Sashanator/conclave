@@ -12,7 +12,9 @@ const invoke = mock(async (_command: string, _args?: Record<string, unknown>): P
 }));
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 
-const { storageService } = await import('../../src/services/storageService');
+// A query suffix gives a fresh module instance: an earlier test file may have loaded the real one before these mocks.
+// @ts-expect-error tsc cannot resolve the query suffix
+const { storageService } = (await import('../../src/services/storageService?isolated')) as typeof import('../../src/services/storageService');
 
 describe('saveMeeting', () => {
   test('sends the recording id so its LLM usage attaches to the meeting', async () => {

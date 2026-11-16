@@ -51,7 +51,8 @@ jobs:
           cache: pnpm
           cache-dependency-path: frontend/pnpm-lock.yaml
 
-      - uses: dtolnay/rust-toolchain@stable
+      # Pinned: cargo 1.100 puts build script OUT_DIR under build/<pkg>/<hash>, and ort-sys 2.0.0-rc.10 (copy-dylibs) then copies into a missing build/examples
+      - uses: dtolnay/rust-toolchain@1.99.1
         with:
           targets: x86_64-pc-windows-msvc
 

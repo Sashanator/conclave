@@ -1,0 +1,58 @@
+{
+  "schemaVersion": 1,
+  "source": "DESIGN.md",
+  "fonts": {
+    "sans": "Source Sans 3"
+  },
+  "themes": {
+    "default": "conclave",
+    "available": [
+      "light",
+      "dark",
+      "conclave"
+    ]
+  },
+  "colors": {
+    "conclave": {
+      "background": "235 45% 9%",
+      "foreground": "40 30% 94%",
+      "card": "235 40% 12%",
+      "primary": "43 90% 58%",
+      "muted": "235 30% 18%",
+      "border": "235 30% 22%",
+      "destructive": "0 70% 50%",
+      "ring": "43 90% 58%"
+    },
+    "light": {
+      "background": "0 0% 100%",
+      "foreground": "0 0% 3.9%",
+      "primary": "0 0% 9%",
+      "muted": "0 0% 96.1%",
+      "border": "0 0% 89.8%"
+    },
+    "dark": {
+      "background": "0 0% 3.9%",
+      "foreground": "0 0% 98%",
+      "primary": "0 0% 98%",
+      "muted": "0 0% 14.9%",
+      "border": "0 0% 14.9%"
+    }
+  },
+  "newTokens": {
+    "--rec": "0 72% 51%",
+    "--violet": "262 83% 52%",
+    "--hl": "43 95% 55%",
+    "--live": "142 70% 28%",
+    "--cat-1": "217 91% 60%",
+    "--cat-2": "160 60% 40%",
+    "--cat-3": "27 87% 55%",
+    "--cat-4": "262 70% 60%",
+    "--cat-5": "0 0% 55%"
+  },
+  "radius": "0.5rem",
+  "density": {
+    "comfortable": "40px",
+    "compact": "32px"
+  },
+  "aiSidebarWidth": "360px"
+}

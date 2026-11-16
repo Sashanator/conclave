@@ -242,6 +242,7 @@ pub(crate) async fn get(pool: &SqlitePool, id: &str) -> Result<Option<BriefConte
         .into_iter()
         .filter(|p| match (parse_date(&p.created_at), parse_date(&stored.content.previous_date)) {
             (Some(a), Some(b)) => a <= b,
+            // Unparseable dates: text order is all there is.
             _ => p.created_at <= stored.content.previous_date,
         })
         .map(|p| p.id)
@@ -654,6 +655,23 @@ mod meeting_date_tests {
             .execute(pool).await.unwrap();
     }
     async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn a_same_day_earlier_meeting_in_the_other_format_keeps_its_open_tasks() {
+        let pool = test_pool().await;
+        row(&pool, "early", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T09:00:00.000+00:00"), None).await;
+        exec(&pool, "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('early', 'completed', 't', 't', '{\"template_id\":\"one_on_one\"}')").await;
+        exec(&pool, "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES ('t1', 'early', 'x', 'me', 'open', 'ai', 0, 'c')").await;
+        let content = serde_json::json!({
+            "eventTitle": "T", "eventStart": "s", "templateName": "1:1", "previousMeetingId": "prev", "previousTitle": "T",
+            "previousDate": "2026-11-09 10:00:00.000+00:00", "requests": [], "decisions": [], "openTasks": []
+        });
+        sqlx::query("INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) VALUES ('b1', 'u', 's', 'T', 'one_on_one', 'prev', ?, 'c')")
+            .bind(content.to_string()).execute(&pool).await.unwrap();
+        // As text, "...T09" sorts after "... 10", so a text comparison would drop 'early' and its task.
+        let got = get(&pool, "b1").await.unwrap().unwrap();
+        assert_eq!(got.open_tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t1"]);
+    }
 
     #[test]
     fn dates_in_both_formats_compare_as_instants() {

@@ -217,7 +217,15 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn keyring_store_round_trip_on_windows() {
+        // Deletes the credential even if an assert below panics.
+        struct Cleanup(String);
+        impl Drop for Cleanup {
+            fn drop(&mut self) {
+                let _ = KeyringStore { lock: Mutex::new(()) }.delete(&self.0);
+            }
+        }
         let name = format!("test.{}", uuid::Uuid::new_v4());
+        let _cleanup = Cleanup(name.clone());
         let store = KeyringStore { lock: Mutex::new(()) };
         store.set(&name, &"x".repeat(1280)).unwrap();
         let read = KeyringStore { lock: Mutex::new(()) };

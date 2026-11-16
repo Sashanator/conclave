@@ -1,6 +1,11 @@
 use crate::database::models::{Setting, TranscriptSetting};
 use crate::summary::CustomOpenAIConfig;
+use crate::secrets::{self, read_or_plain, transcript_name};
 use sqlx::SqlitePool;
+
+fn store_err(e: anyhow::Error) -> sqlx::Error {
+    sqlx::Error::Protocol(e.to_string().into())
+}
 
 #[derive(serde::Deserialize, Debug)]
 pub struct SaveModelConfigRequest {
@@ -102,7 +107,9 @@ impl SettingsRepository {
             "#,
             api_key_column, api_key_column
         );
-        sqlx::query(&query).bind(api_key).execute(pool).await?;
+        // Store first: on failure the DB is untouched. The plain column is cleared.
+        secrets::store().set(api_key_column, api_key).map_err(store_err)?;
+        sqlx::query(&query).bind(None::<String>).execute(pool).await?;
 
         Ok(())
     }
@@ -135,8 +142,8 @@ impl SettingsRepository {
             "SELECT {} FROM settings WHERE id = '1' LIMIT 1",
             api_key_column
         );
-        let api_key = sqlx::query_scalar(&query).fetch_optional(pool).await?;
-        Ok(api_key)
+        let plain: Option<String> = sqlx::query_scalar(&query).fetch_optional(pool).await?;
+        read_or_plain(secrets::store(), api_key_column, plain).map_err(store_err)
     }
 
     pub async fn get_transcript_config(
@@ -203,7 +210,10 @@ impl SettingsRepository {
             crate::config::DEFAULT_WHISPER_MODEL,
             api_key_column
         );
-        sqlx::query(&query).bind(api_key).execute(pool).await?;
+        secrets::store()
+            .set(&transcript_name(api_key_column), api_key)
+            .map_err(store_err)?;
+        sqlx::query(&query).bind(None::<String>).execute(pool).await?;
 
         Ok(())
     }
@@ -230,8 +240,8 @@ impl SettingsRepository {
             "SELECT {} FROM transcript_settings WHERE id = '1' LIMIT 1",
             api_key_column
         );
-        let api_key = sqlx::query_scalar(&query).fetch_optional(pool).await?;
-        Ok(api_key)
+        let plain: Option<String> = sqlx::query_scalar(&query).fetch_optional(pool).await?;
+        read_or_plain(secrets::store(), &transcript_name(api_key_column), plain).map_err(store_err)
     }
 
     pub async fn delete_api_key(
@@ -240,6 +250,9 @@ impl SettingsRepository {
     ) -> std::result::Result<(), sqlx::Error> {
         // Custom OpenAI uses JSON config - clear the entire config
         if provider == "custom-openai" {
+            secrets::store()
+                .delete(secrets::CUSTOM_OPENAI_API_KEY)
+                .map_err(store_err)?;
             sqlx::query("UPDATE settings SET customOpenAIConfig = NULL WHERE id = '1'")
                 .execute(pool)
                 .await?;
@@ -260,6 +273,7 @@ impl SettingsRepository {
             }
         };
 
+        secrets::store().delete(api_key_column).map_err(store_err)?;
         let query = format!(
             "UPDATE settings SET {} = NULL WHERE id = '1'",
             api_key_column
@@ -299,10 +313,17 @@ impl SettingsRepository {
 
                 if let Some(json) = config_json {
                     // Parse JSON into CustomOpenAIConfig
-                    let config: CustomOpenAIConfig = serde_json::from_str(&json)
+                    let mut config: CustomOpenAIConfig = serde_json::from_str(&json)
                         .map_err(|e| sqlx::Error::Protocol(
                             format!("Invalid JSON in customOpenAIConfig: {}", e).into()
                         ))?;
+
+                    config.api_key = read_or_plain(
+                        secrets::store(),
+                        secrets::CUSTOM_OPENAI_API_KEY,
+                        config.api_key.take(),
+                    )
+                    .map_err(store_err)?;
 
                     Ok(Some(config))
                 } else {
@@ -326,8 +347,16 @@ impl SettingsRepository {
         pool: &SqlitePool,
         config: &CustomOpenAIConfig,
     ) -> std::result::Result<(), sqlx::Error> {
-        // Serialize config to JSON
-        let config_json = serde_json::to_string(config)
+        match &config.api_key {
+            Some(k) => secrets::store().set(secrets::CUSTOM_OPENAI_API_KEY, k),
+            None => secrets::store().delete(secrets::CUSTOM_OPENAI_API_KEY),
+        }
+        .map_err(store_err)?;
+
+        // The key lives in the store, never in the JSON.
+        let mut plain_config = config.clone();
+        plain_config.api_key = None;
+        let config_json = serde_json::to_string(&plain_config)
             .map_err(|e| sqlx::Error::Protocol(
                 format!("Failed to serialize config to JSON: {}", e).into()
             ))?;
@@ -396,5 +425,117 @@ mod default_transcript_tests {
         let config = SettingsRepository::get_transcript_config(&pool).await.unwrap().unwrap();
         assert_eq!(config.provider, "parakeet");
         assert_eq!(config.model, "parakeet-tdt-0.6b-v3-int8");
+    }
+}
+
+#[cfg(test)]
+mod secret_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    async fn plain(pool: &SqlitePool, table: &str, col: &str) -> Option<String> {
+        sqlx::query_scalar(&format!("SELECT {col} FROM {table} WHERE id = '1'"))
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn save_api_key_goes_to_store_not_column() {
+        let pool = test_pool().await;
+        SettingsRepository::save_api_key(&pool, "openai", "sk-1").await.unwrap();
+        assert_eq!(plain(&pool, "settings", "openaiApiKey").await, None);
+        assert_eq!(secrets::store().get("openaiApiKey").unwrap().as_deref(), Some("sk-1"));
+        let got = SettingsRepository::get_api_key(&pool, "openai").await.unwrap();
+        assert_eq!(got.as_deref(), Some("sk-1"));
+    }
+
+    #[tokio::test]
+    async fn get_api_key_falls_back_to_plain_column() {
+        let pool = test_pool().await;
+        sqlx::query("INSERT INTO settings (id, provider, model, whisperModel, groqApiKey) VALUES ('1','openai','m','w','old')")
+            .execute(&pool).await.unwrap();
+        let got = SettingsRepository::get_api_key(&pool, "groq").await.unwrap();
+        assert_eq!(got.as_deref(), Some("old"));
+        SettingsRepository::save_api_key(&pool, "groq", "new").await.unwrap();
+        let got = SettingsRepository::get_api_key(&pool, "groq").await.unwrap();
+        assert_eq!(got.as_deref(), Some("new"));
+    }
+
+    #[tokio::test]
+    async fn transcript_and_summary_keys_are_distinct() {
+        let pool = test_pool().await;
+        SettingsRepository::save_api_key(&pool, "groq", "sum").await.unwrap();
+        SettingsRepository::save_transcript_api_key(&pool, "groq", "tr").await.unwrap();
+        let s = SettingsRepository::get_api_key(&pool, "groq").await.unwrap();
+        let t = SettingsRepository::get_transcript_api_key(&pool, "groq").await.unwrap();
+        assert_eq!(s.as_deref(), Some("sum"));
+        assert_eq!(t.as_deref(), Some("tr"));
+        assert_eq!(plain(&pool, "transcript_settings", "groqApiKey").await, None);
+    }
+
+    #[tokio::test]
+    async fn local_whisper_key_goes_to_store() {
+        let pool = test_pool().await;
+        SettingsRepository::save_transcript_api_key(&pool, "localWhisper", "w1").await.unwrap();
+        let name = transcript_name("whisperApiKey");
+        assert_eq!(name, "transcript.whisperApiKey");
+        assert_eq!(secrets::store().get(&name).unwrap().as_deref(), Some("w1"));
+        let got = SettingsRepository::get_transcript_api_key(&pool, "localWhisper").await.unwrap();
+        assert_eq!(got.as_deref(), Some("w1"));
+    }
+
+    #[tokio::test]
+    async fn delete_api_key_removes_store_and_column() {
+        let pool = test_pool().await;
+        sqlx::query("INSERT INTO settings (id, provider, model, whisperModel, openaiApiKey) VALUES ('1','openai','m','w','plainkey')")
+            .execute(&pool).await.unwrap();
+        SettingsRepository::save_api_key(&pool, "openai", "k").await.unwrap();
+        SettingsRepository::delete_api_key(&pool, "openai").await.unwrap();
+        assert_eq!(secrets::store().get("openaiApiKey").unwrap(), None);
+        assert_eq!(plain(&pool, "settings", "openaiApiKey").await, None);
+        assert_eq!(SettingsRepository::get_api_key(&pool, "openai").await.unwrap(), None);
+    }
+
+    fn cfg(key: Option<&str>) -> CustomOpenAIConfig {
+        CustomOpenAIConfig {
+            endpoint: "http://x/v1".into(),
+            api_key: key.map(Into::into),
+            model: "m".into(),
+            max_tokens: Some(5),
+            temperature: Some(0.5),
+            top_p: Some(0.9),
+        }
+    }
+
+    #[tokio::test]
+    async fn custom_openai_key_lives_in_store() {
+        let pool = test_pool().await;
+        SettingsRepository::save_custom_openai_config(&pool, &cfg(Some("c"))).await.unwrap();
+        let raw = plain(&pool, "settings", "customOpenAIConfig").await.unwrap();
+        assert!(!raw.contains("\"c\""));
+        let got = SettingsRepository::get_custom_openai_config(&pool).await.unwrap().unwrap();
+        assert_eq!(got.api_key.as_deref(), Some("c"));
+        assert_eq!((got.endpoint.as_str(), got.model.as_str(), got.max_tokens), ("http://x/v1", "m", Some(5)));
+
+        SettingsRepository::save_custom_openai_config(&pool, &cfg(None)).await.unwrap();
+        assert_eq!(secrets::store().get(secrets::CUSTOM_OPENAI_API_KEY).unwrap(), None);
+
+        SettingsRepository::save_custom_openai_config(&pool, &cfg(Some("c"))).await.unwrap();
+        SettingsRepository::delete_api_key(&pool, "custom-openai").await.unwrap();
+        assert_eq!(secrets::store().get(secrets::CUSTOM_OPENAI_API_KEY).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn over_limit_key_is_rejected_and_keeps_old() {
+        let pool = test_pool().await;
+        SettingsRepository::save_api_key(&pool, "openai", "k1").await.unwrap();
+        let err = SettingsRepository::save_api_key(&pool, "openai", &"x".repeat(2000))
+            .await
+            .unwrap_err()
+            .to_string();
+        assert!(!err.contains("xxxx"));
+        let got = SettingsRepository::get_api_key(&pool, "openai").await.unwrap();
+        assert_eq!(got.as_deref(), Some("k1"));
     }
 }

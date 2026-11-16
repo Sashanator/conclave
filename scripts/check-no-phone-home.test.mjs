@@ -83,7 +83,7 @@ test('fails_with_webview_updater_permission', () => {
 });
 
 test('urls_in_test_module_are_ignored', () => {
-  const r = run({ 'frontend/src-tauri/src/updates/mod.rs': `const API: &str = "${API}";\n#[cfg(test)]\nmod t { const U: &str = "https://evil.example/x"; }\n` });
+  const r = run({ 'frontend/src-tauri/src/updates/mod.rs': `const API: &str = "${API}";\n#[cfg(test)]\nmod t {\n const U: &str = "https://evil.example/x";\n}\n` });
   assert.equal(r.code, 0, r.out);
 });
 
@@ -91,4 +91,108 @@ test('still_fails_on_meetily_latest_json', () => {
   const r = run({ 'frontend/src/a.ts': 'fetch("https://github.com/x/y/releases/latest/download/latest.json");\n' });
   assert.equal(r.code, 1);
   assert.match(r.out, /latest/);
+});
+
+const fails = (overrides, re) => {
+  const r = run(overrides);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, re);
+};
+
+test('fails_with_foreign_pubkey_in_platform_config', () =>
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': conf({ plugins: { updater: { pubkey: 'AAAA' } } }) }, /FOREIGN updater pubkey/));
+
+test('fails_with_endpoints_in_platform_config', () =>
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': conf({ plugins: { updater: { endpoints: ['https://x.example/l.json'] } } }) }, /endpoints/));
+
+test('fails_with_toml_config_pubkey_and_endpoints', () => {
+  fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\npubkey = "AAAA"\n' }, /FOREIGN updater pubkey/);
+  fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\nendpoints = ["https://x.example"]\n' }, /pubkey or endpoints/);
+});
+
+test('fails_with_workflow_updater_config', () => {
+  for (const l of ['TAURI_CONFIG: "{}"', 'args: --config {"plugins":{"updater":{"pubkey":"x"}}}', 'x: endpoints']) {
+    fails({ '.github/workflows/r.yml': `run: ${l}\n` }, /updater config in workflows/);
+  }
+});
+
+test('item_level_cfg_test_does_not_hide_urls', () => {
+  for (const item of ['use std::fmt;', 'mod tests;']) {
+    fails({ 'frontend/src-tauri/src/updates/mod.rs': `#[cfg(test)]\n${item}\nconst E: &str = "https://evil.example/x";\n` }, /FOREIGN URL/);
+  }
+  fails({ 'frontend/src-tauri/src/updates/mod.rs': '#[cfg(test)]\nconst E: &str = "https://evil.example/x";\n' }, /FOREIGN URL/);
+});
+
+test('test_module_on_one_line_or_two_stops_scan', () => {
+  for (const head of ['#[cfg(test)] mod t {', '#[cfg(test)]\nmod t {']) {
+    const r = run({ 'frontend/src-tauri/src/updates/mod.rs': `const A: &str = "${API}";\n${head}\n const U: &str = "https://evil.example/x";\n}\n` });
+    assert.equal(r.code, 0, r.out);
+  }
+});
+
+test('fails_with_foreign_url_in_updates_subdirectory', () =>
+  fails({ 'frontend/src-tauri/src/updates/sub/c.rs': 'const C: &str = "https://evil.example/sub";\n' }, /FOREIGN URL/));
+
+test('fails_with_uppercase_scheme_or_host_and_lookalike_hosts', () => {
+  for (const u of ['HTTPS://evil.example/x', 'https://api.github.com@evil.example/repos/Sashanator/conclave/x', 'https://api.github.com.evil.example/repos/Sashanator/conclave/x', 'https://api.github.com/repos/other/conclave/x']) {
+    fails({ 'frontend/src-tauri/src/updates/mod.rs': `const U: &str = "${u}";\n` }, /FOREIGN URL/);
+  }
+  const r = run({ 'frontend/src-tauri/src/updates/mod.rs': `const U: &str = "HTTPS://API.GITHUB.COM/repos/Sashanator/conclave/x";\n` });
+  assert.equal(r.code, 0, r.out);
+});
+
+test('fails_with_endpoints_call_in_other_dir_named_updates', () =>
+  fails({ 'frontend/src-tauri/src/practice/updates/x.rs': 'fn f() { b.endpoints(vec![]); }\n' }, /updater endpoints outside src\/updates/));
+
+test('fails_with_toml_capability_updater_permission', () =>
+  fails({ 'frontend/src-tauri/capabilities/main.toml': "permissions = ['updater:default']\n" }, /updater:/));
+
+const MOD = 'frontend/src-tauri/src/updates/mod.rs';
+const EVIL = 'const E: &str = "https://evil.example/x";\n';
+
+test('code_after_test_module_is_scanned', () => {
+  fails({ [MOD]: `#[cfg(test)]\nmod tests {\n    const U: &str = "https://ok.example/in-test";\n}\n${EVIL}` }, /FOREIGN URL/);
+  fails({ [MOD]: `#[cfg(test)] mod tests {\n}\n${EVIL}` }, /FOREIGN URL/);
+});
+
+test('one_line_test_module_does_not_hide_following_code', () =>
+  fails({ [MOD]: '#[cfg(test)] mod t {} pub fn f() { let _ = "https://evil.example/x"; }\n' }, /FOREIGN URL/));
+
+test('fails_with_foreign_pubkey_beside_conclave_key_on_one_line', () =>
+  fails({ 'frontend/src-tauri/tauri.conf.json': `{"plugins":{"updater":{"pubkey":"AAAA","x":"${KEY}"}}}` }, /FOREIGN updater pubkey/));
+
+test('fails_with_json_escaped_keys', () => {
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': '{"plugins":{"updater":{"pub\\u006bey":"AAAA"}}}' }, /FOREIGN updater pubkey/);
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': '{"plugins":{"updater":{"end\\u0070oints":["https://x.example"]}}}' }, /endpoints/);
+});
+
+test('fails_with_unparseable_json_config', () =>
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': '{"plugins":' }, /unparseable/));
+
+test('toml_allows_only_the_exact_pinned_pubkey_line', () => {
+  const ok = run({ 'frontend/src-tauri/Tauri.toml': `[plugins.updater]\npubkey = "${KEY}"\n` });
+  assert.equal(ok.code, 0, ok.out);
+  fails({ 'frontend/src-tauri/Tauri.toml': `[plugins.updater]\npubkey = "AAAA" # ${KEY}\n` }, /FOREIGN updater pubkey/);
+  fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\n"pub\\u006bey" = "AAAA"\n' }, /FOREIGN updater pubkey/);
+});
+
+test('fails_with_spaced_endpoints_and_pubkey_calls', () => {
+  fails({ 'frontend/src-tauri/src/lib.rs': 'fn f() { b.endpoints (vec![]); }\n' }, /endpoints outside/);
+  fails({ 'frontend/src-tauri/src/lib.rs': 'fn f() { b.pubkey  ("A"); }\n' }, /pubkey/);
+});
+
+test('fails_with_dotdot_segments_in_conclave_url', () =>
+  fails({ [MOD]: 'const U: &str = "https://api.github.com/repos/Sashanator/conclave/../../evil/x";\n' }, /FOREIGN URL/));
+
+test('test_module_end_is_found_by_brace_depth', () => {
+  const after = `${EVIL}`;
+  // trailing comment on the closing brace
+  fails({ [MOD]: `#[cfg(test)]\nmod tests {\n}  // end tests\n${after}` }, /FOREIGN URL/);
+  // CRLF line endings
+  fails({ [MOD]: `#[cfg(test)]\r\nmod tests {\r\n    const U: &str = "x";\r\n}\r\n${after}` }, /FOREIGN URL/);
+  // nested, indented test module inside an outer module
+  fails({ [MOD]: `pub mod outer {\n    #[cfg(test)]\n    mod t {\n        fn f() { if true {} }\n    }\n    ${after}}\n` }, /FOREIGN URL/);
+  // and URLs inside a nested/CRLF test module are still ignored
+  const ok = run({ [MOD]: `const A: &str = "${API}";\r\n#[cfg(test)]\r\nmod t {\r\n  fn f() { if true {} } // }\r\n  const U: &str = "https://evil.example/x";\r\n}\r\n` });
+  assert.equal(ok.code, 0, ok.out);
 });

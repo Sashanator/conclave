@@ -56,12 +56,16 @@ pub(crate) async fn list_rows_inner(pool: &SqlitePool) -> Result<Vec<MeetingRow>
     );
     let mut rows: Vec<MeetingRow> = sqlx::query_as(&sql).fetch_all(pool).await.map_err(|e| format!("Failed to list meetings: {e}"))?;
     let listing = tokio::task::spawn_blocking(templates::list_templates).await.map_err(|e| format!("Failed to read templates: {e}"))?;
-    for r in &mut rows {
+    fill_emoji(&mut rows, &listing);
+    Ok(rows)
+}
+
+fn fill_emoji(rows: &mut [MeetingRow], listing: &templates::TemplateListing) {
+    for r in rows {
         r.emoji = r.template_id.as_deref().and_then(|id| {
             listing.templates.iter().find(|t| t.id == id).and_then(|t| t.template.emoji.clone()).filter(|e| !e.is_empty())
         });
     }
-    Ok(rows)
 }
 
 async fn require_changed(res: Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error>, what: &str, id: &str) -> Result<(), String> {
@@ -189,6 +193,31 @@ mod tests {
         let got: Vec<_> = rows.iter().map(|r| (r.id.as_str(), r.has_transcript, r.has_summary, r.prep_points)).collect();
         assert_eq!(got, [("new", false, false, 3), ("rec", true, true, 0), ("bad", false, false, 0), ("pend", false, false, 0)]);
         assert!(rows[0].created_at.0.to_rfc3339().starts_with("2026-11-01T10:00:00"));
+    }
+
+    #[tokio::test]
+    async fn row_emoji_comes_from_the_template_listing() {
+        let pool = test_pool().await;
+        for (id, tpl) in [("a", "interview"), ("b", "ghost"), ("c", "mine")] {
+            exec(&pool, &format!("INSERT INTO meetings (id,title,created_at,updated_at,template_id) VALUES ('{id}','T','2026-11-01T10:00:00Z','x','{tpl}')")).await;
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let write = |id: &str, emoji: &str| std::fs::write(dir.path().join(format!("{id}.json")),
+            format!(r#"{{"name":"{id}",{emoji}"sections":[{{"title":"A","instruction":"B"}}]}}"#)).unwrap();
+        write("interview", "");
+        write("mine", r#""emoji":"","#);
+        let listing = templates::list_templates_in(dir.path());
+        let mut rows = list_rows_inner(&pool).await.unwrap();
+        fill_emoji(&mut rows, &listing);
+        let got: Vec<_> = rows.iter().map(|r| (r.id.as_str(), r.emoji.as_deref())).collect();
+        assert_eq!(got, [("a", Some("🤝")), ("b", None), ("c", None)]);
+    }
+
+    #[test]
+    fn meeting_view_wire_shape_is_camel_case() {
+        let v: MeetingView = serde_json::from_str(r#"{"id":"x","name":"N","position":1,"builtin":false,"configJson":"{}"}"#).unwrap();
+        assert_eq!((v.id.as_str(), v.name.as_str(), v.position, v.builtin, v.config_json.as_str()), ("x", "N", 1, false, "{}"));
+        assert_eq!(serde_json::to_value(&v).unwrap(), serde_json::json!({"id":"x","name":"N","position":1,"builtin":false,"configJson":"{}"}));
     }
 
     #[tokio::test]

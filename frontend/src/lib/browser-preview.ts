@@ -61,6 +61,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   feed_unread_count: () => 0,
   feed_list: () => [],
   api_get_meetings: () => meetings,
+  api_route_recording_start: () => ({ meetingId: 'preview-1', title: 'Weekly sync' }),
   api_get_meeting_metadata: ({ meetingId }) => meetings.find((m) => m.id === meetingId) ?? meetings[0],
   api_get_meeting_transcripts: () => ({ transcripts, total_count: transcripts.length, has_more: false }),
   api_get_summary: ({ meetingId }) => ({

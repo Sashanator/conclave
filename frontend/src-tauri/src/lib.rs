@@ -65,6 +65,7 @@ mod usage;
 mod prep;
 mod secrets;
 mod backup;
+mod recording;
 mod updates;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
@@ -917,6 +918,7 @@ pub fn run() {
             api::api_get_meeting_transcripts,
             api::api_save_meeting_title,
             api::api_save_transcript,
+            recording::route::api_route_recording_start,
             api::open_meeting_folder,
             api::test_backend_connection,
             api::debug_backend_connection,

@@ -23,16 +23,19 @@ pub fn may_migrate(data_dir: &Path, templates: Option<&Path>, current: &str, ask
 }
 
 /// Windows: native Continue/Quit box. Close/Escape, or a dialog that can't open, means Quit.
+/// `parent` (the main window, which exists before setup runs) owns the box so it can't hide behind it.
 #[cfg(windows)]
-pub fn ask_continue_without_backup(message: &str) -> bool {
+fn ask_owned<R: tauri::Runtime>(message: &str, parent: Option<&tauri::WebviewWindow<R>>) -> bool {
     use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
-    let result = MessageDialog::new()
+    let mut dialog = MessageDialog::new()
         .set_level(MessageLevel::Warning)
         .set_title("Conclave")
         .set_description(message)
-        .set_buttons(MessageButtons::OkCancelCustom("Continue".into(), "Quit".into()))
-        .show();
-    match result {
+        .set_buttons(MessageButtons::OkCancelCustom("Continue".into(), "Quit".into()));
+    if let Some(p) = parent {
+        dialog = dialog.set_parent(p);
+    }
+    match dialog.show() {
         MessageDialogResult::Custom(s) => s == "Continue",
         MessageDialogResult::Cancel => {
             // rfd also returns Cancel when the dialog could not be shown at all
@@ -44,6 +47,11 @@ pub fn ask_continue_without_backup(message: &str) -> bool {
             false
         }
     }
+}
+
+#[cfg(windows)]
+pub fn ask_continue_without_backup(message: &str) -> bool {
+    ask_owned::<tauri::Wry>(message, None)
 }
 
 #[cfg(not(windows))]
@@ -62,7 +70,13 @@ pub fn run_at_startup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
         }
     };
     let templates = crate::summary::templates::templates_dir();
-    if !may_migrate(&data_dir, templates.as_deref(), env!("CARGO_PKG_VERSION"), ask_continue_without_backup) {
+    #[cfg(windows)]
+    let main_window = app.get_webview_window("main");
+    #[cfg(windows)]
+    let ask = |m: &str| ask_owned(m, main_window.as_ref());
+    #[cfg(not(windows))]
+    let ask = ask_continue_without_backup;
+    if !may_migrate(&data_dir, templates.as_deref(), env!("CARGO_PKG_VERSION"), ask) {
         error!("backup: user chose Quit after a failed backup; exiting without touching the database");
         log::logger().flush();
         std::process::exit(0);

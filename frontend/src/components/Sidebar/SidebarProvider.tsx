@@ -135,7 +135,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
   // Update current meeting when on home page
   useEffect(() => {
-    if (pathname === '/') {
+    if (pathname === '/record') {
       setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
     }
     setSidebarItems(baseItems);
@@ -150,7 +150,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const handleRecordingToggle = () => {
     if (!isRecording) {
       // Check if already on home page
-      if (pathname === '/') {
+      if (pathname === '/record') {
         // Already on home - trigger recording directly via custom event
         console.log('Triggering recording from sidebar (already on home page)');
         window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
@@ -158,7 +158,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
         // Not on home - navigate and use auto-start mechanism
         console.log('Navigating to home page with auto-start flag');
         sessionStorage.setItem('autoStartRecording', 'true');
-        router.push('/');
+        router.push('/record');
       }
     }
     // The actual recording start/stop is handled in the Home component

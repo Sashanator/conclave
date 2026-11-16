@@ -154,7 +154,7 @@ function AppShell({
     const unlisten = listen('copilot-open', () => {
       writeLiveSideTab('copilot');
       writeFlag('conclave.notesPaneCollapsed', false);
-      if (pathname !== '/') router.push('/');
+      if (pathname !== '/record') router.push('/record');
     });
 
     return () => {

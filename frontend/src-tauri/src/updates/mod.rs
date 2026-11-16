@@ -299,7 +299,7 @@ const SIGNATURE_MESSAGE: &str = "The update's signature doesn't match. It was no
 fn update_error(e: &tauri_plugin_updater::Error, token: &str, prefix: &str) -> String {
     use tauri_plugin_updater::Error;
     match e {
-        Error::Minisign(_) | Error::SignatureUtf8(_) => SIGNATURE_MESSAGE.to_string(),
+        Error::Minisign(_) | Error::SignatureUtf8(_) | Error::Base64(_) => SIGNATURE_MESSAGE.to_string(),
         _ => format!("{prefix}{}", github::scrub(&e.to_string(), token)),
     }
 }

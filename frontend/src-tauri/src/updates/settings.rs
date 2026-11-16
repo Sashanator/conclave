@@ -25,22 +25,19 @@ pub fn last_check_from(v: Option<Value>) -> Option<LastCheck> {
     serde_json::from_value(v?).ok()
 }
 
-fn read<R: Runtime>(app: &AppHandle<R>, key: &str) -> Option<Value> {
-    match app.store(STORE_FILE) {
-        Ok(s) => s.get(key),
-        Err(e) => {
-            warn!("updates: settings store unreadable: {e}");
-            None
-        }
-    }
+/// A store that can't be read is an error, never a default: a user who turned the check off must not get one.
+fn read<R: Runtime>(app: &AppHandle<R>, key: &str) -> Result<Option<Value>, String> {
+    app.store(STORE_FILE)
+        .map(|s| s.get(key))
+        .map_err(|e| format!("Couldn't read the update settings: {e}"))
 }
 
-pub fn check_on_start<R: Runtime>(app: &AppHandle<R>) -> bool {
-    check_on_start_from(read(app, CHECK_ON_START))
+pub fn check_on_start<R: Runtime>(app: &AppHandle<R>) -> Result<bool, String> {
+    read(app, CHECK_ON_START).map(check_on_start_from)
 }
 
-pub fn last_check<R: Runtime>(app: &AppHandle<R>) -> Option<LastCheck> {
-    last_check_from(read(app, LAST_CHECK))
+pub fn last_check<R: Runtime>(app: &AppHandle<R>) -> Result<Option<LastCheck>, String> {
+    read(app, LAST_CHECK).map(last_check_from)
 }
 
 fn write<R: Runtime>(app: &AppHandle<R>, key: &str, v: Value) -> Result<(), String> {

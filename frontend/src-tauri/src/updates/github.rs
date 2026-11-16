@@ -52,12 +52,12 @@ pub fn status_message(status: u16) -> String {
     }
 }
 
+/// Redacts the exact token, and anything shaped like a GitHub token (a different one may appear in a body).
 pub fn scrub(msg: &str, token: &str) -> String {
-    if token.is_empty() {
-        msg.to_string()
-    } else {
-        msg.replace(token, "[token]")
-    }
+    static SHAPE: std::sync::LazyLock<regex::Regex> =
+        std::sync::LazyLock::new(|| regex::Regex::new(r"(?:github_pat|gh[pousr])_[A-Za-z0-9_]+").unwrap());
+    let m = if token.is_empty() { msg.to_string() } else { msg.replace(token, "[token]") };
+    SHAPE.replace_all(&m, "[token]").into_owned()
 }
 
 pub fn validate_token(raw: &str) -> Result<String, String> {
@@ -93,7 +93,7 @@ pub async fn find_latest_json(token: &str) -> Result<url::Url, String> {
         warn!("updates: GitHub request failed: {}", scrub(&e.without_url().to_string(), token));
         NETWORK_MESSAGE.to_string()
     };
-    let resp = client
+    let mut resp = client
         .get(endpoint)
         .bearer_auth(token)
         .header("Accept", "application/vnd.github+json")
@@ -108,9 +108,12 @@ pub async fn find_latest_json(token: &str) -> Result<url::Url, String> {
     if resp.content_length().is_some_and(|n| n > MAX_BODY as u64) {
         return Err("GitHub's answer was too large to read.".into());
     }
-    let bytes = resp.bytes().await.map_err(net)?;
-    if bytes.len() > MAX_BODY {
-        return Err("GitHub's answer was too large to read.".into());
+    let mut bytes = Vec::new();
+    while let Some(c) = resp.chunk().await.map_err(net)? {
+        if bytes.len() + c.len() > MAX_BODY {
+            return Err("GitHub's answer was too large to read.".into());
+        }
+        bytes.extend_from_slice(&c);
     }
     let release: serde_json::Value = serde_json::from_slice(&bytes)
         .map_err(|_| "GitHub's answer could not be read.".to_string())?;
@@ -200,6 +203,11 @@ mod tests {
             assert!(!m.contains(t), "{m}");
         }
         assert_eq!(scrub("abc", ""), "abc");
+        // Other tokens in a message are redacted too (fake, low-entropy fixtures).
+        for other in ["github_pat_AAAA_bbbb", "ghp_aaaa", "gho_aaaa", "ghu_aaaa", "ghs_aaaa", "ghr_aaaa"] {
+            let s = scrub(&format!("x {other} y"), "unrelated");
+            assert_eq!(s, "x [token] y");
+        }
     }
 
     #[test]

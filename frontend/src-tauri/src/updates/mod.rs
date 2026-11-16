@@ -167,8 +167,8 @@ pub fn updates_get_status<R: Runtime>(app: AppHandle<R>) -> Result<UpdatesStatus
     });
     Ok(UpdatesStatus {
         token_last4,
-        check_on_start: settings::check_on_start(&app),
-        last_check: settings::last_check(&app),
+        check_on_start: settings::check_on_start(&app)?,
+        last_check: settings::last_check(&app)?,
         current_version: app.package_info().version.to_string(),
     })
 }
@@ -247,7 +247,16 @@ pub async fn updates_install<R: Runtime>(app: AppHandle<R>) -> Result<(), String
 pub fn start_check<R: Runtime>(app: AppHandle<R>) {
     tauri::async_runtime::spawn(async move {
         tokio::time::sleep(STARTUP_DELAY).await;
-        if !settings::check_on_start(&app) || !matches!(token(), Ok(Some(_))) {
+        match settings::check_on_start(&app) {
+            Ok(true) => {}
+            Ok(false) => return,
+            Err(e) => {
+                // Skipped, not defaulted: Settings shows the same error when opened.
+                log::warn!("updates: start-up check skipped: {e}");
+                return;
+            }
+        }
+        if !matches!(token(), Ok(Some(_))) {
             return;
         }
         let r = run_check(&app).await;

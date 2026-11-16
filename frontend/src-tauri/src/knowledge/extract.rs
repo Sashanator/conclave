@@ -143,6 +143,33 @@ fn capped_lines(own_lines: &[String]) -> String {
     out.trim_end().to_string()
 }
 
+pub(crate) const GIST_MAX_CHARS: usize = 160;
+
+/// One-line gist of a summary: the first sentence of the first non-heading line, markdown markers stripped.
+pub(crate) fn gist_from_summary(md: &str) -> Option<String> {
+    let line = md.lines().map(str::trim).find(|l| !l.is_empty() && !l.starts_with('#'))?;
+    let line = line.trim_start_matches(['-', '*']).trim_start();
+    let digits = line.chars().take_while(char::is_ascii_digit).count();
+    let line = match line[digits..].strip_prefix('.') {
+        Some(rest) if digits > 0 => rest,
+        _ => line,
+    };
+    let line = line.replace("**", "").replace("__", "").replace('`', "");
+    let chars: Vec<char> = line.trim().chars().collect();
+    let end = (0..chars.len())
+        .find(|&i| matches!(chars[i], '.' | '!' | '?') && chars.get(i + 1).map_or(true, |c| c.is_whitespace()))
+        .map_or(chars.len(), |i| i + 1);
+    let sentence = &chars[..end];
+    if sentence.is_empty() {
+        return None;
+    }
+    Some(if sentence.len() > GIST_MAX_CHARS {
+        sentence[..GIST_MAX_CHARS - 1].iter().collect::<String>() + "…"
+    } else {
+        sentence.iter().collect()
+    })
+}
+
 /// Parses the model's JSON. The reply is untrusted: a code fence is stripped, the three arrays are required, a task
 /// with an unknown owner or an empty text is dropped, every text is trimmed and cut to MAX_TASK_CHARS, every list is
 /// capped at EXTRACT_MAX_ITEMS, and an `at` that is negative or not finite is dropped.
@@ -525,6 +552,20 @@ pub async fn extraction_status(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gist() {
+        assert_eq!(gist_from_summary("## Summary\nWe agreed to ship. Then more.").as_deref(), Some("We agreed to ship."));
+        assert_eq!(gist_from_summary("# T\n\n- **Ship** on Friday\n## Next").as_deref(), Some("Ship on Friday"));
+        assert_eq!(gist_from_summary("1. Done: v1.2 shipped").as_deref(), Some("Done: v1.2 shipped"));
+        assert_eq!(gist_from_summary("## A\n## B"), None);
+        assert_eq!(gist_from_summary(""), None);
+        let long = gist_from_summary(&"a".repeat(400)).unwrap();
+        assert_eq!(long.chars().count(), 160);
+        assert!(long.ends_with('…'));
+        let ru = gist_from_summary(&"щ".repeat(400)).unwrap();
+        assert_eq!(ru.chars().count(), 160);
+    }
+
     use super::*;
     use crate::database::repositories::test_pool;
     use crate::summary::llm_client::LlmCompletion;

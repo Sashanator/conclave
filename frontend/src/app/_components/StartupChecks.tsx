@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
@@ -16,6 +16,8 @@ let cudaToastChecked = false;
 
 export function StartupChecks() {
   const [showRecoveryDialog, setShowRecoveryDialog] = useState(false);
+  const navTimer = useRef<ReturnType<typeof setTimeout>>();
+  useEffect(() => () => clearTimeout(navTimer.current), []);
   const router = useRouter();
   const { refetchMeetings } = useSidebar();
   const recordingState = useRecordingState();
@@ -126,7 +128,7 @@ export function StartupChecks() {
 
         // Auto-navigate after a short delay
         if (result.meetingId) {
-          setTimeout(() => {
+          navTimer.current = setTimeout(() => {
             router.push(`/meeting-details?id=${result.meetingId}`);
           }, 2000);
         }

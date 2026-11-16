@@ -8,6 +8,7 @@ import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateCon
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { StatusOverlays } from '@/app/_components/StatusOverlays';
+import { StartupChecks } from '@/app/_components/StartupChecks';
 import { SettingsModals } from '@/app/_components/SettingsModal';
 import { LiveTranscriptAndNotes } from '@/app/_components/LiveTranscriptAndNotes';
 import { useModalState } from '@/hooks/useModalState';
@@ -60,6 +61,8 @@ export default function RecordPage() {
 
   return (
     <div className="flex flex-col h-screen bg-muted/50">
+      {/* Temporary: the startup checks also run here, so a reload after auto-start still offers recovery */}
+      <StartupChecks />
       {/* All Modals supported*/}
       <SettingsModals
         modals={modals}

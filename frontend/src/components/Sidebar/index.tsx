@@ -68,7 +68,7 @@ const Sidebar: React.FC = () => {
   } = useSidebar();
 
   // Get recording state from RecordingStateContext (single source of truth)
-  const { isRecording } = useRecordingState();
+  const { isRecording, status } = useRecordingState();
   const { openImportDialog } = useImportDialog();
   const { betaFeatures } = useConfig();
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set(['meetings']));
@@ -469,7 +469,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => go(homeRoute(isRecording))}
+                onClick={() => go(homeRoute(isRecording, status))}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-muted' : 'hover:bg-accent'
                   }`}
               >
@@ -850,7 +850,7 @@ const Sidebar: React.FC = () => {
           <div className="flex-shrink-0">
             {!isCollapsed && (
               <div
-                onClick={() => go(homeRoute(isRecording))}
+                onClick={() => go(homeRoute(isRecording, status))}
                 className="p-3  text-lg font-semibold items-center hover:bg-accent h-10   flex mx-3 mt-3 rounded-lg cursor-pointer"
               >
                 <Home className="w-4 h-4 mr-2" />

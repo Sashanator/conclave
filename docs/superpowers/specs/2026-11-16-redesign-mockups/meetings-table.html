@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Conclave: Meetings table</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Tokens copied from frontend/src/app/globals.css */
+:root{--background:0 0% 100%;--foreground:0 0% 3.9%;--card:0 0% 100%;--primary:0 0% 9%;--primary-foreground:0 0% 98%;--muted:0 0% 96.1%;--muted-foreground:0 0% 40%;--accent:0 0% 96.1%;--border:0 0% 89.8%;--ring:0 0% 3.9%;--radius:.5rem;--rec:0 72% 51%;
+  --cat-1:217 91% 60%;--cat-2:160 60% 40%;--cat-3:27 87% 55%;--cat-4:262 70% 60%;--cat-5:0 0% 55%;--row:40px}
+.dark{--background:0 0% 3.9%;--foreground:0 0% 98%;--card:0 0% 6%;--primary:0 0% 98%;--primary-foreground:0 0% 9%;--muted:0 0% 14.9%;--muted-foreground:0 0% 68%;--accent:0 0% 14.9%;--border:0 0% 14.9%;--ring:0 0% 83.1%}
+.theme-conclave{--background:235 45% 9%;--foreground:40 30% 94%;--card:235 40% 12%;--primary:43 90% 58%;--primary-foreground:235 45% 9%;--muted:235 30% 18%;--muted-foreground:230 20% 74%;--accent:235 30% 18%;--border:235 30% 22%;--ring:43 90% 58%}
+.compact{--row:32px}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Source Sans 3",system-ui,sans-serif;font-size:14px;color:hsl(var(--foreground));background:hsl(var(--background))}
+button{font:inherit;color:inherit;cursor:pointer}
+:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+.picker{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 16px;background:#f4f4f5;color:#18181b;border-bottom:1px solid #ddd;font-size:13px}
+.picker b{font-weight:600}.picker .seg{display:inline-flex;border:1px solid #ccc;border-radius:6px;overflow:hidden}
+.picker .seg button{border:0;background:#fff;padding:4px 10px}.picker .seg button[aria-pressed=true]{background:#18181b;color:#fff}
+.app{display:grid;grid-template-columns:208px 1fr auto;height:calc(100vh - 45px);min-height:620px}
+/* nav */
+nav{border-right:1px solid hsl(var(--border));display:flex;flex-direction:column;padding:12px 8px;gap:2px}
+.brand{display:flex;align-items:center;gap:8px;padding:4px 8px 12px;font-weight:700;font-size:15px}
+.brand i{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#1e1b4b,#3730a3);display:inline-block}
+.nav-item{display:flex;align-items:center;gap:10px;padding:0 8px;height:32px;border-radius:6px;border:0;background:none;text-align:left;width:100%;color:hsl(var(--muted-foreground))}
+.nav-item:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.nav-item[aria-current=page]{background:hsl(var(--accent));color:hsl(var(--foreground));font-weight:600}
+.nav-item svg{width:16px;height:16px;flex:none}
+.nav-sep{flex:1}
+.rec{background:hsl(var(--rec));color:#fff;font-weight:600;justify-content:center;margin-bottom:6px;height:36px}
+.rec:hover{background:hsl(0 72% 45%);color:#fff}
+.ver{font-size:12px;color:hsl(var(--muted-foreground));padding:6px 8px}
+.ver span{display:inline-block;width:6px;height:6px;border-radius:50%;background:hsl(var(--cat-1));margin-right:6px;vertical-align:middle}
+/* main */
+main{overflow:auto;padding:20px 28px}
+h1{font-size:22px;margin:0 0 12px;font-weight:700;letter-spacing:-.01em}
+.views{display:flex;gap:2px;border-bottom:1px solid hsl(var(--border));margin-bottom:10px}
+.view{border:0;background:none;padding:6px 10px;color:hsl(var(--muted-foreground));border-bottom:2px solid transparent;margin-bottom:-1px}
+.view[aria-selected=true]{color:hsl(var(--foreground));border-color:hsl(var(--foreground));font-weight:600}
+.view .n{font-size:12px;opacity:.8;margin-left:4px}
+.view.add{color:hsl(var(--muted-foreground))}
+.toolbar{display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--card))}
+.btn:hover{background:hsl(var(--accent))}
+.btn.ghost{border-color:transparent;background:none;color:hsl(var(--muted-foreground))}
+.btn.ghost:hover{color:hsl(var(--foreground));background:hsl(var(--accent))}
+.btn.on{color:hsl(var(--foreground));background:hsl(var(--accent));border-color:transparent}
+.btn.primary{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent;font-weight:600}
+.btn svg{width:14px;height:14px}
+.search{flex:1;min-width:240px;max-width:360px;position:relative}
+.search input::placeholder{color:hsl(var(--muted-foreground))}
+.search input{width:100%;height:30px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--card));color:inherit;padding:0 10px 0 30px;font:inherit}
+.search svg{position:absolute;left:9px;top:8px;width:14px;height:14px;color:hsl(var(--muted-foreground))}
+.chips{display:flex;gap:6px;margin-bottom:12px}
+.chip-f{font-size:12px;border:1px dashed hsl(var(--border));border-radius:999px;padding:2px 10px;color:hsl(var(--muted-foreground));background:none}
+.chip-f.set{border-style:solid;color:hsl(var(--foreground))}
+table{width:100%;border-collapse:collapse;table-layout:fixed}
+th{font-weight:500;font-size:12px;color:hsl(var(--muted-foreground));text-align:left;height:32px;border-bottom:1px solid hsl(var(--border));padding:0 10px}
+th svg{width:12px;height:12px;vertical-align:-1px;margin-right:4px}
+td{height:var(--row);border-bottom:1px solid hsl(var(--border));padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+tbody tr.row:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:-2px}
+tbody tr.row:hover td,tbody tr.row:focus td{background:hsl(var(--accent))}
+tbody tr.row{cursor:pointer}
+.name{font-weight:600}
+.name .sub{font-weight:400;color:hsl(var(--muted-foreground));margin-left:6px;font-size:12px}
+.date{color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+.gist{color:hsl(var(--muted-foreground))}
+:root:not(.compact) td.gist{white-space:normal;padding-block:6px}
+.clamp{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+:root:not(.compact) .clamp{white-space:normal;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35}
+.pinned td{background:hsl(var(--rec)/.06)}
+.hidecat .c-cat{display:none}
+.hint{font-size:12px;color:hsl(var(--muted-foreground));margin-top:10px}
+.tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:1px 8px;border-radius:999px;background:hsl(var(--c)/.12);color:hsl(var(--foreground))}
+.tag::before{content:"";width:6px;height:6px;border-radius:50%;background:hsl(var(--c))}
+.pending{font-size:12px;border:1px solid hsl(var(--border));border-radius:999px;padding:1px 8px;color:hsl(var(--muted-foreground))}
+.live{font-size:12px;border-radius:999px;padding:1px 8px;background:hsl(0 74% 42%);color:#fff;font-weight:600}
+.group button{border:0;background:none;padding:0;display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.group td{height:36px;font-weight:600;border-bottom:1px solid hsl(var(--border));background:none}
+.group .cnt{font-weight:400;color:hsl(var(--muted-foreground));margin-left:6px}
+.group svg{width:12px;height:12px;vertical-align:-1px;margin-right:6px}
+.ck{padding:0;background:none;width:16px;height:16px;border:1.5px solid hsl(var(--muted-foreground));border-radius:4px;display:inline-grid;place-items:center;vertical-align:middle}
+.ck.on{background:hsl(var(--foreground));border-color:hsl(var(--foreground))}
+.ck.on::after{content:"";width:8px;height:4px;border:2px solid hsl(var(--background));border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
+.ck.na{border-style:dashed;opacity:.5}
+.newrow td{color:hsl(var(--muted-foreground));border-bottom:0}
+/* ask */
+aside{width:340px;border-left:1px solid hsl(var(--border));display:flex;flex-direction:column;background:hsl(var(--card))}
+aside[hidden]{display:none}
+.ask-h{display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid hsl(var(--border));font-weight:600}
+.ask-b{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.q{align-self:flex-end;background:hsl(var(--accent));padding:8px 12px;border-radius:10px;max-width:85%}
+.a{line-height:1.5}
+.a .cite{display:block;margin-top:8px;font-size:12px;border:1px solid hsl(var(--border));border-radius:6px;padding:6px 8px;color:hsl(var(--muted-foreground))}
+.a .cite b{color:hsl(var(--foreground));font-weight:600}
+.a mark{background:hsl(43 90% 58%/.35);color:inherit;border-radius:2px;padding:0 1px}
+.scope{font-size:12px;color:hsl(var(--muted-foreground))}
+.ask-in{padding:12px 16px;border-top:1px solid hsl(var(--border))}
+.ask-in textarea{width:100%;resize:none;height:64px;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--background));color:inherit;font:inherit;padding:8px 10px}
+.kbd{font-size:11px;border:1px solid hsl(var(--border));border-radius:4px;padding:0 4px;color:hsl(var(--muted-foreground))}
+@media (prefers-reduced-motion:no-preference){.nav-item,.btn,td{transition:background-color .15s}}
+</style>
+</head>
+<body>
+<div class="picker" role="group" aria-label="Mockup controls">
+  <b>Mockup controls:</b>
+  <span>Theme <span class="seg" id="theme">
+    <button data-choice="theme-light" aria-pressed="true" data-v="">Light</button><button data-choice="theme-dark" aria-pressed="false" data-v="dark">Dark</button><button data-choice="theme-conclave" aria-pressed="false" data-v="theme-conclave">Conclave</button></span></span>
+  <span>Rows <span class="seg" id="density">
+    <button data-choice="rows-comfortable" aria-pressed="true" data-v="">Comfortable</button><button data-choice="rows-compact" aria-pressed="false" data-v="compact">Compact</button></span></span>
+  <span>Group <span class="seg" id="grp">
+    <button data-choice="group-category" aria-pressed="true" data-v="cat">Category</button><button data-choice="group-day" aria-pressed="false" data-v="day">Day</button></span></span>
+  <span>Click <b>Ask</b> in the toolbar to hide or show the sidebar.</span>
+</div>
+
+<div class="app" id="app">
+  <nav aria-label="Main">
+    <div class="brand"><i aria-hidden="true"></i>Conclave</div>
+    <button class="nav-item rec"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="6" fill="currentColor"/></svg>Record now</button>
+    <button class="nav-item" aria-current="page"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></svg>Meetings</button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="m3 7 2 2 4-4M3 17l2 2 4-4M13 6h8M13 12h8M13 18h8"/></svg>Tasks <span class="pending" style="margin-left:auto">7 to review</span></button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 4h12a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4z"/><path d="M8 9h8M8 13h6"/></svg>Briefs &amp; digests</button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M2 12h2M6 8v8M10 5v14M14 8v8M18 10v4M22 12h0"/></svg>Dictate</button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M22 10 12 5 2 10l10 5z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/></svg>Practice</button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 3v18h18M8 17V9M13 17V5M18 17v-6"/></svg>Stats</button>
+    <div class="nav-sep"></div>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 15V3M7 8l5-5 5 5M5 21h14"/></svg>Import audio</button>
+    <button class="nav-item"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-2.9 1.2V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-2.9-1.2l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1A1.7 1.7 0 0 0 3 14H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.2-2.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1A1.7 1.7 0 0 0 10 3V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 2.9 1.2l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1A1.7 1.7 0 0 0 21 10h0a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1z"/></svg>Settings</button>
+    <button class="nav-item ver" data-choice="whats-new"><span aria-hidden="true"></span>What's new in v1.6.0</button>
+  </nav>
+
+  <main>
+    <h1>Meetings</h1>
+    <div class="views" role="tablist" aria-label="Saved views">
+      <button class="view" role="tab" aria-selected="false">All meetings</button>
+      <button class="view" role="tab" aria-selected="true">This week<span class="n">6</span></button>
+      <button class="view" role="tab" aria-selected="false">Not reviewed<span class="n">3</span></button>
+      <button class="view add" aria-label="Add a view">+ View</button>
+    </div>
+    <div class="toolbar">
+      <button class="btn" data-choice="new-meeting" title="New meeting (Ctrl N)"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>New meeting <span class="kbd">Ctrl N</span></button>
+      <label class="search"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></svg><input placeholder="Search everything  ( / )" aria-label="Search meetings"></label>
+      <button class="btn ghost"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M3 5h18l-7 8v6l-4-2v-4z"/></svg>Filter</button>
+      <button class="btn ghost"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></svg>Sort</button>
+      <button class="btn ghost on"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/></svg><span id="grpLabel">Group: Category</span></button>
+      <span style="flex:1"></span>
+      <button class="btn ghost on" id="askBtn" aria-pressed="true" aria-controls="ask" data-choice="toggle-ask"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></svg>Ask <span class="kbd">Ctrl J</span></button>
+    </div>
+    <div class="chips">
+      <span class="chip-f set">Date: This week (Mon 16 – Sun 22 Nov) <button aria-label="Remove date filter" style="border:0;background:none;padding:0 2px">×</button></span>
+      <button class="chip-f">+ Filter</button>
+    </div>
+
+    <table id="tbl">
+            <thead><tr>
+        <th scope="col" style="width:28%">Name</th><th scope="col" style="width:150px">Date</th><th scope="col" class="c-cat" style="width:130px">Category</th><th scope="col">Summary</th><th scope="col" style="width:80px">Reviewed</th>
+      </tr></thead>
+      <tbody id="tb"></tbody>
+    </table>
+    <p class="hint">Keyboard: ↑ ↓ move between rows · Enter opens · Space marks reviewed · / search · Ctrl N new meeting · Ctrl J Ask</p>
+  </main>
+
+  <aside id="ask" aria-label="Ask about your meetings">
+    <div class="ask-h">Ask your meetings <button class="btn ghost" id="askClose" aria-label="Close Ask">✕</button></div>
+    <div class="ask-b">
+      <div class="scope">Searching: all meetings · transcripts, summaries and notes</div>
+      <div class="q">When did we talk about the installer QA owner?</div>
+      <div class="a">On <b>Mon 16 Nov</b>, in the weekly 1:1. Your lead said the <mark>installer QA</mark> moves to Sam, and the release slips a week.
+        <span class="cite"><b>Weekly 1:1 with team lead</b> · transcript 12:40 · “let's give <mark>installer QA</mark> to Sam…”</span>
+        <span class="cite"><b>Team sync</b> · 9 Nov · summary</span>
+      </div>
+    </div>
+    <div class="ask-in"><textarea aria-label="Question" placeholder="Ask about any meeting, keyword or person…"></textarea></div>
+  </aside>
+</div>
+<script>
+const app=document.documentElement;
+function seg(id,apply){document.querySelectorAll('#'+id+' button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#'+id+' button').forEach(x=>x.setAttribute('aria-pressed',x===b));apply(b.dataset.v)}))}
+seg('theme',v=>{app.classList.remove('dark','theme-conclave');if(v)app.classList.add(v)});
+seg('density',v=>{app.classList.toggle('compact',v==='compact')});
+const ask=document.getElementById('ask'),askBtn=document.getElementById('askBtn');
+function setAsk(open){ask.hidden=!open;askBtn.setAttribute('aria-pressed',open);askBtn.classList.toggle('on',open)}
+askBtn.onclick=()=>setAsk(ask.hidden);document.getElementById('askClose').onclick=()=>setAsk(false);
+
+const CAT={'1:1':'--cat-1','Interview':'--cat-3','German lesson':'--cat-2','No template':'--cat-5'};
+const M=[
+ {n:'System design interview',d:'Wed 18 Nov · 11:00',day:'Wednesday 18 Nov',c:'Interview',live:'● Recording · 24 min',r:null},
+ {n:'Weekly 1:1 with team lead',d:'Mon 16 Nov · 10:00',day:'Monday 16 Nov',c:'1:1',g:'Release slips one week; installer QA moves to Sam, who reports back on Thursday.',r:false},
+ {n:'Untitled · Mon 14:02',d:'Mon 16 Nov · 14:02',day:'Monday 16 Nov',c:'No template',g:'Quick call about the conference travel budget.',r:false},
+ {n:'C# interview: backend candidate',d:'Tue 17 Nov · 15:30',day:'Tuesday 17 Nov',c:'Interview',g:'Strong on async and EF Core; weak on distributed tracing. Lean hire.',r:true},
+ {n:'Deutsch B2: Konjunktiv II',d:'Tue 17 Nov · 19:00',day:'Tuesday 17 Nov',c:'German lesson',g:'Konjunktiv II in polite requests; 14 new words; homework p. 42.',r:false},
+ {n:'Mentoring session',d:'Thu 19 Nov · 17:00',day:'Thursday 19 Nov',c:'1:1',pend:true,r:null},
+];
+const tag=c=>`<span class="tag" style="--c:var(${CAT[c]})">${c}</span>`;
+function row(m,pinned){
+ const sum=m.live?`<span class="live">${m.live}</span>`:m.pend?'<span class="pending">Not recorded yet</span>':`<div class="clamp">${m.g}</div>`;
+ const ck=m.r===null?'<span class="ck na" title="No tasks yet" aria-label="No tasks yet"></span>':`<button class="ck${m.r?' on':''}" role="checkbox" aria-checked="${m.r}" aria-label="Tasks reviewed: ${m.n}"></button>`;
+ return `<tr class="row${pinned?' pinned':''}" tabindex="0"><td class="name">${m.n}</td><td class="date">${m.d}</td>${document.getElementById('tbl').classList.contains('hidecat')?'':`<td class="c-cat">${tag(m.c)}</td>`}<td class="${m.g?'gist':''}">${sum}</td><td>${ck}</td></tr>`;
+}
+function render(by){
+ document.getElementById('tbl').classList.toggle('hidecat',by==='cat');
+ const cols=by==='cat'?4:5;
+ const tb=document.getElementById('tb');let h='';
+ const live=M.filter(m=>m.live);
+ if(live.length) h+=`<tr class="group"><td colspan="${cols}">Now</td></tr>`+live.map(m=>row(m,true)).join('');
+ const rest=M.filter(m=>!m.live);
+ const key=by==='cat'?m=>m.c:m=>m.day;
+ const order=by==='cat'?['1:1','Interview','German lesson','No template']:['Monday 16 Nov','Tuesday 17 Nov','Wednesday 18 Nov','Thursday 19 Nov'];
+ for(const k of order){const g=rest.filter(m=>key(m)===k);if(!g.length)continue;
+  h+=`<tr class="group"><td colspan="${cols}"><button aria-expanded="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true" style="width:12px;height:12px"><path d="m6 9 6 6 6-6"/></svg>${by==='cat'?tag(k):k}<span class="cnt">${g.length}</span></button></td></tr>`+g.map(m=>row(m)).join('');}
+ h+=`<tr class="newrow"><td colspan="${cols}">+ New meeting</td></tr>`;
+ tb.innerHTML=h;
+  document.getElementById('grpLabel').textContent='Group: '+(by==='cat'?'Category':'Day');
+}
+render('cat');seg('grp',render);
+document.addEventListener('click',e=>{const c=e.target.closest('button.ck');if(c){const on=c.getAttribute('aria-checked')!=='true';c.setAttribute('aria-checked',on);c.classList.toggle('on',on);e.stopPropagation()}});
+document.addEventListener('keydown',e=>{const r=document.activeElement.closest&&document.activeElement.closest('tr.row');if(!r)return;const rows=[...document.querySelectorAll('tr.row')];const i=rows.indexOf(r);
+ if(e.key==='ArrowDown'){rows[Math.min(i+1,rows.length-1)].focus();e.preventDefault()} if(e.key==='ArrowUp'){rows[Math.max(i-1,0)].focus();e.preventDefault()}
+ if(e.key===' '){const c=r.querySelector('button.ck');if(c)c.click();e.preventDefault()}});
+</script>
+</body>
+</html>

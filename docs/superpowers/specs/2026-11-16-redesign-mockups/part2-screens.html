@@ -1,0 +1,388 @@
+<!DOCTYPE html>
+<html lang="en" class="dark theme-conclave">
+<head>
+<meta charset="utf-8">
+<title>Conclave: Part 2 screens</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+
+/* Tokens from frontend/src/app/globals.css */
+:root{--background:0 0% 100%;--foreground:0 0% 3.9%;--card:0 0% 100%;--primary:0 0% 9%;--primary-foreground:0 0% 98%;--muted:0 0% 96.1%;--muted-foreground:0 0% 40%;--accent:0 0% 96.1%;--border:0 0% 89.8%;--ring:0 0% 3.9%;--violet:262 83% 58%;--rec:0 74% 42%;
+  --cat-1:217 91% 60%;--cat-2:160 60% 40%;--cat-3:27 87% 55%;--cat-5:0 0% 55%}
+.dark{--violet:258 90% 72%;--background:0 0% 3.9%;--foreground:0 0% 98%;--card:0 0% 6%;--primary:0 0% 98%;--primary-foreground:0 0% 9%;--muted:0 0% 14.9%;--muted-foreground:0 0% 68%;--accent:0 0% 14.9%;--border:0 0% 14.9%;--ring:0 0% 83.1%}
+.theme-conclave{--background:235 45% 9%;--foreground:40 30% 94%;--card:235 40% 12%;--primary:43 90% 58%;--primary-foreground:235 45% 9%;--muted:235 30% 18%;--muted-foreground:230 20% 74%;--accent:235 30% 18%;--border:235 30% 22%;--ring:43 90% 58%;--violet:258 90% 72%}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Source Sans 3",system-ui,sans-serif;font-size:14px;color:hsl(var(--foreground));background:hsl(var(--background))}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+.picker{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 16px;background:#f4f4f5;color:#18181b;border-bottom:1px solid #ddd;font-size:13px}
+.picker .seg{display:inline-flex;border:1px solid #ccc;border-radius:6px;overflow:hidden}
+.picker .seg button{border:0;background:#fff;color:#18181b;padding:4px 10px}.picker .seg button[aria-pressed=true]{background:#18181b;color:#fff}
+.app{display:grid;grid-template-columns:208px 1fr;height:calc(100vh - 45px);min-height:640px}
+nav{border-right:1px solid hsl(var(--border));display:flex;flex-direction:column;padding:12px 8px;gap:2px}
+.brand{display:flex;align-items:center;gap:8px;padding:4px 8px 12px;font-weight:700;font-size:15px}
+.brand i{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#1e1b4b,#7c3aed);display:inline-block}
+.nav-item{display:flex;align-items:center;gap:10px;padding:0 8px;height:32px;border-radius:6px;border:0;background:none;text-align:left;width:100%;color:hsl(var(--muted-foreground))}
+.nav-item:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.nav-item[aria-current=page]{background:hsl(var(--accent));color:hsl(var(--foreground));font-weight:600}
+.nav-sep{flex:1}
+.recnav.live{background:hsl(var(--rec));font-variant-numeric:tabular-nums}
+.recnav.quiet{background:none;color:hsl(var(--foreground));border:1px solid hsl(var(--border))}
+.recnav{background:linear-gradient(135deg,#0e7490,#6d28d9);color:#fff;font-weight:600;justify-content:center;height:36px;margin-bottom:6px}
+.ver{font-size:12px}
+main{overflow:auto;padding:16px 32px 40px}
+.crumb{font-size:12px;color:hsl(var(--muted-foreground));margin-bottom:8px}
+.crumb a{color:inherit;text-decoration:none}.crumb a:hover{color:hsl(var(--foreground))}
+.title{font-size:28px;font-weight:700;letter-spacing:-.01em;border:0;background:none;width:100%;padding:2px 0;outline:none;border-radius:4px}
+.title::placeholder{color:hsl(var(--muted-foreground))}
+.title:focus-visible{box-shadow:0 0 0 2px hsl(var(--ring)/.6)}
+.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 16px;color:hsl(var(--muted-foreground))}
+.meta .dot{opacity:.5}
+.chipbtn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;border:1px solid hsl(var(--border));background:hsl(var(--card));font-size:13px;color:hsl(var(--foreground))}
+.chipbtn:hover{border-color:hsl(var(--violet))}
+.tag::before{content:"";width:7px;height:7px;border-radius:50%;background:hsl(var(--c))}
+.head{display:flex;gap:16px;align-items:flex-start}
+.head .grow{flex:1;min-width:0}
+.actions{display:flex;gap:6px;padding-top:26px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--card))}
+.btn:hover{background:hsl(var(--accent))}
+.btn.violet{border-color:hsl(var(--violet)/.6);background:hsl(var(--violet)/.14)}
+.btn.gold{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent;font-weight:600}
+.btn svg{width:15px;height:15px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid hsl(var(--border));margin-bottom:18px}
+.tab{border:0;background:none;padding:8px 12px;color:hsl(var(--muted-foreground));border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab[aria-selected=true]{color:hsl(var(--foreground));border-color:hsl(var(--primary));font-weight:600}
+.tab .n{font-size:12px;margin-left:4px;opacity:.85}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:28px;align-items:start}
+.doc{max-width:720px;line-height:1.6;font-size:15px}
+.doc h2{font-size:17px;margin:20px 0 6px;font-weight:700}
+.doc h2:first-child{margin-top:0}
+.doc p,.doc ul{margin:0 0 8px}
+.doc ul{padding-left:20px}
+.doc .src{font-size:12px;color:hsl(var(--violet));text-decoration:none;margin-left:4px}
+.panel{border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--card))}
+.panel-h{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid hsl(var(--border));font-weight:600}
+.panel-h small{font-weight:400;color:hsl(var(--muted-foreground))}
+.task{display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px 14px;border-bottom:1px solid hsl(var(--border))}
+.task:last-of-type{border-bottom:0}
+.task .t{line-height:1.4}
+.task .who{font-size:12px;color:hsl(var(--muted-foreground));margin-top:2px}
+.task.kept .t::before{content:"✓ ";color:hsl(160 60% 55%);font-weight:700}
+.task.dropped .t{text-decoration:line-through;color:hsl(var(--muted-foreground))}
+.tb{display:flex;gap:4px}
+.ib{width:30px;height:30px;border-radius:6px;border:1px solid hsl(var(--border));background:none;display:grid;place-items:center}
+.ib:hover{background:hsl(var(--accent))}
+.ib svg{width:15px;height:15px}
+.ib[aria-pressed=true].keep{background:hsl(160 60% 40%/.25);border-color:hsl(160 60% 45%)}
+.ib[aria-pressed=true].drop{background:hsl(0 70% 50%/.2);border-color:hsl(0 70% 55%)}
+.panel-f{padding:12px 14px;border-top:1px solid hsl(var(--border));display:flex;gap:8px;align-items:center;justify-content:space-between}
+.panel-f small{color:hsl(var(--muted-foreground));font-size:13px}
+.removed-row{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;border-top:1px dashed hsl(var(--border));color:hsl(var(--muted-foreground));font-size:13px}
+.linkbtn{border:0;background:none;color:hsl(var(--violet));padding:0;font-size:13px}
+.task.dropped{display:none}
+.showdropped .task.dropped{display:grid}
+.panel.done .task,.panel.done .removed-row,.panel.done .panel-f{display:none!important}
+.bulk{display:flex;gap:8px;padding:10px 14px;border-bottom:1px solid hsl(var(--border));align-items:center;font-size:13px;color:hsl(var(--muted-foreground))}
+.kbd{font-size:12px;border:1px solid hsl(var(--border));border-radius:4px;padding:0 4px}
+.datebtn{border:0;background:none;padding:0;color:inherit;border-bottom:1px dashed hsl(var(--muted-foreground))}
+/* before */
+.prep-hero{display:flex;gap:16px;align-items:center;border:1px solid hsl(var(--border));border-radius:12px;padding:16px 18px;background:hsl(var(--card));margin-bottom:20px}
+.bigrec{display:inline-flex;align-items:center;gap:10px;height:44px;padding:0 20px;border-radius:999px;border:0;color:#fff;font-weight:700;font-size:15px;background:linear-gradient(135deg,#0e7490,#6d28d9)}
+.bigrec:hover{filter:brightness(1.1)}
+.bigrec i{width:12px;height:12px;border-radius:50%;background:#fff}
+.prep-hero p{margin:0;color:hsl(var(--muted-foreground));line-height:1.45}
+.editor{min-height:260px;border:1px solid hsl(var(--border));border-radius:10px;padding:14px 16px;background:hsl(var(--background));line-height:1.6;font-size:15px}
+.editor .ph{color:hsl(var(--muted-foreground))}
+.field-l{font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));margin:0 0 6px;text-transform:none}
+/* live */
+.livebar{display:flex;align-items:center;gap:14px;border:1px solid hsl(var(--rec)/.6);background:hsl(var(--rec)/.12);border-radius:12px;padding:12px 16px;margin-bottom:18px}
+.livebar .pulse{width:10px;height:10px;border-radius:50%;background:hsl(0 80% 60%)}
+@media (prefers-reduced-motion:no-preference){.livebar .pulse{animation:p 1.6s ease-in-out infinite}@keyframes p{50%{opacity:.35}}}
+.livebar b{font-variant-numeric:tabular-nums}
+.stop{margin-left:auto;background:hsl(var(--rec));color:#fff;border:0;height:34px;padding:0 16px;border-radius:999px;font-weight:700}
+.tline{display:grid;grid-template-columns:64px 1fr;gap:8px;padding:6px 0;line-height:1.5}
+.tline .ts{font-size:12px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums;padding-top:2px}
+.tline .sp{font-weight:600;margin-right:6px}
+.notein::placeholder,.title::placeholder{color:hsl(var(--muted-foreground))}
+.notein{width:100%;height:80px;resize:none;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--background));padding:8px 10px}
+.note{padding:8px 0;border-bottom:1px solid hsl(var(--border));line-height:1.45}
+.note .ts{font-size:12px;color:hsl(var(--muted-foreground));margin-right:6px}
+[hidden]{display:none!important}
+.h1{font-size:24px;font-weight:700;margin:0 0 12px;letter-spacing:-.01em}
+.h2{font-size:17px;font-weight:700;margin:0 0 8px}
+.h3{font-size:14px;font-weight:700;margin:20px 0 8px}
+.mut{color:hsl(var(--muted-foreground))}.sm{font-size:13px;font-weight:400}
+.lnk{color:hsl(var(--violet))}
+.views{display:flex;gap:2px;border-bottom:1px solid hsl(var(--border));margin-bottom:10px}
+.view{border:0;background:none;padding:6px 10px;color:hsl(var(--muted-foreground));border-bottom:2px solid transparent;margin-bottom:-1px}
+.view[aria-selected=true]{color:hsl(var(--foreground));border-color:hsl(var(--primary));font-weight:600}
+.view .n{font-size:12px;margin-left:4px}
+.toolbar{display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.btn.ghost{border-color:transparent;background:none;color:hsl(var(--muted-foreground))}
+.btn.ghost:hover{color:hsl(var(--foreground));background:hsl(var(--accent))}
+.search{flex:1;min-width:220px;max-width:340px}
+.search input,.inp{width:100%;height:32px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--background));padding:0 10px}
+.search input::placeholder,.inp::placeholder{color:hsl(var(--muted-foreground))}
+.inp{margin-top:8px}
+.kbd{font-size:12px;border:1px solid hsl(var(--border));border-radius:4px;padding:0 4px;color:hsl(var(--muted-foreground))}
+.tbl{width:100%;border-collapse:collapse;table-layout:fixed}
+.tbl th{font-weight:500;font-size:13px;color:hsl(var(--muted-foreground));text-align:left;height:32px;border-bottom:1px solid hsl(var(--border));padding:0 10px}
+.tbl td{height:40px;border-bottom:1px solid hsl(var(--border));padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tbl .grp td{font-weight:600;height:36px}
+.tbl tr.sel td{background:hsl(var(--accent))}
+.nm{font-weight:600}.dt{color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+.tag{display:inline-flex;align-items:center;gap:6px;font-size:13px;padding:1px 8px;border-radius:999px;background:hsl(var(--c)/.16)}
+.pending{font-size:13px;border:1px solid hsl(var(--border));border-radius:999px;padding:1px 8px;color:hsl(var(--muted-foreground))}
+.ready{font-size:13px;color:hsl(var(--foreground))}
+.warn{color:hsl(38 95% 64%)}
+:root:not(.dark) .warn{color:hsl(30 90% 32%)}
+.src-cal{font-size:12px;font-weight:500;border:1px solid hsl(var(--violet)/.6);color:hsl(var(--violet));border-radius:4px;padding:0 5px;margin-left:6px}
+.ck{width:16px;height:16px;border:1.5px solid hsl(var(--muted-foreground));border-radius:4px;display:inline-block;vertical-align:middle}
+.ck.on{background:hsl(var(--foreground))}.ck.na{border-style:dashed;opacity:.6}
+.note-s{margin-top:18px;font-size:13px;color:hsl(var(--muted-foreground));border-left:3px solid hsl(var(--primary));padding:6px 12px;max-width:760px;line-height:1.5}
+.pill{margin-left:auto;font-size:12px;border:1px solid hsl(var(--border));border-radius:999px;padding:0 7px}
+.newdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:hsl(var(--primary));margin-right:6px}
+.panel.pad{padding:14px 16px}
+.lbl{font-size:13px;font-weight:600;color:hsl(var(--muted-foreground));margin:0 0 6px}
+.ul{margin:0 0 12px;padding-left:20px;line-height:1.55}
+.sm-btn{height:28px;font-size:13px}
+.chk{display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid hsl(var(--border))}
+.chk input{accent-color:hsl(var(--primary));width:16px;height:16px}
+.chk .kind{margin-left:auto;font-size:12px;color:hsl(var(--muted-foreground));border:1px solid hsl(var(--border));border-radius:999px;padding:0 7px}
+.setgrid{display:grid;grid-template-columns:220px minmax(0,760px);gap:28px}
+.subnav{display:flex;flex-direction:column;gap:2px}
+.subnav .sg{font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));margin:12px 8px 4px}
+.subnav .sg:first-child{margin-top:0}
+.subnav button{border:0;background:none;text-align:left;padding:6px 8px;border-radius:6px;color:hsl(var(--muted-foreground))}
+.subnav button:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.subnav button[aria-current=page]{background:hsl(var(--accent));color:hsl(var(--foreground));font-weight:600;box-shadow:inset 3px 0 0 hsl(var(--primary))}
+.srow{display:grid;grid-template-columns:1fr auto auto;gap:14px;align-items:center;padding:10px 14px;border-bottom:1px solid hsl(var(--border))}
+.srow:last-child{border-bottom:0}
+.ok{color:hsl(150 60% 60%)}
+:root:not(.dark) .ok{color:hsl(150 70% 28%)}
+.app.noside{grid-template-columns:1fr}.app.noside>nav{display:none}
+.onb{max-width:620px;margin:24px auto}
+.steps{display:flex;gap:6px;list-style:none;padding:0;margin:0 0 24px;counter-reset:s}
+.steps li{flex:1;font-size:13px;color:hsl(var(--muted-foreground));border-top:3px solid hsl(var(--border));padding-top:6px;counter-increment:s}
+.steps li::before{content:counter(s) " · "}
+.steps li.done{border-color:hsl(var(--primary)/.5)}
+.steps li[aria-current]{border-color:hsl(var(--primary));color:hsl(var(--foreground));font-weight:600}
+.lead{font-size:15px;line-height:1.55;margin:0 0 18px}
+.seg2{display:flex;flex-wrap:wrap;gap:6px}
+.seg2 button{height:32px;padding:0 12px;border-radius:6px;border:1px solid hsl(var(--border));background:none}
+.seg2 button[aria-pressed=true]{border-color:hsl(var(--primary));box-shadow:inset 0 0 0 1px hsl(var(--primary));font-weight:600}
+.onb-f{display:flex;justify-content:space-between;margin-top:18px}
+.popup{width:460px;border:1px solid hsl(var(--border));border-radius:12px;background:hsl(var(--card));padding:10px 12px;margin-bottom:18px;box-shadow:0 8px 24px hsl(0 0% 0%/.35)}
+.pl1{display:flex;align-items:center;gap:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:8px}
+.pl1 .mut{overflow:hidden;text-overflow:ellipsis}
+.pl2{display:flex;gap:6px}.pl2 .ix{margin-left:auto;width:32px;padding:0;justify-content:center}
+.zdot{width:9px;height:9px;border-radius:50%;background:hsl(213 94% 62%);flex:none}.zdot.g{background:hsl(var(--muted-foreground))}
+.recpanel{border:1px solid hsl(var(--border));border-radius:12px;background:hsl(var(--card));padding:18px}
+.devs{display:grid;gap:10px;margin-bottom:14px}
+.dev{display:grid;grid-template-columns:120px 300px 1fr;gap:12px;align-items:center}
+.dev .lbl{margin:0}
+.meter{height:6px;border-radius:3px;background:hsl(var(--muted));max-width:220px;overflow:hidden}
+.meter i{display:block;height:100%;background:hsl(150 60% 50%)}
+.detected{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:8px;background:hsl(var(--accent));margin-bottom:16px}
+.recbtns{display:flex;align-items:center;gap:14px}
+.livebar .btn{margin-left:auto}.livebar .stop{margin-left:0}
+.wn{max-width:720px}
+.rel{border-bottom:1px solid hsl(var(--border));padding:18px 0}
+.rh{display:flex;align-items:baseline;gap:12px;margin-bottom:6px}.rh .h2{margin:0}
+.badge{font-size:12px;border-radius:999px;padding:0 8px;background:hsl(var(--primary));color:hsl(var(--primary-foreground));font-weight:600}
+.about{margin-top:24px;font-size:13px;color:hsl(var(--muted-foreground))}
+</style>
+</head>
+<body>
+<div class="picker" role="group" aria-label="Mockup controls">
+  <b>Mockup controls:</b>
+  <span>Screen <span class="seg" id="screen">
+    <button data-choice="p2-calendar" aria-pressed="true" data-v="cal">1 · Calendar in This week</button><button data-choice="p2-prep" aria-pressed="false" data-v="prep">2 · Prep tab</button><button data-choice="p2-settings" aria-pressed="false" data-v="set">3 · Settings: AI</button><button data-choice="p2-onboarding" aria-pressed="false" data-v="onb">4 · Onboarding</button><button data-choice="p2-popup" aria-pressed="false" data-v="pop">5 · Zoom pop-up</button><button data-choice="p2-record" aria-pressed="false" data-v="rec">6 · Record screen</button><button data-choice="p2-whatsnew" aria-pressed="false" data-v="new">7 · What's new</button></span></span>
+  <span>Theme <span class="seg" id="theme">
+    <button data-choice="theme-conclave" aria-pressed="true" data-v="dark theme-conclave">Conclave</button><button data-choice="theme-dark" aria-pressed="false" data-v="dark">Dark</button><button data-choice="theme-light" aria-pressed="false" data-v="">Light</button></span></span>
+</div>
+
+<div class="app" id="app">
+  <nav aria-label="Main">
+    <div class="brand"><i aria-hidden="true"></i>Conclave</div>
+    <button class="nav-item recnav quiet">● Record new meeting</button>
+    <button class="nav-item" data-nav="cal prep rec" aria-current="page">Meetings</button>
+    <button class="nav-item">Tasks <span class="pill">7</span></button>
+    <button class="nav-item">Digests</button>
+    <button class="nav-item">Dictate</button>
+    <button class="nav-item">Practice</button>
+    <button class="nav-item">Stats</button>
+    <div class="nav-sep"></div>
+    <button class="nav-item">Import audio</button>
+    <button class="nav-item" data-nav="set">Settings</button>
+    <button class="nav-item ver" data-nav="new"><span class="newdot" aria-hidden="true"></span>What's new in v1.6.0</button>
+  </nav>
+
+  <main>
+  <!-- 1 CALENDAR IN THIS WEEK -->
+  <section data-s="cal">
+    <h1 class="h1">Meetings</h1>
+    <div class="views" role="tablist" aria-label="Saved views"><button class="view" role="tab" aria-selected="false">All meetings</button><button class="view" role="tab" aria-selected="true">This week<span class="n">4</span></button><button class="view" role="tab" aria-selected="false">Not reviewed<span class="n">2</span></button><button class="view">+ View</button></div>
+    <div class="toolbar"><button class="btn">+ New meeting</button><label class="search"><input placeholder="Search everything  ( / )" aria-label="Search meetings"></label><button class="btn ghost">Filter</button><button class="btn ghost">Sort</button><button class="btn ghost">Group: Day</button><span style="flex:1"></span><button class="btn ghost">Ask <span class="kbd">Ctrl J</span></button></div>
+    <table class="tbl">
+      <thead><tr><th style="width:30%">Name</th><th style="width:110px">Time</th><th style="width:130px">Category</th><th>Summary</th><th style="width:80px">Reviewed</th></tr></thead>
+      <tbody>
+        <tr class="grp"><td colspan="5">Monday 16 Nov</td></tr>
+        <tr><td class="nm">Weekly 1:1 with team lead</td><td class="dt">10:00</td><td><span class="tag" style="--c:var(--cat-1)">1:1</span></td><td class="mut">Release slips one week; installer QA moves to Sam.</td><td><span class="ck on"></span></td></tr>
+        <tr class="grp"><td colspan="5">Today · Thursday 19 Nov</td></tr>
+        <tr class="sel"><td class="nm">Mentoring session <span class="src-cal" title="From your calendar">Calendar</span></td><td class="dt">17:00</td><td><span class="tag" style="--c:var(--cat-1)">1:1</span></td><td><span class="ready">Brief ready · 3 prep points</span></td><td></td></tr>
+        <tr><td class="nm">Product sync <span class="src-cal">Calendar</span></td><td class="dt">18:30</td><td><span class="tag" style="--c:var(--cat-5)">No template</span></td><td><span class="mut">No prep yet</span></td><td></td></tr>
+        <tr class="grp"><td colspan="5">Friday 20 Nov</td></tr>
+        <tr><td class="nm">Deutsch B2 <span class="src-cal">Calendar</span></td><td class="dt">19:00</td><td><span class="tag" style="--c:var(--cat-2)">German lesson</span></td><td><span class="ready">Brief ready · last lesson's homework</span></td><td></td></tr>
+      </tbody>
+    </table>
+    <p class="note-s">Calendar events of the week appear here by themselves, marked <span class="src-cal">Calendar</span>. Opening one shows its brief and prep. When the call starts, Record fills this same row. Briefs no longer need their own page; weekly digests keep theirs.</p>
+  </section>
+
+  <!-- 2 PREP TAB -->
+  <section data-s="prep" hidden>
+    <div class="crumb">Meetings / This week</div>
+    <input class="title" value="Mentoring session" aria-label="Meeting name">
+    <div class="meta"><button class="datebtn">Thu 19 Nov · 17:00</button> · from your calendar · <button class="chipbtn tag" style="--c:var(--cat-1)">1:1 ▾</button></div>
+    <div class="prep-hero"><button class="bigrec"><i aria-hidden="true"></i>Start recording</button><p>Recording goes into this meeting. Your prep is passed to the summary.</p></div>
+    <div class="tabs" role="tablist"><button class="tab" role="tab" aria-selected="true">Prep</button><button class="tab" role="tab" aria-selected="false" disabled>Summary</button><button class="tab" role="tab" aria-selected="false" disabled>Transcript</button></div>
+    <div class="cols">
+      <div>
+        <h2 class="h2">Brief <span class="mut sm">written by AI from your earlier meetings</span></h2>
+        <div class="panel pad">
+          <p class="lbl">From last time · <a class="lnk" href="#">Mentoring session, 5 Nov</a></p>
+          <ul class="ul"><li>You agreed to draft a 6-month growth plan.</li><li>Mentor suggested reading “Staff Engineer”, chapter 3.</li></ul>
+          <p class="lbl">Still open</p>
+          <ul class="ul"><li>Draft the growth plan <a class="lnk" href="#">in Tasks</a></li></ul>
+          <button class="btn sm-btn">Regenerate brief</button>
+        </div>
+      </div>
+      <div>
+        <h2 class="h2">My prep</h2>
+        <div class="panel pad">
+          <label class="chk"><input type="checkbox" checked> <span>Show the growth plan draft</span> <span class="kind">Goal</span></label>
+          <label class="chk"><input type="checkbox"> <span>Ask how to pick a mentee for next year</span> <span class="kind">Question</span></label>
+          <label class="chk"><input type="checkbox"> <span>Ask about conference talk proposal</span> <span class="kind">Question</span></label>
+          <input class="inp" placeholder="Add a question or goal, press Enter" aria-label="Add prep point">
+          <p class="lbl" style="margin-top:14px">Material</p>
+          <button class="btn sm-btn">Attach file…</button> <span class="mut sm">growth-plan-draft.md</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- 3 SETTINGS -->
+  <section data-s="set" hidden>
+    <h1 class="h1">Settings</h1>
+    <div class="setgrid">
+      <nav class="subnav" aria-label="Settings sections">
+        <p class="sg">Capture</p><button>Recording &amp; devices</button><button>Transcription</button><button>Speakers</button>
+        <p class="sg">AI</p><button aria-current="page">AI models &amp; keys</button><button>Summary &amp; templates</button><button>Tasks &amp; digests</button><button>Copilot</button>
+        <p class="sg">Me</p><button>About me &amp; names</button><button>Calendar</button>
+        <p class="sg">App</p><button>General &amp; storage</button>
+      </nav>
+      <div class="setbody">
+        <h2 class="h2">AI models &amp; keys</h2>
+        <p class="mut">One place for every cloud model. Features use the default unless you override them.</p>
+        <div class="panel">
+          <div class="srow"><div><b>Claude (Anthropic)</b><div class="mut sm">Key ends in …8f2c · tested today</div></div><span class="ok">● Connected</span><button class="btn">Change key</button></div>
+          <div class="srow"><div><b>OpenAI</b><div class="mut sm">Not set</div></div><span class="mut">—</span><button class="btn">Add key</button></div>
+          <div class="srow"><div><b>Groq</b><div class="mut sm">Not set</div></div><span class="mut">—</span><button class="btn">Add key</button></div>
+          <div class="srow"><div><b>OpenRouter</b><div class="mut sm">Not set</div></div><span class="mut">—</span><button class="btn">Add key</button></div>
+          <div class="srow"><div><b>Custom (OpenAI-compatible)</b><div class="mut sm">Base URL, model and key</div></div><span class="mut">—</span><button class="btn">Set up</button></div>
+        </div>
+        <h3 class="h3">Default model</h3>
+        <div class="panel"><div class="srow"><div><b>Claude Sonnet</b><div class="mut sm">≈ $0.03 per one-hour meeting</div></div><button class="btn">Change ▾</button></div></div>
+        <details open><summary class="h3" style="cursor:pointer">Advanced: different model per feature</summary>
+        <div class="panel">
+          <div class="srow"><span>Summaries</span><span class="mut">Default · Claude Sonnet</span><button class="btn ghost">Override</button></div>
+          <div class="srow"><span>Ask, tasks &amp; briefs</span><span class="mut">Default · Claude Sonnet</span><button class="btn ghost">Override</button></div>
+          <div class="srow"><span>Copilot (live)</span><span>Claude Haiku <span class="mut sm">faster</span></span><button class="btn ghost">Reset</button></div>
+          <div class="srow"><span>Template assistant</span><span class="mut">Default · Claude Sonnet</span><button class="btn ghost">Override</button></div>
+          <div class="srow"><span>Dictate clean-up</span><span class="warn">⚠ Groq Llama: no Groq key, clean-up is off</span><button class="btn">Add Groq key</button></div>
+          <div class="srow"><span>Practice partner</span><span class="mut">Default · Claude Sonnet</span><button class="btn ghost">Override</button></div>
+        </div></details>
+        <p class="note-s">Replaces 10 tabs (Beta is gone, Costs becomes the price hint next to each model). The six model pickers (Summary, Copilot, Knowledge → “Ask, tasks &amp; briefs”, Templates, Dictate, Practice) move here; overrides stay under Advanced because most of the time one key and one model is enough.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- 4 ONBOARDING -->
+  <section data-s="onb" hidden>
+    <div class="onb">
+      <ol class="steps" aria-label="Setup steps"><li class="done">Welcome</li><li class="done">Audio check</li><li aria-current="step">AI key</li><li>Transcription model</li></ol>
+      <h1 class="h1">Connect your AI for summaries</h1>
+      <p class="mut lead">Conclave transcribes on this PC. Summaries, tasks and Ask use a cloud model with <b>your own key</b>. Only text is sent (transcripts, your notes and prep), never audio.</p>
+      <div class="panel pad">
+        <p class="lbl">Provider</p>
+        <div class="seg2" role="radiogroup"><button aria-pressed="true">Claude</button><button>OpenAI</button><button>Groq</button><button>OpenRouter</button><button>Custom</button></div>
+        <p class="lbl" style="margin-top:14px">API key</p>
+        <div style="display:flex;gap:8px"><input class="inp" value="sk-ant-••••••••••••8f2c" aria-label="API key" style="margin:0"><button class="btn">Test</button></div>
+        <p class="sm mut" style="margin-top:6px"><a class="lnk" href="#">Where do I get a Claude key?</a> · console.anthropic.com → API keys</p>
+        <p class="ok sm" style="margin-top:8px">● Works: Claude Sonnet answered in 0.8 s</p>
+      </div>
+      <div class="onb-f"><button class="btn">← Back</button><span style="display:flex;gap:8px;align-items:center"><button class="btn ghost" title="Summaries won't run until you add a key">Skip: no summaries until a key is added</button><button class="btn gold">Continue</button></span></div>
+      <p class="note-s">Step 2 “Audio check” replaces the macOS permission screen: a 5-second level test of microphone and system audio. The transcription model (step 4) starts downloading in the background from step 1.</p>
+    </div>
+  </section>
+
+  <!-- 5 POP-UP -->
+  <section data-s="pop" hidden>
+    <h1 class="h1">Meeting-detected pop-up <span class="mut sm">(real size 460 × 96; Esc = Not now)</span></h1>
+    <p class="note-s" style="margin:0 0 16px">Line 1 = app + meeting (long titles fade out), line 2 = buttons, so the title can never shrink to “Z.” again.</p>
+    <p class="lbl">A · New call</p>
+    <div class="popup"><div class="pl1"><span class="zdot" aria-hidden="true"></span><b>Zoom</b><span class="mut"> · Quarterly planning with the platform team and external partners (calendar)</span></div><div class="pl2"><button class="btn gold">● Record</button><button class="btn ghost">Not now</button></div></div>
+    <p class="lbl">B · Same call again (dropped after 40 min)</p>
+    <div class="popup"><div class="pl1"><span class="zdot" aria-hidden="true"></span><b>Zoom again</b><span class="mut"> · continue “Weekly product sync”?</span></div><div class="pl2"><button class="btn gold">Continue</button><button class="btn">New meeting</button><button class="btn ghost">Not now</button></div></div>
+    <p class="lbl">C · Not sure which app</p>
+    <div class="popup"><div class="pl1"><span class="zdot g" aria-hidden="true"></span><b>Chrome is using the microphone</b><span class="mut"> · meet.google.com?</span></div><div class="pl2"><button class="btn gold">● Record</button><button class="btn ghost">Not now</button><button class="btn ghost" style="margin-left:auto">Don't ask for Chrome</button></div></div>
+    <p class="lbl">D · Call ended</p>
+    <div class="popup"><div class="pl1"><span class="zdot g" aria-hidden="true"></span><b>Recording saved</b><span class="mut"> · writing the summary…</span></div><div class="pl2"><button class="btn">Open meeting</button><button class="btn ghost">Close</button></div></div>
+  </section>
+
+  <!-- 6 RECORD SCREEN -->
+  <section data-s="rec" hidden>
+    <div class="crumb">Meetings / This week</div>
+    <input class="title" value="Mentoring session" aria-label="Meeting name">
+    <div class="meta">Thu 19 Nov · 17:00 · from your calendar · Zoom call running · <button class="chipbtn tag" style="--c:var(--cat-1)">1:1 ▾</button> · 3 prep points</div>
+    <div class="recpanel">
+      <div class="devs">
+        <div class="dev"><span class="lbl">Microphone</span><button class="btn">Headset (Jabra Evolve2) ▾</button><span class="meter" role="meter" aria-valuenow="42" aria-label="Microphone level"><i style="width:42%"></i></span></div>
+        <div class="dev"><span class="lbl">System audio</span><button class="btn">Speakers (Realtek) ▾</button><span class="meter" role="meter" aria-valuenow="0" aria-label="System audio level"><i style="width:0%"></i></span></div>
+        <div class="dev"><span></span><span class="warn sm" style="grid-column:2/4">⚠ No sound from Speakers while Zoom is running: is the call playing in your headset? <button class="btn" style="height:26px;margin-left:6px">Switch to Jabra</button></span></div>
+        <div class="dev"><span class="lbl">Language</span><button class="btn">Auto (RU · EN · DE) ▾</button></div>
+      </div>
+      <div class="detected"><span class="zdot" aria-hidden="true"></span>Recording goes into <b>Mentoring session</b> (matches the Zoom call and your calendar). <button class="linkbtn">Record as a new meeting instead</button></div>
+      <div class="recbtns"><button class="bigrec"><i aria-hidden="true"></i>Start recording</button><span class="mut sm">Ctrl Shift R from anywhere</span></div>
+    </div>
+    <p class="lbl" style="margin-top:22px">While recording, the controls are labelled:</p>
+    <div class="livebar" role="status"><span class="pulse" aria-hidden="true"></span>Recording <b>03:12</b><button class="btn">❚❚ Pause</button><button class="stop">■ Stop and summarize</button></div>
+  </section>
+
+  <!-- 7 WHAT'S NEW -->
+  <section data-s="new" hidden>
+    <div class="wn">
+      <h1 class="h1">What's new</h1>
+      <article class="rel cur"><div class="rh"><h2 class="h2">v1.6.0</h2><span class="mut">16 Nov 2026</span><span class="badge">Installed</span></div>
+        <ul class="ul"><li><b>Meetings table.</b> All your meetings in one table with views like <i>This week</i>, search across transcripts, and grouping by day or category.</li><li><b>Create a meeting first.</b> Name it, write prep notes, then press Record.</li><li><b>Review tasks.</b> Tasks that aren't yours are removed for you; keep the rest in one click.</li><li><b>Ask</b> now opens as a sidebar next to the table (Ctrl J).</li></ul>
+        <p class="mut sm">Before you install a newer version, back up your data: <a class="lnk" href="#">README → Back up before you update</a>.</p></article>
+      <article class="rel"><div class="rh"><h2 class="h2">v1.5.2</h2><span class="mut">12 Nov 2026</span></div><ul class="ul"><li>Warnings and crashes are written to a log file you can attach to a bug report.</li></ul></article>
+      <article class="rel"><div class="rh"><h2 class="h2">v1.5.0</h2><span class="mut">2 Nov 2026</span></div><ul class="ul"><li>Template history and an AI assistant that improves a summary template from an example.</li></ul></article>
+      <footer class="about">Conclave v1.6.0 · Based on Meetily (MIT) · <a class="lnk" href="#">Open data folder</a> · <a class="lnk" href="#">Open log file</a></footer>
+    </div>
+  </section>
+  </main>
+</div>
+<script>
+const root=document.documentElement;
+function seg(id,apply){document.querySelectorAll('#'+id+' button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#'+id+' button').forEach(x=>x.setAttribute('aria-pressed',x===b));apply(b.dataset.v)}))}
+seg('theme',v=>{root.className=v});
+function show(v){document.querySelectorAll('[data-s]').forEach(s=>s.hidden=s.dataset.s!==v);
+ document.querySelectorAll('nav .nav-item').forEach(n=>n.removeAttribute('aria-current'));
+ const n=[...document.querySelectorAll('nav [data-nav]')].find(n=>n.dataset.nav.split(' ').includes(v));if(n)n.setAttribute('aria-current','page');
+ document.getElementById('app').classList.toggle('noside',v==='onb'||v==='pop')}
+seg('screen',show);show('cal');
+</script>
+</body>
+</html>

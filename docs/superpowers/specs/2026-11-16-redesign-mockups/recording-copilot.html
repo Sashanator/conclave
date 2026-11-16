@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en" class="dark theme-conclave">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Conclave: Recording with Copilot</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Tokens as in the approved meeting-page mockup */
+:root{--background:0 0% 100%;--foreground:0 0% 3.9%;--card:0 0% 100%;--primary:0 0% 9%;--primary-foreground:0 0% 98%;--muted:0 0% 96.1%;--muted-foreground:0 0% 40%;--accent:0 0% 96.1%;--border:0 0% 89.8%;--ring:0 0% 3.9%;--violet:262 83% 58%;--rec:0 74% 42%;--live:142 70% 28%;--cat-1:217 91% 60%}
+.dark{--violet:258 90% 72%;--background:0 0% 3.9%;--foreground:0 0% 98%;--card:0 0% 6%;--primary:0 0% 98%;--primary-foreground:0 0% 9%;--muted:0 0% 14.9%;--muted-foreground:0 0% 68%;--accent:0 0% 14.9%;--border:0 0% 14.9%;--ring:0 0% 83.1%;--live:142 60% 55%}
+.theme-conclave{--background:235 45% 9%;--foreground:40 30% 94%;--card:235 40% 12%;--primary:43 90% 58%;--primary-foreground:235 45% 9%;--muted:235 30% 18%;--muted-foreground:230 20% 74%;--accent:235 30% 18%;--border:235 30% 22%;--ring:43 90% 58%;--violet:258 90% 72%}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Source Sans 3",system-ui,sans-serif;font-size:14px;color:hsl(var(--foreground));background:hsl(var(--background))}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+[hidden]{display:none!important}
+.picker{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 16px;background:#f4f4f5;color:#18181b;border-bottom:1px solid #ddd;font-size:13px}
+.picker .seg{display:inline-flex;border:1px solid #ccc;border-radius:6px;overflow:hidden}
+.picker .seg button{border:0;background:#fff;color:#18181b;padding:4px 10px}.picker .seg button[aria-pressed=true]{background:#18181b;color:#fff}
+.app{display:grid;grid-template-columns:208px minmax(0,1fr) auto;height:calc(100vh - 45px);min-height:640px}
+nav{border-right:1px solid hsl(var(--border));display:flex;flex-direction:column;padding:12px 8px;gap:2px}
+.brand{display:flex;align-items:center;gap:8px;padding:4px 8px 12px;font-weight:700;font-size:15px}
+.brand i{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#1e1b4b,#7c3aed)}
+.nav-item{display:flex;align-items:center;gap:10px;padding:0 8px;height:32px;border-radius:6px;border:0;background:none;text-align:left;width:100%;color:hsl(var(--muted-foreground))}
+.nav-item:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.nav-item[aria-current=page]{background:hsl(var(--accent));color:hsl(var(--foreground));font-weight:600}
+.nav-sep{flex:1}
+.recnav{justify-content:center;height:36px;margin-bottom:6px;font-weight:600;color:#fff;background:hsl(var(--rec));font-variant-numeric:tabular-nums}
+.ver{font-size:12px}
+main{overflow:auto;padding:16px 32px 40px;min-width:0}
+.crumb{font-size:12px;color:hsl(var(--muted-foreground));margin-bottom:8px}
+.crumb a{color:inherit;text-decoration:none}
+.head{display:flex;gap:16px;align-items:flex-start}.grow{flex:1;min-width:0}
+.title{font-size:28px;font-weight:700;letter-spacing:-.01em;border:0;background:none;width:100%;padding:2px 0;outline:none;border-radius:4px}
+.title:focus-visible{box-shadow:0 0 0 2px hsl(var(--ring)/.6)}
+.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 14px;color:hsl(var(--muted-foreground))}
+.chipbtn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;border:1px solid hsl(var(--border));background:hsl(var(--card));font-size:13px;color:hsl(var(--foreground))}
+.chipbtn:hover{border-color:hsl(var(--violet))}
+.tag::before{content:"";width:7px;height:7px;border-radius:50%;background:hsl(var(--cat-1))}
+.actions{padding-top:6px}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--card))}
+.btn:hover{background:hsl(var(--accent))}
+.btn[aria-expanded=true]{border-color:hsl(var(--primary));background:hsl(var(--primary)/.12)}
+.btn svg{width:15px;height:15px}
+.btn.sm{height:28px;padding:0 10px;font-size:13px}
+.btn.ghost{border-color:transparent;background:none}
+.kbd{font-size:11px;border:1px solid hsl(var(--border));border-radius:4px;padding:0 4px;color:hsl(var(--muted-foreground))}
+.livebar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;border:1px solid hsl(var(--rec)/.6);background:hsl(var(--rec)/.12);border-radius:12px;padding:10px 16px;margin-bottom:16px}
+.pulse{width:10px;height:10px;border-radius:50%;background:hsl(0 80% 60%);flex:none}
+@media (prefers-reduced-motion:no-preference){.pulse{animation:p 1.6s ease-in-out infinite}@keyframes p{50%{opacity:.35}}}
+.livebar b{font-variant-numeric:tabular-nums}
+.audio{color:hsl(var(--muted-foreground))}
+.lb-r{margin-left:auto;display:flex;gap:8px}
+.stop{background:hsl(var(--rec));color:#fff;border:0;height:34px;padding:0 16px;border-radius:999px;font-weight:700}
+.pause{height:34px;padding:0 14px;border-radius:999px;border:1px solid hsl(var(--border));background:hsl(var(--card))}
+/* columns: closed = transcript | notes; open = one column with Transcript / My notes tabs */
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:28px;align-items:start}
+.tabs{display:none;gap:2px;border-bottom:1px solid hsl(var(--border));margin-bottom:12px}
+.tab{border:0;background:none;padding:8px 12px;color:hsl(var(--muted-foreground));border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab[aria-selected=true]{color:hsl(var(--foreground));border-color:hsl(var(--primary));font-weight:600}
+.sb-open .cols{grid-template-columns:minmax(0,1fr)}
+.sb-open .tabs{display:flex}
+.sb-open .cols [role=tabpanel]:not(.on){display:none}
+.field-l{font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));margin:0 0 6px}
+.sb-open .field-l{display:none}
+.tline{display:grid;grid-template-columns:52px 1fr;gap:8px;padding:6px 8px;line-height:1.5;border-radius:6px}
+.tline.hl{background:hsl(var(--primary)/.18)}
+.tline .ts{font-size:12px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums;padding-top:2px}
+.tline .sp{font-weight:600;margin-right:6px}
+.tscroll{max-height:calc(100vh - 330px);overflow:auto;scroll-behavior:smooth}
+@media (prefers-reduced-motion:reduce){.tscroll{scroll-behavior:auto}}
+.panel{border:1px solid hsl(var(--border));border-radius:12px;background:hsl(var(--card))}
+.panel-h{padding:10px 14px;font-weight:600;border-bottom:1px solid hsl(var(--border));display:flex;justify-content:space-between}
+.panel-h small{font-weight:400;color:hsl(var(--muted-foreground))}
+.note{padding:8px 0;border-bottom:1px solid hsl(var(--border));line-height:1.45}
+.note .ts{font-size:12px;color:hsl(var(--muted-foreground));margin-right:6px}
+.notein{width:100%;height:80px;resize:none;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--background));padding:8px 10px;margin-top:10px}
+::placeholder{color:hsl(var(--muted-foreground));opacity:1}
+/* Copilot sidebar: same shell as the Ask sidebar (states-search.html s-ask) */
+aside{width:360px;border-left:1px solid hsl(var(--border));display:flex;flex-direction:column;background:hsl(var(--card));min-height:0}
+.ask-h{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 10px 16px;font-weight:600}
+.live{display:inline-flex;align-items:center;gap:5px;margin-left:8px;font-size:12px;font-weight:600;color:hsl(var(--live))}
+.live::before{content:"";width:7px;height:7px;border-radius:50%;background:currentColor}
+@media (prefers-reduced-motion:no-preference){.live::before{animation:p 1.6s ease-in-out infinite}}
+.ask-sc{padding:0 16px 10px;border-bottom:1px solid hsl(var(--border))}
+.ask-sc .chipbtn{background:hsl(var(--background))}
+.quick{display:flex;flex-wrap:wrap;gap:6px;padding:10px 16px;border-bottom:1px solid hsl(var(--border))}
+.quick .btn{height:28px;font-size:13px;background:hsl(var(--background))}
+.alerts{padding:8px 16px;font-size:12px;color:hsl(var(--muted-foreground));border-bottom:1px solid hsl(var(--border))}
+.alerts a{color:hsl(var(--foreground));text-underline-offset:2px}
+.ask-b{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.q{align-self:flex-end;background:hsl(var(--accent));padding:8px 12px;border-radius:10px;max-width:88%}
+.a{line-height:1.55}.a ul{margin:6px 0;padding-left:18px}.a li{margin-bottom:4px}
+.cardmeta{font-size:12px;color:hsl(var(--muted-foreground));margin-bottom:4px}
+.cc{display:inline-block;font-size:12px;border:1px solid hsl(var(--primary)/.6);background:none;color:hsl(var(--primary));border-radius:6px;padding:0 6px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.cc:hover{background:hsl(var(--primary)/.15)}
+.arow{display:flex;gap:6px;margin-top:8px}
+.alert{border:1px solid hsl(var(--primary)/.6);background:hsl(var(--primary)/.12);border-radius:10px;padding:10px 12px;line-height:1.45}
+.alert b{display:block;margin-bottom:2px}
+.ask-in{padding:10px 16px 12px;border-top:1px solid hsl(var(--border))}
+.ask-in textarea{width:100%;resize:none;height:60px;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--background));padding:8px 10px}
+.ask-f{display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground))}
+.cap{margin:12px 0 0;font-size:12px;color:hsl(var(--muted-foreground));max-width:70ch}
+</style>
+</head>
+<body>
+<div class="picker" role="group" aria-label="Mockup controls">
+  <b>Mockup controls:</b>
+  <span>Theme <span class="seg" id="theme" role="group" aria-label="Theme">
+    <button aria-pressed="true" data-v="dark theme-conclave">Conclave</button><button aria-pressed="false" data-v="dark">Dark</button><button aria-pressed="false" data-v="">Light</button></span></span>
+  <span>Sidebar <span class="seg" id="sbpick" role="group" aria-label="Sidebar">
+    <button aria-pressed="true" data-v="open">Open</button><button aria-pressed="false" data-v="closed">Closed</button></span></span>
+</div>
+
+<div class="app sb-open" id="app">
+  <nav aria-label="Main">
+    <div class="brand"><i aria-hidden="true"></i>Conclave</div>
+    <button class="nav-item recnav" aria-label="Recording in progress, 24:13. Go to the live meeting">● Recording 24:13</button>
+    <button class="nav-item" aria-current="page">Meetings</button>
+    <button class="nav-item">Tasks</button>
+    <button class="nav-item">Digests</button>
+    <button class="nav-item">Dictate</button>
+    <button class="nav-item">Practice</button>
+    <button class="nav-item">Stats</button>
+    <div class="nav-sep"></div>
+    <button class="nav-item">Import audio</button>
+    <button class="nav-item">Settings</button>
+    <button class="nav-item ver">What's new in v1.6.0</button>
+  </nav>
+
+  <main>
+    <div class="crumb"><a href="#">Meetings</a> / <a href="#">This week</a></div>
+    <div class="head">
+      <div class="grow">
+        <span class="emoji" role="img" aria-label="Category emoji, 1:1" style="font-size:26px;margin-right:8px">🤝</span><input class="title" aria-label="Meeting name" value="Weekly 1:1 with team lead">
+        <div class="meta">
+          <span>Mon 16 Nov · 10:00–now</span><span aria-hidden="true">·</span>
+          <button class="chipbtn tag" aria-haspopup="listbox" aria-label="Category: 1:1. Sets the summary template. Change">1:1 ▾</button>
+        </div>
+      </div>
+      <div class="actions">
+        <button class="btn" id="cpbtn" aria-expanded="true" aria-controls="copilot" aria-label="Copilot, keyboard shortcut Control J">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z"/></svg>Copilot <span class="kbd" aria-hidden="true">Ctrl J</span></button>
+      </div>
+    </div>
+
+    <div class="livebar" role="status">
+      <span class="pulse" aria-hidden="true"></span>Recording <b>24:13</b>
+      <span class="audio">Audio: Microphone + system audio</span>
+      <span class="lb-r"><button class="pause" id="pause" aria-label="Pause recording">Pause</button><button class="stop" aria-label="Stop recording and summarize">■ Stop and summarize</button></span>
+    </div>
+
+    <div class="tabs" role="tablist" aria-label="Live content">
+      <button class="tab" role="tab" id="t-tr" aria-selected="true" aria-controls="p-tr">Transcript</button>
+      <button class="tab" role="tab" id="t-no" aria-selected="false" aria-controls="p-no">My notes<span style="font-size:12px;margin-left:4px">4</span></button>
+    </div>
+    <div class="cols">
+      <div id="p-tr" role="tabpanel" aria-labelledby="t-tr" class="on">
+        <p class="field-l">Live transcript</p>
+        <div class="tscroll" id="tscroll" tabindex="0" aria-label="Live transcript">
+          <div class="tline" data-t="12:04"><span class="ts">12:04</span><span><span class="sp">Them</span>The installer build is green. The remaining risk is the audio device switch.</span></div>
+          <div class="tline" data-t="17:30"><span class="ts">17:30</span><span><span class="sp">You</span>Sam can own installer QA, he already has the test matrix.</span></div>
+          <div class="tline" data-t="21:10"><span class="ts">21:10</span><span><span class="sp">Them</span>Fine. Conference travel needs sign-off before the end of the month.</span></div>
+          <div class="tline" data-t="22:51"><span class="ts">22:51</span><span><span class="sp">Them</span>So the remaining risk is the audio device switch on Windows.</span></div>
+          <div class="tline" data-t="23:20"><span class="ts">23:20</span><span><span class="sp">You</span>I'll test it on the Windows machine tomorrow and report back.</span></div>
+          <div class="tline" data-t="23:41"><span class="ts">23:41</span><span><span class="sp">Them</span>We have a hard deadline: the release notes go out Friday.</span></div>
+          <div class="tline" data-t="23:58"><span class="ts">23:58</span><span><span class="sp">Them</span>Good. Then the redesign review moves to Thursday.</span></div>
+        </div>
+      </div>
+      <div id="p-no" role="tabpanel" aria-labelledby="t-no" class="panel" style="">
+        <div class="panel-h">My notes <small>Prep: 3 points</small></div>
+        <div style="padding:6px 14px 12px">
+          <div class="note"><span class="ts">Prep</span>Ask about the QA owner for the installer</div>
+          <div class="note"><span class="ts">Prep</span>Confirm the release date</div>
+          <div class="note"><span class="ts">Prep</span>Mention conference travel</div>
+          <div class="note"><span class="ts">23:21</span>I test device switch tomorrow</div>
+          <textarea class="notein" aria-label="New note" placeholder="Type a note, press Enter"></textarea>
+        </div>
+      </div>
+    </div>
+    <p class="cap" id="cap">Layout decision: at 1440px the sidebar leaves about 820px for the page, so transcript (about 450px) plus a 340px notes column would be cramped. While Copilot is open, My notes becomes a tab next to Transcript. Closed, both columns come back.</p>
+    <p class="cap">On the meetings table the same button is labelled "Ask" (Ctrl J) and opens the Ask sidebar.</p>
+  </main>
+
+  <aside id="copilot" aria-label="Copilot, this call">
+    <div class="ask-h"><span>Copilot · this call <span class="live" role="status">Live</span></span>
+      <button class="btn ghost" id="cpclose" aria-label="Close Copilot" style="padding:0 7px"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>
+    <div class="ask-sc"><span class="chipbtn" aria-label="Scope: this call, transcript so far">This call · 24 min so far</span></div>
+    <div class="quick" role="group" aria-label="Quick actions">
+      <button class="btn">Catch me up</button><button class="btn">What should I ask?</button><button class="btn">Explain the last minute</button>
+    </div>
+    <div class="alerts">Alerts: <b style="color:hsl(var(--foreground));font-weight:600">deadline, budget, Sasha</b> · <a href="#" aria-label="Edit alert words in Settings">edit</a></div>
+    <div class="ask-b" aria-live="polite">
+      <div class="alert" role="status"><b>Alert · 23:41</b>"deadline" was said at <button class="cc" data-goto="23:41" aria-label="Jump to 23:41 in the transcript">23:41</button></div>
+      <article aria-label="Catch me up">
+        <div class="cardmeta">Catch me up · asked 24:05 · covers 00:00–24:05</div>
+        <div class="a">
+          <ul>
+            <li>The installer build is green; the audio device switch is the one open risk. <button class="cc" data-goto="12:04" aria-label="Jump to 12:04 in the transcript">12:04</button></li>
+            <li>Sam takes installer QA. <button class="cc" data-goto="17:30" aria-label="Jump to 17:30 in the transcript">17:30</button></li>
+            <li>You will test the device switch on Windows tomorrow. <button class="cc" data-goto="23:20" aria-label="Jump to 23:20 in the transcript">23:20</button></li>
+          </ul>
+        </div>
+        <div class="arow"><button class="btn sm">Add to notes</button><button class="btn sm ghost">Copy</button></div>
+      </article>
+    </div>
+    <div class="ask-in"><textarea aria-label="Ask Copilot" maxlength="1000" placeholder="Ask about this call…"></textarea>
+      <div class="ask-f"><span><span class="kbd">Enter</span> to send · <span class="kbd">Shift Enter</span> new line</span><button class="btn sm" aria-label="Stop answering" disabled style="opacity:.7">■ Stop</button></div></div>
+  </aside>
+</div>
+<script>
+const root=document.documentElement,app=document.getElementById('app'),cp=document.getElementById('copilot'),btn=document.getElementById('cpbtn');
+function seg(id,fn){const bs=document.querySelectorAll('#'+id+' button');bs.forEach(b=>b.addEventListener('click',()=>{bs.forEach(x=>x.setAttribute('aria-pressed',x===b));fn(b.dataset.v)}))}
+seg('theme',v=>{root.className=v});
+function sidebar(open){app.classList.toggle('sb-open',open);cp.hidden=!open;btn.setAttribute('aria-expanded',open);
+ document.getElementById('cap').hidden=!open;
+ document.querySelectorAll('#sbpick button').forEach(x=>x.setAttribute('aria-pressed',(x.dataset.v==='open')===open));
+ if(!open){document.querySelectorAll('.cols [role=tabpanel]').forEach(p=>p.classList.remove('on'))}else tab('tr')}
+function tab(w){['tr','no'].forEach(k=>{document.getElementById('t-'+k).setAttribute('aria-selected',k===w);document.getElementById('p-'+k).classList.toggle('on',k===w)})}
+seg('sbpick',v=>sidebar(v==='open'));
+btn.addEventListener('click',()=>sidebar(cp.hidden));
+document.getElementById('cpclose').addEventListener('click',()=>{sidebar(false);btn.focus()});
+document.addEventListener('keydown',e=>{if(e.ctrlKey&&e.key.toLowerCase()==='j'){e.preventDefault();sidebar(cp.hidden)}});
+document.getElementById('t-tr').onclick=()=>tab('tr');document.getElementById('t-no').onclick=()=>tab('no');
+document.getElementById('pause').onclick=e=>{const p=e.target.textContent==='Pause';e.target.textContent=p?'Resume':'Pause';e.target.setAttribute('aria-label',p?'Resume recording':'Pause recording')};
+document.addEventListener('click',e=>{const c=e.target.closest('[data-goto]');if(!c)return;tab('tr');
+ const l=document.querySelector('.tline[data-t="'+c.dataset.goto+'"]');document.querySelectorAll('.tline.hl').forEach(x=>x.classList.remove('hl'));
+ l.classList.add('hl');l.scrollIntoView({block:'center'})});
+tab('tr');
+</script>
+</body>
+</html>

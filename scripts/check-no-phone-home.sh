@@ -13,7 +13,7 @@ PATTERNS=(
   'src/lib/analytics'
   'Analytics(Provider|ConsentSwitch|DataModal)'
   "[\"']updater:"
-  '\.pubkey\('
+  '\.pubkey[[:space:]]*\('
   '"endpoints"[[:space:]]*:'
   'releases/latest/download/latest\.json'
   'zackriya\.com'
@@ -41,9 +41,12 @@ done
 CONF_FILES=()
 while IFS= read -r -d '' f; do CONF_FILES+=("$f"); done < <(find frontend/src-tauri -maxdepth 1 -type f \( -iname 'tauri*.conf.json*' -o -iname 'tauri*.toml' \) -print0)
 if [ "${#CONF_FILES[@]}" -eq 0 ]; then echo "phone-home guard: no Tauri config found" >&2; exit 1; fi
+NONCONF_PATHS=("${SEARCH_PATHS[@]}")
 SEARCH_PATHS+=("${CONF_FILES[@]}")
 paths=()
 for p in "${SEARCH_PATHS[@]}"; do [ -e "$p" ] && paths+=("$p"); done
+nonconf=()
+for p in "${NONCONF_PATHS[@]}"; do [ -e "$p" ] && nonconf+=("$p"); done
 
 errf=$(mktemp); trap 'rm -f "$errf"' EXIT
 fail=0
@@ -82,17 +85,31 @@ grep_or_die() { # args: grep options and operands; prints matches
   printf '%s' "$out"
 }
 
-hits=$(grep_or_die -rnIE '"pubkey"' "${paths[@]}") || exit 1
-# Config files also come as TOML (pubkey = "...") and may split the value onto the next line: any pubkey key needs the Conclave value on its line.
-hits+=$'\n'$(grep_or_die -niIE "[\"']?pubkey[\"']?[[:space:]]*[:=]" "${CONF_FILES[@]}") || exit 1
+# Outside the Tauri configs a "pubkey" line must carry the Conclave key.
+hits=$(grep_or_die -rnIE '"pubkey"' "${nonconf[@]}") || exit 1
 while IFS= read -r line; do
   [ -n "$line" ] || continue
   case "$line" in *"$CONCLAVE_UPDATER_PUBKEY"*) ;; *) echo "FOREIGN updater pubkey: $line"; fail=1 ;; esac
 done <<< "$hits"
 
-# Endpoints belong in Rust (src/updates) only, never in a Tauri config.
-hits=$(grep_or_die -niIE "[\"']?endpoints[\"']?[[:space:]]*[:=]" "${CONF_FILES[@]}") || exit 1
-if [ -n "$hits" ]; then echo "updater endpoints in Tauri config:"; echo "$hits"; fail=1; fi
+# Tauri configs: JSON is parsed (text checks are fooled by escapes and extra keys on one line); plugins.updater.pubkey
+# must equal the pinned key and plugins.updater.endpoints must not exist. Other formats (json5, toml) get a strict text check.
+for f in "${CONF_FILES[@]}"; do
+  case "$f" in
+    *.json)
+      msg=$(CONCLAVE_UPDATER_PUBKEY="$CONCLAVE_UPDATER_PUBKEY" node -e '
+        const u = (() => { try { return JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); } catch (e) { console.log("unparseable JSON"); process.exit(0); } })()?.plugins?.updater;
+        if (u === undefined) process.exit(0);
+        if (u === null || typeof u !== "object" || Array.isArray(u)) console.log("plugins.updater is not an object");
+        else if ("endpoints" in u) console.log("updater endpoints in Tauri config");
+        else if ("pubkey" in u && u.pubkey !== process.env.CONCLAVE_UPDATER_PUBKEY) console.log("FOREIGN updater pubkey");
+      ' "$f" 2>"$errf") || { echo "phone-home guard: node failed on $f:" >&2; cat "$errf" >&2; exit 1; }
+      if [ -n "$msg" ]; then echo "$msg: $f"; fail=1; fi ;;
+    *)
+      bad=$(grep -niIE 'pubkey|endpoints|\\[ux][0-9a-f{]' "$f" | grep -vxE "[0-9]+:pubkey[[:space:]]*=[[:space:]]*\"$CONCLAVE_UPDATER_PUBKEY\"[[:space:]]*") || true
+      if [ -n "$bad" ]; then echo "FOREIGN updater pubkey or endpoints in $f:"; echo "$bad"; fail=1; fi ;;
+  esac
+done
 
 # Workflows must not inject an updater key, endpoints or a config override at build time.
 if [ -d .github/workflows ]; then
@@ -102,27 +119,29 @@ fi
 
 # .endpoints( is allowed only under the exact path frontend/src-tauri/src/updates/.
 ep=""
+out=$(grep_or_die -rnIE '\.endpoints[[:space:]]*\(' frontend/src-tauri/src) || exit 1
 while IFS= read -r line; do
   [ -n "$line" ] || continue
   case "$line" in "$UPD"/*) ;; *) ep+="$line"$'\n' ;; esac
-done <<< "$(grep_or_die -rnIE '\.endpoints\(' frontend/src-tauri/src)" || exit 1
+done <<< "$out"
 if [ -n "$ep" ]; then echo "updater endpoints outside src/updates:"; printf '%s' "$ep"; fail=1; fi
 
-# Every URL in non-test updates code must stay inside the Conclave repo API. Scanning stops only at
-# `#[cfg(test)]` directly followed by `mod name {`; any other cfg(test) item is still scanned.
+# Every URL in non-test updates code must stay inside the Conclave repo API. Scanning skips only
+# `#[cfg(test)] mod name {` (up to the next column-0 `}`), then resumes; any other cfg(test) item is still scanned.
 H='https://api.github.com/'
 if [ -d "$UPD" ]; then
   while IFS= read -r -d '' f; do
     urls=$(awk '
-      /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*mod [A-Za-z_0-9]+[[:space:]]*\{/ {exit}
+      skip {if ($0 == "}") skip = 0; next}
+      /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*mod [A-Za-z_0-9]+[[:space:]]*\{[[:space:]]*$/ {if (held != "") print held; held = ""; skip = 1; next}
       /^[[:space:]]*#\[cfg\(test\)\][[:space:]]*$/ {if (held != "") print held; held = $0; next}
-      held != "" && /^[[:space:]]*mod [A-Za-z_0-9]+[[:space:]]*\{/ {exit}
+      held != "" && /^[[:space:]]*(pub[[:space:]]+)?mod [A-Za-z_0-9]+[[:space:]]*\{[[:space:]]*$/ {held = ""; skip = 1; next}
       {if (held != "") print held; held = ""; print}
       END {if (held != "") print held}' "$f" | grep_or_die -noiE 'https?://[^"[:space:]]+') || exit 1
     while IFS= read -r u; do
       [ -n "$u" ] || continue
       u=${u#*:}; head=${u:0:${#H}}; head=${head,,}   # scheme and host are case-insensitive, the path is not
-      [ "$head" = "$H" ] && [[ ${u:${#H}} == repos/Sashanator/conclave/* ]] || { echo "FOREIGN URL in src/updates: $f:$u"; fail=1; }
+      [ "$head" = "$H" ] && [[ ${u:${#H}} == repos/Sashanator/conclave/* && ${u:${#H}} != *..* && ${u:${#H}} != *%2[eE]* ]] || { echo "FOREIGN URL in src/updates: $f:$u"; fail=1; }
     done <<< "$urls"
   done < <(find "$UPD" -type f -name '*.rs' -print0)
 fi

@@ -83,7 +83,7 @@ test('fails_with_webview_updater_permission', () => {
 });
 
 test('urls_in_test_module_are_ignored', () => {
-  const r = run({ 'frontend/src-tauri/src/updates/mod.rs': `const API: &str = "${API}";\n#[cfg(test)]\nmod t { const U: &str = "https://evil.example/x"; }\n` });
+  const r = run({ 'frontend/src-tauri/src/updates/mod.rs': `const API: &str = "${API}";\n#[cfg(test)]\nmod t {\n const U: &str = "https://evil.example/x";\n}\n` });
   assert.equal(r.code, 0, r.out);
 });
 
@@ -107,7 +107,7 @@ test('fails_with_endpoints_in_platform_config', () =>
 
 test('fails_with_toml_config_pubkey_and_endpoints', () => {
   fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\npubkey = "AAAA"\n' }, /FOREIGN updater pubkey/);
-  fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\nendpoints = ["https://x.example"]\n' }, /endpoints in Tauri config/);
+  fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\nendpoints = ["https://x.example"]\n' }, /pubkey or endpoints/);
 });
 
 test('fails_with_workflow_updater_config', () => {
@@ -146,3 +146,40 @@ test('fails_with_endpoints_call_in_other_dir_named_updates', () =>
 
 test('fails_with_toml_capability_updater_permission', () =>
   fails({ 'frontend/src-tauri/capabilities/main.toml': "permissions = ['updater:default']\n" }, /updater:/));
+
+const MOD = 'frontend/src-tauri/src/updates/mod.rs';
+const EVIL = 'const E: &str = "https://evil.example/x";\n';
+
+test('code_after_test_module_is_scanned', () => {
+  fails({ [MOD]: `#[cfg(test)]\nmod tests {\n    const U: &str = "https://ok.example/in-test";\n}\n${EVIL}` }, /FOREIGN URL/);
+  fails({ [MOD]: `#[cfg(test)] mod tests {\n}\n${EVIL}` }, /FOREIGN URL/);
+});
+
+test('one_line_test_module_does_not_hide_following_code', () =>
+  fails({ [MOD]: '#[cfg(test)] mod t {} pub fn f() { let _ = "https://evil.example/x"; }\n' }, /FOREIGN URL/));
+
+test('fails_with_foreign_pubkey_beside_conclave_key_on_one_line', () =>
+  fails({ 'frontend/src-tauri/tauri.conf.json': `{"plugins":{"updater":{"pubkey":"AAAA","x":"${KEY}"}}}` }, /FOREIGN updater pubkey/));
+
+test('fails_with_json_escaped_keys', () => {
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': '{"plugins":{"updater":{"pub\\u006bey":"AAAA"}}}' }, /FOREIGN updater pubkey/);
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': '{"plugins":{"updater":{"end\\u0070oints":["https://x.example"]}}}' }, /endpoints/);
+});
+
+test('fails_with_unparseable_json_config', () =>
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': '{"plugins":' }, /unparseable/));
+
+test('toml_allows_only_the_exact_pinned_pubkey_line', () => {
+  const ok = run({ 'frontend/src-tauri/Tauri.toml': `[plugins.updater]\npubkey = "${KEY}"\n` });
+  assert.equal(ok.code, 0, ok.out);
+  fails({ 'frontend/src-tauri/Tauri.toml': `[plugins.updater]\npubkey = "AAAA" # ${KEY}\n` }, /FOREIGN updater pubkey/);
+  fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\n"pub\\u006bey" = "AAAA"\n' }, /FOREIGN updater pubkey/);
+});
+
+test('fails_with_spaced_endpoints_and_pubkey_calls', () => {
+  fails({ 'frontend/src-tauri/src/lib.rs': 'fn f() { b.endpoints (vec![]); }\n' }, /endpoints outside/);
+  fails({ 'frontend/src-tauri/src/lib.rs': 'fn f() { b.pubkey  ("A"); }\n' }, /pubkey/);
+});
+
+test('fails_with_dotdot_segments_in_conclave_url', () =>
+  fails({ [MOD]: 'const U: &str = "https://api.github.com/repos/Sashanator/conclave/../../evil/x";\n' }, /FOREIGN URL/));

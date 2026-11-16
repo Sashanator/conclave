@@ -23,6 +23,7 @@ import { RecordingPostProcessingProvider } from '@/contexts/RecordingPostProcess
 import { ImportAudioDialog, ImportDropOverlay } from '@/components/ImportAudio'
 import { ImportDialogProvider } from '@/contexts/ImportDialogContext'
 import { OldAudioReminder } from '@/components/OldAudio/OldAudioReminder'
+import { UpdateDialog } from '@/components/Updates/UpdateDialog'
 import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioFormats'
 import { usePathname, useRouter } from 'next/navigation'
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext'
@@ -296,6 +297,7 @@ function AppShell({
                               importFilePath={importFilePath}
                             />
                             <OldAudioReminder />
+                            <UpdateDialog />
                           </ImportDialogProvider>
                         </RecordingPostProcessingProvider>
                       </TooltipProvider>

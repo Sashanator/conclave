@@ -41,6 +41,14 @@ const monday = (h: number, m = 0) => {
   return d.toISOString();
 };
 
+// Two days back from now: reads "not recorded" (over 24 h past) whatever day the preview runs.
+const daysAgo = (n: number, h: number, m = 0) => {
+  const d = new Date();
+  d.setDate(d.getDate() - n);
+  d.setHours(h, m, 0, 0);
+  return d.toISOString();
+};
+
 const meetingRows = (): MeetingRow[] => {
   const base: MeetingRow = {
     id: '', title: '', titleSource: 'default', templateId: null, emoji: null, reviewed: false, gist: null,
@@ -49,9 +57,9 @@ const meetingRows = (): MeetingRow[] => {
   };
   return [
     { ...base, id: 'preview-4', title: 'Release planning', reviewed: true, gist: 'Release is on track; the audio switch is the open risk.', startedAt: monday(10), endedAt: monday(10, 45), hasTranscript: true, hasSummary: true, createdAt: monday(9, 55) },
-    { ...base, id: 'preview-5', title: 'Candidate interview', templateId: 'interview', emoji: '🧑‍💻', startedAt: monday(9), endedAt: monday(9, 50), hasTranscript: true, hasSummary: true, createdAt: monday(9) },
-    { ...base, id: 'preview-6', title: 'Untitled · Mon 14:02', startedAt: monday(14, 2), endedAt: monday(14, 20), hasTranscript: true, createdAt: monday(14, 2) },
-    { ...base, id: 'preview-7', title: 'Design review', titleSource: 'calendar', templateId: '1-1', emoji: '🤝', calendarUid: 'preview-uid-7', calendarStart: monday(11), calendarEnd: monday(11, 30), prepPoints: 2 },
+    { ...base, id: 'preview-5', title: 'Candidate interview', templateId: 'interview', emoji: '🤝', startedAt: monday(9), endedAt: monday(9, 50), hasTranscript: true, hasSummary: true, createdAt: monday(9) },
+    { ...base, id: 'preview-3', title: 'Untitled · Mon 14:02', startedAt: monday(14, 2), endedAt: monday(14, 20), hasTranscript: true, createdAt: monday(14, 2) },
+    { ...base, id: 'preview-7', title: 'Design review', titleSource: 'calendar', templateId: 'one_to_one', emoji: '👥', calendarUid: 'preview-uid-7', calendarStart: daysAgo(2, 11), calendarEnd: daysAgo(2, 11, 30), prepPoints: 2 },
     { ...base, id: 'preview-8', title: 'Budget check', titleSource: 'calendar', calendarUid: 'preview-uid-8', calendarStart: monday(13), calendarEnd: monday(13, 30), calendarCancelledAt: monday(12), prepPoints: 1 },
     { ...base, id: 'preview-9', title: 'Vendor call', titleSource: 'calendar', calendarUid: 'preview-uid-9', calendarStart: monday(15), calendarEnd: monday(15, 45), prepPoints: 3 },
     { ...base, id: 'preview-1', title: 'Weekly product sync', reviewed: true, startedAt: '2026-11-10T09:00:00Z', endedAt: '2026-11-10T09:45:00Z', createdAt: '2026-11-10T09:00:00Z', hasTranscript: true, hasSummary: true },
@@ -68,7 +76,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   api_get_transcript_config: () => ({ provider: 'localWhisper', model: 'large-v3' }),
   get_audio_devices: () => [{ name: 'Preview mic', device_type: 'Input' }, { name: 'Preview speakers', device_type: 'Output' }],
   get_ollama_models: () => [],
-  api_list_templates: () => ({ templates: [{ id: 'standard_meeting', name: 'Standard meeting', emoji: null }, { id: '1-1', name: '1:1', emoji: '🤝' }, { id: 'interview', name: 'Interview', emoji: '🧑‍💻' }], errors: [] }),
+  api_list_templates: () => ({ templates: [{ id: 'standard_meeting', name: 'Standard meeting', emoji: '📝' }, { id: 'one_to_one', name: '1:1', emoji: '👥' }, { id: 'interview', name: 'Interview', emoji: '🤝' }], errors: [] }),
   get_meeting_audio: () => ({ path: null }),
   get_meeting_notes: () => [],
   speakers_get_settings: () => ({ enabled: false, models_ready: false }),

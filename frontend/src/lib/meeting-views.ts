@@ -44,6 +44,14 @@ export const BUILTIN_VIEW_DEFAULTS: Record<string, ViewConfig> = {
 const clampWidth = (w: number) => Math.min(640, Math.max(80, w));
 const isObj = (v: unknown): v is Record<string, unknown> => typeof v === 'object' && v !== null && !Array.isArray(v);
 
+/** `yyyy-MM-dd` that is a real calendar date. */
+const validDay = (v: unknown): v is string => {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return false;
+  const [y, m, d] = v.split('-').map(Number);
+  const t = new Date(y, m - 1, d);
+  return t.getFullYear() === y && t.getMonth() === m - 1 && t.getDate() === d;
+};
+
 function cleanFilter(v: unknown): ViewFilter | null {
   if (!isObj(v)) return null;
   const f: ViewFilter = {};
@@ -52,7 +60,7 @@ function cleanFilter(v: unknown): ViewFilter | null {
   if (Array.isArray(v.states)) f.states = v.states.filter((s): s is MeetingState => STATES.includes(s));
   if (typeof v.calendar === 'boolean') f.calendar = v.calendar;
   if (v.range === 'this-week') f.range = 'this-week';
-  else if (isObj(v.range) && typeof v.range.from === 'string' && typeof v.range.to === 'string') {
+  else if (isObj(v.range) && validDay(v.range.from) && validDay(v.range.to)) {
     f.range = { from: v.range.from, to: v.range.to };
   }
   return f;
@@ -133,8 +141,10 @@ const parseDay = (s: string) => {
   return new Date(y, m - 1, d);
 };
 
-function matches(row: MeetingRow, f: ViewFilter, liveId: string | null, now: Date): boolean {
-  if (f.categories && !f.categories.includes(row.templateId)) return false;
+function matches(row: MeetingRow, f: ViewFilter, liveId: string | null, now: Date, known: Set<string>): boolean {
+  // An unknown template id is shown as "No template", so it filters as null too.
+  const cat = row.templateId !== null && known.has(row.templateId) ? row.templateId : null;
+  if (f.categories && !f.categories.includes(cat)) return false;
   if (f.reviewed === false && !(row.hasSummary && !row.reviewed)) return false;
   if (f.reviewed === true && !row.reviewed) return false;
   if (f.states && !f.states.includes(meetingState(row, liveId, now))) return false;
@@ -155,7 +165,8 @@ export function arrangeRows(
 ): Section[] {
   const tName = (id: string | null) => templates.find((t) => t.id === id)?.name ?? '';
   const live = liveId ? rows.find((r) => r.id === liveId) : undefined;
-  const rest = rows.filter((r) => r.id !== live?.id && matches(r, config.filter, liveId, now));
+  const known = new Set(templates.map((t) => t.id));
+  const rest = rows.filter((r) => r.id !== live?.id && matches(r, config.filter, liveId, now, known));
 
   const cmp = (a: MeetingRow, b: MeetingRow) => {
     for (const { id, desc } of config.sort) {
@@ -190,7 +201,6 @@ export function arrangeRows(
     const desc = config.sort[0]?.id === 'date' && config.sort[0].desc;
     sections.push(...[...byDay.values()].sort((a, b) => (desc ? -1 : 1) * a.key.localeCompare(b.key)));
   } else {
-    const known = new Set(templates.map((t) => t.id));
     const groups = templates.map((t) => ({
       key: t.id,
       label: t.emoji ? `${t.emoji} ${t.name}` : t.name,

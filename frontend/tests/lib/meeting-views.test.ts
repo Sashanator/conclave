@@ -21,6 +21,12 @@ describe('parseViewConfig', () => {
     expect(c.group).toBe('none');
     expect(c.density).toBe('compact');
   });
+  test('garbage range is dropped', () => {
+    const bad = (range: unknown) => parseViewConfig('v1', JSON.stringify({ filter: { range } })).filter.range;
+    expect(bad({ from: 'x', to: '2026-11-17' })).toBeUndefined();
+    expect(bad({ from: '2026-02-30', to: '2026-03-01' })).toBeUndefined();
+    expect(bad({ from: '2026-11-01', to: '2026-11-17' })).toEqual({ from: '2026-11-01', to: '2026-11-17' });
+  });
   test('sanitises widths and hidden', () => {
     const c = parseViewConfig('v1', '{"widths":{"date":9999,"x":1},"hidden":["name","summary","zzz"]}');
     expect(c.widths).toEqual({ date: 640 });
@@ -61,15 +67,32 @@ describe('arrangeRows', () => {
     expect(s[0].rows.map((r) => r.id)).toEqual(['next']);
   });
   test('category grouping', () => {
-    const t = [{ id: 'one_on_one', name: '1:1', emoji: '🤝' }, { id: 'interview', name: 'Interview', emoji: '🧑‍💻' }];
-    const rs = [row('x', d(16, 9), { templateId: 'interview' }), row('y', d(16, 8), { templateId: 'one_on_one' }), row('z', d(16, 7))];
+    const t = [{ id: 'one_to_one', name: '1:1', emoji: '👥' }, { id: 'interview', name: 'Interview', emoji: '🤝' }];
+    const rs = [row('x', d(16, 9), { templateId: 'interview' }), row('y', d(16, 8), { templateId: 'one_to_one' }), row('z', d(16, 7))];
     const s = arrangeRows(rs, BUILTIN_VIEW_DEFAULTS.all, { liveId: null, now, templates: t });
-    expect(labels(s)).toEqual(['🤝 1:1', '🧑‍💻 Interview', 'No template']);
+    expect(labels(s)).toEqual(['👥 1:1', '🤝 Interview', 'No template']);
   });
   test('unreviewed needs a summary', () => {
     const rs = [row('s', d(16, 9)), row('n', d(16, 8), { hasSummary: false }), row('r', d(16, 7), { reviewed: true })];
     const s = arrangeRows(rs, BUILTIN_VIEW_DEFAULTS.unreviewed, { liveId: null, now, templates: [] });
     expect(s[0].rows.map((r) => r.id)).toEqual(['s']);
+  });
+  test('unknown template id filters as no template', () => {
+    const rs = [row('u', d(16, 9), { templateId: 'gone' }), row('k', d(16, 8), { templateId: 'interview' })];
+    const cfg = { ...BUILTIN_VIEW_DEFAULTS.all, group: 'none' as const, filter: { categories: [null] } };
+    const s = arrangeRows(rs, cfg, { liveId: null, now, templates: [{ id: 'interview', name: 'Interview', emoji: null }] });
+    expect(s[0].rows.map((r) => r.id)).toEqual(['u']);
+  });
+  test('custom range includes the to day', () => {
+    const cfg = { ...BUILTIN_VIEW_DEFAULTS.all, group: 'none' as const, filter: { range: { from: '2026-11-17', to: '2026-11-17' } } };
+    const s = arrangeRows(rows, cfg, { liveId: null, now, templates: [] });
+    expect(s[0].rows.map((r) => r.id)).toEqual(['c']);
+  });
+  test('category sort, no template last', () => {
+    const t = [{ id: 'b', name: 'Beta', emoji: null }, { id: 'a', name: 'Alpha', emoji: null }];
+    const rs = [row('n', d(16, 9)), row('x', d(16, 9), { templateId: 'b' }), row('y', d(16, 9), { templateId: 'a' })];
+    const cfg = { ...BUILTIN_VIEW_DEFAULTS.all, group: 'none' as const, sort: [{ id: 'category' as const, desc: false }] };
+    expect(arrangeRows(rs, cfg, { liveId: null, now, templates: t })[0].rows.map((r) => r.id)).toEqual(['y', 'x', 'n']);
   });
   test('states and calendar filters, ties by id', () => {
     const rs = [

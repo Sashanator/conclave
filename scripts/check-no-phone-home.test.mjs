@@ -92,3 +92,57 @@ test('still_fails_on_meetily_latest_json', () => {
   assert.equal(r.code, 1);
   assert.match(r.out, /latest/);
 });
+
+const fails = (overrides, re) => {
+  const r = run(overrides);
+  assert.equal(r.code, 1, r.out);
+  assert.match(r.out, re);
+};
+
+test('fails_with_foreign_pubkey_in_platform_config', () =>
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': conf({ plugins: { updater: { pubkey: 'AAAA' } } }) }, /FOREIGN updater pubkey/));
+
+test('fails_with_endpoints_in_platform_config', () =>
+  fails({ 'frontend/src-tauri/tauri.windows.conf.json': conf({ plugins: { updater: { endpoints: ['https://x.example/l.json'] } } }) }, /endpoints/));
+
+test('fails_with_toml_config_pubkey_and_endpoints', () => {
+  fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\npubkey = "AAAA"\n' }, /FOREIGN updater pubkey/);
+  fails({ 'frontend/src-tauri/Tauri.toml': '[plugins.updater]\nendpoints = ["https://x.example"]\n' }, /endpoints in Tauri config/);
+});
+
+test('fails_with_workflow_updater_config', () => {
+  for (const l of ['TAURI_CONFIG: "{}"', 'args: --config {"plugins":{"updater":{"pubkey":"x"}}}', 'x: endpoints']) {
+    fails({ '.github/workflows/r.yml': `run: ${l}\n` }, /updater config in workflows/);
+  }
+});
+
+test('item_level_cfg_test_does_not_hide_urls', () => {
+  for (const item of ['use std::fmt;', 'mod tests;']) {
+    fails({ 'frontend/src-tauri/src/updates/mod.rs': `#[cfg(test)]\n${item}\nconst E: &str = "https://evil.example/x";\n` }, /FOREIGN URL/);
+  }
+  fails({ 'frontend/src-tauri/src/updates/mod.rs': '#[cfg(test)]\nconst E: &str = "https://evil.example/x";\n' }, /FOREIGN URL/);
+});
+
+test('test_module_on_one_line_or_two_stops_scan', () => {
+  for (const head of ['#[cfg(test)] mod t {', '#[cfg(test)]\nmod t {']) {
+    const r = run({ 'frontend/src-tauri/src/updates/mod.rs': `const A: &str = "${API}";\n${head}\n const U: &str = "https://evil.example/x";\n}\n` });
+    assert.equal(r.code, 0, r.out);
+  }
+});
+
+test('fails_with_foreign_url_in_updates_subdirectory', () =>
+  fails({ 'frontend/src-tauri/src/updates/sub/c.rs': 'const C: &str = "https://evil.example/sub";\n' }, /FOREIGN URL/));
+
+test('fails_with_uppercase_scheme_or_host_and_lookalike_hosts', () => {
+  for (const u of ['HTTPS://evil.example/x', 'https://api.github.com@evil.example/repos/Sashanator/conclave/x', 'https://api.github.com.evil.example/repos/Sashanator/conclave/x', 'https://api.github.com/repos/other/conclave/x']) {
+    fails({ 'frontend/src-tauri/src/updates/mod.rs': `const U: &str = "${u}";\n` }, /FOREIGN URL/);
+  }
+  const r = run({ 'frontend/src-tauri/src/updates/mod.rs': `const U: &str = "HTTPS://API.GITHUB.COM/repos/Sashanator/conclave/x";\n` });
+  assert.equal(r.code, 0, r.out);
+});
+
+test('fails_with_endpoints_call_in_other_dir_named_updates', () =>
+  fails({ 'frontend/src-tauri/src/practice/updates/x.rs': 'fn f() { b.endpoints(vec![]); }\n' }, /updater endpoints outside src\/updates/));
+
+test('fails_with_toml_capability_updater_permission', () =>
+  fails({ 'frontend/src-tauri/capabilities/main.toml': "permissions = ['updater:default']\n" }, /updater:/));

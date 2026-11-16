@@ -8,7 +8,7 @@ Approved mockups (open in a browser; each has a theme switch, Conclave is the re
 - `states-search.html`: search results, special row states, empty first run, Ask mid-answer.
 - `recording-copilot.html`: the meeting page while recording, with the Copilot sidebar open and closed.
 
-Where a mockup and this text disagree, this text wins (several decisions came after the mockups; they are listed in §6 where they apply).
+Where a mockup and this text disagree, this text wins (several decisions came after the mockups; they are listed in §6 where they apply). Known differences: the nav's record button is "Record new meeting" (not "Record now"); the nav item is "Digests" (not "Briefs & digests"); the Date column shows start–end times; there is no "Record as a new meeting instead" link (the record screen is gone; to record separately, use Record new meeting); the category emoji sits before the name in the table and above the title on the meeting page.
 
 ## 1. Why
 
@@ -44,13 +44,13 @@ Also not in scope: Obsidian export, Tasks → Notion (the "Done reviewing" butto
 
 - **Losing user content.** Calendar sync, migration or a failed save must never delete or overwrite a recording, transcript, note, prep, brief or summary. A cancelled or moved event never takes the user's content with it. Only the user's explicit "Delete meeting" removes prep and notes; "Delete recording" never does (§6.4).
 - **A recording with nowhere to go.** If the meeting it targets is gone or unwritable at save time, the recording is saved as a new meeting (the current behaviour), never dropped.
-- **New AI cost.** No extra LLM call per meeting: the one-line summary rides on the existing task-extraction call; old meetings are backfilled without AI. Briefs (an LLM call each) are generated only for 📞 meetings.
+- **New AI cost.** No extra LLM call per meeting: the one-line summary rides on the existing task-extraction call; old meetings are backfilled without AI. The only new LLM call is a one-time emoji suggestion for a custom template (§6.3).
 - **A slower table.** The table must stay instant with the user's full history (hundreds of meetings): no per-row backend calls, no transcript loading for the list.
 - **Breaking the invariants** in `AGENTS.md`: no telemetry, no new outbound hosts (What's new reads a bundled file), app identity unchanged.
 
 ## 5. Constraints (facts from the code)
 
-- **A meeting row is created only at save.** `TranscriptsRepository::save_transcript` (`frontend/src-tauri/src/database/repositories/transcript.rs:84-110`) inserts the `meetings` row with its segments, reached from `api_save_transcript` (`api/api.rs:977`) at stop. Recording start (`audio/recording_commands.rs:562`, `lib.rs:200`) takes only a name.
+- **A meeting row is created only at save.** `TranscriptsRepository::save_transcript` (`frontend/src-tauri/src/database/repositories/transcript.rs:84-110`) inserts the `meetings` row with its segments, reached from `api_save_transcript` (`api/api.rs:978`) at stop. Recording start (`audio/recording_commands.rs:562`, `lib.rs:200`) takes only a name.
 - **Migrations** are sqlx-embedded (`database/manager.rs:38`), files `frontend/src-tauri/migrations/YYYYMMDDHHMMSS_name.sql`.
 - **`meetings` today**: `id, title, created_at, updated_at, folder_path, title_source ('user' default), calendar_uid, calendar_start, keep_audio, audio_deleted_at`. No template, reviewed, gist or end-time columns.
 - **Template used** lives only in `summary_processes.result` JSON (`summary/service.rs:104-131`) and the meeting folder's `metadata.json`. Templates are JSON files (`summary/templates/types.rs:6-38`) with no emoji field. Choice order: manual pick → stored choice → prep template → title keywords → LLM auto-pick (`summary/template_choice.rs:24-65`).
@@ -58,7 +58,7 @@ Also not in scope: Obsidian export, Tasks → Notion (the "Done reviewing" butto
 - **Prep** (`meeting_preps`) and **briefs** are keyed by `(event_uid, event_start)` with no `meeting_id`; a meeting links to them through `calendar_uid/calendar_start` (`prep/upcoming.rs:86`). Briefs are made when an event is within 60 min (`scheduler.rs:90`).
 - **Tasks** already carry `owner` (`me` | `unassigned`) and `status` (`open|done|dismissed`); extraction is one LLM call per finished summary returning JSON (`knowledge/extract.rs:99-157`).
 - **Search** exists: `api_search_transcripts` → `search_all` (`transcript.rs:231-395`), `LIKE` over titles, summary markdown and transcript text, 50 meetings × 3 hits.
-- **Ask**: `ask_meetings` / `ask_cancel` (`knowledge/ask.rs:254-293`), plan → local retrieval → answer with citations; no scope parameter today.
+- **Ask**: `ask_meetings` / `ask_cancel` (`knowledge/ask.rs:254-293`, command at `:270`), plan → local retrieval → answer with citations; no scope parameter today.
 - **Copilot**: `components/Copilot/CopilotPane.tsx` + `contexts/CopilotContext.tsx`, mounted in the record screen's notes/copilot block (`app/_components/LiveTranscriptAndNotes.tsx`).
 - **Continue the same call** (`audio/continuation.rs`, `api.rs:1027-1040`) appends a recording to the last meeting saved within 120 s. It stays as it is.
 - **Frontend**: Next.js 14 static export, shadcn (new-york) + Tailwind tokens in `app/globals.css` (`:root`, `.dark`, `.theme-conclave`), Source Sans 3, lucide icons. `@tanstack/react-virtual`, `cmdk`, `date-fns` are installed; `@tanstack/react-table` is not (approved to add). Sidebar is `components/Sidebar/index.tsx` (two render paths, collapsed and expanded); meetings list state is `Sidebar/SidebarProvider.tsx`.
@@ -78,15 +78,18 @@ New `meetings` columns (all nullable or defaulted, so old rows stay valid):
 | `gist TEXT` | One-line summary shown in the table. |
 | `started_at TEXT`, `ended_at TEXT` | Real start and end of the recording (UTC, same format as `created_at`). |
 | `calendar_end TEXT` | Event end, for 📞 meetings. |
+| `calendar_original_start TEXT` | The occurrence's original start, part of the calendar matching key (§6.6). |
 | `calendar_cancelled_at TEXT` | Set when the event vanished from the calendar but the meeting holds user content. |
 
-`meeting_preps` gets a nullable `meeting_id` so a hand-made meeting can have prep; 📞 meetings keep the `(event_uid, event_start)` key and also get `meeting_id` filled. New table `meeting_views (id, name, position, builtin, config_json)` stores views (§6.3).
+`meeting_preps` is **rebuilt** in the migration (SQLite cannot drop NOT NULL): `event_uid`, `event_start`, `event_title` become nullable, a `meeting_id` column is added with a UNIQUE constraint, and `UNIQUE(event_uid, event_start)` stays for rows that have them. Every existing prep row keeps its data and gets `meeting_id` filled (§6.6 "Existing preps"). A hand-made meeting's prep has only `meeting_id`. New table `dismissed_occurrences (calendar_uid, original_start, dismissed_at)` (§6.4). New table `meeting_views (id, name, position, builtin, config_json)` stores views (§6.3).
 
 Backfill, run once after the migration, idempotent, no AI:
 - `reviewed = 1` for every existing meeting (user decision).
 - `template_id` from `summary_processes.result` JSON when present.
-- `started_at = created_at`; `ended_at` = start + the last transcript segment's audio end time, else NULL (the table then shows only the start).
+- `ended_at = created_at` (today `created_at` is the save time, i.e. when recording stopped; `transcript.rs:84-110` binds now); `started_at = created_at` minus the last transcript segment's audio end time, else `started_at = created_at`.
 - `gist` = the first sentence of the summary's first section (trimmed to ~160 chars), else NULL.
+
+**Which date a meeting has.** From now on a meeting's date is `COALESCE(started_at, calendar_start, created_at)`, because a row can now exist days before its call. Every reader that uses `created_at` as the meeting date switches to that expression: the list order (`meeting.rs:43`), digests (`digest.rs:490`), audio retention (`retention.rs:61,85`; it must count from `ended_at`, never from row creation), briefs' previous meeting (`briefs.rs:86`), tasks, stats and Ask retrieval. The builder greps every `created_at` read on `meetings` and lists the decisions in the plan.
 
 A meeting's **state** is derived, not stored: Recording (it is the live recording target), Finished (has transcripts), Cancelled in calendar (`calendar_cancelled_at` set), Not recorded (no transcripts and its start time + 1 day has passed), New (no transcripts otherwise; shown as "Not recorded yet").
 
@@ -94,7 +97,9 @@ A meeting's **state** is derived, not stored: Recording (it is the live recordin
 
 - **New meeting** (toolbar, Ctrl N, or "+ New meeting" row) inserts a row now: title "Untitled · Mon 14:02" (local weekday and time), `title_source='default'`, and opens its page in the New state.
 - **Record new meeting** (sidebar button) inserts the same kind of row and opens its page already recording.
-- **Start recording** on a meeting page records into that meeting. The meeting id travels with the recording from start to save: `start_recording…` accepts an optional `meeting_id`; `api_save_transcript` writes the segments into that existing row and sets `started_at/ended_at`; with no id it creates a row as today.
+- **Start recording** on a meeting page records into that meeting. The meeting id travels with the recording from start to save: `start_recording…` accepts an optional `meeting_id`; `started_at` is written when recording starts (so the calendar reconcile leaves the row alone from then on, §6.6); `api_save_transcript` writes the segments into that existing row and sets `ended_at`; with no id it creates a row as today.
+- **Crash recovery** (`TranscriptRecovery`, today mounted only in `app/page.tsx`, the record screen being removed) moves to the new `/` screen. The recording's target `meeting_id` is stored in the recovery metadata (IndexedDB) at start, and recovery saves into that row (`useTranscriptRecovery.ts:182` today always creates a new meeting), falling back to a new meeting if the row is gone.
+- **Every recording start is routed the same way**: the sidebar button, the pop-up (§6.7), the tray menu (`tray.rs:84`) and the detector's auto-start (`meeting_detector.rs:129`) all go through one routing function that picks the target meeting.
 - If the target row no longer exists at save, save as a new meeting and tell the user (toast), as the continue path already does on failure.
 - A finished meeting has no Start recording button (as in the approved mockup). A dropped call is still joined through the pop-up's existing "Continue".
 - The category chosen on the page before recording is the summary's manual template pick (first in the choice order).
@@ -122,7 +127,7 @@ As in `meeting-page.html` (three states) and `recording-copilot.html`, with:
 - **Finished**: opens on Summary with the "Tasks from this meeting" panel; tabs Summary, Transcript, My notes, Prep. Tasks with `owner='unassigned'` are shown as removed (restorable); K keeps, X removes; "Keep all mine"; **Done reviewing** ticks Reviewed.
 - **Deleting** (user decision) is two separate actions:
   - **Delete recording** (Finished meetings): removes the transcript, audio, summary, extracted tasks that were not kept, and speaker data; keeps the meeting row, its title, category, prep and notes. The meeting returns to New (or Not recorded if its day has passed). This replaces the old "deleting a recording never deletes its prep" rule with the same guarantee.
-  - **Delete meeting** (meeting page menu and the table's row menu; also the Delete button on Cancelled in calendar rows): a confirmation dialog names what goes (recording, prep, notes, brief); then everything tied to the meeting is removed, prep included. A deleted 📞 occurrence is remembered by `(calendar_uid, original start)` in a small `dismissed_occurrences` table so the reconcile does not bring it back; entries older than 30 days are pruned. Kept tasks (`owner='me'` or edited) survive with `meeting_id` cleared, as manual tasks do today, unless the builder finds the current delete already handles tasks differently, in which case keep the current behaviour.
+  - **Delete meeting** (meeting page menu and the table's row menu; also the Delete button on Cancelled in calendar rows): a confirmation dialog names what goes (recording, prep, notes, brief); then everything tied to the meeting is removed, prep included. A deleted 📞 occurrence is remembered by `(calendar_uid, original start)` in a small `dismissed_occurrences` table so the reconcile does not bring it back; entries older than 30 days are pruned. Kept tasks (`owner='me'` or edited) survive with `meeting_id` cleared, like manual tasks; the current delete removes all of a meeting's tasks (`meeting.rs:355`), so this is a deliberate change with its own test. Delete recording follows the same task rule.
 - Changing the category of a finished meeting relabels it and offers "Regenerate summary with <template>" (no automatic re-summary; cost).
 - The old two layouts, their setting and the notes-pane collapse flag are removed.
 
@@ -137,17 +142,22 @@ One right-hand panel (~360 px) with one look (`states-search.html` screen 4, `re
 ### 6.6 Calendar 📞 meetings (approach A: the backend scheduler)
 
 - **Marker**: Settings → Calendar gets a "My calls marker" field (default 📞). Only events whose title contains it become meetings. The marker is stripped from the shown and stored title.
-- After each calendar refresh, the scheduler reconciles events starting within the next **7 days** (and events in progress) with meeting rows matched on `(calendar_uid, calendar_start)`; the reconcile logic is a pure function (events + rows → actions) with unit tests:
-  - new 📞 event → insert a row (`title_source='calendar'`, `calendar_end` set);
-  - moved event (same uid, new time) → update the row's times; its prep and notes move with it;
+- **Matching key.** A 📞 row is identified by `calendar_uid` plus `calendar_original_start` (new column, §6.1): the occurrence's original start (iCal `RECURRENCE-ID` for a moved occurrence of a series, else its start at the time the row was made). One-off events (not recurring) match on `calendar_uid` alone. `calendar_start`/`calendar_end` hold the current times. `Occurrence` (`calendar.rs:45-53`) gains the original start; the cache format changes with it (an old cache is refetched).
+- **When it runs.** After each calendar refresh, only if the fetch succeeded, a calendar is connected, and the expansion was **complete**: `calendar::expand` must report when it hit its time or occurrence limits or skipped a series (`calendar.rs:205,211` only log today). An incomplete expansion allows inserts and updates but no cancel or delete. A failed fetch, disconnecting the calendar, or changing the marker never cancels or deletes anything. The marker last reconciled is stored with the cache; when it changes, rows made under the old marker are left alone (they age out through the "past and untouched" rule) and only new matches are inserted.
+- **The window.** Events in progress or starting within the next **7 days**. A row counts as "gone from the feed" only if its `calendar_start` lies inside the window that was fetched and expanded; rows outside it are never cancelled.
+- **Rules** (a pure function: events + rows + live target → actions, with table-driven unit tests):
+  - new 📞 event → insert a row (`title_source='calendar'`, `calendar_start/end/original_start` set);
+  - moved (key matches, times differ) → update `calendar_start/end`; the row's prep (its `meeting_preps.event_start`, unique key included) and notes move with it;
   - renamed → update the title unless `title_source='user'`;
-  - cancelled (gone from the feed): untouched row (no recording, prep, notes, brief opened or user rename) → delete the row; otherwise set `calendar_cancelled_at` and keep it until the user deletes it;
-  - past and untouched after its day → delete the row; with prep or notes it stays as Not recorded.
-- Recurring events: one row per occurrence within the 7-day window. Occurrences are matched by `uid` plus the occurrence's **original** start (iCal `RECURRENCE-ID` when the occurrence was moved, else its start), so a moved occurrence is a move, not a cancel plus insert. `Occurrence` (`calendar.rs:45-53`) gains that original start; the cache format changes with it (an old cache is simply refetched). For 📞 meetings the reconcile moves the prep with the row; `prep/upcoming.rs::relocate` keeps its current job only for preps without a meeting row. *(Builder-check answer, my call.)*
-- **"Untouched"** means: no transcript, no prep content (material, chat or checklist items), no notes, `title_source` not `'user'`, and `template_id` NULL (reconcile never sets it, so a set category means the user chose it). A brief does **not** count: it is generated automatically and can be regenerated. *(My call.)*
-- **Reconcile runs only after a successful fetch with a calendar connected and an unchanged marker.** A failed fetch, disconnecting the calendar or changing the marker never cancels or deletes anything; rows already made stay and age out through the "past and untouched" rule. *(My call.)*
-- **Briefs** are generated only for 📞 meetings (cost) and shown in the Prep tab; "Regenerate brief" calls the existing generator. The Briefs page becomes **Digests** (weekly digests only); `/prep` is removed.
-- **Existing content**: on first reconcile after the update, any existing `meeting_preps` row for an upcoming event without the marker also gets a meeting row, so no prep becomes unreachable.
+  - gone from the feed: untouched row → delete; otherwise set `calendar_cancelled_at`;
+  - an event that reappears clears `calendar_cancelled_at`;
+  - past and untouched after its day → delete; with content it stays as Not recorded.
+  - **Never touched by the reconcile:** the live recording target and any row with `started_at` set (recording has started or finished): no move, rename, cancel or delete. `started_at` is written when recording starts, not at save.
+- **"Untouched"** means: no transcript, `started_at` NULL, no prep content (material, chat or checklist items), no notes, `title_source` not `'user'`, and `template_id` NULL (reconcile never sets it, so a set category means the user chose it). A brief does not count: it is made automatically. *(My call.)*
+- **No lost edits.** Each action re-checks its condition in the same SQL statement (the "untouched" test inside the `DELETE … WHERE`, the `title_source` test inside the rename `UPDATE`), so prep or a rename saved between the snapshot and the action wins.
+- **Failures** are retried on the next tick and the last sync error (with its time) shows in Settings → Calendar, not only in the log.
+- **Briefs** are made only for 📞 meetings (they are what the Prep tab shows) and appear in the Prep tab; "Regenerate brief" calls the existing generator. The Briefs page becomes **Digests** (weekly digests only); `/prep` is removed.
+- **Existing preps.** The migration gives **every** `meeting_preps` row without a linked meeting (upcoming, past or unreadable, the `other` list in `prep/upcoming.rs:172,235` included) a meeting row with its event's title, uid, start and original start, so no prep becomes unreachable. Such rows for events without the marker are not reconciled: they keep their times and age out only if untouched (they are not, since they hold prep), so they stay until the user deletes them.
 
 ### 6.7 Pop-up Record routing
 
@@ -171,7 +181,7 @@ The first plan task writes `DESIGN.md` (via `/impeccable document`) from `app/gl
 
 ## 8. Testing
 
-- Rust: migration + backfill on a database built from the previous schema with sample rows (template from JSON, end time, gist, reviewed); save-into-existing-meeting, missing-target fallback; calendar reconcile as table-driven tests covering every rule in §6.6, including "never deletes a row with content"; pop-up routing window and overlap; Ask scoping by ids.
+- Rust: migration + backfill on a database built from the previous schema with sample rows (template from JSON, start/end times from `created_at` minus audio length, gist, reviewed, every prep row gets a meeting row, the `meeting_preps` rebuild keeps all data); save-into-existing-meeting, missing-target fallback, crash recovery into the target row; calendar reconcile as table-driven tests covering every rule in §6.6, including: never deletes a row with content, incomplete expansion never cancels, rows outside the window never cancel, the live target and rows with `started_at` are never touched, reappearing events clear the cancel flag, one-off moves keep their prep, marker change touches nothing, a concurrent prep save wins over a delete; Delete recording vs Delete meeting (prep and notes kept or removed, kept tasks survive, dismissed occurrence not re-inserted); routing for all four start paths (window, overlap, already-finished 📞 meeting); Ask scoping by ids; every `created_at` reader that switched to the meeting date.
 - Frontend (bun): view state save/restore, filter/sort/group, keyboard map, row-state rendering, search snippets, sidebar content per screen, What's new parsing of `CHANGELOG.md`.
 - Browser preview mocks for every new command, then Playwright screenshots of each screen in the three themes, `/impeccable audit`, and the a11y check (`frontend/scripts/a11y-check.mjs`) with no serious or critical issues on `/` and the meeting page.
 - Windows: the user's PC checklist (record from a page, pop-up into a 📞 meeting, Copilot during a call, update from v1.2.x with a backup).

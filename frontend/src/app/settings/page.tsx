@@ -7,6 +7,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { motion } from 'framer-motion';
 import { TranscriptSettings } from '@/components/TranscriptSettings';
 import { RecordingSettings } from '@/components/RecordingSettings';
+import { UpdatesSettings } from '@/components/UpdatesSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { SummaryModelSettings } from '@/components/SummaryModelSettings';
 import { CopilotSettings } from '@/components/CopilotSettings';
@@ -128,7 +129,10 @@ function SettingsContent() {
             </TabsList>
 
             <TabsContent value="general">
-              <PreferenceSettings />
+              <div className="space-y-6">
+                <PreferenceSettings />
+                <UpdatesSettings />
+              </div>
             </TabsContent>
             <TabsContent value="recording">
               <RecordingSettings />

@@ -794,12 +794,16 @@ mod redesign_migration_tests {
                 .bind(uid).bind(start).execute(&pool).await.unwrap();
         }
         exec(&pool, "DELETE FROM meeting_preps WHERE event_uid='u3'").await;
+        exec(&pool, "INSERT INTO meeting_preps (event_uid,event_start,event_title,created_at,updated_at) VALUES ('u4','2026-11-23T09:00:00+00:00','T','c','u')").await;
+        exec(&pool, "INSERT INTO meetings (id,title,created_at,updated_at) VALUES ('frac','Frac','2026-11-01T10:00:00.123456789+00:00','2026-11-01T10:00:00.123456789+00:00')").await;
+        exec(&pool, "INSERT INTO transcripts (id,meeting_id,transcript,timestamp,audio_end_time) VALUES ('t4','frac','a','x',300.0),('t5','frac','b','x',600.0)").await;
         type Prep = (i64, Option<String>, Option<String>, Option<String>, Option<String>, String, String, String, Option<String>, String, String);
         let prep_sql = "SELECT id,event_uid,event_start,event_title,template_id,material,chat_json,items_json,approved_at,created_at,updated_at FROM meeting_preps ORDER BY id";
         let before: Vec<Prep> = sqlx::query_as(prep_sql).fetch_all(&pool).await.unwrap();
-        assert_eq!(before.len(), 2);
+        assert_eq!(before.len(), 3);
+        assert!(before[2].4.is_none() && before[2].8.is_none());
         let (seq_before,): (i64,) = sqlx::query_as("SELECT seq FROM sqlite_sequence WHERE name='meeting_preps'").fetch_one(&pool).await.unwrap();
-        assert!(seq_before > before[1].0);
+        assert!(seq_before >= before[2].0);
 
         Migrator::new(Path::new("./migrations")).await.unwrap().run(&pool).await.unwrap();
 
@@ -819,6 +823,10 @@ mod redesign_migration_tests {
         let started = chrono::DateTime::parse_from_rfc3339(old.1.as_deref().unwrap()).unwrap();
         assert_eq!(started.with_timezone(&Utc).to_rfc3339(), "2026-11-01T09:15:00+00:00");
         let legacy = row("legacy").await;
+        let frac = row("frac").await;
+        let started = chrono::DateTime::parse_from_rfc3339(frac.1.as_deref().unwrap()).unwrap();
+        let created = chrono::DateTime::parse_from_rfc3339(&frac.3).unwrap();
+        assert_eq!((created - chrono::Duration::seconds(600) - started).num_milliseconds().abs(), 0);
         assert_eq!(legacy.0, None);
         assert_eq!(legacy.1.as_deref(), Some(legacy.3.as_str()));
 

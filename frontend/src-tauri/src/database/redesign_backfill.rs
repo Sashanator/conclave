@@ -5,6 +5,7 @@ use chrono::Utc;
 use sqlx::SqlitePool;
 
 pub async fn run(pool: &SqlitePool) -> anyhow::Result<()> {
+    let mut failed = 0usize;
     let rows: Vec<(String, String)> = sqlx::query_as(
         "SELECT m.id, json_extract(s.result, '$.markdown') FROM meetings m
          JOIN summary_processes s ON s.meeting_id = m.id AND s.status = 'completed'
@@ -14,11 +15,10 @@ pub async fn run(pool: &SqlitePool) -> anyhow::Result<()> {
     .await?;
     for (id, md) in rows {
         if let Some(gist) = gist_from_summary(&md) {
-            sqlx::query("UPDATE meetings SET gist = ? WHERE id = ? AND gist IS NULL")
-                .bind(gist)
-                .bind(id)
-                .execute(pool)
-                .await?;
+            if let Err(e) = set_gist(pool, &id, gist).await {
+                log::error!("redesign backfill: gist for meeting {id} failed: {e:#}");
+                failed += 1;
+            }
         }
     }
 
@@ -29,44 +29,57 @@ pub async fn run(pool: &SqlitePool) -> anyhow::Result<()> {
     .fetch_all(pool)
     .await?;
     for (prep_id, uid, start, title) in preps {
-        let mut tx = pool.begin().await?;
-        let existing: Option<(String,)> = sqlx::query_as(
-            "SELECT id FROM meetings m WHERE calendar_uid = ? AND calendar_start = ?
-             AND NOT EXISTS (SELECT 1 FROM meeting_preps p WHERE p.meeting_id = m.id)
-             ORDER BY created_at, id LIMIT 1",
-        )
-        .bind(&uid)
-        .bind(&start)
-        .fetch_optional(&mut *tx)
-        .await?;
-        let meeting_id = match existing {
-            Some((id,)) => id,
-            None => {
-                let id = format!("meeting-{}", uuid::Uuid::new_v4());
-                let now = Utc::now().to_rfc3339();
-                sqlx::query(
-                    "INSERT INTO meetings (id, title, created_at, updated_at, title_source, calendar_uid, calendar_start, reviewed)
-                     VALUES (?, ?, ?, ?, 'calendar', ?, ?, 0)",
-                )
-                .bind(&id)
-                .bind(title.unwrap_or_else(|| "Untitled".into()))
-                .bind(&now)
-                .bind(&now)
-                .bind(&uid)
-                .bind(&start)
-                .execute(&mut *tx)
-                .await?;
-                id
-            }
-        };
-        sqlx::query("UPDATE meeting_preps SET meeting_id = ? WHERE id = ? AND meeting_id IS NULL")
-            .bind(&meeting_id)
-            .bind(prep_id)
+        if let Err(e) = link_prep(pool, prep_id, &uid, &start, title).await {
+            log::error!("redesign backfill: prep {prep_id} failed: {e:#}");
+            failed += 1;
+        }
+    }
+    anyhow::ensure!(failed == 0, "redesign backfill: {failed} item(s) failed (see the log); retried at next start");
+    Ok(())
+}
+
+async fn set_gist(pool: &SqlitePool, id: &str, gist: String) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE meetings SET gist = ? WHERE id = ? AND gist IS NULL").bind(gist).bind(id).execute(pool).await?;
+    Ok(())
+}
+
+async fn link_prep(pool: &SqlitePool, prep_id: i64, uid: &str, start: &Option<String>, title: Option<String>) -> Result<(), sqlx::Error> {
+    let mut tx = pool.begin().await?;
+    let existing: Option<(String,)> = sqlx::query_as(
+        "SELECT id FROM meetings m WHERE calendar_uid = ? AND calendar_start = ?
+         AND NOT EXISTS (SELECT 1 FROM meeting_preps p WHERE p.meeting_id = m.id)
+         ORDER BY created_at, id LIMIT 1",
+    )
+    .bind(uid)
+    .bind(start)
+    .fetch_optional(&mut *tx)
+    .await?;
+    let meeting_id = match existing {
+        Some((id,)) => id,
+        None => {
+            let id = format!("meeting-{}", uuid::Uuid::new_v4());
+            let now = Utc::now().to_rfc3339();
+            sqlx::query(
+                "INSERT INTO meetings (id, title, created_at, updated_at, title_source, calendar_uid, calendar_start, reviewed)
+                 VALUES (?, ?, ?, ?, 'calendar', ?, ?, 0)",
+            )
+            .bind(&id)
+            .bind(title.unwrap_or_else(|| "Untitled".into()))
+            .bind(&now)
+            .bind(&now)
+            .bind(uid)
+            .bind(start)
             .execute(&mut *tx)
             .await?;
-        tx.commit().await?;
-    }
-    Ok(())
+            id
+        }
+    };
+    sqlx::query("UPDATE meeting_preps SET meeting_id = ? WHERE id = ? AND meeting_id IS NULL")
+        .bind(&meeting_id)
+        .bind(prep_id)
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await
 }
 
 #[cfg(test)]
@@ -133,5 +146,17 @@ mod redesign_backfill_tests {
         run(&pool).await.unwrap();
         let g: Vec<(String, Option<String>)> = sqlx::query_as("SELECT id, gist FROM meetings ORDER BY id").fetch_all(&pool).await.unwrap();
         assert_eq!(g, vec![("a".into(), Some("We agreed.".into())), ("b".into(), Some("kept".into()))]);
+    }
+
+    #[tokio::test]
+    async fn backfill_continues_past_a_failed_prep() {
+        let pool = test_pool().await;
+        exec(&pool, "INSERT INTO meeting_preps (event_uid,event_start,event_title,created_at,updated_at) VALUES ('ux','sx','bad','c','u'),('uy','sy','Good','c','u')").await;
+        exec(&pool, "CREATE TRIGGER boom BEFORE INSERT ON meetings WHEN NEW.title='bad' BEGIN SELECT RAISE(ABORT,'boom'); END").await;
+        let err = run(&pool).await.unwrap_err().to_string();
+        assert!(err.contains("1 item"), "{err}");
+        assert!(!prep_meeting(&pool, "uy").await.is_empty());
+        let bad: Option<String> = sqlx::query_scalar("SELECT meeting_id FROM meeting_preps WHERE event_uid='ux'").fetch_one(&pool).await.unwrap();
+        assert!(bad.is_none());
     }
 }

@@ -104,15 +104,38 @@ pub fn list_backups(data_dir: &Path) -> anyhow::Result<Vec<BackupInfo>> {
     }
     v.sort_by(|a, b| (created(&b.1), &b.0).cmp(&(created(&a.1), &a.0)));
     Ok(v.into_iter()
-        .map(|(p, m)| BackupInfo {
-            kind: m.kind,
-            created_at: m.created_at,
-            from_version: m.from_version,
-            version: m.version,
-            size_bytes: m.size_bytes,
-            path: p.to_string_lossy().into_owned(),
-        })
+        .map(|(p, m)| info(m, &p))
         .collect())
+}
+
+fn info(m: Manifest, dir: &Path) -> BackupInfo {
+    BackupInfo {
+        kind: m.kind,
+        created_at: m.created_at,
+        from_version: m.from_version,
+        version: m.version,
+        size_bytes: m.size_bytes,
+        path: dir.to_string_lossy().into_owned(),
+    }
+}
+
+/// On success prune old backups (a failed prune only leaves extras, so it is logged, not an error);
+/// on failure remove the partial dir and return the original error.
+fn finish(result: anyhow::Result<BackupInfo>, kind_dir: &Path, kind: &str, keep: usize, dir: &Path) -> anyhow::Result<BackupInfo> {
+    match result {
+        Ok(info) => {
+            if let Err(e) = prune(kind_dir, kind, keep, Some(dir)) {
+                warn!("backup: prune failed: {e:#}");
+            }
+            Ok(info)
+        }
+        Err(e) => {
+            if let Err(re) = fs::remove_dir_all(dir) {
+                warn!("backup: could not remove partial {}: {re}", dir.display());
+            }
+            Err(e)
+        }
+    }
 }
 
 /// Keeps the `keep` newest; `protect` (the backup just made) is never deleted, even if the clock put it last.
@@ -226,29 +249,11 @@ pub fn pre_upgrade_backup(data_dir: &Path, templates: Option<&Path>, current: &s
             files,
         };
         fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec_pretty(&m)?).context("writing backup manifest")?;
-        Ok(BackupInfo {
-            kind: m.kind,
-            created_at: m.created_at,
-            from_version: m.from_version,
-            version: m.version,
-            size_bytes: m.size_bytes,
-            path: dir.to_string_lossy().into_owned(),
-        })
+        Ok(info(m, &dir))
     })();
-    match result {
-        Ok(info) => {
-            if let Err(e) = prune(&kind_dir, PRE_UPGRADE, KEEP_PRE_UPGRADE, Some(&dir)) {
-                warn!("backup: prune failed: {e:#}");
-            }
-            Ok(Some(info))
-        }
-        Err(e) => {
-            if let Err(re) = fs::remove_dir_all(&dir) {
-                warn!("backup: could not remove partial {}: {re}", dir.display());
-            }
-            Err(e.context("pre-upgrade backup failed"))
-        }
-    }
+    finish(result, &kind_dir, PRE_UPGRADE, KEEP_PRE_UPGRADE, &dir)
+        .map(Some)
+        .map_err(|e| e.context("pre-upgrade backup failed"))
 }
 
 /// Back up now: a consistent `VACUUM INTO` copy of the live DB (no -wal/-shm), user files, a manifest, then retention.
@@ -273,31 +278,10 @@ pub async fn manual_backup(pool: &sqlx::SqlitePool, data_dir: &Path, templates: 
             files,
         };
         fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec_pretty(&m)?).context("writing backup manifest")?;
-        Ok::<_, anyhow::Error>(BackupInfo {
-            kind: m.kind,
-            created_at: m.created_at,
-            from_version: m.from_version,
-            version: m.version,
-            size_bytes: m.size_bytes,
-            path: dir.to_string_lossy().into_owned(),
-        })
+        Ok::<_, anyhow::Error>(info(m, &dir))
     }
     .await;
-    match result {
-        Ok(info) => {
-            // The backup exists; a failed prune only leaves extra old ones, so it is logged, not an error.
-            if let Err(e) = prune(&kind_dir, MANUAL, KEEP_MANUAL, Some(&dir)) {
-                warn!("backup: prune failed: {e:#}");
-            }
-            Ok(info)
-        }
-        Err(e) => {
-            if let Err(re) = fs::remove_dir_all(&dir) {
-                warn!("backup: could not remove partial {}: {re}", dir.display());
-            }
-            Err(e)
-        }
-    }
+    finish(result, &kind_dir, MANUAL, KEEP_MANUAL, &dir)
 }
 
 #[cfg(test)]

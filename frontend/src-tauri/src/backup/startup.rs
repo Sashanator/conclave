@@ -49,13 +49,8 @@ fn ask_owned<R: tauri::Runtime>(message: &str, parent: Option<&tauri::WebviewWin
     }
 }
 
-#[cfg(windows)]
-pub fn ask_continue_without_backup(message: &str) -> bool {
-    ask_owned::<tauri::Wry>(message, None)
-}
-
 #[cfg(not(windows))]
-pub fn ask_continue_without_backup(message: &str) -> bool {
+fn ask_continue_without_backup(message: &str) -> bool {
     error!("backup: no dialog on this platform; treating as Quit. {message}");
     false
 }

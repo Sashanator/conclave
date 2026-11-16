@@ -5,7 +5,7 @@ import type { SearchHit } from '../../src/lib/meeting-target';
 import type { ReactTestInstance } from 'react-test-renderer';
 
 const hit = (over: Partial<SearchHit>): SearchHit => ({
-  meetingId: 'm1', title: 'Standup', source: 'transcript', snippet: 'план', transcriptId: 't9', audioStart: 4, ...over,
+  meetingId: 'm1', title: 'Standup', source: 'transcript', snippet: 'план', transcriptId: 't9', audioStart: 4, totalInMeeting: 1, ...over,
 });
 
 function render(hits: SearchHit[], onOpen: (href: string) => void): ReactTestRenderer {

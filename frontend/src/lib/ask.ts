@@ -1,4 +1,4 @@
-import type { MeetingTarget } from '@/lib/meeting-target';
+import { clock, type MeetingTarget } from '@/lib/meeting-target';
 
 // Camel-case shape of the Rust `Citation` returned inside `AskAnswer`.
 export type Citation = {
@@ -63,12 +63,4 @@ export function citeLabel(c: Citation): string {
   const parts = [c.meetingTitle, `${Number(day)} ${MONTHS[Number(month) - 1]}`];
   if (c.audioStart !== null) parts.push(clock(c.audioStart));
   return parts.join(' · ');
-}
-
-function clock(seconds: number): string {
-  const s = Math.floor(seconds);
-  const h = Math.floor(s / 3600);
-  const m = Math.floor((s % 3600) / 60);
-  const sec = String(s % 60).padStart(2, '0');
-  return h > 0 ? `${h}:${String(m).padStart(2, '0')}:${sec}` : `${m}:${sec}`;
 }

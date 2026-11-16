@@ -226,6 +226,8 @@ pub struct SearchHit {
     pub snippet: String,
     pub transcript_id: Option<String>,
     pub audio_start: Option<f64>,
+    /// The count of hits in the meeting before the cap.
+    pub total_in_meeting: usize,
 }
 
 const SEARCH_MEETINGS: usize = 50;
@@ -411,14 +413,19 @@ pub async fn search_all(pool: &SqlitePool, query: &str) -> Result<Vec<SearchHit>
     for (meeting_id, _) in ordered {
         // Each meeting's matches arrive transcripts first (by time), then title, summary, notes
         let Some(list) = by_meeting.remove(&meeting_id) else { continue };
-        let hits = list.into_iter().filter_map(|m| {
+        let mut hits: Vec<SearchHit> = list.into_iter().filter_map(|m| {
             let snippet = snippet_around(&m.text, &needle, SNIPPET_RADIUS)?;
             Some(SearchHit {
                 meeting_id: m.meeting_id, title: m.title, source: m.source.into(), snippet,
                 transcript_id: m.transcript_id, audio_start: m.audio_start,
+                total_in_meeting: 0,
             })
-        });
-        out.extend(hits.take(SEARCH_HITS_PER_MEETING));
+        }).collect();
+        let total = hits.len();
+        for h in &mut hits {
+            h.total_in_meeting = total;
+        }
+        out.extend(hits.into_iter().take(SEARCH_HITS_PER_MEETING));
     }
     Ok(out)
 }
@@ -585,6 +592,17 @@ mod tests {
         assert_eq!(sources, vec!["transcript", "transcript", "transcript"]);
         let times: Vec<Option<f64>> = hits.iter().map(|h| h.audio_start).collect();
         assert_eq!(times, vec![Some(0.0), Some(1.0), Some(2.0)]);
+    }
+
+    #[tokio::test]
+    async fn search_reports_total_in_meeting() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "бюджет", &["бюджет один", "бюджет два", "бюджет три", "бюджет четыре"], &["бюджет"], Some("бюджет")).await;
+        let hits = search_all(&pool, "бюджет").await.unwrap();
+        assert_eq!(hits.len(), 3);
+        for h in &hits {
+            assert_eq!(h.total_in_meeting, 7);
+        }
     }
 
     #[tokio::test]

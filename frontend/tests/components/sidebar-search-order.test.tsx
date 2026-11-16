@@ -69,8 +69,8 @@ async function mount() {
   await act(async () => { renderer = create(<SidebarProvider><Probe /></SidebarProvider>); });
 }
 
-const older = [{ meetingId: 'old' }] as SearchHit[];
-const newer = [{ meetingId: 'new' }] as SearchHit[];
+const older = [{ meetingId: 'old', totalInMeeting: 1 }] as SearchHit[];
+const newer = [{ meetingId: 'new', totalInMeeting: 1 }] as SearchHit[];
 
 describe('transcript search responses', () => {
   test('a slow earlier response does not overwrite the results of a newer search', async () => {

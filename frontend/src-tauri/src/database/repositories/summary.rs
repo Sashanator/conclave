@@ -181,10 +181,10 @@ impl SummaryProcessesRepository {
             MeetingsRepository::rename_if_default(&mut *transaction, meeting_id, name).await?;
         }
         if completed {
-            // Fallback only: a gist the extraction, backfill or user set stays; same for the category.
+            // A new summary refreshes the gist (the old one stays only if it yields none); a set category is never overwritten.
             let gist = result["markdown"].as_str().and_then(crate::knowledge::extract::gist_from_summary);
             let template = result["template_id"].as_str().filter(|t| !t.trim().is_empty());
-            sqlx::query("UPDATE meetings SET gist = COALESCE(gist, ?), template_id = COALESCE(template_id, ?) WHERE id = ?")
+            sqlx::query("UPDATE meetings SET gist = COALESCE(?, gist), template_id = COALESCE(template_id, ?) WHERE id = ?")
                 .bind(gist)
                 .bind(template)
                 .bind(meeting_id)
@@ -413,9 +413,9 @@ mod tests {
     #[tokio::test]
     async fn completion_sets_fallback_gist_and_template() {
         let pool = crate::database::repositories::test_pool().await;
-        for (id, gist) in [("a", None), ("b", Some("x"))] {
-            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, gist) VALUES (?, 'M', 't', 't', ?)")
-                .bind(id).bind(gist).execute(&pool).await.unwrap();
+        for (id, gist, tpl) in [("a", None, None), ("b", Some("old"), Some("x"))] {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, gist, template_id) VALUES (?, 'M', 't', 't', ?, ?)")
+                .bind(id).bind(gist).bind(tpl).execute(&pool).await.unwrap();
             let started = Utc::now();
             SummaryProcessesRepository::create_or_reset_process(&pool, id, started).await.unwrap();
             assert!(SummaryProcessesRepository::update_process_completed(
@@ -424,7 +424,7 @@ mod tests {
         }
         let row = |id: &'static str| sqlx::query_as::<_, (Option<String>, Option<String>)>("SELECT gist, template_id FROM meetings WHERE id = ?").bind(id).fetch_one(&pool);
         assert_eq!(row("a").await.unwrap(), (Some("Shipped it.".into()), Some("interview".into())));
-        assert_eq!(row("b").await.unwrap(), (Some("x".into()), Some("interview".into())));
+        assert_eq!(row("b").await.unwrap(), (Some("Shipped it.".into()), Some("x".into())));
         // Stale completion (no pending process): nothing written.
         sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('c', 'M', 't', 't')").execute(&pool).await.unwrap();
         assert!(!SummaryProcessesRepository::update_process_completed(

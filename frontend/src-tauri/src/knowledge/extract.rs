@@ -603,6 +603,8 @@ mod tests {
         assert_eq!(g(r#""""#).unwrap().gist, None);
         assert_eq!(g("null").unwrap().gist, None);
         assert_eq!(parse_extraction(r#"{"tasks":[],"decisions":[],"requests":[]}"#).unwrap().gist, None);
+        // A leading blank line is trimmed first, so the gist is the next line.
+        assert_eq!(g(r#""\nSecond line""#).unwrap().gist.as_deref(), Some("Second line"));
         assert!(g("5").is_err());
         let long = format!("\"{}\"", "я".repeat(300));
         assert_eq!(g(&long).unwrap().gist.unwrap().chars().count(), GIST_MAX_CHARS);

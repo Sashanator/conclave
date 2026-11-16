@@ -359,6 +359,16 @@ mod tests {
         assert!(!d.path().join(BACKUPS_DIR).exists());
     }
 
+    // The dir exists by the time the copy fails (closed pool), so the cleanup branch runs.
+    #[tokio::test]
+    async fn manual_backup_removes_partial_dir_when_copy_fails() {
+        let d = tempdir().unwrap();
+        let db = live_db(d.path()).await;
+        db.pool().close().await;
+        assert!(manual_backup(db.pool(), d.path(), None, "1.0.0").await.is_err());
+        assert_eq!(count(&d.path().join(BACKUPS_DIR).join("manual")), 0);
+    }
+
     #[tokio::test]
     async fn manual_retention_keeps_five_and_spares_pre_upgrade() {
         let d = tempdir().unwrap();

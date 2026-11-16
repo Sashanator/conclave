@@ -994,6 +994,9 @@ pub fn run() {
             // Database and Models path commands
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            backup::commands::backup_now,
+            backup::commands::backup_list,
+            backup::commands::backup_open_folder,
             whisper_engine::commands::open_models_folder,
             // Onboarding commands
             onboarding::get_onboarding_status,

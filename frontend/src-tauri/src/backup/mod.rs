@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 
+pub mod commands;
 mod startup;
 pub use startup::*;
 
@@ -250,6 +251,55 @@ pub fn pre_upgrade_backup(data_dir: &Path, templates: Option<&Path>, current: &s
     }
 }
 
+/// Back up now: a consistent `VACUUM INTO` copy of the live DB (no -wal/-shm), user files, a manifest, then retention.
+pub async fn manual_backup(pool: &sqlx::SqlitePool, data_dir: &Path, templates: Option<&Path>, version: &str) -> anyhow::Result<BackupInfo> {
+    if !valid_version(version) {
+        bail!("invalid app version {version:?}");
+    }
+    let kind_dir = data_dir.join(BACKUPS_DIR).join(MANUAL);
+    let now = Local::now();
+    let dir = new_backup_dir(&kind_dir, &format!("{}_v{version}", now.format("%Y-%m-%d_%H%M")))?;
+    let result = async {
+        let db_copy = dir.join(DB_FILE_NAME);
+        sqlx::query("VACUUM INTO ?").bind(db_copy.to_string_lossy().into_owned()).execute(pool).await.context("copying the database")?;
+        let mut files = vec![ManifestFile { path: DB_FILE_NAME.into(), size_bytes: fs::metadata(&db_copy)?.len() }];
+        files.extend(copy_user_files(data_dir, templates, &dir)?);
+        let m = Manifest {
+            kind: MANUAL.into(),
+            created_at: now.to_rfc3339(),
+            from_version: None,
+            version: version.into(),
+            size_bytes: files.iter().map(|f| f.size_bytes).sum(),
+            files,
+        };
+        fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec_pretty(&m)?).context("writing backup manifest")?;
+        Ok::<_, anyhow::Error>(BackupInfo {
+            kind: m.kind,
+            created_at: m.created_at,
+            from_version: m.from_version,
+            version: m.version,
+            size_bytes: m.size_bytes,
+            path: dir.to_string_lossy().into_owned(),
+        })
+    }
+    .await;
+    match result {
+        Ok(info) => {
+            // The backup exists; a failed prune only leaves extra old ones, so it is logged, not an error.
+            if let Err(e) = prune(&kind_dir, MANUAL, KEEP_MANUAL, Some(&dir)) {
+                warn!("backup: prune failed: {e:#}");
+            }
+            Ok(info)
+        }
+        Err(e) => {
+            if let Err(re) = fs::remove_dir_all(&dir) {
+                warn!("backup: could not remove partial {}: {re}", dir.display());
+            }
+            Err(e)
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +315,66 @@ mod tests {
     fn manifest(kind_dir: &Path, name: &str, kind: &str, at: &str) {
         let m = Manifest { kind: kind.into(), created_at: at.into(), from_version: None, version: "1".into(), size_bytes: 0, files: vec![] };
         w(&kind_dir.join(name).join(MANIFEST_FILE), &serde_json::to_string(&m).unwrap());
+    }
+
+    async fn live_db(d: &Path) -> crate::database::manager::DatabaseManager {
+        let p = |n: &str| d.join(n).to_string_lossy().to_string();
+        crate::database::manager::DatabaseManager::new(&p(DB_FILE_NAME), &p("legacy.db")).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn manual_backup_copies_live_db_with_vacuum_into() {
+        let d = tempdir().unwrap();
+        let db = live_db(d.path()).await;
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m', 'Hello', 't', 't')").execute(db.pool()).await.unwrap();
+        w(&d.path().join("x.json"), "{}");
+        let t = d.path().join("tpl");
+        w(&t.join("a.json"), "{}");
+        let info = manual_backup(db.pool(), d.path(), Some(&t), "1.0.0").await.unwrap();
+        assert_eq!(info.kind, "manual");
+        assert_eq!(info.from_version, None);
+        let dir = PathBuf::from(&info.path);
+        assert!(dir.join("x.json").exists() && dir.join("templates/a.json").exists());
+        assert!(!dir.join(format!("{DB_FILE_NAME}-wal")).exists() && !dir.join(format!("{DB_FILE_NAME}-shm")).exists());
+        let copy = sqlx::SqlitePool::connect(&format!("sqlite:{}", dir.join(DB_FILE_NAME).display())).await.unwrap();
+        let title: String = sqlx::query_scalar("SELECT title FROM meetings WHERE id='m'").fetch_one(&copy).await.unwrap();
+        assert_eq!(title, "Hello");
+        assert_eq!(list_backups(d.path()).unwrap(), vec![info]);
+    }
+
+    #[tokio::test]
+    async fn manual_backup_twice_in_a_minute_gets_distinct_dirs() {
+        let d = tempdir().unwrap();
+        let db = live_db(d.path()).await;
+        let a = manual_backup(db.pool(), d.path(), None, "1.0.0").await.unwrap();
+        let b = manual_backup(db.pool(), d.path(), None, "1.0.0").await.unwrap();
+        assert_ne!(a.path, b.path);
+    }
+
+    #[tokio::test]
+    async fn manual_backup_failure_leaves_no_partial_dir() {
+        let d = tempdir().unwrap();
+        let db = live_db(d.path()).await;
+        assert!(manual_backup(db.pool(), d.path(), None, "bad version!").await.is_err());
+        assert!(!d.path().join(BACKUPS_DIR).exists());
+    }
+
+    #[tokio::test]
+    async fn manual_retention_keeps_five_and_spares_pre_upgrade() {
+        let d = tempdir().unwrap();
+        let db = live_db(d.path()).await;
+        let b = d.path().join(BACKUPS_DIR);
+        for i in 0..5 {
+            manifest(&b.join("manual"), &format!("m{i}"), "manual", &format!("2020-01-0{}T00:00:00+00:00", i + 1));
+        }
+        for i in 0..4 {
+            manifest(&b.join("pre-upgrade"), &format!("p{i}"), "pre-upgrade", &format!("2020-01-0{}T00:00:00+00:00", i + 1));
+        }
+        let info = manual_backup(db.pool(), d.path(), None, "1.0.0").await.unwrap();
+        assert_eq!(count(&b.join("manual")), 5);
+        assert_eq!(count(&b.join("pre-upgrade")), 4);
+        assert!(Path::new(&info.path).exists());
+        assert!(!b.join("manual/m0").exists());
     }
 
     #[test]

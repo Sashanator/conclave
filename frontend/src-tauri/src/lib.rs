@@ -604,6 +604,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_process::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(whisper_engine::parallel_commands::ParallelProcessorState::new())
         .manage(Arc::new(RwLock::new(
             None::<notifications::manager::NotificationManager<tauri::Wry>>,
@@ -775,6 +776,8 @@ pub fn run() {
             knowledge::extract::start_worker(_app.handle().clone());
             // The scheduler: calendar refresh, briefs and the daily feed prune. It waits for the database too.
             knowledge::scheduler::start(_app.handle().clone());
+            // Update check ~30 s after launch (no modal; the prompt waits for idle).
+            updates::start_check(_app.handle().clone());
 
             // Copy the shipped templates into the user's templates folder once; deleted ones stay deleted.
             match summary::templates::seed_templates() {
@@ -1055,6 +1058,12 @@ pub fn run() {
             knowledge::calendar::calendar_disconnect,
             knowledge::calendar::calendar_status,
             knowledge::calendar::calendar_title_now,
+            updates::updates_get_status,
+            updates::updates_set_token,
+            updates::updates_remove_token,
+            updates::updates_set_check_on_start,
+            updates::updates_check,
+            updates::updates_install,
             prep::upcoming::prep_overview,
             prep::store::prep_get,
             prep::store::prep_for_meeting,

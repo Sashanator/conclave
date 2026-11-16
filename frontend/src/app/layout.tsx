@@ -28,6 +28,8 @@ import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioF
 import { usePathname, useRouter } from 'next/navigation'
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext'
 import { THEME_INIT_SCRIPT } from '@/lib/theme'
+import { AiSidebarProvider } from '@/components/AiSidebar/AiSidebarProvider'
+import { AiSidebar } from '@/components/AiSidebar/AiSidebar'
 import { CopilotProvider, writeLiveSideTab } from '@/contexts/CopilotContext'
 import { writeFlag } from '@/lib/meeting-page-layout'
 import { installBrowserPreview } from '@/lib/browser-preview'
@@ -270,6 +272,7 @@ function AppShell({
           <RecordingStateProvider>
             <TranscriptProvider>
               <CopilotProvider>
+              <AiSidebarProvider>
               <ConfigProvider>
                 <OllamaDownloadProvider>
                   <OnboardingProvider>
@@ -287,6 +290,7 @@ function AppShell({
                               <div className="flex">
                                 <Sidebar />
                                 <MainContent>{children}</MainContent>
+                                <AiSidebar />
                               </div>
                             )}
                             {/* Import audio overlay and dialog */}
@@ -306,6 +310,7 @@ function AppShell({
 
                 </OllamaDownloadProvider>
               </ConfigProvider>
+              </AiSidebarProvider>
               </CopilotProvider>
             </TranscriptProvider>
           </RecordingStateProvider>

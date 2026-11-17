@@ -209,6 +209,9 @@ export function useRecordingStart(
           const autoMeetingId = takeAutoStartMeetingId(sessionStorage);
           // Set by requestResume (Resume recording on the meeting page): the meeting this call continues.
           const continueId = takeAutoStartContinueId(sessionStorage);
+          // Set by Rust when it could not make a meeting row twice: record without one.
+          const routingFailed = sessionStorage.getItem('autoStartRoutingFailed') === 'true';
+          sessionStorage.removeItem('autoStartRoutingFailed');
 
           // Check the selected transcription model before starting.
           const modelReady = await checkModelReady();
@@ -236,7 +239,10 @@ export function useRecordingStart(
           try {
             // A continue start joins the earlier meeting at save time, so it skips routing.
             if (continueId) sessionStorage.removeItem('last_recording_meeting_id');
-            routed = continueId
+            if (routingFailed && !continueId) {
+              toast.warning('Recording as a new meeting', { description: 'The meeting could not be prepared in advance.' });
+            }
+            routed = continueId || routingFailed
               ? { meetingId: null, title: null }
               : await routeOrFallback(autoMeetingId ? { page: autoMeetingId } : 'sidebar');
 

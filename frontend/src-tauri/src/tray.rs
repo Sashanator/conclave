@@ -87,7 +87,7 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// Constructs the JS snippet injected into the webview to start recording on the record screen.
-fn autostart_script(meeting_id: Option<&str>, continue_id: Option<&str>) -> String {
+fn autostart_script(meeting_id: Option<&str>, continue_id: Option<&str>, routing_failed: bool) -> String {
     // JSON-encode so an id is always a safe JS string literal.
     let set = |key: &str, id: Option<&str>| {
         id.map(|id| {
@@ -96,8 +96,9 @@ fn autostart_script(meeting_id: Option<&str>, continue_id: Option<&str>) -> Stri
         })
         .unwrap_or_default()
     };
+    let failed = if routing_failed { "sessionStorage.setItem('autoStartRoutingFailed', 'true'); " } else { "" };
     format!(
-        "{}{}sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/')",
+        "{}{}{failed}sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/record')",
         set("autoStartMeetingId", meeting_id),
         set("autoStartContinueId", continue_id)
     )
@@ -109,10 +110,7 @@ static ROUTING_START: AtomicBool = AtomicBool::new(false);
 /// bringing the window forward. Routes the start to a meeting row first; a continuation keeps its own row.
 pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, source: crate::recording::route::StartSource, continue_id: Option<&str>) {
     // An automatic start must never reload the page over a live, starting or saving recording.
-    if crate::audio::recording_commands::is_recording_now()
-        || crate::audio::recording_commands::start_in_flight()
-        || crate::meeting_detector::post_processing()
-    {
+    if start_busy() {
         log::info!("Start ignored: a recording is starting, running or saving");
         return;
     }
@@ -125,33 +123,72 @@ pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, source: crate::re
     let app = app.clone();
     let continue_id = continue_id.map(str::to_owned);
     tauri::async_runtime::spawn(async move {
-        let meeting_id = if continue_id.is_some() { None } else { route_start(&app, source).await };
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.eval(&autostart_script(meeting_id.as_deref(), continue_id.as_deref()));
+        let _routing = RoutingGuard; // released on every path out, including a panic
+        let Some(window) = app.get_webview_window("main") else {
+            log::warn!("Start dropped: the main window is gone");
+            update_tray_menu_async(&app).await;
+            return;
+        };
+        let (meeting_id, routing_failed) = if continue_id.is_some() { (None, false) } else { route_start(&app, source).await };
+        // The routing await is a gap: a recording may have started, or be saving, since the check above.
+        if start_busy() {
+            log::info!("Start dropped: a recording started or is saving while the meeting was routed");
+            release_unused(&app, meeting_id.as_deref()).await;
+            update_tray_menu_async(&app).await;
+            return;
         }
-        ROUTING_START.store(false, Ordering::Release);
+        if let Err(e) = window.eval(&autostart_script(meeting_id.as_deref(), continue_id.as_deref(), routing_failed)) {
+            log::warn!("Start dropped: could not reach the main window ({e})");
+            release_unused(&app, meeting_id.as_deref()).await;
+            update_tray_menu_async(&app).await;
+        }
     });
 }
 
+fn start_busy() -> bool {
+    crate::audio::recording_commands::is_recording_now()
+        || crate::audio::recording_commands::start_in_flight()
+        || crate::meeting_detector::post_processing()
+}
+
+/// Clears `ROUTING_START` when dropped.
+struct RoutingGuard;
+impl Drop for RoutingGuard {
+    fn drop(&mut self) {
+        ROUTING_START.store(false, Ordering::Release);
+    }
+}
+
+/// A routed row no recording will use: gives it back (deleted when we created it and it is untouched).
+async fn release_unused<R: Runtime>(app: &AppHandle<R>, meeting_id: Option<&str>) {
+    let (Some(id), Some(state)) = (meeting_id, app.try_state::<crate::state::AppState>()) else { return };
+    if let Err(e) = crate::recording::route::release_failed_start(state.db_manager.pool(), id).await {
+        log::warn!("release of unused routed meeting {id} failed: {e}");
+    }
+}
+
 /// Routing failure must not drop the recording: retry as a sidebar start, then record with no row
-/// so the save creates one.
-async fn route_start<R: Runtime>(app: &AppHandle<R>, source: crate::recording::route::StartSource) -> Option<String> {
-    use crate::recording::route::{resolve_target, StartSource};
+/// so the save creates one. The flag is true when no row could be made (the UI tells the user).
+async fn route_start<R: Runtime>(app: &AppHandle<R>, source: crate::recording::route::StartSource) -> (Option<String>, bool) {
     let Some(state) = app.try_state::<crate::state::AppState>() else {
         log::error!("Start routing: AppState missing, recording into a new meeting");
-        return None;
+        return (None, true);
     };
-    let pool = state.db_manager.pool();
+    route_with(state.db_manager.pool(), source).await
+}
+
+async fn route_with(pool: &sqlx::SqlitePool, source: crate::recording::route::StartSource) -> (Option<String>, bool) {
+    use crate::recording::route::{resolve_target, StartSource};
     let mut result = resolve_target(pool, chrono::Utc::now(), source).await;
     if let Err(e) = &result {
         log::warn!("Start routing failed ({e}), retrying as a new meeting");
         result = resolve_target(pool, chrono::Utc::now(), StartSource::Sidebar).await;
     }
     match result {
-        Ok(r) => Some(r.meeting_id),
+        Ok(r) => (Some(r.meeting_id), false),
         Err(e) => {
             log::error!("Start routing failed twice ({e}), recording into a new meeting");
-            None
+            (None, true)
         }
     }
 }
@@ -721,23 +758,58 @@ mod tests {
 
     #[test]
     fn autostart_script_sets_meeting_id() {
-        let script = autostart_script(Some("m-1"), None);
+        let script = autostart_script(Some("m-1"), None, false);
         assert!(script.contains("sessionStorage.setItem('autoStartMeetingId', \"m-1\")"));
         assert!(!script.contains("autoStartContinueId") && !script.contains("autoStartTitlePrefix"));
-        assert!(script.ends_with("window.location.assign('/')"));
+        assert!(!script.contains("autoStartRoutingFailed"));
+        assert!(script.ends_with("window.location.assign('/record')"));
     }
 
     #[test]
     fn autostart_script_escapes_ids() {
-        let script = autostart_script(Some("x\"); alert(1)//"), Some("y\"); alert(2)//"));
+        let script = autostart_script(Some("x\"); alert(1)//"), Some("y\"); alert(2)//"), false);
         assert!(script.contains(r#""x\"); alert(1)//""#));
         assert!(script.contains(r#""y\"); alert(2)//""#));
     }
 
     #[test]
     fn autostart_script_continue_has_no_meeting_id() {
-        let script = autostart_script(None, Some("c-1"));
+        let script = autostart_script(None, Some("c-1"), false);
         assert!(!script.contains("autoStartMeetingId"));
         assert!(script.contains("sessionStorage.setItem('autoStartContinueId', \"c-1\")"));
+    }
+
+    #[test]
+    fn autostart_script_flags_a_routing_failure() {
+        let script = autostart_script(None, None, true);
+        assert!(script.contains("sessionStorage.setItem('autoStartRoutingFailed', 'true')"));
+        assert!(script.contains("autoStartRecording"));
+    }
+
+    #[tokio::test]
+    async fn route_with_retries_as_a_new_meeting_then_gives_up() {
+        use crate::recording::route::StartSource;
+        let pool = crate::database::repositories::test_pool().await;
+        let (id, failed) = route_with(&pool, StartSource::Page("gone".into())).await;
+        assert!(id.is_some() && !failed, "the missing page falls back to a new row");
+        let (id, failed) = route_with(&pool, StartSource::Sidebar).await;
+        assert!(id.is_some() && !failed);
+        pool.close().await;
+        assert_eq!(route_with(&pool, StartSource::Page("gone".into())).await, (None, true));
+    }
+
+    #[test]
+    fn the_routing_flag_is_released_on_every_path_out() {
+        // One test owns the flag: the paths are the guard dropping normally, early, and by a panic.
+        ROUTING_START.store(true, Ordering::Release);
+        drop(RoutingGuard);
+        assert!(!ROUTING_START.load(Ordering::Acquire));
+        ROUTING_START.store(true, Ordering::Release);
+        let _ = std::panic::catch_unwind(|| { let _g = RoutingGuard; panic!("boom"); });
+        assert!(!ROUTING_START.load(Ordering::Acquire));
+        let early = || { let _g = RoutingGuard; if ROUTING_START.load(Ordering::Acquire) { return 1; } 2 };
+        ROUTING_START.store(true, Ordering::Release);
+        assert_eq!(early(), 1);
+        assert!(!ROUTING_START.load(Ordering::Acquire));
     }
 }

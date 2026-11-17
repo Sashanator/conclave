@@ -173,9 +173,16 @@ pub(crate) fn ensure_not_live(live: Option<&str>, id: &str) -> Result<(), String
 
 /// `ensure_not_live` against both live meetings: the routed target and the one a Continue appends to.
 pub(crate) fn ensure_not_live_now(id: &str) -> Result<(), String> {
-    ensure_not_live(recording_target_id().as_deref(), id)?;
     let cont = super::continuation::current_target(recordings_started()).map(|m| m.meeting_id);
-    ensure_not_live(cont.as_deref(), id)
+    let busy = is_recording_now() || crate::meeting_detector::post_processing();
+    ensure_not_live_in(recording_target_id().as_deref(), cont.as_deref(), busy, id)
+}
+
+/// A Continue target is only live while a recording runs or saves: it outlives the save until the next start.
+fn ensure_not_live_in(routed: Option<&str>, cont: Option<&str>, busy: bool, id: &str) -> Result<(), String> {
+    ensure_not_live(routed, id)?;
+    if busy { ensure_not_live(cont, id)?; }
+    Ok(())
 }
 
 /// Marks the routed row started and tells the UI. A failure only warns: the save falls back to a new meeting.
@@ -1894,11 +1901,35 @@ mod tests {
 
     #[test]
     fn recording_target_is_set_by_finalize_and_taken_once() {
+        let _turn = TEST_STATE.lock().unwrap_or_else(PoisonError::into_inner);
         set_recording_target(Some("m-1".to_string()));
         assert_eq!(recording_target_id().as_deref(), Some("m-1"));
         assert_eq!(take_recording_target().as_deref(), Some("m-1"));
         assert_eq!(take_recording_target(), None);
         assert_eq!(recording_target_id(), None);
+    }
+
+    /// Tests that flip `IS_RECORDING` or the targets take turns.
+    static TEST_STATE: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn finalize_recording_start_stores_the_target() {
+        let _turn = TEST_STATE.lock().unwrap_or_else(PoisonError::into_inner);
+        let before = recordings_started();
+        finalize_recording_start(Some("m-1".to_string()));
+        assert_eq!(recording_target_id().as_deref(), Some("m-1"));
+        assert!(is_recording_now());
+        assert_eq!(recordings_started(), before + 1);
+        assert_eq!(take_recording_target().as_deref(), Some("m-1"));
+        IS_RECORDING.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn a_continue_target_blocks_delete_only_while_busy() {
+        assert!(ensure_not_live_in(None, Some("c"), true, "c").is_err());
+        assert!(ensure_not_live_in(None, Some("c"), false, "c").is_ok(), "a stale continue target is not live");
+        assert!(ensure_not_live_in(Some("r"), Some("c"), false, "r").is_err(), "the routed row stays protected");
+        assert!(ensure_not_live_in(Some("r"), Some("c"), true, "x").is_ok());
     }
 
     #[test]

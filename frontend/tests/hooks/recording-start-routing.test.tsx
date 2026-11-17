@@ -125,6 +125,16 @@ describe('auto-start', () => {
     expect(startRecordingWithDevices).toHaveBeenCalledWith('mic', 'sys', null, null);
   });
 
+  test('a routing failure flag from Rust records with no row and shows the warning', async () => {
+    sessionStorage.setItem('autoStartRecording', 'true');
+    sessionStorage.setItem('autoStartRoutingFailed', 'true');
+    await mount();
+    expect(routeCalls()).toEqual([]);
+    expect(startRecordingWithDevices).toHaveBeenCalledWith('mic', 'sys', null, null);
+    expect(toast.warning).toHaveBeenCalledWith('Recording as a new meeting', expect.anything());
+    expect(sessionStorage.getItem('autoStartRoutingFailed')).toBeNull();
+  });
+
   test('an auto-start with a meeting id routes to that page and passes the routed id', async () => {
     sessionStorage.setItem('autoStartRecording', 'true');
     sessionStorage.setItem('autoStartMeetingId', 'm-cal');

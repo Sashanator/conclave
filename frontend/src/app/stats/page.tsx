@@ -45,7 +45,7 @@ export default function StatsPage() {
   };
 
   return (
-    <div className="h-full overflow-y-auto bg-muted/50">
+    <div className="h-full overflow-y-auto">
       <div className="mx-auto max-w-3xl space-y-8 p-8">
         <div className="flex items-center justify-between">
           <h1 className="text-3xl font-bold">Stats</h1>

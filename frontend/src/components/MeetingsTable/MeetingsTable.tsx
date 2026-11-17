@@ -144,6 +144,8 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
       }
     },
   });
+  // Widths are proportions, so the columns always fit beside the AI sidebar instead of scrolling sideways.
+  const sizeTotal = table.getVisibleLeafColumns().reduce((n, c) => n + c.getSize(), 0) || 1;
 
   const virtual = items.length > VIRTUALIZE_ABOVE;
   const virtualizer = useVirtualizer({
@@ -201,7 +203,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
           <thead>
             <tr>
               {table.getHeaderGroups()[0].headers.map((h) => (
-                <th key={h.id} style={{ width: h.getSize() }} className="px-[10px] py-1 text-left text-xs font-semibold text-muted-foreground"
+                <th key={h.id} style={{ width: `${(h.getSize() / sizeTotal) * 100}%` }} className="px-[10px] py-1 text-left text-xs font-semibold text-muted-foreground"
                   aria-sort={config.sort[0]?.id === h.column.id ? (config.sort[0].desc ? 'descending' : 'ascending') : undefined}>
                   {SORTABLE.includes(h.column.id as SortId)
                     ? <button type="button" onClick={() => dispatch(nextSort(config, h.column.id as SortId))} className="hover:text-foreground">

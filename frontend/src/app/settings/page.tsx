@@ -82,9 +82,9 @@ function SettingsContent() {
   }, [activeTab]);
 
   return (
-    <div className="h-screen bg-muted/50 flex flex-col">
+    <div className="h-screen flex flex-col">
       {/* Fixed Header */}
-      <div className="sticky top-0 z-10 bg-muted/50 border-b border-border">
+      <div className="sticky top-0 z-10 bg-background border-b border-border">
         <div className="max-w-6xl mx-auto px-8 py-6">
           <div className="flex items-center gap-4">
             <button
@@ -112,7 +112,7 @@ function SettingsContent() {
                     key={tab.value}
                     value={tab.value}
                     ref={el => { tabRefs.current[index] = el }}
-                    className="flex items-center gap-2 px-6 py-4 bg-transparent rounded-none border-0 data-[state=active]:bg-transparent data-[state=active]:text-blue-600 data-[state=active]:shadow-none text-muted-foreground hover:text-foreground relative z-10"
+                    className="flex items-center gap-2 px-6 py-4 bg-transparent rounded-none border-0 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none text-muted-foreground hover:text-foreground relative z-10"
                   >
                     <Icon className="w-4 h-4" />
                     {tab.label}
@@ -121,7 +121,7 @@ function SettingsContent() {
               })}
 
               <motion.div
-                className="absolute bottom-0 z-20 h-0.5 bg-blue-600"
+                className="absolute bottom-0 z-20 h-0.5 bg-primary"
                 layoutId="underline"
                 style={{ left: underlineStyle.left, width: underlineStyle.width }}
                 transition={{ type: 'spring', stiffness: 400, damping: 40 }}

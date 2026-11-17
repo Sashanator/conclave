@@ -89,7 +89,7 @@ function chipsOf(f: ViewFilter, now: Date, templates: CategoryInfo[]): { key: ke
     const name = (c: string | null) => (c === null ? 'No template' : templates.find((t) => t.id === c)?.name ?? c);
     out.push({ key: 'categories', label: `Category: ${f.categories.map(name).join(', ') || 'none'}` });
   }
-  if (f.states) out.push({ key: 'states', label: `Status: ${f.states.join(', ') || 'none'}` });
+  if (f.states) out.push({ key: 'states', label: `Status: ${f.states.map((s) => STATE_FILTERS.find(([id]) => id === s)?.[1] ?? s).join(', ') || 'none'}` });
   if (f.calendar !== undefined) out.push({ key: 'calendar', label: `Calendar: ${f.calendar ? 'Yes' : 'No'}` });
   return out;
 }

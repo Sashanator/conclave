@@ -9,9 +9,9 @@ import { formatMeetingDate, type MeetingRow } from '@/lib/meetings';
 import type { CategoryInfo } from '@/lib/meeting-views';
 import { CategoryChip, ReviewedCell } from './cells';
 
-/** Debounced search; only the newest request may write results. `hits` is null while not searching. */
+/** Debounced search; only the newest request may write results. Returns null while the current query is still pending; `hits` is null when it failed. */
 export function useMeetingSearch(query: string) {
-  const [found, setFound] = useState<{ q: string; hits: SearchHit[] } | null>(null);
+  const [found, setFound] = useState<{ q: string; hits: SearchHit[] | null } | null>(null);
   const seq = useRef(0);
   useEffect(() => {
     const mine = ++seq.current;
@@ -22,19 +22,19 @@ export function useMeetingSearch(query: string) {
         const hits = await invoke<SearchHit[]>('api_search_transcripts', { query: q });
         if (mine === seq.current) setFound({ q, hits });
       } catch (e) {
-        if (mine === seq.current) { setFound(null); toast.error('Search failed', { description: e instanceof Error ? e.message : String(e) }); }
+        if (mine === seq.current) { setFound({ q, hits: null }); toast.error('Search failed', { description: e instanceof Error ? e.message : String(e) }); }
       }
     }, 250);
     return () => clearTimeout(t);
   }, [query]);
-  return found && found.q === query.trim() ? found.hits : null;
+  return found && found.q === query.trim() ? found : null;
 }
 
 const th = 'px-[10px] py-1 text-left text-xs font-semibold text-muted-foreground';
 
 export function SearchResults({ query, hits, rows, templates, now, selectedId, onClear, onToggleReviewed, onChangeTemplate }: {
   query: string;
-  hits: SearchHit[];
+  hits: SearchHit[] | null | undefined; // undefined: still searching; null: the search failed
   rows: MeetingRow[];
   templates: CategoryInfo[];
   now: Date;
@@ -43,6 +43,15 @@ export function SearchResults({ query, hits, rows, templates, now, selectedId, o
   onToggleReviewed: (id: string) => void;
   onChangeTemplate: (id: string, templateId: string | null) => void;
 }) {
+  if (hits === undefined) return <p role="status" className="py-10 text-center text-sm text-muted-foreground">Searching…</p>;
+  if (hits === null) {
+    return (
+      <div role="status" className="py-10 text-center text-sm text-muted-foreground">
+        <p>The search failed. Try again.</p>
+        <button type="button" onClick={onClear} className="mt-2 text-foreground underline">Clear search</button>
+      </div>
+    );
+  }
   const groups = groupHits(hits);
   if (!groups.length) {
     return (

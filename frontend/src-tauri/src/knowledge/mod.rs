@@ -23,9 +23,11 @@ pub const CALENDAR_FETCH_TIMEOUT_SECS: u64 = 20;
 pub const CALENDAR_MAX_BYTES: usize = 5 * 1024 * 1024;
 pub const CALENDAR_AHEAD_DAYS: i64 = 14;
 pub const CALENDAR_BEHIND_DAYS: i64 = 1;
+/// How far ahead the reconcile looks. Inside the fetch window (CALENDAR_AHEAD_DAYS).
+pub const RECONCILE_AHEAD_DAYS: i64 = 7;
 
 /// Timing for auto-titles, briefs and feed retention.
-pub const AUTO_TITLE_LEAD_MINS: i64 = 10;
+pub const AUTO_TITLE_LEAD_MINS: i64 = 15;
 pub const BRIEF_LEAD_MINS: i64 = 60;
 pub const FEED_RETENTION_DAYS: i64 = 30;
 
@@ -54,3 +56,7 @@ pub const DIGEST_MAX_TASKS: usize = 30;
 pub const DIGEST_MAX_ITEMS: usize = 10;
 pub const DIGEST_MAX_ITEM_CHARS: usize = 200;
 pub const DIGEST_MAX_TITLE_CHARS: usize = 120;
+
+/// Tests that set the process-wide settings cache take this, so they do not overwrite each other.
+#[cfg(test)]
+pub(crate) static SETTINGS_TEST_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());

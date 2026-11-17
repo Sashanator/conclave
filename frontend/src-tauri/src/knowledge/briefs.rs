@@ -142,6 +142,19 @@ pub(crate) async fn make_brief<R: Runtime>(
     template: &TemplateEntry,
     now: &(dyn Fn() -> DateTime<Utc> + Sync),
 ) -> Result<Option<String>, String> {
+    build_brief(app, pool, occ, template, now, false).await
+}
+
+/// `replace`: the event's existing brief and its feed item go in the same transaction that stores the new one,
+/// so nothing is lost when the new one is not made.
+async fn build_brief<R: Runtime>(
+    app: &AppHandle<R>,
+    pool: &SqlitePool,
+    occ: &Occurrence,
+    template: &TemplateEntry,
+    now: &(dyn Fn() -> DateTime<Utc> + Sync),
+    replace: bool,
+) -> Result<Option<String>, String> {
     let past = matching_meetings(pool, &template.id, &occ.title).await?;
     let Some(previous) = past.first() else {
         return Ok(None);
@@ -168,7 +181,7 @@ pub(crate) async fn make_brief<R: Runtime>(
     };
     let (decisions, requests) = (stored.content.decisions.len(), stored.content.requests.len());
     let line = brief_line(occ);
-    let Some(id) = store(pool, occ, template, &previous.id, &stored, &line).await? else {
+    let Some(id) = store(pool, occ, template, &previous.id, &stored, &line, replace).await? else {
         return Ok(None);
     };
     // Only after the commit: the UI and the toast never show a brief that was not saved.
@@ -182,6 +195,19 @@ pub(crate) async fn make_brief<R: Runtime>(
     Ok(Some(id))
 }
 
+async fn remove_event_briefs(conn: &mut sqlx::SqliteConnection, uid: &str, start: &str) -> Result<(), sqlx::Error> {
+    let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM briefs WHERE event_uid = ? AND datetime(event_start) = datetime(?)")
+        .bind(uid)
+        .bind(start)
+        .fetch_all(&mut *conn)
+        .await?;
+    for (id,) in &ids {
+        feed::delete_for_target(&mut *conn, "brief", id).await?;
+        sqlx::query("DELETE FROM briefs WHERE id = ?").bind(id).execute(&mut *conn).await?;
+    }
+    Ok(())
+}
+
 /// Writes the brief and its feed item in one transaction. None when the brief already exists or the previous meeting
 /// was deleted while the lists were being made (the check is in the INSERT, so a delete cannot slip in between).
 async fn store(
@@ -191,11 +217,15 @@ async fn store(
     previous_id: &str,
     stored: &Stored,
     line: &str,
+    replace: bool,
 ) -> Result<Option<String>, String> {
     let id = Uuid::new_v4().to_string();
     let content_json = serde_json::to_string(stored).map_err(|e| e.to_string())?;
     // The brief and its feed item commit together. Dropping the transaction on an error rolls both back.
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
+    if replace {
+        remove_event_briefs(&mut tx, &occ.uid, &start_key(occ.start)).await.map_err(|e| e.to_string())?;
+    }
     let inserted = sqlx::query(
         "INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) \
          SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?) \
@@ -280,6 +310,98 @@ pub async fn brief_get(state: State<'_, AppState>, id: String) -> Result<Option<
     get(state.db_manager.pool(), &id).await
 }
 
+/// What the meeting page needs to know about a meeting's brief.
+#[derive(Serialize, Debug, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct MeetingBrief {
+    pub is_call: bool,
+    pub brief_id: Option<String>,
+}
+
+/// The brief of a meeting, joined by event uid and start instant (briefs store `Z`, meetings `+00:00`).
+pub(crate) async fn for_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<MeetingBrief, String> {
+    let row: Option<(i64, Option<String>)> = sqlx::query_as(
+        "SELECT m.calendar_marker IS NOT NULL, (SELECT b.id FROM briefs b WHERE b.event_uid = m.calendar_uid \
+         AND datetime(b.event_start) = datetime(m.calendar_start) LIMIT 1) FROM meetings m WHERE m.id = ?",
+    )
+    .bind(meeting_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let (is_call, brief_id) = row.unwrap_or((0, None));
+    Ok(MeetingBrief { is_call: is_call != 0, brief_id })
+}
+
+/// The meeting a brief belongs to (the reverse of `for_meeting`).
+pub(crate) async fn meeting_for_brief(pool: &SqlitePool, brief_id: &str) -> Result<Option<String>, String> {
+    sqlx::query_scalar(
+        "SELECT m.id FROM briefs b JOIN meetings m ON b.event_uid = m.calendar_uid AND datetime(b.event_start) = datetime(m.calendar_start) \
+         WHERE b.id = ? ORDER BY m.created_at LIMIT 1",
+    )
+    .bind(brief_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Replaces the brief of a 📞 meeting at any time, not only in the due window. With no matching template the old brief stays.
+pub(crate) async fn regenerate<R: Runtime>(
+    app: &AppHandle<R>,
+    pool: &SqlitePool,
+    meeting_id: &str,
+    templates: &[TemplateEntry],
+) -> Result<String, String> {
+    type Row = (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>);
+    let row: Option<Row> = sqlx::query_as(
+        "SELECT title, calendar_marker, calendar_uid, calendar_start, calendar_end, calendar_original_start FROM meetings WHERE id = ?",
+    )
+    .bind(meeting_id)
+    .fetch_optional(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    let Some((title, marker, uid, start, end, original)) = row else {
+        return Err("Meeting not found".to_string());
+    };
+    let (Some(_), Some(uid), Some(start_text)) = (marker, uid, start) else {
+        return Err("Briefs are made for 📞 calls only".to_string());
+    };
+    let start = parse_date(&start_text).ok_or("The meeting start is not a date")?;
+    let occ = Occurrence {
+        uid,
+        title,
+        start,
+        end: end.as_deref().and_then(parse_date).unwrap_or(start + Duration::minutes(30)),
+        recurring: false,
+        original_start: original.as_deref().and_then(parse_date).unwrap_or(start),
+    };
+    let template = event_type(&occ.title, templates)
+        .ok_or("No template matches this title, so there is no earlier meeting to brief from")?;
+    // The old brief is replaced inside the store transaction; if no new one is made it stays.
+    build_brief(app, pool, &occ, template, &|| occ.start - Duration::minutes(1), true)
+        .await?
+        .ok_or_else(|| "The brief could not be made now (the earlier meeting's notes are not ready). The old brief is kept.".to_string())
+}
+
+#[tauri::command]
+pub async fn brief_for_meeting(state: State<'_, AppState>, meeting_id: String) -> Result<MeetingBrief, String> {
+    for_meeting(state.db_manager.pool(), &meeting_id).await
+}
+
+#[tauri::command]
+pub async fn brief_meeting(state: State<'_, AppState>, brief_id: String) -> Result<Option<String>, String> {
+    meeting_for_brief(state.db_manager.pool(), &brief_id).await
+}
+
+#[tauri::command]
+pub async fn brief_regenerate(app: AppHandle<Wry>, meeting_id: String) -> Result<Option<String>, String> {
+    let pool = app.state::<AppState>().db_manager.pool().clone();
+    // The template folder is read on a blocking thread.
+    let templates = tauri::async_runtime::spawn_blocking(|| crate::summary::templates::list_templates().templates)
+        .await
+        .map_err(|e| e.to_string())?;
+    regenerate(&app, &pool, &meeting_id, &templates).await.map(Some)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -297,7 +419,7 @@ mod tests {
     }
 
     fn occurrence(uid: &str, title: &str, start: DateTime<Utc>) -> Occurrence {
-        Occurrence { uid: uid.into(), title: title.into(), start, end: start + Duration::minutes(30), recurring: false }
+        Occurrence { uid: uid.into(), title: title.into(), start, end: start + Duration::minutes(30), original_start: start, recurring: false }
     }
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {
@@ -597,7 +719,7 @@ mod tests {
 
         // The meeting is deleted after the lookup, while the extraction was being waited for.
         sqlx::query("DELETE FROM meetings WHERE id = 'ivan-deleted_previous'").execute(&pool).await.unwrap();
-        let made = store(&pool, &occ, &one_on_one, "ivan-deleted_previous", &stored, "Brief: x").await.unwrap();
+        let made = store(&pool, &occ, &one_on_one, "ivan-deleted_previous", &stored, "Brief: x", false).await.unwrap();
 
         assert_eq!(made, None);
         assert_eq!(brief_rows(&pool).await, 0);
@@ -625,7 +747,7 @@ mod tests {
         };
         assert!(crate::database::repositories::meeting::MeetingsRepository::delete_recording(&pool, "ivan-rec_deleted").await.unwrap());
 
-        let made = store(&pool, &occ, &one_on_one, "ivan-rec_deleted", &stored, "Brief: x").await.unwrap();
+        let made = store(&pool, &occ, &one_on_one, "ivan-rec_deleted", &stored, "Brief: x", false).await.unwrap();
 
         assert_eq!(made, None);
         assert_eq!(brief_rows(&pool).await, 0);
@@ -656,7 +778,7 @@ mod tests {
             },
         };
 
-        let made = store(&pool, &occ, &one_on_one, "ivan-regen_store", &stored, "Brief: x").await.unwrap();
+        let made = store(&pool, &occ, &one_on_one, "ivan-regen_store", &stored, "Brief: x", false).await.unwrap();
 
         assert!(made.is_some());
         assert_eq!(brief_rows(&pool).await, 1);
@@ -700,6 +822,101 @@ mod tests {
         let _flight = extract::hold_in_flight("ivan-queued");
         assert_eq!(make_brief(app.handle(), &pool, &occ, &one_on_one, &|| at(10, 30)).await.unwrap(), None);
         assert_eq!(brief_rows(&pool).await, 0);
+    }
+
+    async fn call_row(pool: &SqlitePool, id: &str, marker: Option<&str>, start: &str) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, calendar_uid, calendar_start, calendar_marker) VALUES (?, '1:1 Ivan', 't', 't', 'u1', ?, ?)")
+            .bind(id)
+            .bind(start)
+            .bind(marker)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn brief_for_meeting_finds_by_uid_and_start() {
+        let pool = test_pool().await;
+        call_row(&pool, "call", Some("📞"), "2026-10-26T11:00:00+00:00").await;
+        call_row(&pool, "plain", None, "2026-10-26T11:00:00+00:00").await;
+        assert_eq!(for_meeting(&pool, "call").await.unwrap(), MeetingBrief { is_call: true, brief_id: None });
+        sqlx::query("INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) VALUES ('b1', 'u1', '2026-10-26T11:00:00Z', 't', 'x', 'p', '{}', 't')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(for_meeting(&pool, "call").await.unwrap(), MeetingBrief { is_call: true, brief_id: Some("b1".into()) });
+        assert!(!for_meeting(&pool, "plain").await.unwrap().is_call);
+        assert_eq!(meeting_for_brief(&pool, "b1").await.unwrap().as_deref(), Some("call"));
+        assert_eq!(meeting_for_brief(&pool, "nope").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn regenerate_replaces_brief_outside_due_window() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        meeting(&pool, "regen-prev", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        extracted(&pool, "regen-prev", "[]", "[]").await;
+        let templates = [template("one_on_one", "1:1", &["1:1"])];
+        // The meeting is three days ahead: far outside the due window.
+        let start = Utc::now() + Duration::days(3);
+        call_row(&pool, "regen-call", Some("📞"), &start.to_rfc3339_opts(SecondsFormat::Secs, false)).await;
+        let old = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", start), &templates[0], &|| start - Duration::minutes(1))
+            .await
+            .unwrap()
+            .unwrap();
+
+        let new = regenerate(app.handle(), &pool, "regen-call", &templates).await.unwrap();
+
+        assert_ne!(new, old);
+        assert_eq!(brief_rows(&pool).await, 1);
+        assert_eq!(feed_count(&pool).await, 1);
+        assert!(get(&pool, &old).await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn regenerate_without_template_keeps_the_old_brief() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        meeting(&pool, "regen2-prev", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        extracted(&pool, "regen2-prev", "[]", "[]").await;
+        call_row(&pool, "regen2-call", Some("📞"), "2026-10-26T11:00:00+00:00").await;
+        let one_on_one = template("one_on_one", "1:1", &["1:1"]);
+        make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30)).await.unwrap().unwrap();
+
+        let err = regenerate(app.handle(), &pool, "regen2-call", &[]).await.unwrap_err();
+
+        assert_eq!(err, "No template matches this title, so there is no earlier meeting to brief from");
+        assert_eq!(brief_rows(&pool).await, 1);
+        assert_eq!(feed_count(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn regenerate_failure_keeps_the_old_brief() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        meeting(&pool, "regen3-prev", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        extracted(&pool, "regen3-prev", "[]", "[]").await;
+        call_row(&pool, "regen3-call", Some("📞"), "2026-10-26T11:00:00+00:00").await;
+        let one_on_one = template("one_on_one", "1:1", &["1:1"]);
+        let old = make_brief(app.handle(), &pool, &occurrence("u1", "1:1 Ivan", at(11, 0)), &one_on_one, &|| at(10, 30)).await.unwrap().unwrap();
+
+        // The previous meeting is being extracted again: no new brief can be made meanwhile.
+        sqlx::query("DELETE FROM meeting_extracts WHERE meeting_id = 'regen3-prev'").execute(&pool).await.unwrap();
+        let _flight = extract::hold_in_flight("regen3-prev");
+        assert!(regenerate(app.handle(), &pool, "regen3-call", &[one_on_one]).await.is_err());
+
+        assert!(get(&pool, &old).await.unwrap().is_some());
+        assert_eq!(brief_rows(&pool).await, 1);
+        assert_eq!(feed_count(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn regenerate_refuses_non_call_row() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        call_row(&pool, "plain", None, "2026-10-26T11:00:00+00:00").await;
+        let err = regenerate(app.handle(), &pool, "plain", &[]).await.unwrap_err();
+        assert_eq!(err, "Briefs are made for 📞 calls only");
     }
 }
 

@@ -31,7 +31,8 @@ interface TranscriptContextType {
   setStartTitle: (start: StartTitle) => void;
   clearTranscripts: () => void;
   currentMeetingId: string | null;
-  markMeetingAsSaved: () => Promise<void>;
+  /** Marks a recording's IndexedDB record saved. With an id (taken at its stop) the current recording's id is left alone. */
+  markMeetingAsSaved: (meetingId?: string) => Promise<void>;
 }
 
 const TranscriptContext = createContext<TranscriptContextType | undefined>(undefined);
@@ -588,9 +589,9 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
   }, []);
 
   // Mark current meeting as saved in IndexedDB
-  const markMeetingAsSaved = useCallback(async () => {
+  const markMeetingAsSaved = useCallback(async (givenId?: string) => {
     // Try context state first, fallback to sessionStorage
-    const meetingId = currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
+    const meetingId = givenId || currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id');
 
     if (!meetingId) {
       console.error('[IndexedDB] ❌ Cannot mark meeting as saved: No meeting ID available!');
@@ -602,9 +603,13 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
     try {
       await indexedDBService.markMeetingSaved(meetingId);
 
-      // Clear both sources
-      setCurrentMeetingId(null);
-      sessionStorage.removeItem('indexeddb_current_meeting_id');
+      // Clear both sources, unless a newer recording owns them now
+      // (the stored id is the truth: the state captured here may be the finished recording's)
+      const stored = sessionStorage.getItem('indexeddb_current_meeting_id');
+      if (!givenId || !stored || stored === givenId) {
+        setCurrentMeetingId(null);
+        sessionStorage.removeItem('indexeddb_current_meeting_id');
+      }
     } catch (error) {
       console.error('[IndexedDB] ❌ Failed to mark meeting as saved:', error);
     }

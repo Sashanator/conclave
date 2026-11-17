@@ -6,6 +6,7 @@
 use anyhow::Result;
 use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
+use std::time::{Duration, Instant};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
     Arc, Mutex, PoisonError,
@@ -159,18 +160,33 @@ fn set_recording_target(id: Option<String>) {
     *RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner) = id;
 }
 
-/// Meetings whose recording stopped but whose save has not finished: they must not be deleted meanwhile.
-static SAVING_TARGETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// Meetings whose recording stopped but whose save has not finished: they must not be deleted or claimed meanwhile.
+/// An entry expires, so a save that never reports back cannot protect a meeting forever.
+static SAVING_TARGETS: Mutex<Vec<(String, std::time::Instant)>> = Mutex::new(Vec::new());
+const SAVING_TARGET_TTL: std::time::Duration = std::time::Duration::from_secs(600);
 
-fn add_saving_target(id: &str) {
-    SAVING_TARGETS.lock().unwrap_or_else(PoisonError::into_inner).push(id.to_string());
+fn prune_saving(v: &mut Vec<(String, std::time::Instant)>, now: std::time::Instant) {
+    v.retain(|(_, at)| now.saturating_duration_since(*at) < SAVING_TARGET_TTL);
 }
 
-fn remove_saving_target(id: &str) {
+pub(crate) fn add_saving_target(id: &str) {
     let mut g = SAVING_TARGETS.lock().unwrap_or_else(PoisonError::into_inner);
-    if let Some(i) = g.iter().position(|s| s == id) {
+    let now = std::time::Instant::now();
+    prune_saving(&mut g, now);
+    g.push((id.to_string(), now));
+}
+
+pub(crate) fn remove_saving_target(id: &str) {
+    let mut g = SAVING_TARGETS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(i) = g.iter().position(|(s, _)| s == id) {
         g.remove(i);
     }
+}
+
+pub(crate) fn is_saving_target(id: &str) -> bool {
+    let mut g = SAVING_TARGETS.lock().unwrap_or_else(PoisonError::into_inner);
+    prune_saving(&mut g, std::time::Instant::now());
+    g.iter().any(|(s, _)| s == id)
 }
 
 /// The frontend's save finished (or gave up): the meeting is deletable again.
@@ -193,8 +209,7 @@ pub(crate) fn ensure_not_live(live: Option<&str>, id: &str) -> Result<(), String
 
 /// `ensure_not_live` against both live meetings: the routed target and the one a Continue appends to.
 pub(crate) fn ensure_not_live_now(id: &str) -> Result<(), String> {
-    let saving = SAVING_TARGETS.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|s| s == id);
-    ensure_not_live(saving.then_some(id), id)?;
+    ensure_not_live(is_saving_target(id).then_some(id), id)?;
     let cont = super::continuation::current_target(recordings_started()).map(|m| m.meeting_id);
     let busy = is_recording_now() || crate::meeting_detector::post_processing();
     ensure_not_live_in(recording_target_id().as_deref(), cont.as_deref(), busy, id)
@@ -209,6 +224,9 @@ fn ensure_not_live_in(routed: Option<&str>, cont: Option<&str>, busy: bool, id: 
 
 /// Marks the routed row started. Err = why this recording can't use it (finished, has lines, or gone).
 async fn claim_row(pool: &sqlx::SqlitePool, id: &str) -> Result<(), String> {
+    if is_saving_target(id) {
+        return Err("Its previous recording is still being saved.".to_string());
+    }
     match crate::recording::route::mark_started(pool, id, chrono::Utc::now()).await {
         Ok(true) => Ok(()),
         Ok(false) => Err("Its meeting was deleted or already holds a recording.".to_string()),
@@ -216,21 +234,29 @@ async fn claim_row(pool: &sqlx::SqlitePool, id: &str) -> Result<(), String> {
     }
 }
 
-/// Claims the routed row and tells the UI. On a refusal the target is dropped, so the save makes a new meeting
-/// instead of the stop returning an id this recording must not write to.
-async fn claim_target<R: Runtime>(app: &AppHandle<R>, meeting_id: Option<&str>) {
-    let Some(id) = meeting_id else { return };
-    let claimed = match app.try_state::<crate::state::AppState>() {
-        Some(state) => claim_row(state.db_manager.pool(), id).await,
+/// Claims the routed row; on a refusal the target is dropped, so the save makes a new meeting instead of the
+/// stop returning an id this recording must not write to.
+async fn claim_or_drop(pool: Option<&sqlx::SqlitePool>, id: &str) -> Result<(), String> {
+    let claimed = match pool {
+        Some(pool) => claim_row(pool, id).await,
         None => Err("The app database is not ready.".to_string()),
     };
-    match claimed {
+    if claimed.is_err() {
+        set_recording_target(None);
+    }
+    claimed
+}
+
+/// Claims the routed row and tells the UI.
+async fn claim_target<R: Runtime>(app: &AppHandle<R>, meeting_id: Option<&str>) {
+    let Some(id) = meeting_id else { return };
+    let state = app.try_state::<crate::state::AppState>();
+    match claim_or_drop(state.as_ref().map(|s| s.db_manager.pool()), id).await {
         Ok(()) => {
             let _ = app.emit("recording-target", serde_json::json!({ "meetingId": id }));
         }
         Err(reason) => {
             warn!("recording target {id} refused ({reason}); the save will make a new meeting");
-            set_recording_target(None);
             let _ = app.emit("recording-target-failed", serde_json::json!({ "reason": reason }));
         }
     }
@@ -1984,6 +2010,32 @@ mod tests {
         assert!(ensure_not_live_now("s-2").is_err(), "another save still runs");
         remove_saving_target("s-2");
         assert!(ensure_not_live_now("s-2").is_ok());
+    }
+
+    #[test]
+    fn a_saving_target_expires() {
+        let t = Instant::now();
+        let mut v = vec![("old".to_string(), t), ("new".to_string(), t + SAVING_TARGET_TTL)];
+        prune_saving(&mut v, t + SAVING_TARGET_TTL + Duration::from_secs(1));
+        assert_eq!(v.iter().map(|(id, _)| id.as_str()).collect::<Vec<_>>(), vec!["new"]);
+    }
+
+    #[tokio::test]
+    async fn a_refused_claim_clears_the_target() {
+        let _turn = TEST_STATE.lock().unwrap_or_else(PoisonError::into_inner);
+        let pool = crate::database::repositories::test_pool().await;
+        set_recording_target(Some("gone".to_string()));
+        assert!(claim_or_drop(Some(&pool), "gone").await.is_err());
+        assert_eq!(recording_target_id(), None);
+        let id = crate::database::repositories::meeting::MeetingsRepository::create_meeting(&pool, None, chrono::Local::now().naive_local()).await.unwrap();
+        set_recording_target(Some(id.clone()));
+        assert!(claim_or_drop(Some(&pool), &id).await.is_ok());
+        assert_eq!(recording_target_id().as_deref(), Some(id.as_str()));
+        add_saving_target(&id);
+        assert!(claim_or_drop(Some(&pool), &id).await.is_err(), "a meeting still saving is not claimed");
+        remove_saving_target(&id);
+        assert_eq!(recording_target_id(), None);
+        assert!(claim_or_drop(None, "x").await.is_err());
     }
 
     #[tokio::test]

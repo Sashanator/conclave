@@ -713,33 +713,35 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 | 31 prep by meeting id | done (pre-crash) |
 | 32 meeting-page helpers | done |
 | 33 page shell + New + autostart URL | done |
-| 34 Recording state | done (rd-d, merged into rd-35) |
-| 35 Finished state + tasks | done (rd-35, not merged) |
-| 36 page menu + category | fix round (rd-35) |
-| 37 remove old layouts | todo |
-| 38 meeting page mocks + a11y | todo |
+| 34 Recording state | done |
+| 35 Finished state + tasks | done |
+| 36 page menu + category | done |
+| 37 remove old layouts | done |
+| 38 meeting page mocks + a11y | mocks done (a11y in 55) |
 | 39 original_start + cache v2 | done |
 | 40 expansion completeness | done |
 | 41 marker + 15-min window | done |
 | 42 reconcile plan | done |
 | 43 reconcile executor | done |
 | 44 reconcile scheduling + sync error | done |
-| 45 remove prep mover | done (rd-49, with 49) |
+| 45 remove prep mover | done |
 | 46 📞 briefs + commands | done |
 | 47 pop-up 📞 routing | done |
 | 48 Settings marker + error time | done |
-| 49 brief in Prep, Digests | done (rd-49) + prep chat moved into Prep tab (user, 2026-11-17) |
-| 50 nav | done (rd-50, not merged) |
-| 51 removals | todo |
+| 49 brief in Prep, Digests | done + prep chat moved into Prep tab (user, 2026-11-17) |
+| 50 nav | done |
+| 51 removals | done |
 | 52 open_log_file | done |
 | 53 CHANGELOG v2.0.0 (+ v1.2.0) | done |
-| 54 What's new | done (rd-50) |
-| 55 final UI QA | todo |
+| 54 What's new | done |
+| 55 final UI QA | in progress |
 | 56 checkpoint + Windows checklist | todo |
 
 2026-11-17: the VM crashed mid-session; uncommitted work in rd-e (Tasks 39+) and rd-r (Task 10) was corrupted (NUL bytes) and discarded (backups in the session scratchpad). Committed lanes merged into `redesign`. "done (pre-crash)" tasks get covered by their phase-end reviews.
 
 2026-11-17 session: lanes write code in parallel; every build/test (cargo, pnpm, tsc, bun) runs under `flock /workspace/.superpowers/cargo.lock`. Phase 2 merged into `redesign` from rd-b (Phase 2 review running). Review-found plan errors fixed in code: `UNTOUCHED_SQL` also checks `notes_json`; autostart script goes to `/record` (Task 16), not `/`; brief store and `set_extract` require a `summary_processes` row (Task 8).
+
+2026-11-17 evening: Phases 1, 4, 5 reviewed and fixed (Phase 4 two rounds + recheck), Task 51 reviewed; batch-3 gates on `redesign` 17fd9a50 all PASS (bun 1029, cargo 1583). Next: Task 55 QA, whole-branch review, Task 56.
 
 ## Open items for the user
 

@@ -61,7 +61,7 @@ mock.module('next/navigation', () => ({
   useRouter: () => ({ push: () => {} }),
 }));
 
-const { default: BriefsPage } = await import('../../src/app/briefs/page');
+const { default: DigestsPage } = await import('../../src/app/digests/page');
 
 let renderer: ReactTestRenderer | null = null;
 
@@ -80,7 +80,7 @@ async function mount(query = '') {
   renderer = null;
   searchQuery = query;
   await act(async () => {
-    renderer = create(<BriefsPage />);
+    renderer = create(<DigestsPage />);
   });
   await flush();
 }
@@ -104,60 +104,23 @@ beforeEach(() => {
   digestGets.length = 0;
 });
 
-describe('Briefs & digests page', () => {
-  test('lists the briefs and filters by kind', async () => {
+describe('Digests page', () => {
+  test('lists only digests', async () => {
     await mount();
     expect(invoke).toHaveBeenCalledWith('briefs_list');
-    expect(textOf(buttonNamed('1:1 Ivan'))).toContain('1:1 Ivan');
-    expect(renderer!.root.findAll((n) => n.type === 'button' && textOf(n).includes('Weekly digest'))).toHaveLength(0);
-
-    await click(buttonNamed('Digests'));
+    expect(renderer!.root.findAll((n) => n.type === 'h1').map(textOf)).toEqual(['Digests']);
     expect(textOf(buttonNamed('Weekly digest'))).toContain('Weekly digest: 16–21 Oct');
     expect(renderer!.root.findAll((n) => n.type === 'button' && textOf(n).includes('1:1 Ivan'))).toHaveLength(0);
   });
 
-  test('?id= opens that brief', async () => {
-    await mount('id=b1&kind=brief');
-    expect(briefGets).toEqual([{ id: 'b1' }]);
-    const article = renderer!.root.findAll((n) => n.type === 'article');
-    expect(article).toHaveLength(1);
-    expect(textOf(article[0])).toContain('Ship the plan');
-    expect(textOf(article[0])).toContain('From last time');
-  });
-
-  test('brief text renders literally, never as markup', async () => {
-    await mount('id=b1&kind=brief');
-    expect(renderer!.root.findAll((n) => n.type === 'img' || n.type === 'b' || n.type === 'i')).toHaveLength(0);
-    const all = JSON.stringify(renderer!.toJSON());
-    expect(all).toContain('<img src=x> Ivan sync');
-    expect(all).toContain('<b>Send the deck</b>');
-    expect(all).toContain('Book <i>room</i>');
-  });
-
-  test('unknown tag left as text', async () => {
-    await mount('id=d1&kind=digest');
+  test('?id= opens that digest, links known meetings, sanitises markdown', async () => {
+    await mount('id=d1');
     expect(digestGets).toEqual([{ id: 'd1' }]);
-    // [M1] links to its meeting; [M9] has no meeting, so it stays plain text.
     const links = renderer!.root.findAll((n) => n.type === 'a');
     expect(links.map((l) => l.props.href)).toEqual(['/meeting-details?id=m-old']);
-    expect(JSON.stringify(renderer!.toJSON())).toContain('[M9]');
-  });
-
-  test('switching tabs clears the selection', async () => {
-    await mount('id=d1&kind=digest');
-    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(1);
-
-    await click(buttonNamed('Briefs'));
-    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(0);
-
-    await click(buttonNamed('Digests'));
-    expect(renderer!.root.findAll((n) => n.type === 'article')).toHaveLength(0);
-  });
-
-  test('digest markdown is sanitised', async () => {
-    await mount('id=d1&kind=digest');
     expect(renderer!.root.findAll((n) => n.type === 'script' || n.type === 'img')).toHaveLength(0);
     const all = JSON.stringify(renderer!.toJSON());
+    expect(all).toContain('[M9]');
     expect(all).not.toContain('<script>');
     expect(all).not.toContain('https://example.com/p.png');
     expect(all).not.toContain('https://evil.example');

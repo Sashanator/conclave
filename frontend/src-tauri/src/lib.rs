@@ -1084,7 +1084,6 @@ pub fn run() {
             updates::updates_set_check_on_start,
             updates::updates_check,
             updates::updates_install,
-            prep::upcoming::prep_overview,
             prep::store::prep_get,
             prep::store::prep_for_meeting,
             prep::store::prep_save,

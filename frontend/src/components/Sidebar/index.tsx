@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useMemo, useEffect, useCallback } from 'react';
-import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap, BarChart3, ListChecks, Newspaper, ClipboardList } from 'lucide-react';
+import { ChevronDown, ChevronRight, File, Settings, ChevronLeftCircle, ChevronRightCircle, Calendar, StickyNote, Home, Trash2, Mic, Square, Plus, Search, Pencil, NotebookPen, SearchIcon, X, Upload, AudioLines, GraduationCap, BarChart3, ListChecks, Newspaper } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { useSidebar } from './SidebarProvider';
 import type { CurrentMeeting } from '@/components/Sidebar/SidebarProvider';
@@ -47,7 +47,6 @@ interface SidebarItem {
 const Sidebar: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname();
-  const isPrepPage = pathname === '/prep';
   // Navigation that discards nothing unless the user agrees (e.g. unsaved template edits)
   const go = (href: string) => {
     if (confirmLeave()) router.push(href);
@@ -458,7 +457,7 @@ const Sidebar: React.FC = () => {
     const isPracticePage = pathname === '/practice';
     const isStatsPage = pathname === '/stats';
     const isTasksPage = pathname === '/tasks';
-    const isBriefsPage = pathname === '/briefs';
+    const isBriefsPage = pathname === '/digests';
 
     return (
       <TooltipProvider>
@@ -500,8 +499,8 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
-                onClick={() => go('/briefs')}
-                aria-label="Briefs & digests"
+                onClick={() => go('/digests')}
+                aria-label="Digests"
                 className={`p-2 rounded-lg transition-colors duration-150 ${isBriefsPage ? 'bg-muted' : 'hover:bg-accent'
                   }`}
               >
@@ -509,21 +508,8 @@ const Sidebar: React.FC = () => {
               </button>
             </TooltipTrigger>
             <TooltipContent side="right">
-              <p>Briefs & digests</p>
+              <p>Digests</p>
             </TooltipContent>
-          </Tooltip>
-
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button
-                onClick={() => go('/prep')}
-                aria-label="Prep"
-                className={`p-2 rounded-lg transition-colors duration-150 ${isPrepPage ? 'bg-muted' : 'hover:bg-accent'}`}
-              >
-                <ClipboardList className="w-5 h-5 text-muted-foreground" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="right"><p>Prep</p></TooltipContent>
           </Tooltip>
 
           <Tooltip>
@@ -867,29 +853,18 @@ const Sidebar: React.FC = () => {
               <div
                 role="button"
                 tabIndex={0}
-                onClick={() => go('/briefs')}
+                onClick={() => go('/digests')}
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    go('/briefs');
+                    go('/digests');
                   }
                 }}
                 className="p-3 text-lg font-semibold items-center hover:bg-accent h-10 flex mx-3 rounded-lg cursor-pointer"
               >
                 <Newspaper className="w-4 h-4 mr-2" />
-                <span>Briefs & digests</span>
+                <span>Digests</span>
               </div>
-            )}
-            {!isCollapsed && (
-              <button
-                type="button"
-                onClick={() => go('/prep')}
-                aria-current={isPrepPage ? 'page' : undefined}
-                className={`p-3 text-lg font-semibold items-center hover:bg-accent h-10 flex mx-3 rounded-lg cursor-pointer ${isPrepPage ? 'bg-muted' : ''}`}
-              >
-                <ClipboardList className="w-4 h-4 mr-2" />
-                <span>Prep</span>
-              </button>
             )}
             {!isCollapsed && (
               <div

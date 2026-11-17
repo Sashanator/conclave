@@ -701,39 +701,39 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 | 19 search totals + snippets | done (pre-crash) |
 | 20 keyboard map | done (pre-crash) |
 | 21 react-table + mocks | done (pre-crash) |
-| 22 rows/views hooks | done (rd-c, not merged) |
-| 23 table rows + delete dialog | done (rd-c, not merged) |
-| 24 tabs, toolbar, search, empty | done (rd-c, not merged) |
-| 25 Phase 3 check | in progress (rd-c QA + phase review) |
+| 22 rows/views hooks | done |
+| 23 table rows + delete dialog | done |
+| 24 tabs, toolbar, search, empty | done |
+| 25 Phase 3 check | done |
 | 26 AiSidebar shell | done (pre-crash) |
 | 27 ask_meetings scope | done (pre-crash) |
-| 28 Ask in sidebar | todo |
+| 28 Ask in sidebar | done |
 | 29 copilot-alert | done (pre-crash) |
 | 30 Copilot in sidebar | done |
 | 31 prep by meeting id | done (pre-crash) |
 | 32 meeting-page helpers | done |
-| 33 page shell + New + autostart URL | todo |
-| 34 Recording state | todo |
-| 35 Finished state + tasks | todo |
-| 36 page menu + category | todo |
+| 33 page shell + New + autostart URL | done |
+| 34 Recording state | done (rd-d, merged into rd-35) |
+| 35 Finished state + tasks | done (rd-35, not merged) |
+| 36 page menu + category | fix round (rd-35) |
 | 37 remove old layouts | todo |
 | 38 meeting page mocks + a11y | todo |
-| 39 original_start + cache v2 | in progress (rd-e) |
-| 40 expansion completeness | in progress (rd-e) |
-| 41 marker + 15-min window | in progress (rd-e) |
-| 42 reconcile plan | todo |
-| 43 reconcile executor | todo |
-| 44 reconcile scheduling + sync error | todo |
-| 45 remove prep mover | todo |
-| 46 📞 briefs + commands | todo |
-| 47 pop-up 📞 routing | todo |
-| 48 Settings marker + error time | todo |
-| 49 brief in Prep, Digests | todo |
-| 50 nav | todo |
+| 39 original_start + cache v2 | done |
+| 40 expansion completeness | done |
+| 41 marker + 15-min window | done |
+| 42 reconcile plan | done |
+| 43 reconcile executor | done |
+| 44 reconcile scheduling + sync error | done |
+| 45 remove prep mover | done (rd-49, with 49) |
+| 46 📞 briefs + commands | done |
+| 47 pop-up 📞 routing | done |
+| 48 Settings marker + error time | done |
+| 49 brief in Prep, Digests | done (rd-49) + prep chat moved into Prep tab (user, 2026-11-17) |
+| 50 nav | done (rd-50, not merged) |
 | 51 removals | todo |
 | 52 open_log_file | done |
-| 53 CHANGELOG v2.0.0 (+ v1.2.0) | todo |
-| 54 What's new | todo |
+| 53 CHANGELOG v2.0.0 (+ v1.2.0) | done |
+| 54 What's new | done (rd-50) |
 | 55 final UI QA | todo |
 | 56 checkpoint + Windows checklist | todo |
 

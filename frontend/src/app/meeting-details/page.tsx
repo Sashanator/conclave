@@ -367,7 +367,8 @@ function MeetingDetailsContent() {
     onSetTranscriptMark={setTranscriptMark}
     onSetTranscriptSpeaker={setTranscriptSpeaker}
     focusSegmentId={targetLine ?? timeLine}
-    requestedTab={target?.tab === 'summary' || target?.tab === 'notes' ? target.tab : null}
+    requestedTab={target?.tab ?? null}
+    reviewed={row?.reviewed ?? false}
   /></>;
 }
 

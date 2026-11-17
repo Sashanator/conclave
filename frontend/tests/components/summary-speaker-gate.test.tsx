@@ -22,7 +22,7 @@ const originals = {
   picker: { ...await import('../../src/components/LanguagePickerPopover') },
   recents: { ...await import('../../src/hooks/useRecentLanguages') },
   transcriptPanel: { ...await import('../../src/components/MeetingDetails/TranscriptPanel') },
-  splitView: { ...await import('../../src/components/MeetingDetails/MeetingDetailsSplitView') },
+  splitView: { ...await import('../../src/components/MeetingPage/FinishedTabs') },
   audioBar: { ...await import('../../src/components/MeetingDetails/AudioPlayerBar') },
   notesPane: { ...await import('../../src/components/MeetingNotes/NotesPane') },
   meetingData: { ...await import('../../src/hooks/meeting-details/useMeetingData') },
@@ -50,7 +50,7 @@ afterAll(() => {
   mock.module('../../src/components/LanguagePickerPopover', () => originals.picker);
   mock.module('../../src/hooks/useRecentLanguages', () => originals.recents);
   mock.module('../../src/components/MeetingDetails/TranscriptPanel', () => originals.transcriptPanel);
-  mock.module('../../src/components/MeetingDetails/MeetingDetailsSplitView', () => originals.splitView);
+  mock.module('../../src/components/MeetingPage/FinishedTabs', () => originals.splitView);
   mock.module('../../src/components/MeetingDetails/AudioPlayerBar', () => originals.audioBar);
   mock.module('../../src/components/MeetingNotes/NotesPane', () => originals.notesPane);
   mock.module('../../src/hooks/meeting-details/useMeetingData', () => originals.meetingData);
@@ -148,8 +148,8 @@ let transcriptProps: { onResumeRecording?: () => void; speakers: { name: (idx: n
 mock.module('../../src/components/MeetingDetails/TranscriptPanel', () => ({
   TranscriptPanel: (props: typeof transcriptProps) => { transcriptProps = props; return null; },
 }));
-mock.module('../../src/components/MeetingDetails/MeetingDetailsSplitView', () => ({
-  MeetingDetailsSplitView: (props: { transcript: ReactNode; summary: ReactNode }) => <>{props.transcript}{props.summary}</>,
+mock.module('../../src/components/MeetingPage/FinishedTabs', () => ({
+  FinishedTabs: (props: { transcript: ReactNode; summary: ReactNode }) => <>{props.transcript}{props.summary}</>,
 }));
 mock.module('../../src/components/MeetingDetails/AudioPlayerBar', () => ({ AudioPlayerBar: () => null }));
 mock.module('../../src/components/MeetingNotes/NotesPane', () => ({ NotesPane: () => null }));

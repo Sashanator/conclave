@@ -583,7 +583,7 @@ export const WHATS_NEW_SEEN_KEY = 'whats-new-seen';
 export function whatsNewUnseen(seen: string | null, version: string | null): boolean;
 ```
 Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{version}` → `/whats-new` with a dot (`aria-hidden` + `sr-only` " (new)") while unseen; re-read on window event `whats-new-seen`. Expanded: visible labels; collapsed: icon + `Tooltip side="right"` + `aria-label`; active `aria-current="page"`; `<nav aria-label="Main">`. Record: not recording → `routeRecordingStart('sidebar')`, `queueAutoStart(sessionStorage, meetingId)`, `go(url)` (error → `toast.error('Could not start recording', …)`); recording → `recordLabel`, click → `go('/meeting-details?id=' + liveMeetingId)` (disabled while `liveMeetingId` is null).
-- [ ] Failing tests: `NAV_MAIN` labels `['Meetings','Tasks','Digests','Dictate','Practice','Stats']`; `isNavActive('/meeting-details', NAV_MAIN[0])` true, `'/ask'` false; `recordLabel(false,null)`, `(true,192)` → `'Recording 03:12'`; `whatsNewUnseen` (null,'1.3.0') true, equal false, (null,null) false. Component (mock `SidebarProvider`, `RecordingStateContext`, `next/navigation`, `ImportDialogContext`, `invoke` with `'plugin:app|version'` → `'1.3.0'` and `api_route_recording_start`): expanded button texts in order `['Record new meeting','Meetings','Tasks','Digests','Dictate','Practice','Stats','Import audio','Settings',"What's new in v1.3.0"]`; collapsed each has its `aria-label`, nothing named `Ask`, `Prep`, `About`, `Briefs & digests`; live `m1` at 192 s → `Recording 03:12`, click → push `/meeting-details?id=m1`; idle click → `api_route_recording_start {source:'sidebar'}` then push of the meeting page; dot gone after `whats-new-seen` with `'1.3.0'`.
+- [ ] Failing tests: `NAV_MAIN` labels `['Meetings','Tasks','Digests','Dictate','Practice','Stats']`; `isNavActive('/meeting-details', NAV_MAIN[0])` true, `'/ask'` false; `recordLabel(false,null)`, `(true,192)` → `'Recording 03:12'`; `whatsNewUnseen` (null,'2.0.0') true, equal false, (null,null) false. Component (mock `SidebarProvider`, `RecordingStateContext`, `next/navigation`, `ImportDialogContext`, `invoke` with `'plugin:app|version'` → `'2.0.0'` and `api_route_recording_start`): expanded button texts in order `['Record new meeting','Meetings','Tasks','Digests','Dictate','Practice','Stats','Import audio','Settings',"What's new in v2.0.0"]`; collapsed each has its `aria-label`, nothing named `Ask`, `Prep`, `About`, `Briefs & digests`; live `m1` at 192 s → `Recording 03:12`, click → push `/meeting-details?id=m1`; idle click → `api_route_recording_start {source:'sidebar'}` then push of the meeting page; dot gone after `whats-new-seen` with `'2.0.0'`.
 - [ ] → FAIL → implement → PASS, full `bun test`, `pnpm run build`. Commit `feat(nav): single left nav with Record, Digests and What's new; drop sidebar list and mic button`.
 
 ### Task 51: Remove the old sidebar state, About, and the record screen
@@ -596,27 +596,28 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 
 ### Task 52: `open_log_file` command
 **Agent:** mechanical · **Risky:** no
-**Files:** `database/commands.rs` (after `open_database_folder :219-234`); `lib.rs` after `:1000`; `src/lib/browser-preview.ts` (`open_log_file`, `open_database_folder` → null, `'plugin:app|version'` → `'1.3.0'`).
+**Files:** `database/commands.rs` (after `open_database_folder :219-234`); `lib.rs` after `:1000`; `src/lib/browser-preview.ts` (`open_log_file`, `open_database_folder` → null, `'plugin:app|version'` → `'2.0.0'`).
 **Interfaces:** `pub(crate) fn log_file_path(log_dir: &Path, app_name: &str) -> PathBuf` (`<dir>/<name>.log`); `#[tauri::command] pub async fn open_log_file(app: AppHandle) -> Result<(), String>` (path from `app.path().app_log_dir()` and `package_info().name`; exists → `open_folder(&path)`, else `create_dir_all` + open the dir).
 - [ ] Failing test `log_file_path` (`"L"`, `"Conclave"` → `L/Conclave.log`). **RUST** → FAIL → implement, register → PASS. Commit `feat(app): open the log file from the app`.
 
-### Task 53: CHANGELOG v1.3.0
+### Task 53: CHANGELOG v2.0.0
+**Decided 2026-11-17 (user):** the redesign ships as **v2.0.0**. Also add a `## v1.2.0` section above v1.1.0 for the already-merged safe updates (keyring secrets, pre-upgrade backups, signed in-app updater). What's new lists every section.
 **Agent:** mechanical · **Risky:** no
-**Files:** `CHANGELOG.md` (above the newest section), `scripts/release-scripts.test.mjs:62` (`'1.1.0'` → `'1.3.0'`).
+**Files:** `CHANGELOG.md` (above the newest section), `scripts/release-scripts.test.mjs:62` (`'1.1.0'` → `'2.0.0'`).
 ```
-## v1.3.0 — <commit date, YYYY-MM-DD>
+## v2.0.0 — <commit date, YYYY-MM-DD>
 - **Meetings table.** All meetings in one table with saved views, search across transcripts, and grouping by day or category.
 - **Create a meeting first.** Name it, write prep notes, then press Record; calendar meetings appear on their own.
 - **One AI sidebar.** Ask and Copilot open beside the table or meeting (Ctrl J); Digests replace Briefs in the menu.
 - **What's new** in the menu shows these notes; version, data folder and log file moved there from About.
 ```
-- [ ] Change the test → `node --test scripts/*.test.mjs` FAIL → add the section → PASS; `node scripts/changelog-section.mjs 1.3.0` prints the four bullets. Commit `docs(changelog): v1.3.0`.
+- [ ] Change the test → `node --test scripts/*.test.mjs` FAIL → add the section → PASS; `node scripts/changelog-section.mjs 2.0.0` prints the four bullets. Commit `docs(changelog): v2.0.0`.
 
 ### Task 54: What's new page with the About footer
 **Agent:** implementer · **Risky:** no (bundled file, no network)
 **Files:** create `src/lib/changelog.ts` (`type Release = { version; date; items: string[] }`; `parseChangelog(md)`: `/^## v(\d+\.\d+\.\d+) — (.+)$/`, bullets `/^- (.+)$/`, newest first by numeric semver); `src/components/WhatsNew/WhatsNew.tsx` (`'use client'`, `{ changelog: string }`: one `<article>` per release, `**x**` → `<b>`, everything else text; the `getVersion()` release gets `Installed` + `aria-current="true"`; on mount sets `WHATS_NEW_SEEN_KEY` (try/catch) and dispatches `whats-new-seen`; footer `Conclave v{version} · Based on Meetily (MIT) by Zackriya Solutions ·` + `Open data folder` / `Open log file`, failures `toast.error`); `src/app/whats-new/page.tsx` as a **server component** returning `<WhatsNew changelog={readFileSync(join(process.cwd(), '..', 'CHANGELOG.md'), 'utf8')} />`.
-- [ ] Failing tests: older-first sample → `['1.3.0','1.1.0']`; `items[0]` keeps `**Meetings table.**`; `## Unreleased` and prose skipped; `1.10.0` above `1.9.0`; component with version `'1.1.0'`: only v1.1.0 has `Installed`, the key becomes `'1.1.0'`, footer has `Based on Meetily (MIT)`, `Open log file` invokes `open_log_file`, a rejection toasts, `<img src=x>` renders as text.
-- [ ] → FAIL → implement → PASS; `pnpm run build`, `grep -c "v1.3.0" frontend/out/whats-new.html` ≥ 1. Commit `feat(whats-new): bundled changelog page with version, credit, data folder and log file`.
+- [ ] Failing tests: older-first sample → `['2.0.0','1.1.0']`; `items[0]` keeps `**Meetings table.**`; `## Unreleased` and prose skipped; `1.10.0` above `1.9.0`; component with version `'1.1.0'`: only v1.1.0 has `Installed`, the key becomes `'1.1.0'`, footer has `Based on Meetily (MIT)`, `Open log file` invokes `open_log_file`, a rejection toasts, `<img src=x>` renders as text.
+- [ ] → FAIL → implement → PASS; `pnpm run build`, `grep -c "v2.0.0" frontend/out/whats-new.html` ≥ 1. Commit `feat(whats-new): bundled changelog page with version, credit, data folder and log file`.
 
 ### Task 55: Final UI QA (§8 frontend)
 **Agent:** implementer · **Risky:** no
@@ -634,7 +635,7 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
   2. Create a meeting from the table, add prep, press Start recording on its page: the nav shows `Recording mm:ss` and opens that meeting; Stop saves into the same row (no second row).
   3. A 📞 event within 15 min: its row exists; join Zoom, press Record on the pop-up: the recording goes into that meeting and its page opens.
   4. During the call open Copilot (Ctrl J) and ask; the answer arrives while recording continues.
-  5. What's new shows v1.3.0 Installed; the dot goes after opening; Open data folder and Open log file work.
+  5. What's new shows v2.0.0 Installed; the dot goes after opening; Open data folder and Open log file work.
 
 ## Spec coverage
 
@@ -731,7 +732,7 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 | 50 nav | todo |
 | 51 removals | todo |
 | 52 open_log_file | done |
-| 53 CHANGELOG v1.3.0 | todo |
+| 53 CHANGELOG v2.0.0 (+ v1.2.0) | todo |
 | 54 What's new | todo |
 | 55 final UI QA | todo |
 | 56 checkpoint + Windows checklist | todo |
@@ -742,6 +743,6 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 
 ## Open items for the user
 
-1. **v1.2.0 and the v1.3.0 notes:** `CHANGELOG.md` has no v1.2.0 section yet. If safe updates does not ship as v1.2.0 first, should the v1.3.0 notes (Task 53) also list the safe-updates features?
+1. ~~v1.2.0 and the v1.3.0 notes~~ Resolved 2026-11-17: v1.2.0 section for safe updates; the redesign is v2.0.0.
 
 Decided while planning (2026-11-16): silent-system-audio warning deferred; a Continue mid-recording deletes the fresh routed row only if untouched, else returns it to New (Task 10); a start whose routing fails records anyway into a new meeting (Tasks 12, 13); a failed calendar fetch keeps the 30-min cadence, a failed reconcile retries next tick from the last feed (Task 44).

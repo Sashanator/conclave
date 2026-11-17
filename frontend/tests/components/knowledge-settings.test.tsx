@@ -6,6 +6,7 @@ const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   select: { ...await import('../../src/components/ui/select') },
   switchUi: { ...await import('../../src/components/ui/switch') },
+  sonner: { ...await import('sonner') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
@@ -13,7 +14,10 @@ afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('../../src/components/ui/select', () => originals.select);
   mock.module('../../src/components/ui/switch', () => originals.switchUi);
+  mock.module('sonner', () => originals.sonner);
 });
+
+const toastError = mock((_message: string, _options?: unknown) => undefined);
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
 
@@ -23,6 +27,7 @@ type View = {
   my_names: string[];
   extract_enabled: boolean;
   digest_enabled: boolean;
+  calendar_marker: string;
 };
 
 type Calendar = {
@@ -30,15 +35,17 @@ type Calendar = {
   host: string | null;
   last_ok_at: string | null;
   last_error: string | null;
+  last_error_at: string | null;
   upcoming: number;
 };
 
-const disconnected: Calendar = { connected: false, host: null, last_ok_at: null, last_error: null, upcoming: 0 };
+const disconnected: Calendar = { connected: false, host: null, last_ok_at: null, last_error: null, last_error_at: null, upcoming: 0 };
 const connected: Calendar = {
   connected: true,
   host: 'calendar.example.com',
   last_ok_at: '2026-10-22T09:00:00Z',
   last_error: null,
+  last_error_at: null,
   upcoming: 3,
 };
 
@@ -53,6 +60,8 @@ let statusFails: boolean;
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'knowledge_get_settings') return structuredClone(view);
   if (command === 'knowledge_save_settings') {
+    // Models the backend: an empty or whitespace marker is refused
+    if (!(args?.input as View).calendar_marker.trim()) throw 'The calls marker must be 1–16 characters';
     view = structuredClone(args?.input as View);
     return structuredClone(view);
   }
@@ -76,6 +85,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
 });
 
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
+mock.module('sonner', () => ({ toast: { error: toastError } }));
 mock.module('../../src/components/ui/select', () => ({
   Select: passThrough,
   SelectContent: passThrough,
@@ -142,11 +152,13 @@ beforeEach(() => {
     my_names: ['Sasha'],
     extract_enabled: true,
     digest_enabled: true,
+    calendar_marker: '📞',
   };
   calendar = structuredClone(disconnected);
   upcomingOnConnect = 3;
   statusFails = false;
   invoke.mockClear();
+  toastError.mockClear();
 });
 
 describe('KnowledgeSettings', () => {
@@ -304,5 +316,43 @@ describe('KnowledgeSettings', () => {
     await flush();
     expect(invoke).toHaveBeenCalledWith('calendar_disconnect');
     expect(byLabel('Calendar secret address').props.type).toBe('password');
+  });
+
+  test('My calls marker shows 📞 and saves a changed marker on blur', async () => {
+    calendar = structuredClone(connected);
+    await mount();
+    expect(byLabel('My calls marker').props.value).toBe('📞');
+    await act(async () => {
+      byLabel('My calls marker').props.onChange({ target: { value: '☎' } });
+    });
+    await act(async () => {
+      byLabel('My calls marker').props.onBlur();
+    });
+    await flush();
+    expect(invoke).toHaveBeenCalledWith(
+      'knowledge_save_settings',
+      { input: expect.objectContaining({ calendar_marker: '☎' }) },
+    );
+  });
+
+  test('last_error shows its local time from last_error_at', async () => {
+    calendar = { ...structuredClone(connected), last_error: 'feed timed out', last_error_at: '2026-11-16T08:30:00Z' };
+    await mount();
+    expect(paragraphWith('feed timed out').props.className).toContain('text-red-600');
+    expect(allText()).toContain(`Last error (${new Date('2026-11-16T08:30:00Z').toLocaleString()}): feed timed out`);
+  });
+
+  test('an empty marker shows the error toast and the stored marker comes back', async () => {
+    calendar = structuredClone(connected);
+    await mount();
+    await act(async () => {
+      byLabel('My calls marker').props.onChange({ target: { value: '  ' } });
+    });
+    await act(async () => {
+      byLabel('My calls marker').props.onBlur();
+    });
+    await flush();
+    expect(toastError).toHaveBeenCalledWith('Knowledge settings were not saved', expect.anything());
+    expect(byLabel('My calls marker').props.value).toBe('📞');
   });
 });

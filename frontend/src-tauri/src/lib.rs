@@ -1007,6 +1007,7 @@ pub fn run() {
             // Database and Models path commands
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            database::commands::open_log_file,
             backup::commands::backup_now,
             backup::commands::backup_list,
             backup::commands::backup_open_folder,

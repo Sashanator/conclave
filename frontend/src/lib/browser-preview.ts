@@ -113,6 +113,7 @@ const handlers: Record<string, (args: any) => unknown> = {
   api_search_transcripts: ({ query }) => (/plan/i.test(query)
     ? [{ meetingId: 'preview-4', title: 'Release planning', source: 'transcript', snippet: 'Let us start with the release plan for next week.', transcriptId: 't-0', audioStart: 0, totalInMeeting: 1 }]
     : []),
+  api_route_recording_start: () => ({ meetingId: 'preview-1', title: 'Weekly sync' }),
   api_get_meeting_metadata: ({ meetingId }) => meetings.find((m) => m.id === meetingId) ?? meetings[0],
   api_get_meeting_transcripts: () => ({ transcripts, total_count: transcripts.length, has_more: false }),
   api_get_summary: ({ meetingId }) => ({

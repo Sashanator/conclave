@@ -62,7 +62,7 @@ impl MeetingsRepository {
     /// (only while it has no transcript) and, when `fresh` (we created it), deletes it if still untouched. True = deleted.
     pub async fn release_routed_row(pool: &SqlitePool, id: &str, fresh: bool) -> Result<bool, SqlxError> {
         let mut tx = pool.begin().await?;
-        sqlx::query("UPDATE meetings SET started_at = NULL WHERE id = ? AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = ?)")
+        sqlx::query("UPDATE meetings SET started_at = NULL WHERE id = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = ?)")
             .bind(id).bind(id).execute(&mut *tx).await?;
         let mut deleted = false;
         if fresh {
@@ -1108,6 +1108,14 @@ mod create_tests {
 
     async fn state(pool: &SqlitePool) -> Option<Option<String>> {
         sqlx::query_as::<_, (Option<String>,)>("SELECT started_at FROM meetings WHERE id = 'r'").fetch_optional(pool).await.unwrap().map(|r| r.0)
+    }
+
+    #[tokio::test]
+    async fn release_keeps_started_at_of_finished_meeting() {
+        let pool = test_pool().await;
+        routed(&pool, "UPDATE meetings SET ended_at = '2026-11-17T11:00:00Z' WHERE id = 'r'").await;
+        assert!(!MeetingsRepository::release_routed_row(&pool, "r", false).await.unwrap());
+        assert_eq!(state(&pool).await, Some(Some("2026-11-17T10:00:00Z".to_string())));
     }
 
     #[tokio::test]

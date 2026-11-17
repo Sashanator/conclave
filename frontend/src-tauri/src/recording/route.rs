@@ -67,9 +67,11 @@ pub async fn resolve_target(pool: &SqlitePool, now: DateTime<Utc>, source: Start
 }
 
 pub(crate) async fn mark_started(pool: &SqlitePool, meeting_id: &str, at: DateTime<Utc>) -> Result<bool, sqlx::Error> {
-    let r = sqlx::query("UPDATE meetings SET started_at = ?, updated_at = ? WHERE id = ?")
+    let r = sqlx::query("UPDATE meetings SET started_at = ?, updated_at = ? WHERE id = ? AND ended_at IS NULL \
+         AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = ?)")
         .bind(at)
         .bind(at)
+        .bind(meeting_id)
         .bind(meeting_id)
         .execute(pool)
         .await?;
@@ -127,6 +129,22 @@ mod tests {
         let s: Option<String> = sqlx::query_scalar("SELECT started_at FROM meetings WHERE id = ?").bind(&id).fetch_one(&pool).await.unwrap();
         assert!(s.is_some());
         assert!(!mark_started(&pool, "missing", Utc::now()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn mark_started_leaves_finished_meeting_alone() {
+        let pool = test_pool().await;
+        for extra in [
+            "UPDATE meetings SET ended_at = '2026-11-17T11:00:00Z' WHERE id = 'f'",
+            "INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t', 'f', 'hi', 'x')",
+        ] {
+            sqlx::query("INSERT OR REPLACE INTO meetings (id, title, created_at, updated_at, started_at) VALUES ('f', 'T', 'c', 'c', '2026-11-17T10:00:00Z')").execute(&pool).await.unwrap();
+            sqlx::query("DELETE FROM transcripts").execute(&pool).await.unwrap();
+            sqlx::query(extra).execute(&pool).await.unwrap();
+            assert!(!mark_started(&pool, "f", Utc::now()).await.unwrap(), "{extra}");
+            let s: String = sqlx::query_scalar("SELECT started_at FROM meetings WHERE id = 'f'").fetch_one(&pool).await.unwrap();
+            assert_eq!(s, "2026-11-17T10:00:00Z", "{extra}");
+        }
     }
 
     #[test]

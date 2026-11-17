@@ -2,7 +2,7 @@
 // content it cannot see: the caller's `untouched` flag is the only delete gate (spec 6.6, 4).
 
 use super::{strip_marker, ExpandResult, Occurrence};
-use crate::database::repositories::meeting::UNTOUCHED_SQL;
+use crate::database::repositories::meeting::{delete_event_brief, UNTOUCHED_SQL};
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashSet;
@@ -189,9 +189,9 @@ pub async fn snapshot(pool: &SqlitePool) -> Result<Snapshot, String> {
 // A row with a transcript was recorded (fallback saves leave started_at NULL): never edit it.
 const NOT_RECORDED: &str = "started_at IS NULL AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = meetings.id)";
 const GUARD: &str = "started_at IS NULL AND calendar_marker = ? AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = meetings.id)";
-const CANCEL_SQL: &str =
-    "UPDATE meetings SET calendar_cancelled_at = ? WHERE id = ? AND started_at IS NULL AND calendar_marker = ? AND calendar_cancelled_at IS NULL \
-     AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = meetings.id)";
+fn cancel_sql() -> String {
+    format!("UPDATE meetings SET calendar_cancelled_at = ? WHERE id = ? AND {GUARD} AND calendar_cancelled_at IS NULL")
+}
 
 /// Applies the plan; returns how many actions changed a row. The first failure aborts with its cause.
 pub async fn apply(pool: &SqlitePool, actions: &[Action], marker: &str, now: DateTime<Utc>) -> Result<usize, String> {
@@ -209,11 +209,11 @@ pub async fn apply(pool: &SqlitePool, actions: &[Action], marker: &str, now: Dat
                 "INSERT INTO meetings (id,title,title_source,created_at,updated_at,calendar_uid,calendar_start,calendar_end,calendar_original_start,calendar_marker) \
                  SELECT ?,?,'calendar',?,?,?,?,?,?,? \
                  WHERE NOT EXISTS (SELECT 1 FROM dismissed_occurrences d WHERE d.calendar_uid = ? AND julianday(d.original_start) = julianday(?)) \
-                 AND NOT EXISTS (SELECT 1 FROM meetings WHERE calendar_uid = ? AND julianday(calendar_original_start) = julianday(?))",
+                 AND NOT EXISTS (SELECT 1 FROM meetings WHERE calendar_uid = ? AND julianday(calendar_original_start) = julianday(?) AND calendar_marker IS ?)",
             )
             .bind(format!("meeting-{}", uuid::Uuid::new_v4())).bind(title).bind(&now).bind(&now)
             .bind(uid).bind(start).bind(end).bind(original_start).bind(marker)
-            .bind(uid).bind(original_start).bind(uid).bind(original_start)
+            .bind(uid).bind(original_start).bind(uid).bind(original_start).bind(marker)
             .execute(pool).await.map_err(ctx)?.rows_affected(),
             Action::Move { id, start, end } => {
                 let mut tx = pool.begin().await.map_err(ctx)?;
@@ -235,20 +235,26 @@ pub async fn apply(pool: &SqlitePool, actions: &[Action], marker: &str, now: Dat
             Action::Rename { id, title } => sqlx::query(&format!("UPDATE meetings SET title = ? WHERE id = ? AND {GUARD} AND title_source <> 'user'"))
                 .bind(title).bind(id).bind(marker)
                 .execute(pool).await.map_err(ctx)?.rows_affected(),
-            Action::Cancel { id } => sqlx::query(CANCEL_SQL).bind(&now).bind(id).bind(marker).execute(pool).await.map_err(ctx)?.rows_affected(),
+            Action::Cancel { id } => sqlx::query(&cancel_sql()).bind(&now).bind(id).bind(marker).execute(pool).await.map_err(ctx)?.rows_affected(),
             Action::Uncancel { id } => sqlx::query(&format!("UPDATE meetings SET calendar_cancelled_at = NULL WHERE id = ? AND {GUARD}"))
                 .bind(id).bind(marker)
                 .execute(pool).await.map_err(ctx)?.rows_affected(),
             Action::Delete { id, reason } => {
                 let mut tx = pool.begin().await.map_err(ctx)?;
+                let key: Option<(Option<String>, Option<String>)> = sqlx::query_as("SELECT calendar_uid, calendar_start FROM meetings WHERE id = ?")
+                    .bind(id).fetch_optional(&mut *tx).await.map_err(ctx)?;
                 let sql = format!("DELETE FROM meetings AS m WHERE m.id = ? AND m.calendar_marker = ? AND {UNTOUCHED_SQL}");
                 let mut n = sqlx::query(&sql).bind(id).bind(marker).execute(&mut *tx).await.map_err(ctx)?.rows_affected();
                 if n > 0 {
                     // Empty by the guard above, same transaction.
                     sqlx::query("DELETE FROM meeting_preps WHERE meeting_id = ?").bind(id).execute(&mut *tx).await.map_err(ctx)?;
                     sqlx::query("DELETE FROM meeting_notes WHERE meeting_id = ?").bind(id).execute(&mut *tx).await.map_err(ctx)?;
+                    // Same cleanup as "Delete meeting": the event's brief goes unless another meeting shares the occurrence.
+                    if let Some((Some(uid), Some(start))) = &key {
+                        delete_event_brief(&mut tx, id, uid, start).await.map_err(ctx)?;
+                    }
                 } else if *reason == DeleteReason::Gone {
-                    n = sqlx::query(CANCEL_SQL).bind(&now).bind(id).bind(marker).execute(&mut *tx).await.map_err(ctx)?.rows_affected();
+                    n = sqlx::query(&cancel_sql()).bind(&now).bind(id).bind(marker).execute(&mut *tx).await.map_err(ctx)?.rows_affected();
                 }
                 tx.commit().await.map_err(ctx)?;
                 n
@@ -538,6 +544,50 @@ mod tests {
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM meetings").await, 0);
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM meeting_preps").await, 0);
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM meeting_notes").await, 0);
+        }
+
+        #[tokio::test]
+        async fn delete_removes_the_event_brief_unless_another_meeting_shares_it() {
+            let pool = test_pool().await;
+            put(&pool, "a", 10).await;
+            put(&pool, "b", 10).await; // same occurrence
+            sqlx::query("INSERT INTO briefs (id,event_uid,event_start,title,template_id,previous_meeting_id,content_json,created_at) VALUES ('br','u',?,'T','t','p','{}','c')")
+                .bind(zs(10)).execute(&pool).await.unwrap();
+            sqlx::query("INSERT INTO feed_items (id,kind,title,target_id,created_at) VALUES ('f','brief','T','br','c')").execute(&pool).await.unwrap();
+
+            assert_eq!(apply(&pool, &[gone("a")], M, now()).await.unwrap(), 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM briefs").await, 1);
+            assert_eq!(apply(&pool, &[gone("b")], M, now()).await.unwrap(), 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM briefs").await, 0);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM feed_items").await, 0);
+        }
+
+        #[tokio::test]
+        async fn insert_after_marker_change_is_not_blocked_by_the_old_marker_row() {
+            let pool = test_pool().await;
+            put(&pool, "a", 10).await; // stored with 📞
+            let ins = Action::Insert { uid: "u".into(), title: "Sync".into(), start: ts(10), end: ts(11), original_start: ts(10) };
+            assert_eq!(apply(&pool, &[ins], "☎", now()).await.unwrap(), 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM meetings").await, 2);
+        }
+
+        #[tokio::test]
+        async fn failed_action_aborts_and_the_next_run_recovers() {
+            let pool = test_pool().await;
+            put(&pool, "a", 10).await;
+            put(&pool, "b", 12).await;
+            sqlx::query("CREATE TRIGGER fail_b BEFORE UPDATE ON meetings WHEN old.id = 'b' BEGIN SELECT RAISE(ABORT, 'disk'); END")
+                .execute(&pool).await.unwrap();
+            let cancel = |id: &str| Action::Cancel { id: id.into() };
+            let plan = [cancel("a"), cancel("b")];
+
+            let err = apply(&pool, &plan, M, now()).await.unwrap_err();
+            assert!(err.contains("calendar reconcile") && err.contains("disk"), "{err}");
+            assert!(cancelled(&pool, "a").await && !cancelled(&pool, "b").await);
+
+            sqlx::query("DROP TRIGGER fail_b").execute(&pool).await.unwrap();
+            assert_eq!(apply(&pool, &plan, M, now()).await.unwrap(), 1); // a is already cancelled
+            assert!(cancelled(&pool, "b").await);
         }
 
         #[tokio::test]

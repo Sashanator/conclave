@@ -338,7 +338,7 @@ function MeetingDetailsContent() {
     shell = <RecordingView row={row} onChange={setRow} showModal={showModal} />;
   } else if (row && !row.startedAt && !row.hasTranscript) {
     shell = (
-      <div className="h-screen overflow-y-auto bg-muted/50">
+      <div className="h-screen overflow-y-auto">
         <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} live={busy} onChange={setRow} onMeetingDeleted={() => router.push('/')} /></div>
         <NewMeetingView row={row} live={liveElsewhere} disabled={busy} onStart={() => { handleRecordingStart(row.id).catch((e) => toast.error('Could not start recording', { description: e instanceof Error ? e.message : String(e) })); }} />
       </div>

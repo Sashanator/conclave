@@ -73,6 +73,7 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
     <header className="space-y-1">
       {emoji && <div className="text-3xl" aria-hidden>{emoji}</div>}
       <div className="flex items-start gap-2">
+      <h1 className="flex min-w-0 flex-1">
       <input
         aria-label="Meeting title"
         value={title}
@@ -81,6 +82,7 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
         className="min-w-0 flex-1 bg-transparent text-2xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
       />
+      </h1>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button type="button" aria-label="Meeting actions" className="mt-1 rounded p-1 text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">

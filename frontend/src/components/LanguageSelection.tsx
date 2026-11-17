@@ -175,7 +175,7 @@ export function LanguageSelection({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Globe className="h-4 w-4 text-muted-foreground" />
-          <h4 className="text-sm font-medium text-foreground">Transcription Language</h4>
+          <h2 className="text-sm font-medium text-foreground">Transcription Language</h2>
         </div>
       </div>
 
@@ -185,7 +185,7 @@ export function LanguageSelection({
           aria-label="Transcription language"
           onChange={(e) => handleLanguageChange(e.target.value)}
           disabled={disabled || saving}
-          className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-muted/50 disabled:text-muted-foreground"
+          className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-ring focus:border-ring disabled:bg-muted/50 disabled:text-muted-foreground"
         >
           {availableLanguages.map((language) => (
             <option key={language.code} value={language.code}>
@@ -198,7 +198,7 @@ export function LanguageSelection({
         {/* Languages spoken in the meetings: used whenever auto detection runs */}
         {!isParakeet && (
           <div className="space-y-2 pt-2">
-            <h5 className="text-sm font-medium text-foreground">Languages spoken in your meetings</h5>
+            <h3 className="text-sm font-medium text-foreground">Languages spoken in your meetings</h3>
             <div className="flex flex-wrap gap-2">
               {allowedLanguages.map((code) => {
                 const name = LANGUAGES.find(lang => lang.code === code)?.name || code;
@@ -227,7 +227,7 @@ export function LanguageSelection({
                 onChange={(e) => {
                   if (e.target.value) setAllowedLanguages(addLanguage(allowedLanguages, e.target.value));
                 }}
-                className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500"
+                className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-ring focus:border-ring"
               >
                 <option value="">Add language…</option>
                 {addableLanguages.map((language) => (

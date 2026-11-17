@@ -234,8 +234,8 @@ export const previewHandlers: Record<string, (args: any) => unknown> = {
   updates_install: () => null,
   backup_open_folder: () => null,
   backup_list: () => [
-    { kind: 'manual', createdAt: '2026-11-16T09:30:00Z', fromVersion: null, version: '1.1.0', sizeBytes: 48_200_000, path: 'C:\\…' },
-    { kind: 'pre-upgrade', createdAt: '2026-11-16T08:59:00Z', fromVersion: '1.0.4', version: '1.1.0', sizeBytes: 48_200_000, path: 'C:\\…' },
+    { kind: 'manual', createdAt: '2026-11-16T09:30:00Z', fromVersion: null, version: '1.1.0', sizeBytes: 48_200_000, path: 'C:\\Conclave\\backups\\manual' },
+    { kind: 'pre-upgrade', createdAt: '2026-11-16T08:59:00Z', fromVersion: '1.0.4', version: '1.1.0', sizeBytes: 48_200_000, path: 'C:\\Conclave\\backups\\pre-upgrade' },
   ],
   backup_now: () => ({ kind: 'manual', createdAt: '2026-11-16T09:30:00Z', fromVersion: null, version: '1.1.0', sizeBytes: 48_200_000, path: 'C:\\…' }),
   feed_unread_count: () => 0,

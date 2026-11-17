@@ -42,7 +42,7 @@ export function WhatsNew({ changelog }: { changelog: string }) {
     invoke(command).catch((e) => toast.error(`Could not open the ${what}: ${e}`));
 
   return (
-    <main className="mx-auto max-w-2xl p-6">
+    <div className="mx-auto max-w-2xl p-6">
       <h1 className="text-xl font-semibold mb-4">What&apos;s new</h1>
       {versionUnknown && <p className="mb-4 text-sm text-muted-foreground">Version unknown</p>}
       {releases.map((r) => (
@@ -63,6 +63,6 @@ export function WhatsNew({ changelog }: { changelog: string }) {
         <button className="underline" onClick={open('open_database_folder', 'data folder')}>Open data folder</button>{' · '}
         <button className="underline" onClick={open('open_log_file', 'log file')}>Open log file</button>
       </footer>
-    </main>
+    </div>
   );
 }

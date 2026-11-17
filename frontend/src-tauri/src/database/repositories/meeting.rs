@@ -380,7 +380,7 @@ impl MeetingsRepository {
         }
         delete_recording_data(&mut tx, meeting_id).await?;
         sqlx::query(
-            "UPDATE meetings SET started_at = NULL, ended_at = NULL, gist = NULL, folder_path = NULL, keep_audio = 0, reviewed = 0, updated_at = ? WHERE id = ?",
+            "UPDATE meetings SET started_at = NULL, ended_at = NULL, gist = NULL, folder_path = NULL, keep_audio = 0, audio_deleted_at = NULL, reviewed = 0, updated_at = ? WHERE id = ?",
         )
         .bind(Utc::now())
         .bind(meeting_id)
@@ -641,7 +641,7 @@ mod migration_tests {
     #[tokio::test]
     async fn delete_recording_keeps_meeting_prep_notes() {
         let pool = test_pool().await;
-        exec(&pool, "INSERT INTO meetings (id, title, created_at, updated_at, template_id, reviewed, gist, started_at, ended_at, folder_path, keep_audio) VALUES ('M', 'Title', 't', 't', 'x', 1, 'g', 's', 'e', '/f', 1)").await;
+        exec(&pool, "INSERT INTO meetings (id, title, created_at, updated_at, template_id, reviewed, gist, started_at, ended_at, folder_path, keep_audio, audio_deleted_at) VALUES ('M', 'Title', 't', 't', 'x', 1, 'g', 's', 'e', '/f', 1, 'ad')").await;
         exec(&pool, "INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('tr', 'M', 'hi', 't')").await;
         exec(&pool, "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at) VALUES ('M', 'completed', 't', 't')").await;
         exec(&pool, "INSERT INTO transcript_chunks (meeting_id, meeting_name, transcript_text, model, model_name, chunk_size, overlap, created_at) VALUES ('M', 'n', 'x', 'm', 'm', 1, 1, 't')").await;
@@ -664,12 +664,12 @@ mod migration_tests {
             let (n,): (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {table}")).fetch_one(&pool).await.unwrap();
             assert_eq!(n, want, "{table}");
         }
-        let row: (String, Option<String>, i64, Option<String>, Option<String>, Option<String>, Option<String>, i64) =
-            sqlx::query_as("SELECT title, template_id, reviewed, gist, started_at, ended_at, folder_path, keep_audio FROM meetings WHERE id = 'M'")
+        let row: (String, Option<String>, i64, Option<String>, Option<String>, Option<String>, Option<String>, i64, Option<String>) =
+            sqlx::query_as("SELECT title, template_id, reviewed, gist, started_at, ended_at, folder_path, keep_audio, audio_deleted_at FROM meetings WHERE id = 'M'")
                 .fetch_one(&pool)
                 .await
                 .unwrap();
-        assert_eq!(row, ("Title".into(), Some("x".into()), 0, None, None, None, None, 0));
+        assert_eq!(row, ("Title".into(), Some("x".into()), 0, None, None, None, None, 0, None));
         let (source,): (Option<String>,) = sqlx::query_as("SELECT source_meeting_id FROM voiceprints WHERE id = 'v1'").fetch_one(&pool).await.unwrap();
         assert_eq!(source, None);
     }

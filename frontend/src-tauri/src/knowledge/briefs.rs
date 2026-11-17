@@ -198,7 +198,8 @@ async fn store(
     let mut tx = pool.begin().await.map_err(|e| e.to_string())?;
     let inserted = sqlx::query(
         "INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) \
-         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?)",
+         SELECT ?, ?, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?) \
+         AND EXISTS (SELECT 1 FROM summary_processes WHERE meeting_id = ? AND status = 'completed')",
     )
     .bind(&id)
     .bind(&occ.uid)
@@ -208,6 +209,7 @@ async fn store(
     .bind(previous_id)
     .bind(content_json)
     .bind(stamp())
+    .bind(previous_id)
     .bind(previous_id)
     .execute(&mut *tx)
     .await;
@@ -596,6 +598,34 @@ mod tests {
         // The meeting is deleted after the lookup, while the extraction was being waited for.
         sqlx::query("DELETE FROM meetings WHERE id = 'ivan-deleted_previous'").execute(&pool).await.unwrap();
         let made = store(&pool, &occ, &one_on_one, "ivan-deleted_previous", &stored, "Brief: x").await.unwrap();
+
+        assert_eq!(made, None);
+        assert_eq!(brief_rows(&pool).await, 0);
+        assert_eq!(feed_count(&pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn recording_deleted_during_the_wait_stores_no_brief() {
+        let pool = test_pool().await;
+        let one_on_one = template("one_on_one", "1:1", &["1:1"]);
+        let occ = occurrence("u1", "1:1 Ivan", at(11, 0));
+        meeting(&pool, "ivan-rec_deleted", "1:1 Ivan", "2026-10-19T10:00:00Z", Some("one_on_one")).await;
+        let stored = Stored {
+            content: BriefContent {
+                event_title: occ.title.clone(),
+                event_start: start_key(occ.start),
+                template_name: "1:1".into(),
+                previous_meeting_id: "ivan-rec_deleted".into(),
+                previous_title: "1:1 Ivan".into(),
+                previous_date: "d".into(),
+                requests: Vec::new(),
+                decisions: Vec::new(),
+                open_tasks: Vec::new(),
+            },
+        };
+        assert!(crate::database::repositories::meeting::MeetingsRepository::delete_recording(&pool, "ivan-rec_deleted").await.unwrap());
+
+        let made = store(&pool, &occ, &one_on_one, "ivan-rec_deleted", &stored, "Brief: x").await.unwrap();
 
         assert_eq!(made, None);
         assert_eq!(brief_rows(&pool).await, 0);

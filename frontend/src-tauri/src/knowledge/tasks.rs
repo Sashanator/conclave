@@ -143,6 +143,7 @@ pub(crate) async fn set_extract<'c>(
     let sql = format!(
         "INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, error, extracted_at) \
          SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?) \
+           AND EXISTS (SELECT 1 FROM summary_processes WHERE meeting_id = ?) \
          ON CONFLICT(meeting_id) DO UPDATE SET \
            decisions_json = CASE WHEN ? THEN meeting_extracts.decisions_json ELSE excluded.decisions_json END, \
            requests_json = CASE WHEN ? THEN meeting_extracts.requests_json ELSE excluded.requests_json END, \
@@ -155,6 +156,7 @@ pub(crate) async fn set_extract<'c>(
         .bind(status)
         .bind(error)
         .bind(stamp())
+        .bind(meeting_id)
         .bind(meeting_id)
         .bind(keep)
         .bind(keep);
@@ -357,6 +359,16 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_mark_after_delete_recording_writes_nothing() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        assert!(crate::database::repositories::meeting::MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+        assert_eq!(set_extract(&pool, "M", "failed", Some("x"), None, None).await.unwrap(), 0);
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_extracts").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0);
     }
 
     #[tokio::test]

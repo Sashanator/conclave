@@ -185,8 +185,17 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
         formattedTranscripts,
         folderPath ?? null,
         metadata.notes ?? [],
-        meetingId
+        meetingId,
+        { source: 'default' },
+        false,
+        metadata.targetMeetingId ?? null
       );
+
+      if (saveResponse.fallback) {
+        toast.info('Recovered as a new meeting', {
+          description: 'Its meeting was deleted or recorded again.',
+        });
+      }
 
       const savedMeetingId = saveResponse.meeting_id;
 

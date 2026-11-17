@@ -137,8 +137,8 @@ export class RecordingService {
    * @param callback - Function to call when recording starts
    * @returns Promise that resolves to unlisten function
    */
-  async onRecordingStarted(callback: () => void): Promise<UnlistenFn> {
-    return listen('recording-started', callback);
+  async onRecordingStarted(callback: (payload?: { meetingId?: string | null }) => void): Promise<UnlistenFn> {
+    return listen<{ meetingId?: string | null }>('recording-started', (event) => callback(event.payload));
   }
 
   /**

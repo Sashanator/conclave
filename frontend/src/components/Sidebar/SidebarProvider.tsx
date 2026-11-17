@@ -157,6 +157,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
       } else {
         // Not on home - navigate and use auto-start mechanism
         console.log('Navigating to home page with auto-start flag');
+        sessionStorage.removeItem('autoStartKey');
         sessionStorage.setItem('autoStartRecording', 'true');
         router.push('/record');
       }

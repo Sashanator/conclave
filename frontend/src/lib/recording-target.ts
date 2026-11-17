@@ -21,7 +21,30 @@ export function takeAutoStartMeetingId(storage: Storage): string | null {
 export function queueAutoStart(storage: Storage, meetingId: string): string {
   storage.setItem('autoStartMeetingId', meetingId);
   storage.setItem('autoStartRecording', 'true');
-  return `/meeting-details?id=${encodeURIComponent(meetingId)}`;
+  return queuedPageUrl(storage, meetingId);
+}
+
+/** Marks the queued start for one visit of one meeting page: the url carries `start`, the page key is `id:start`. */
+export function queuedPageUrl(storage: Storage, meetingId: string): string {
+  const start = Date.now();
+  storage.setItem('autoStartKey', `${meetingId}:${start}`);
+  return `/meeting-details?id=${encodeURIComponent(meetingId)}&start=${start}`;
+}
+
+export const pageKeyFor = (meetingId: string | null, start: string | null): string | undefined =>
+  meetingId ? `${meetingId}:${start ?? ''}` : undefined;
+
+/** A queued start is for one page visit and one moment: it is skipped on any other page and dropped once stale. */
+export const AUTO_START_MAX_AGE_MS = 10_000;
+export function autoStartAllowed(storage: Storage, pageKey: string | undefined, now = Date.now()): boolean {
+  const key = storage.getItem('autoStartKey');
+  if (!key) return true; // tray, detector and sidebar starts carry no key
+  const at = Number(key.slice(key.lastIndexOf(':') + 1));
+  if (!Number.isFinite(at) || now - at > AUTO_START_MAX_AGE_MS) {
+    for (const k of ['autoStartKey', 'autoStartRecording', 'autoStartContinueId', 'autoStartMeetingId']) storage.removeItem(k);
+    return false;
+  }
+  return key === pageKey;
 }
 
 /** A failed route never blocks the recording: it starts with no target and the save makes a new meeting (§4). */

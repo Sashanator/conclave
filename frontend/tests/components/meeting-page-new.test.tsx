@@ -20,8 +20,10 @@ afterAll(() => {
 });
 
 const calls: Array<[string, unknown]> = [];
+let prepResult: () => Promise<unknown> = async () => null;
 const invoke = mock(async (command: string, args?: unknown) => {
   calls.push([command, args]);
+  if (command === 'prep_for_meeting') return prepResult();
   if (command === 'api_list_templates') return { templates: [{ id: 'interview', name: 'Interview', emoji: '🤝' }], errors: [] };
   return null;
 });
@@ -109,4 +111,50 @@ test('the emoji precedes the title input', async () => {
   const t = text(r);
   expect(t.indexOf('🤝')).toBeGreaterThan(-1);
   expect(t.indexOf('🤝')).toBeLessThan(t.indexOf('Meeting title'));
+});
+
+const calendarPrep = { id: 5, eventUid: 'ev1', eventStart: '2026-11-17T10:00:00Z', eventTitle: 'Standup', templateId: null, material: 'Old', chat: [], approvedAt: null, createdAt: '', updatedAt: '', items: [] };
+
+test('the prep notes are read-only until the load answered, and a failed load never saves', async () => {
+  prepResult = async () => { throw new Error('read failed'); };
+  const r = await mountNew();
+  expect(r.root.findByType('textarea').props.readOnly).toBe(true);
+  calls.length = 0;
+  await act(async () => { await r.root.findByType('textarea').props.onBlur(); });
+  expect(calls.filter(([c]) => c === 'prep_save')).toEqual([]);
+  prepResult = async () => null;
+});
+
+test('a loaded calendar prep keeps its event when the notes are saved', async () => {
+  prepResult = async () => calendarPrep;
+  const r = await mountNew();
+  const area = r.root.findByType('textarea');
+  expect(area.props.readOnly).toBe(false);
+  expect(area.props.value).toBe('Old');
+  await act(async () => { area.props.onChange({ target: { value: 'New text' } }); });
+  await act(async () => { await r.root.findByType('textarea').props.onBlur(); });
+  const save = calls.find(([c]) => c === 'prep_save')![1] as Record<string, unknown>;
+  expect(save.eventUid).toBe('ev1');
+  expect(save.eventStart).toBe('2026-11-17T10:00:00Z');
+  prepResult = async () => null;
+});
+
+test('a slow load finishing after the page changed does not overwrite the notes', async () => {
+  let finish!: (p: unknown) => void;
+  prepResult = () => new Promise((done) => { finish = done; });
+  const r = await mountNew();
+  expect(r.root.findByType('textarea').props.readOnly).toBe(true);
+  await act(async () => { finish(calendarPrep); });
+  expect(r.root.findByType('textarea').props.value).toBe('Old');
+  prepResult = async () => null;
+});
+
+test('the header reports a saved title', async () => {
+  let saved = 0;
+  let r!: ReactTestRenderer;
+  await act(async () => { r = create(<MeetingHeader row={row} onChange={() => {}} onTitleSaved={() => { saved++; }} />); });
+  const input = r.root.findByProps({ 'aria-label': 'Meeting title' });
+  await act(async () => { input.props.onChange({ target: { value: 'Renamed' } }); });
+  await act(async () => { await r.root.findByProps({ 'aria-label': 'Meeting title' }).props.onBlur(); });
+  expect(saved).toBe(1);
 });

@@ -9,8 +9,9 @@ import { LoaderIcon } from "lucide-react";
 import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
+import { toast } from "sonner";
 import { lineAtTime, parseMeetingTarget } from "@/lib/meeting-target";
-import { showRecordingView } from "@/lib/recording-target";
+import { pageKeyFor, showRecordingView } from "@/lib/recording-target";
 import { useRecordingStart } from "@/hooks/useRecordingStart";
 import { useModalState } from "@/hooks/useModalState";
 import { SettingsModals } from "@/app/_components/SettingsModal";
@@ -38,14 +39,28 @@ function MeetingDetailsContent() {
   const target = parseMeetingTarget(searchParams); // Search hits: a line to scroll to, or a tab to open
   const { setCurrentMeeting, refetchMeetings } = useSidebar();
   const { isAutoSummary, transcriptModelConfig } = useConfig(); // Get auto-summary toggle state
-  const { liveMeetingId, isStopping, isProcessing, isSaving, status } = useRecordingState();
+  const { liveMeetingId, isStopping, isProcessing, isSaving, isRecording, status } = useRecordingState();
   const { meetings } = useSidebar();
   // undefined: loading; null: no row (an old link), shown as the finished page
   const [row, setRow] = useState<MeetingRow | null | undefined>(undefined);
   // The page mounts the start hook for every non-page start (tray, detector, Resume): they land here.
   const [startingLocally, setStartingLocally] = useState(false);
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
-  const { handleRecordingStart } = useRecordingStart(startingLocally, setStartingLocally, showModal, meetingId ?? undefined);
+  // A start that reached the backend leaves startingLocally set; the recording ending clears it for the next start.
+  useEffect(() => { if (!isRecording) setStartingLocally(false); }, [isRecording]);
+  const router = useRouter();
+  // A failed start gives its empty row back: reload it, or leave a meeting that no longer exists.
+  const checkRowAfterRelease = useCallback(() => {
+    listMeetingRows()
+      .then((rows) => {
+        const found = rows.find((r) => r.id === meetingId);
+        if (found) { setRow(found); return; }
+        toast.error('This meeting was removed because the recording could not start');
+        router.push('/');
+      })
+      .catch((e) => toast.error(`Could not reload the meeting: ${String(e)}`));
+  }, [meetingId, router]);
+  const { handleRecordingStart, isAutoStarting } = useRecordingStart(startingLocally, setStartingLocally, showModal, pageKeyFor(meetingId, searchParams.get('start')), checkRowAfterRelease);
   // The backend clears liveMeetingId when the stop lands; the save that follows stays on this view, and so does a failed one.
   const [heldId, setHeldId] = useState<string | null>(null);
   const stopFlow = isStopping || isProcessing || isSaving || status === RecordingStatus.ERROR;
@@ -55,7 +70,6 @@ function MeetingDetailsContent() {
     else if (!stopFlow) setHeldId(null);
   }, [meetingId, liveMeetingId, stopFlow]);
   useAiSidebarScreen(meetingId ? (recordingHere ? 'live' : 'meeting') : null, { label: 'This meeting', meetingIds: meetingId ? [meetingId] : [] });
-  const router = useRouter();
   const [meetingDetails, setMeetingDetails] = useState<MeetingDetailsResponse | null>(null);
   const [summaryResponse, setSummaryResponse] = useState<SummaryProcessResponse | null>(null);
   const [meetingSummary, setMeetingSummary] = useState<MeetingSummary | null>(null);
@@ -98,7 +112,7 @@ function MeetingDetailsContent() {
     let cancelled = false;
     listMeetingRows()
       .then((rows) => { if (!cancelled) setRow(rows.find((r) => r.id === meetingId) ?? null); })
-      .catch((e) => { console.error('Could not load the meeting row:', e); if (!cancelled) setRow(null); });
+      .catch((e) => { console.error('Could not load the meeting row:', e); if (!cancelled) { toast.error(`Could not load the meeting: ${String(e)}`); setRow(null); } });
     return () => { cancelled = true; };
   }, [meetingId, liveMeetingId]);
 
@@ -298,7 +312,7 @@ function MeetingDetailsContent() {
     checkAutoGen();
   }, [meetingDetails, meetingSummary, summaryResponse, isLoading, hasCheckedAutoGen, setupAutoGeneration]);
 
-  const busy = startingLocally || isStopping || isProcessing || isSaving;
+  const busy = startingLocally || isAutoStarting || isStopping || isProcessing || isSaving;
   const liveElsewhere = liveMeetingId && liveMeetingId !== meetingId
     ? { id: liveMeetingId, title: meetings.find((m) => m.id === liveMeetingId)?.title ?? 'another meeting' }
     : null;
@@ -306,12 +320,12 @@ function MeetingDetailsContent() {
   if (meetingId && row === undefined) {
     shell = <div className="flex items-center justify-center h-screen"><LoaderIcon className="animate-spin size-6" /></div>;
   } else if (row && recordingHere) {
-    shell = <RecordingView row={row} onChange={setRow} showModal={showModal} />;
+    shell = <RecordingView row={row} onChange={setRow} onTitleSaved={refetchMeetings} showModal={showModal} />;
   } else if (row && !row.startedAt && !row.hasTranscript) {
     shell = (
       <div className="h-screen overflow-y-auto bg-muted/50">
-        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} onChange={setRow} /></div>
-        <NewMeetingView row={row} live={liveElsewhere} disabled={busy} onStart={() => { void handleRecordingStart(row.id).catch(() => {}); }} />
+        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} onChange={setRow} onTitleSaved={refetchMeetings} /></div>
+        <NewMeetingView row={row} live={liveElsewhere} disabled={busy} onStart={() => { handleRecordingStart(row.id).catch((e) => toast.error('Could not start recording', { description: e instanceof Error ? e.message : String(e) })); }} />
       </div>
     );
   }

@@ -15,7 +15,7 @@ import { formatRecordingTime } from '@/lib/meeting-notes';
 import type { ModalType } from '@/hooks/useModalState';
 
 /** The meeting page while this meeting records, and while its stop is saved: Stop, live transcript, notes. */
-export function RecordingView({ row, onChange, showModal }: { row: MeetingRow; onChange: (row: MeetingRow) => void; showModal: (name: ModalType, message?: string) => void }) {
+export function RecordingView({ row, onChange, onTitleSaved, showModal }: { row: MeetingRow; onChange: (row: MeetingRow) => void; onTitleSaved?: () => void; showModal: (name: ModalType, message?: string) => void }) {
   const meetingId = row.id;
   const { open: sidebarOpen } = useAiSidebar();
   const { selectedDevices } = useConfig();
@@ -30,7 +30,7 @@ export function RecordingView({ row, onChange, showModal }: { row: MeetingRow; o
 
   return (
     <div className="flex h-screen flex-col bg-muted/50">
-      <div className="border-b border-border bg-background px-6 pt-4"><MeetingHeader row={row} live onChange={onChange} /></div>
+      <div className="border-b border-border bg-background px-6 pt-4"><MeetingHeader row={row} live onChange={onChange} onTitleSaved={onTitleSaved} /></div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background px-6 py-3">
         <span className="flex items-center gap-2 text-sm text-foreground" role="status">
           <span aria-hidden className="h-2 w-2 rounded-full bg-red-500" />

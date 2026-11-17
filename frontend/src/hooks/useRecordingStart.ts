@@ -7,7 +7,7 @@ import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateCon
 import { recordingService } from '@/services/recordingService';
 import { showRecordingNotification } from '@/lib/recordingNotification';
 import { continueFailed, takeAutoStartContinueId } from '@/lib/resume';
-import { releaseFailedStart, routeOrFallback, takeAutoStartMeetingId, type RoutedStart } from '@/lib/recording-target';
+import { autoStartAllowed, releaseFailedStart, routeOrFallback, takeAutoStartMeetingId, type RoutedStart } from '@/lib/recording-target';
 import {
   getProviderCommands,
   hasDownloadingModel,
@@ -45,8 +45,16 @@ export function useRecordingStart(
   setIsRecording: (value: boolean) => void,
   showModal?: (name: 'modelSelector', message?: string) => void,
   // The meeting page stays mounted across meetings: a new key re-checks the auto-start flag queued for it.
-  pageKey?: string
+  pageKey?: string,
+  // Called after a failed start gave its routed row back, so the page can stop showing a meeting that is gone.
+  onRowReleased?: () => void
 ): UseRecordingStartReturn {
+  const onRowReleasedRef = useRef(onRowReleased);
+  onRowReleasedRef.current = onRowReleased;
+  const release = async (routed: RoutedStart | null, error: unknown) => {
+    await releaseFailedStart(routed, error);
+    if (routed?.meetingId) onRowReleasedRef.current?.();
+  };
   const [isAutoStarting, setIsAutoStarting] = useState(false);
 
   // Synchronous latch: a rapid double-click re-enters handleRecordingStart
@@ -168,7 +176,7 @@ export function useRecordingStart(
       console.error('Failed to start recording:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
       // Also on a lost race: Rust keeps the row the winner owns.
-      await releaseFailedStart(routed, error);
+      await release(routed, error);
 
       // A racing second start that lost to a live recording must not clobber
       // the running recording's state. The winning start is live, so reflect
@@ -189,7 +197,7 @@ export function useRecordingStart(
         ? TRANSCRIPTION_RUNTIME_USER_MESSAGE
         : errorMsg);
       setIsRecording(false); // Reset state on error
-      if (isRuntimeError) return;
+      if (isRuntimeError) { toast.error(TRANSCRIPTION_RUNTIME_USER_MESSAGE); return; }
       // Re-throw so RecordingControls can handle device-specific errors
       throw error;
     } finally {
@@ -202,10 +210,11 @@ export function useRecordingStart(
     const checkAutoStartRecording = async () => {
       if (typeof window !== 'undefined') {
         const shouldAutoStart = sessionStorage.getItem('autoStartRecording');
-        if (shouldAutoStart === 'true' && !isRecording && !isAutoStarting) {
+        if (shouldAutoStart === 'true' && !isRecording && !isAutoStarting && autoStartAllowed(sessionStorage, pageKey)) {
           console.log('Auto-starting recording from navigation...');
           setIsAutoStarting(true);
           sessionStorage.removeItem('autoStartRecording'); // Clear the flag
+          sessionStorage.removeItem('autoStartKey');
           // Retired key (the title now comes from Rust): still cleared so a stale value cannot linger.
           sessionStorage.removeItem('autoStartTitlePrefix');
           // Set by the tray/meeting page: the meeting row this start belongs to.
@@ -233,7 +242,7 @@ export function useRecordingStart(
               showModal?.('modelSelector', 'Transcription model setup required');
             }
             // A tray or detector start already routed a row: give it back.
-            await releaseFailedStart({ meetingId: autoMeetingId, title: null }, 'model not ready');
+            await release({ meetingId: autoMeetingId, title: null }, 'model not ready');
             setStatus(RecordingStatus.IDLE);
             setIsAutoStarting(false);
             return;
@@ -275,7 +284,7 @@ export function useRecordingStart(
           } catch (error) {
             console.error('Failed to auto-start recording:', error);
             const errorMsg = error instanceof Error ? error.message : String(error);
-            await releaseFailedStart(routed, error);
+            await release(routed, error);
             if (errorMsg.includes('already in progress')) {
               // Benign race — another start won and is live; skip ERROR/alert.
               setStatus(RecordingStatus.RECORDING);
@@ -371,7 +380,7 @@ export function useRecordingStart(
       } catch (error) {
         console.error('Failed to start recording from sidebar:', error);
         const errorMsg = error instanceof Error ? error.message : String(error);
-        await releaseFailedStart(routed, error);
+        await release(routed, error);
         if (errorMsg.includes('already in progress')) {
           // Benign race — another start won and is live; skip ERROR/alert.
           setStatus(RecordingStatus.RECORDING);

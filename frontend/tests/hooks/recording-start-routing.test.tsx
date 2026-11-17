@@ -57,7 +57,8 @@ const { useRecordingStart } = await import('../../src/hooks/useRecordingStart');
 let hook: UseRecordingStartReturn;
 let renderer: ReactTestRenderer | undefined;
 const noop = () => {};
-function View({ k }: { k?: string }) { hook = useRecordingStart(false, noop, undefined, k); return null; }
+let released = 0;
+function View({ k }: { k?: string }) { hook = useRecordingStart(false, noop, undefined, k, () => { released++; }); return null; }
 async function mount() {
   await act(async () => { renderer = create(<View />); });
   await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
@@ -72,6 +73,7 @@ beforeEach(() => {
   routeResult = async () => ({ meetingId: 'routed-1', title: 'Untitled · Mon 14:02' });
   startResult = async () => {};
   sessionStorage.clear();
+  released = 0;
 });
 afterEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
@@ -185,5 +187,72 @@ describe('auto-start', () => {
     await mount();
     console.error = logged; globalThis.alert = alerted;
     expect(releaseCalls()).toEqual([['api_release_routed_start', { meetingId: 'routed-1' }]]);
+  });
+});
+
+describe('queued starts are bound to one page visit', () => {
+  const queue = (id: string, at = Date.now()) => {
+    sessionStorage.setItem('autoStartRecording', 'true');
+    sessionStorage.setItem('autoStartContinueId', id);
+    sessionStorage.setItem('autoStartKey', `${id}:${at}`);
+    return `${id}:${at}`;
+  };
+  const rerender = async (k: string) => {
+    await act(async () => { renderer!.update(<View k={k} />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  };
+  test('Resume on the same meeting id starts when the key changes', async () => {
+    renderer = undefined;
+    await act(async () => { renderer = create(<View k="m1:" />); });
+    const key = queue('m1');
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    await rerender(key);
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem('autoStartKey')).toBeNull();
+  });
+  test('a flag queued for another page is not consumed here and fires on its own page', async () => {
+    const key = queue('m1');
+    renderer = undefined;
+    await act(async () => { renderer = create(<View k="m2:" />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
+    await rerender(key);
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+  });
+  test('a stale flag fires nowhere and is cleared', async () => {
+    const key = queue('m1', Date.now() - 60_000);
+    renderer = undefined;
+    await act(async () => { renderer = create(<View k={key} />); });
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('autoStartRecording')).toBeNull();
+  });
+});
+
+describe('a released row', () => {
+  test('a failed manual start tells the page its row was given back', async () => {
+    startResult = async () => { throw new Error('device busy'); };
+    const logged = console.error; console.error = () => {};
+    await mount();
+    await act(async () => { await hook.handleRecordingStart('routed-1').catch(() => {}); });
+    console.error = logged;
+    expect(released).toBe(1);
+  });
+  test('a failed auto-start does too', async () => {
+    sessionStorage.setItem('autoStartRecording', 'true');
+    startResult = async () => { throw new Error('device busy'); };
+    const logged = console.error; console.error = () => {};
+    const alerted = globalThis.alert; globalThis.alert = () => {};
+    await mount();
+    console.error = logged; globalThis.alert = alerted;
+    expect(released).toBe(1);
+  });
+  test('a speech runtime failure is shown, not only logged', async () => {
+    startResult = async () => { throw 'TRANSCRIPTION_RUNTIME_INITIALIZATION_FAILED'; };
+    const logged = console.error; console.error = () => {};
+    await mount();
+    await act(async () => { await hook.handleRecordingStart(); });
+    console.error = logged;
+    expect(toast.error).toHaveBeenCalledTimes(1);
   });
 });

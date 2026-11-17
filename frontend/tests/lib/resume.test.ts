@@ -28,7 +28,7 @@ describe('requestResume and takeAutoStartContinueId', () => {
     requestResume('m1', push);
     expect(sessionStorage.getItem('autoStartContinueId')).toBe('m1');
     expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
-    expect(pushed).toEqual(['/']);
+    expect(pushed).toEqual(['/record']);
   });
 
   test('takeAutoStartContinueId reads once', () => {

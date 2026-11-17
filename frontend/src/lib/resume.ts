@@ -20,11 +20,11 @@ export interface ContinueStatus {
   target: ContinueMeeting | null;
 }
 
-/** Meeting page's "Resume recording": the next start continues this meeting, then goes home to start it. */
+/** Meeting page's "Resume recording": the next start continues this meeting, then goes to record to start it. */
 export function requestResume(meetingId: string, push: (url: string) => void): void {
   sessionStorage.setItem('autoStartContinueId', meetingId);
   sessionStorage.setItem('autoStartRecording', 'true');
-  push('/');
+  push('/record');
 }
 
 /** Reads and clears the continue id, so a later auto-start does not reuse it. */

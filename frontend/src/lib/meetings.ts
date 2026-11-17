@@ -82,12 +82,16 @@ export const setReviewed = (meetingId: string, reviewed: boolean) =>
 export const setTemplate = (meetingId: string, templateId: string | null) =>
   invoke<void>('api_set_meeting_template', { meetingId, templateId });
 
-export const deleteRecording = (meetingId: string) => invoke<void>('api_delete_recording', { meetingId });
+// The Rust delete responses keep their snake_case key.
+type DeleteResult = { folder_warning?: string | null } | null;
+const folderWarningOf = (res: DeleteResult) => ({ folderWarning: res?.folder_warning ?? null });
+
+export async function deleteRecording(meetingId: string): Promise<{ folderWarning: string | null }> {
+  return folderWarningOf(await invoke<DeleteResult>('api_delete_recording', { meetingId }));
+}
 
 export async function deleteMeeting(id: string): Promise<{ folderWarning: string | null }> {
-  // The Rust response keeps its snake_case key.
-  const res = await invoke<{ folder_warning?: string | null } | null>('api_delete_meeting', { meetingId: id });
-  return { folderWarning: res?.folder_warning ?? null };
+  return folderWarningOf(await invoke<DeleteResult>('api_delete_meeting', { meetingId: id }));
 }
 
 export const listViews = () => invoke<MeetingView[]>('api_list_meeting_views');

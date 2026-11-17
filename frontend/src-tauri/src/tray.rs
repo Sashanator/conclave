@@ -86,6 +86,21 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
+/// Constructs the JS snippet injected into the webview to start recording on the record screen.
+fn autostart_script(continue_id: Option<&str>, title_prefix: &str) -> String {
+    // JSON-encode so the prefix is always a safe JS string literal.
+    let prefix = serde_json::to_string(title_prefix).unwrap_or_else(|_| "\"\"".to_string());
+    let continuation = continue_id
+        .map(|id| {
+            let id = serde_json::to_string(id).expect("a string is JSON serializable");
+            format!("sessionStorage.setItem('autoStartContinueId', {id}); ")
+        })
+        .unwrap_or_default();
+    format!(
+        "{continuation}sessionStorage.setItem('autoStartTitlePrefix', {prefix}); sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/record')"
+    )
+}
+
 /// Starts recording through the main webview's normal start path (model check, recording notice), without
 /// bringing the window forward. `title_prefix` (a call app name) goes in front of the generated meeting title.
 pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Option<&str>, continue_id: Option<&str>) {
@@ -99,15 +114,8 @@ pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Opt
     }
     set_tray_state(app, RecordingState::Starting);
     if let Some(window) = app.get_webview_window("main") {
-        // JSON-encode so the prefix is always a safe JS string literal.
-        let prefix = serde_json::to_string(title_prefix.unwrap_or("")).unwrap_or_else(|_| "\"\"".to_string());
-        let continuation = continue_id.map(|id| {
-            let id = serde_json::to_string(id).expect("a string is JSON serializable");
-            format!("sessionStorage.setItem('autoStartContinueId', {id}); ")
-        }).unwrap_or_default();
-        let _ = window.eval(&format!(
-            "{continuation}sessionStorage.setItem('autoStartTitlePrefix', {prefix}); sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/')"
-        ));
+        let script = autostart_script(continue_id, title_prefix.unwrap_or(""));
+        let _ = window.eval(&script);
     }
 }
 
@@ -672,5 +680,12 @@ mod tests {
         let cap = std::time::Duration::from_millis(20);
         assert!(finish_within(cap, async {}).await);
         assert!(!finish_within(cap, std::future::pending::<()>()).await);
+    }
+
+    #[test]
+    fn autostart_script_sets_meeting_id() {
+        let script = autostart_script(Some("test-meeting-123"), "Zoom");
+        assert!(script.contains("window.location.assign('/record')"));
+        assert!(script.contains("sessionStorage.setItem('autoStartContinueId', \"test-meeting-123\")"));
     }
 }

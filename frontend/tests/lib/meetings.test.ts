@@ -134,4 +134,10 @@ describe('commands', () => {
     expect(await meetings.deleteMeeting('m1')).toEqual({ folderWarning: 'kept' });
     expect(invoke).toHaveBeenCalledWith('api_delete_meeting', { meetingId: 'm1' });
   });
+
+  test('deleteRecording maps folder_warning to folderWarning', async () => {
+    invoke.mockImplementationOnce(async () => ({ folder_warning: 'x' }));
+    expect(await meetings.deleteRecording('m1')).toEqual({ folderWarning: 'x' });
+    expect(invoke).toHaveBeenCalledWith('api_delete_recording', { meetingId: 'm1' });
+  });
 });

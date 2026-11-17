@@ -3,6 +3,7 @@
 // folds this whole file away). Commands not listed here resolve null and warn once; add data here as screens need it.
 import { mockIPC } from '@tauri-apps/api/mocks';
 import type { MeetingRow } from './meetings';
+import { BUILTIN_VIEW_DEFAULTS } from './meeting-views';
 
 const meetings = [
   { id: 'preview-1', title: 'Weekly product sync', created_at: '2026-11-10T09:00:00Z', updated_at: '2026-11-10T09:45:00Z' },
@@ -97,11 +98,18 @@ const handlers: Record<string, (args: any) => unknown> = {
   feed_list: () => [],
   api_get_meetings: () => meetings,
   api_list_meeting_rows: () => meetingRows(),
+  api_list_meeting_views: () => [
+    { id: 'all', name: 'All meetings', position: 0, builtin: true, configJson: JSON.stringify(BUILTIN_VIEW_DEFAULTS.all) },
+    { id: 'week', name: 'This week', position: 1, builtin: true, configJson: JSON.stringify(BUILTIN_VIEW_DEFAULTS.week) },
+    { id: 'unreviewed', name: 'Not reviewed', position: 2, builtin: true, configJson: JSON.stringify(BUILTIN_VIEW_DEFAULTS.unreviewed) },
+  ],
+  api_create_meeting: () => 'preview-new',
   api_save_meeting_view: () => null,
   api_delete_meeting_view: () => null,
   api_set_meeting_reviewed: () => null,
   api_set_meeting_template: () => null,
   api_delete_meeting: () => ({ folder_warning: null }),
+  api_delete_recording: () => ({ folder_warning: null }),
   api_search_transcripts: ({ query }) => (/plan/i.test(query)
     ? [{ meetingId: 'preview-4', title: 'Release planning', source: 'transcript', snippet: 'Let us start with the release plan for next week.', transcriptId: 't-0', audioStart: 0, totalInMeeting: 1 }]
     : []),

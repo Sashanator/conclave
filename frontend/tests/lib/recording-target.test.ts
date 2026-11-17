@@ -51,10 +51,10 @@ describe('takeAutoStartMeetingId', () => {
 });
 
 describe('routeOrFallback id hygiene', () => {
-  test('a new start clears a stale last_recording_meeting_id', async () => {
-    sessionStorage.setItem('last_recording_meeting_id', 'stale');
+  test('a new start leaves last_recording_meeting_id alone: the previous recording may still be saving', async () => {
+    sessionStorage.setItem('last_recording_meeting_id', 'prev');
     await routeOrFallback('sidebar');
-    expect(sessionStorage.getItem('last_recording_meeting_id')).toBeNull();
+    expect(sessionStorage.getItem('last_recording_meeting_id')).toBe('prev');
   });
 });
 
@@ -69,9 +69,10 @@ describe('releaseFailedStart', () => {
     await releaseFailedStart(null, new Error('x'));
     expect(invoke).not.toHaveBeenCalled();
   });
-  test('skips when another start is already in progress', async () => {
+  test('a lost race still releases: Rust refuses the winner\'s row', async () => {
+    routeResult = async () => false;
     await releaseFailedStart({ meetingId: 'm9', title: 'T' }, 'Recording already in progress');
-    expect(invoke).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith('api_release_routed_start', { meetingId: 'm9' });
   });
   test('toasts when the release fails', async () => {
     routeResult = async () => { throw 'db locked'; };

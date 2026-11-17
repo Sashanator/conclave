@@ -21,6 +21,7 @@ mock.module('sonner', () => ({ toast: { success() {}, warning() {}, error() {}, 
 let storedTranscripts: Array<Record<string, unknown>> = [
   { id: 't1', text: 'hello', timestamp: '2026-10-16T10:00:00Z', sequenceId: 1, confidence: 0.9 },
 ];
+const deleted: string[] = [];
 let metadataExtra: Record<string, unknown> = {};
 let saveResult: Record<string, unknown> = { meeting_id: 'meeting-1' };
 const saveArgs: unknown[][] = [];
@@ -30,6 +31,7 @@ mock.module('../../src/services/indexedDBService', () => ({
     getMeetingMetadata: async () => ({ meetingId: 'meeting-local-1', title: 'Standup', folderPath: '/recordings/Standup', ...metadataExtra }),
     getTranscripts: async () => storedTranscripts,
     markMeetingSaved: async () => {},
+    deleteMeeting: async (id: string) => { deleted.push(id); },
   },
 }));
 mock.module('../../src/services/storageService', () => ({
@@ -147,5 +149,21 @@ describe('recovery targets the meeting the recording belonged to', () => {
   test('a normal save shows no info toast', async () => {
     await recoverAndCountCleanups();
     expect(infoToast).not.toHaveBeenCalled();
+  });
+});
+
+describe('discarding a recovery', () => {
+  test('releases the row its recording was routed to', async () => {
+    metadataExtra = { targetMeetingId: 'meeting-target' };
+    await act(async () => { renderer = create(<View />); });
+    await act(async () => { await recovery.deleteRecoverableMeeting('meeting-local-1'); });
+    expect(invoke).toHaveBeenCalledWith('api_release_routed_start', { meetingId: 'meeting-target' });
+    expect(deleted).toContain('meeting-local-1');
+  });
+
+  test('a recording without a target releases nothing', async () => {
+    await act(async () => { renderer = create(<View />); });
+    await act(async () => { await recovery.deleteRecoverableMeeting('meeting-local-1'); });
+    expect(invoke.mock.calls.some(([c]) => c === 'api_release_routed_start')).toBe(false);
   });
 });

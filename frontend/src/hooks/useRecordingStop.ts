@@ -76,10 +76,13 @@ export function useRecordingStop(
 
   // Promise to track recording-stopped event data (fixes race condition with recording-stop-complete)
   const recordingStoppedDataRef = useRef<Promise<void> | null>(null);
+  // Counts recording-started events: a new recording during this save replaces the shared lines and notes.
+  const startsRef = useRef(0);
 
   // Set up recording-stopped listener for meeting navigation
   useEffect(() => {
     let unlistenFn: (() => void) | undefined;
+    let unlistenStarted: (() => void) | undefined;
 
     const setupRecordingStoppedListener = async () => {
       try {
@@ -110,6 +113,7 @@ export function useRecordingStop(
           })();
 
         });
+        unlistenStarted = await listen('recording-started', () => { startsRef.current += 1; });
         console.log('Recording stopped listener setup complete');
       } catch (error) {
         console.error('Failed to setup recording stopped listener:', error);
@@ -120,6 +124,7 @@ export function useRecordingStop(
 
     return () => {
       console.log('Cleaning up recording stopped listener...');
+      unlistenStarted?.();
       if (unlistenFn) {
         unlistenFn();
       }
@@ -139,6 +144,15 @@ export function useRecordingStop(
       // A failed data write must not leave the gate held: the save reads sessionStorage either way.
       await recordingStoppedDataRef.current.catch((error) => console.error('Recording-stopped data unavailable:', error));
     }
+
+    // Everything this save needs, taken now: a recording that starts during the save (up to a minute away)
+    // clears the lines and rewrites the session keys.
+    const folderPath = sessionStorage.getItem('last_recording_folder_path');
+    const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
+    const routedMeetingId = sessionStorage.getItem('last_recording_meeting_id');
+    const startsAtStop = startsRef.current;
+    const stoppedTranscripts = [...transcriptsRef.current];
+    const stoppedNotes = [...notesRef.current];
 
     // Set status to STOPPING immediately
     setStatus(RecordingStatus.STOPPING);
@@ -250,12 +264,9 @@ export function useRecordingStop(
         setStatus(RecordingStatus.SAVING, 'Saving meeting to database...');
 
         // Get fresh transcript state (ALL transcripts including late ones)
-        const freshTranscripts = [...transcriptsRef.current];
-
-        // Get folder_path and meeting_name from recording-stopped event
-        const folderPath = sessionStorage.getItem('last_recording_folder_path');
-        const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
-        const routedMeetingId = sessionStorage.getItem('last_recording_meeting_id');
+        // (Late lines arrive in the live list; once a new recording replaced it, the lines taken at stop are all there is.)
+        const sameRecording = startsRef.current === startsAtStop;
+        const freshTranscripts = sameRecording ? [...transcriptsRef.current] : stoppedTranscripts;
 
         console.log('💾 Saving COMPLETE transcripts to database...', {
           transcript_count: freshTranscripts.length,
@@ -268,7 +279,7 @@ export function useRecordingStop(
             savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
             freshTranscripts,
             folderPath,
-            [...notesRef.current],
+            (sameRecording ? [...notesRef.current] : stoppedNotes),
             currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id'),
             { source: titleSource, uid: calendarLink?.uid, start: calendarLink?.start },
             true,
@@ -283,7 +294,7 @@ export function useRecordingStop(
           const outcome = saveOutcome(responseData);
           if (outcome.continueError) {
             toast.error('Could not add this recording to the earlier meeting', {
-              description: `${outcome.continueError} It was saved as a new meeting instead.`,
+              description: `${outcome.continueError} It was saved ${routedMeetingId && !outcome.fallback ? 'into the meeting it started in' : 'as a new meeting'} instead.`,
             });
           }
           if (outcome.fallback && !outcome.continueError) {
@@ -411,6 +422,8 @@ export function useRecordingStop(
       // Always reset the guard flag when done
       endStop();
       invoke('set_recording_post_processing', { active: false }).catch(() => {});
+      // The meeting may be deleted again now that its save is over (Rust kept it protected since the stop).
+      if (routedMeetingId) invoke('api_finish_saving_target', { meetingId: routedMeetingId }).catch(() => {});
     }
   }, [
     setIsRecording,

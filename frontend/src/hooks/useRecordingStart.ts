@@ -165,6 +165,8 @@ export function useRecordingStart(
     } catch (error) {
       console.error('Failed to start recording:', error);
       const errorMsg = error instanceof Error ? error.message : String(error);
+      // Also on a lost race: Rust keeps the row the winner owns.
+      await releaseFailedStart(routed, error);
 
       // A racing second start that lost to a live recording must not clobber
       // the running recording's state. The winning start is live, so reflect
@@ -176,7 +178,6 @@ export function useRecordingStart(
         return;
       }
 
-      await releaseFailedStart(routed, error);
       const isRuntimeError = isTranscriptionRuntimeStartError(error);
       if (errorMsg.includes('Recording start timed out')) {
         toast.error('Recording start timed out — please try again');
@@ -229,6 +230,8 @@ export function useRecordingStart(
               });
               showModal?.('modelSelector', 'Transcription model setup required');
             }
+            // A tray or detector start already routed a row: give it back.
+            await releaseFailedStart({ meetingId: autoMeetingId, title: null }, 'model not ready');
             setStatus(RecordingStatus.IDLE);
             setIsAutoStarting(false);
             return;
@@ -238,7 +241,6 @@ export function useRecordingStart(
           let routed: RoutedStart | null = null;
           try {
             // A continue start joins the earlier meeting at save time, so it skips routing.
-            if (continueId) sessionStorage.removeItem('last_recording_meeting_id');
             if (routingFailed && !continueId) {
               toast.warning('Recording as a new meeting', { description: 'The meeting could not be prepared in advance.' });
             }
@@ -271,11 +273,11 @@ export function useRecordingStart(
           } catch (error) {
             console.error('Failed to auto-start recording:', error);
             const errorMsg = error instanceof Error ? error.message : String(error);
+            await releaseFailedStart(routed, error);
             if (errorMsg.includes('already in progress')) {
               // Benign race — another start won and is live; skip ERROR/alert.
               setStatus(RecordingStatus.RECORDING);
             } else {
-              await releaseFailedStart(routed, error);
               const isRuntimeError = isTranscriptionRuntimeStartError(error);
               setStatus(RecordingStatus.ERROR, isRuntimeError
                 ? TRANSCRIPTION_RUNTIME_USER_MESSAGE
@@ -366,11 +368,11 @@ export function useRecordingStart(
       } catch (error) {
         console.error('Failed to start recording from sidebar:', error);
         const errorMsg = error instanceof Error ? error.message : String(error);
+        await releaseFailedStart(routed, error);
         if (errorMsg.includes('already in progress')) {
           // Benign race — another start won and is live; skip ERROR/alert.
           setStatus(RecordingStatus.RECORDING);
         } else {
-          await releaseFailedStart(routed, error);
           const isRuntimeError = isTranscriptionRuntimeStartError(error);
           setStatus(RecordingStatus.ERROR, isRuntimeError
             ? TRANSCRIPTION_RUNTIME_USER_MESSAGE

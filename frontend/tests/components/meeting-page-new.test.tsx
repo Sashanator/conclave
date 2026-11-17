@@ -24,6 +24,7 @@ let prepResult: () => Promise<unknown> = async () => null;
 const invoke = mock(async (command: string, args?: unknown) => {
   calls.push([command, args]);
   if (command === 'prep_for_meeting') return prepResult();
+  if (command === 'prep_save') return { id: 'p1', eventUid: null, eventStart: null, eventTitle: 'Interview', material: (args as { material?: string })?.material ?? '', items: [] };
   if (command === 'api_list_templates') return { templates: [{ id: 'interview', name: 'Interview', emoji: '🤝' }], errors: [] };
   return null;
 });
@@ -103,6 +104,35 @@ test('the prep notes save on blur with the meeting id', async () => {
   const save = calls.find(([c]) => c === 'prep_save')!;
   expect((save[1] as { meetingId: string; material: string }).meetingId).toBe('m1');
   expect((save[1] as { material: string }).material).toBe('Ask about budget');
+});
+
+const saves = () => calls.filter(([c]) => c === 'prep_save');
+const sleep = (ms: number) => act(async () => { await new Promise((r) => setTimeout(r, ms)); });
+
+test('typing saves the prep notes after a pause, without a blur', async () => {
+  const r = await mountNew();
+  await act(async () => { r.root.findByType('textarea').props.onChange({ target: { value: 'Ask about budget' } }); });
+  expect(saves().length).toBe(0);
+  await sleep(900);
+  expect(saves().length).toBe(1);
+  expect((saves()[0][1] as { material: string }).material).toBe('Ask about budget');
+});
+
+test('a blur after the pause save does not save the same text twice', async () => {
+  const r = await mountNew();
+  await act(async () => { r.root.findByType('textarea').props.onChange({ target: { value: 'Ask' } }); });
+  await sleep(900);
+  await act(async () => { await r.root.findByType('textarea').props.onBlur(); });
+  expect(saves().length).toBe(1);
+});
+
+test('leaving the page saves notes typed a moment ago', async () => {
+  const r = await mountNew();
+  await act(async () => { r.root.findByType('textarea').props.onChange({ target: { value: 'Last words' } }); });
+  await act(async () => { r.unmount(); });
+  await sleep(10);
+  expect(saves().length).toBe(1);
+  expect((saves()[0][1] as { material: string }).material).toBe('Last words');
 });
 
 test('the emoji precedes the title input', async () => {

@@ -21,37 +21,42 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
     let active = true;
     Promise.all(STATUSES.map((status) => invoke<TaskRow[]>('tasks_list', { status })))
       .then((lists) => { if (active) setTasks(lists.flat()); })
-      .catch(() => { if (active) toast.error('Could not load the tasks.'); });
+      .catch((e) => { console.error('Could not load the tasks:', e); if (active) toast.error('Could not load the tasks.'); });
     return () => { active = false; };
   }, [meetingId]);
 
   const { kept, removed } = splitTasks(tasks, meetingId);
   const all = [...kept, ...removed];
 
-  const edit = useCallback(async (task: TaskRow, patch: Partial<TaskRow>, calls: [string, Record<string, unknown>][]) => {
-    const before = tasks;
-    setTasks((cur) => cur.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
+  // Each step carries the change it makes: a failure rolls back only this task, to the steps that did save.
+  type Step = [string, Record<string, unknown>, Partial<TaskRow>];
+  const edit = useCallback(async (task: TaskRow, steps: Step[]) => {
+    const patchTask = (patch: Partial<TaskRow>) => setTasks((cur) => cur.map((t) => (t.id === task.id ? { ...t, ...patch } : t)));
+    patchTask(Object.assign({}, ...steps.map((s) => s[2])));
+    let saved: Partial<TaskRow> = {};
     try {
-      for (const [command, args] of calls) await invoke(command, args);
-    } catch {
-      setTasks(before);
+      for (const [command, args, patch] of steps) { await invoke(command, args); saved = { ...saved, ...patch }; }
+    } catch (e) {
+      console.error('Task change failed:', e);
+      patchTask({ ...task, ...saved });
       toast.error('Could not save the task change.');
     }
-  }, [tasks]);
+  }, []);
 
   const keep = (task: TaskRow) => {
     if (task.owner === 'me' && task.status !== 'dismissed') return Promise.resolve();
-    const calls: [string, Record<string, unknown>][] = [['tasks_claim', { id: task.id }]];
-    if (task.status === 'dismissed') calls.push(['tasks_set_status', { id: task.id, status: 'open' }]);
-    return edit(task, { owner: 'me', status: task.status === 'dismissed' ? 'open' : task.status }, calls);
+    const steps: Step[] = [['tasks_claim', { id: task.id }, { owner: 'me' }]];
+    if (task.status === 'dismissed') steps.push(['tasks_set_status', { id: task.id, status: 'open' }, { status: 'open' }]);
+    return edit(task, steps);
   };
   const remove = (task: TaskRow) =>
-    task.status === 'dismissed' ? Promise.resolve() : edit(task, { status: 'dismissed' }, [['tasks_set_status', { id: task.id, status: 'dismissed' }]]);
+    task.status === 'dismissed' ? Promise.resolve() : edit(task, [['tasks_set_status', { id: task.id, status: 'dismissed' }, { status: 'dismissed' }]]);
 
   const toggleReviewed = async () => {
     const next = !reviewed;
     setReviewedState(next);
-    try { await setReviewed(meetingId, next); } catch {
+    try { await setReviewed(meetingId, next); } catch (e) {
+      console.error('Could not save the review state:', e);
       setReviewedState(!next);
       toast.error('Could not save the review state.');
     }

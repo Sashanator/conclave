@@ -15,8 +15,8 @@ import { formatRecordingTime } from '@/lib/meeting-notes';
 import type { ModalType } from '@/hooks/useModalState';
 
 /** The meeting page while this meeting records, and while its stop is saved: Stop, live transcript, notes. */
-export function RecordingView({ row, onChange, onTitleSaved, showModal }: { row: MeetingRow; onChange: (row: MeetingRow) => void; onTitleSaved?: () => void; showModal: (name: ModalType, message?: string) => void }) {
-  const meetingId = row.id;
+export function RecordingView({ row, onChange, onTitleSaved, showModal }: { row: MeetingRow | null; onChange?: (row: MeetingRow) => void; onTitleSaved?: () => void; showModal: (name: ModalType, message?: string) => void }) {
+  const meetingId = row?.id; // null: a recording whose routing failed, saved as a new meeting
   const { open: sidebarOpen } = useAiSidebar();
   const { selectedDevices } = useConfig();
   const { status, isRecording, isStopping, isProcessing, activeDuration, setStatus } = useRecordingState();
@@ -30,7 +30,7 @@ export function RecordingView({ row, onChange, onTitleSaved, showModal }: { row:
 
   return (
     <div className="flex h-screen flex-col bg-muted/50">
-      <div className="border-b border-border bg-background px-6 pt-4"><MeetingHeader row={row} live onChange={onChange} onTitleSaved={onTitleSaved} /></div>
+      <div className="border-b border-border bg-background px-6 pt-4">{row && onChange ? <MeetingHeader row={row} live onChange={onChange} onTitleSaved={onTitleSaved} /> : <h1 className="pb-3 text-xl font-semibold">New recording</h1>}</div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background px-6 py-3">
         <span className="flex items-center gap-2 text-sm text-foreground" role="status">
           {isRecording && <span aria-hidden className="h-2 w-2 rounded-full" style={{ backgroundColor: 'hsl(var(--rec))' }} />}
@@ -50,7 +50,7 @@ export function RecordingView({ row, onChange, onTitleSaved, showModal }: { row:
             isRecordingDisabled={isRecordingDisabled}
             isParentProcessing={isProcessingStop}
             selectedDevices={selectedDevices}
-            meetingName={row.title}
+            meetingName={row?.title}
           />
         )}
         <div className="ml-auto"><AudioLine disabled /></div>

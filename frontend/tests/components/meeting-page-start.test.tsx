@@ -73,7 +73,7 @@ mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...orig
 let contentProps: { onMeetingUpdated: () => Promise<void> } | undefined;
 mock.module('../../src/app/meeting-details/page-content', () => ({ default: (p: NonNullable<typeof contentProps>) => { contentProps = p; return null; } }));
 mock.module('../../src/components/MeetingPage/NewMeetingView', () => ({ NewMeetingView: (p: typeof newProps) => { newProps = p; return <div>New view</div>; } }));
-mock.module('../../src/components/MeetingPage/RecordingView', () => ({ RecordingView: () => <div>Recording view</div> }));
+mock.module('../../src/components/MeetingPage/RecordingView', () => ({ RecordingView: (p: { row: unknown }) => <div>{p.row ? 'Recording view' : 'Recording view unrouted'}</div> }));
 let headerProps: { live?: boolean; onMeetingDeleted?: () => void } | undefined;
 mock.module('../../src/components/MeetingPage/MeetingHeader', () => ({ MeetingHeader: (p: NonNullable<typeof headerProps>) => { headerProps = p; return null; } }));
 
@@ -160,14 +160,14 @@ test('live, stopping, saving, completed: the view holds until the save is done, 
   await mount();
   expect(shows()).toBe(true);
   expect(screenKind).toBe('live');
-  sessionStorage.setItem('last_recording_meeting_id', 'm1'); // the stop listener writes it
+  sessionStorage.setItem('last_recording_held_id', 'm1'); // the stop listener writes it
   setState(stopping); await rerender();
   expect(shows()).toBe(true);
   expect(screenKind).toBe('meeting'); // Copilot is live-only
   setState(saving); await rerender();
   expect(shows()).toBe(true);
   expect(refetchTranscripts).not.toHaveBeenCalled();
-  sessionStorage.removeItem('last_recording_meeting_id'); // a successful save removes it
+  sessionStorage.removeItem('last_recording_held_id'); // a successful save removes it
   setState(done); await rerender();
   await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
   expect(shows()).toBe(false);
@@ -177,7 +177,7 @@ test('live, stopping, saving, completed: the view holds until the save is done, 
 test('a failed save keeps the view, also after a remount', async () => {
   setState(live);
   await mount();
-  sessionStorage.setItem('last_recording_meeting_id', 'm1');
+  sessionStorage.setItem('last_recording_held_id', 'm1');
   setState(stopping); await rerender();
   setState({ isStopping: false, status: 'error' }); await rerender();
   expect(shows()).toBe(true);
@@ -189,14 +189,14 @@ test('a failed save keeps the view, also after a remount', async () => {
 
 test('a remount during the save still shows the view', async () => {
   setState({ ...stopping, ...saving, isStopping: false });
-  sessionStorage.setItem('last_recording_meeting_id', 'm1');
+  sessionStorage.setItem('last_recording_held_id', 'm1');
   await mount();
   expect(shows()).toBe(true);
 });
 
 test('a stop flow of another meeting does not take this page', async () => {
   setState({ ...stopping });
-  sessionStorage.setItem('last_recording_meeting_id', 'm2');
+  sessionStorage.setItem('last_recording_held_id', 'm2');
   await mount();
   expect(shows()).toBe(false);
 });
@@ -227,4 +227,31 @@ test('a summary rename reloads the header row too', async () => {
   const before = loads();
   await act(async () => { await contentProps?.onMeetingUpdated(); });
   expect(loads()).toBeGreaterThan(before);
+});
+
+const unroutedShows = () => JSON.stringify(renderer!.toJSON()).includes('Recording view unrouted');
+
+test('a recording that has no meeting row shows the row-less view on the id-less page and Copilot', async () => {
+  params = new URLSearchParams('');
+  setState({ isRecording: true, status: 'recording' });
+  await mount();
+  expect(unroutedShows()).toBe(true);
+  expect(screenKind).toBe('live');
+});
+
+test('the page that started an unrouted recording shows it, through the stop and save', async () => {
+  await mount();
+  await act(async () => { (startArgs[1] as (v: boolean) => void)(true); });
+  setState({ isRecording: true, status: 'recording' }); await rerender();
+  expect(unroutedShows()).toBe(true);
+  setState({ isRecording: false, isSaving: true, status: 'saving' }); await rerender();
+  expect(unroutedShows()).toBe(true);
+  setState(done); await rerender();
+  expect(unroutedShows()).toBe(false);
+});
+
+test('another meeting page does not show an unrouted recording', async () => {
+  setState({ isRecording: true, status: 'recording' });
+  await mount();
+  expect(unroutedShows()).toBe(false);
 });

@@ -81,6 +81,15 @@ describe('Sidebar nav', () => {
     expect(push).toHaveBeenCalledWith('/meeting-details?id=m1');
   });
 
+  test('a recording with no meeting row can still be opened', async () => {
+    rec = { isRecording: true, liveMeetingId: null, activeDuration: 5 };
+    const r = await render();
+    const b = buttons(r)[0];
+    expect(b.props.disabled).toBeFalsy();
+    await act(async () => { b.props.onClick(); });
+    expect(push).toHaveBeenCalledWith('/meeting-details');
+  });
+
   test('idle click routes the start and opens the meeting page', async () => {
     const r = await render();
     await act(async () => { await buttons(r)[0].props.onClick(); });

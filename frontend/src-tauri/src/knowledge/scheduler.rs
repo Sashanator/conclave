@@ -168,7 +168,13 @@ pub(crate) async fn make_due_briefs<R: Runtime>(
     // The clock the brief re-reads before it saves: the tick's time plus what has passed since (so a test clock works).
     let begun = std::time::Instant::now();
     let later = || now + Duration::from_std(begun.elapsed()).unwrap_or_else(|_| Duration::zero());
+    let marker = settings::current().calendar_marker;
     for occ in occurrences.iter().filter(|o| due(o, now)) {
+        // Briefs are for 📞 calls only; the brief carries the title without the marker.
+        let Some(title) = calendar::strip_marker(&occ.title, &marker) else {
+            continue;
+        };
+        let occ = &Occurrence { title, ..occ.clone() };
         let Some(template) = event_type(&occ.title, templates) else {
             continue;
         };
@@ -249,7 +255,7 @@ mod tests {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
         previous_meeting(&pool, "brief_once_per_occurrence").await;
-        let occurrences = vec![event("1:1 Ivan", at(11, 0))];
+        let occurrences = vec![event("📞 1:1 Ivan", at(11, 0))];
         let templates = vec![one_on_one()];
 
         make_due_briefs(app.handle(), &pool, at(10, 10), &occurrences, &templates).await.unwrap();
@@ -265,7 +271,7 @@ mod tests {
         let app = tauri::test::mock_app();
         previous_meeting(&pool, "late_start_still_briefs").await;
         // The app starts 20 minutes before the meeting: the brief is still made.
-        let occurrences = vec![event("1:1 Ivan", at(11, 0))];
+        let occurrences = vec![event("📞 1:1 Ivan", at(11, 0))];
 
         make_due_briefs(app.handle(), &pool, at(10, 40), &occurrences, &[one_on_one()]).await.unwrap();
 
@@ -277,11 +283,25 @@ mod tests {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
         previous_meeting(&pool, "untyped_or_not_due_events_get_no_brief").await;
-        let occurrences = vec![event("Standup", at(11, 0)), event("1:1 Ivan", at(14, 0))];
+        let occurrences = vec![event("📞 Standup", at(11, 0)), event("📞 1:1 Ivan", at(14, 0))];
 
         make_due_briefs(app.handle(), &pool, at(10, 40), &occurrences, &[one_on_one()]).await.unwrap();
 
         assert_eq!(brief_count(&pool).await, 0);
+    }
+
+    #[tokio::test]
+    async fn only_marker_events_get_briefs() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        previous_meeting(&pool, "only_marker_events_get_briefs").await;
+        let occurrences = vec![event("📞 1:1 Ivan", at(11, 0)), event("1:1 Ivan", at(11, 0))];
+
+        make_due_briefs(app.handle(), &pool, at(10, 40), &occurrences, &[one_on_one()]).await.unwrap();
+
+        assert_eq!(brief_count(&pool).await, 1);
+        let title: String = sqlx::query_scalar("SELECT title FROM briefs").fetch_one(&pool).await.unwrap();
+        assert_eq!(title, "1:1 Ivan");
     }
 
     #[tokio::test]

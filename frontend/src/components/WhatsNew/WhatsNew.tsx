@@ -5,9 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { getVersion } from '@tauri-apps/api/app';
 import { toast } from 'sonner';
 import { parseChangelog } from '@/lib/changelog';
-
-// Same literal as Task 50's WHATS_NEW_SEEN_KEY in lib/nav.ts
-const SEEN_KEY = 'whats-new-seen';
+import { WHATS_NEW_SEEN_KEY as SEEN_KEY } from '@/lib/nav';
 
 // `**x**` becomes <b>; everything else stays text
 function inline(s: string) {

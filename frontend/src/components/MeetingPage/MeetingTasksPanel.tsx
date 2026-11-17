@@ -97,7 +97,6 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
     <aside aria-label="Tasks from this meeting" className="space-y-3 p-3">
       <h2 className="text-sm font-medium">Tasks from this meeting <small aria-live="polite" className="text-muted-foreground">{kept.length} kept</small></h2>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <Button variant="outline" size="sm" onClick={() => kept.filter((t) => t.owner !== 'me').forEach((t) => void keep(t))}>Keep all mine</Button>
         <span>K keep · X remove · ↑↓ move</span>
       </div>
       {kept.length > 0 && <ul className="space-y-2">{kept.map((t, i) => row(t, i, false))}</ul>}

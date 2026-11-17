@@ -4,6 +4,7 @@ import type { ReactNode } from 'react';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { ChevronDown } from 'lucide-react';
 import { toast } from 'sonner';
 import { flexRender, getCoreRowModel, useReactTable, type ColumnDef } from '@tanstack/react-table';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -26,7 +27,7 @@ const VIRTUALIZE_ABOVE = 200;
 const DEFAULT_WIDTH: Record<string, number> = { name: 280, date: 190, category: 150, summary: 420, reviewed: 90 };
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
-type Item = { kind: 'group'; key: string; label: string } | { kind: 'row'; key: string; row: MeetingRow };
+type Item = { kind: 'group'; key: string; label: string; count: number; chip: string | null; collapsed: boolean } | { kind: 'row'; key: string; row: MeetingRow };
 
 export function MeetingsTable({ onAsk, onScopeChange }: {
   onAsk?: () => void;
@@ -55,10 +56,17 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     [rows, config, liveId, now, availableTemplates],
   );
   const data = useMemo(() => sections.flatMap((s) => s.rows), [sections]);
-  const items = useMemo<Item[]>(() => sections.flatMap((s) => [
-    ...(s.label ? [{ kind: 'group' as const, key: `g-${s.key}`, label: s.label }] : []),
-    ...s.rows.map((row) => ({ kind: 'row' as const, key: row.id, row })),
-  ]), [sections]);
+  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
+  const toggleGroup = (key: string) => setCollapsed((c) => { const n = new Set(c); if (!n.delete(key)) n.add(key); return n; });
+  const items = useMemo<Item[]>(() => sections.flatMap((s) => {
+    const closed = !!s.label && collapsed.has(s.key);
+    const i = config.group === 'category' ? availableTemplates.findIndex((t) => t.id === s.key) : -1;
+    return [
+      ...(s.label ? [{ kind: 'group' as const, key: `g-${s.key}`, label: s.label, count: s.rows.length, collapsed: closed,
+        chip: config.group === 'category' ? `var(--cat-${i >= 0 ? (i % 4) + 1 : 5})` : null }] : []),
+      ...(closed ? [] : s.rows.map((row) => ({ kind: 'row' as const, key: row.id, row }))),
+    ];
+  }), [sections, collapsed, config.group, availableTemplates]);
 
   const counts = useMemo(() => Object.fromEntries(views.map((v) => [v.id,
     arrangeRows(rows, parseViewConfig(v.id, v.configJson), { liveId, now, templates: availableTemplates }).reduce((n, s) => n + s.rows.length, 0)])),
@@ -76,7 +84,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     }
   }, [router]);
 
-  const ids = useMemo(() => (searchMode ? [...new Set((hits ?? []).map((h) => h.meetingId))] : data.map((r) => r.id)), [searchMode, hits, data]);
+  const ids = useMemo(() => (searchMode ? [...new Set((hits ?? []).map((h) => h.meetingId))] : items.flatMap((i) => (i.kind === 'row' ? [i.row.id] : []))), [searchMode, hits, items]);
   const selected = selectedId && ids.includes(selectedId) ? selectedId : null;
 
   useEffect(() => {
@@ -212,7 +220,20 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
             {padTop > 0 && <tr aria-hidden style={{ height: padTop }}><td colSpan={colCount} /></tr>}
             {shown.map((item) => {
               if (item.kind === 'group') {
-                return <tr key={item.key}><th colSpan={colCount} scope="colgroup" className="px-[10px] pt-3 text-left text-xs font-semibold text-muted-foreground">{item.label}</th></tr>;
+                const gk = item.key.slice(2);
+                return (
+                  <tr key={item.key}>
+                    <th colSpan={colCount} scope="colgroup" className="px-[10px] pt-3 text-left text-xs font-semibold text-muted-foreground">
+                      <button type="button" aria-expanded={!item.collapsed} onClick={() => toggleGroup(gk)} className="inline-flex items-center gap-1.5 hover:text-foreground">
+                        <ChevronDown className={`h-3.5 w-3.5 transition-transform ${item.collapsed ? '-rotate-90' : ''}`} aria-hidden />
+                        {item.chip
+                          ? <span className="rounded-full px-2 py-0.5 text-foreground" style={{ background: `hsl(${item.chip} / .15)` }}>{item.label}</span>
+                          : <span className="text-foreground">{item.label}</span>}
+                        <span className="font-normal">{item.count}</span>
+                      </button>
+                    </th>
+                  </tr>
+                );
               }
               const row = rowById.get(item.row.id);
               if (!row) return null;
@@ -229,9 +250,9 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
               );
             })}
             {padBottom > 0 && <tr aria-hidden style={{ height: padBottom }}><td colSpan={colCount} /></tr>}
+            <tr><td colSpan={colCount}><button type="button" onClick={() => void newMeeting()} className="px-[10px] py-2 text-sm text-muted-foreground hover:text-foreground">+ New meeting</button></td></tr>
           </tbody>
         </table>
-        <button type="button" onClick={() => void newMeeting()} className="px-[10px] py-2 text-sm text-muted-foreground hover:text-foreground">+ New meeting</button>
       </div>
       )}
       <DeleteMeetingDialog

@@ -48,6 +48,7 @@ const fixture = [
   mk('cancelled', { calendarCancelledAt: '2026-11-10T00:00:00Z', calendarStart: soon, prepPoints: 2 }),
 ];
 
+let allCfg = '{}';
 let rowsImpl: () => MeetingRow[] = () => fixture;
 let searchImpl: () => unknown[] = () => [];
 const push = mock((_href: string) => {});
@@ -56,7 +57,7 @@ const invoke = mock(async (command: string, _args?: Record<string, unknown>): Pr
   switch (command) {
     case 'api_list_meeting_rows': return rowsImpl();
     case 'api_list_meeting_views': return [
-      { id: 'all', name: 'All meetings', position: 0, builtin: true, configJson: '{}' },
+      { id: 'all', name: 'All meetings', position: 0, builtin: true, configJson: allCfg },
       { id: 'week', name: 'This week', position: 1, builtin: true, configJson: JSON.stringify(BUILTIN_VIEW_DEFAULTS.week) },
     ];
     case 'api_create_meeting': return 'preview-new';
@@ -100,6 +101,7 @@ describe('meetings table', () => {
     invoke.mockClear();
     toastError.mockClear();
     push.mockClear();
+    allCfg = '{}';
     rowsImpl = () => fixture;
     searchImpl = () => [];
     setSystemTime();
@@ -192,6 +194,19 @@ describe('meetings table', () => {
     await search('plan');
     expect(toastError.mock.calls.some((c) => c[0] === 'Search failed')).toBe(true);
     expect(all()).not.toContain('Searching all meetings');
+  });
+
+  test('group headers show a count and the chevron collapses the group', async () => {
+    allCfg = JSON.stringify({ group: 'day' });
+    await mount();
+    const toggles = renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === true);
+    expect(toggles.length).toBeGreaterThan(1);
+    expect(all()).toContain('done1');
+    const first = toggles.find((t) => text(t).includes('Monday 16 Nov'))!;
+    expect(text(first)).toContain('1');
+    await act(async () => { first.props.onClick(); });
+    expect(all()).not.toContain('done1');
+    expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false).length).toBe(1);
   });
 
   test('the table ends with a New meeting row', async () => {

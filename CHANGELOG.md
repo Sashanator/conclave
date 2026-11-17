@@ -1,5 +1,16 @@
 # Conclave changelog
 
+## v2.0.0 — 2026-11-17
+- **Meetings table.** All meetings in one table with saved views, search across transcripts, and grouping by day or category.
+- **Create a meeting first.** Name it, write prep notes, then press Record; calendar meetings appear on their own.
+- **One AI sidebar.** Ask and Copilot open beside the table or meeting (Ctrl J); Digests replace Briefs in the menu.
+- **What's new** in the menu shows these notes; version, data folder and log file moved there from About.
+
+## v1.2.0 — 2026-11-16
+- API keys are stored in Windows Credential Manager instead of plain text; existing keys move over automatically on first start.
+- A backup of your data is made before every version change, and the three most recent are kept.
+- The app checks for new releases and installs one only after you click Update; every update is signature-checked.
+
 ## v1.1.0 — 2026-10-30
 - Improve a summary's template right from the meeting page, with suggestions after you edit a summary.
 - Templates keep an undo history; a failed save or an unreadable undo copy no longer blocks you.

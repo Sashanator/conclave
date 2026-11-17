@@ -754,6 +754,15 @@ pub(crate) fn record_sync_error(problem: String) {
     }
 }
 
+/// A reconcile of the kept feed worked: the earlier sync error no longer holds for the connected calendar.
+pub(crate) fn clear_sync_error() {
+    let mut state = STATE.write().unwrap_or_else(PoisonError::into_inner);
+    if settings::current().calendar_url.is_some() {
+        state.last_error = None;
+        state.last_error_at = None;
+    }
+}
+
 fn cache_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
     app.path()
         .resolve(CACHE_FILE, BaseDirectory::AppData)

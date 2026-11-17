@@ -1005,6 +1005,7 @@ pub fn run() {
             audio::permissions::trigger_system_audio_permission_command,
             // Database import commands
             database::commands::check_first_launch,
+            database::commands::take_backfill_error,
             database::commands::select_legacy_database_path,
             database::commands::detect_legacy_database,
             database::commands::check_default_legacy_database,
@@ -1089,7 +1090,6 @@ pub fn run() {
             prep::store::prep_save,
             prep::store::prep_tick,
             prep::store::prep_approve,
-            prep::store::prep_delete,
             prep::chat::prep_send, prep::chat::prep_material_limit,
             usage::stats::stats_cost,
             usage::stats::meeting_cost,

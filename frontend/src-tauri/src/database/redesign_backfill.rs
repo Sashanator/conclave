@@ -4,6 +4,18 @@ use crate::knowledge::extract::gist_from_summary;
 use chrono::Utc;
 use sqlx::SqlitePool;
 
+static LAST_ERROR: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Keeps a failed startup run for the UI to show once.
+pub fn record_failure(msg: String) {
+    *LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()) = Some(msg);
+}
+
+/// Hands the stored failure out once (a second call gets None).
+pub fn take_failure() -> Option<String> {
+    LAST_ERROR.lock().unwrap_or_else(|e| e.into_inner()).take()
+}
+
 pub async fn run(pool: &SqlitePool) -> anyhow::Result<()> {
     let mut failed = 0usize;
     let rows: Vec<(String, String)> = sqlx::query_as(
@@ -86,6 +98,13 @@ async fn link_prep(pool: &SqlitePool, prep_id: i64, uid: &str, start: &Option<St
 mod redesign_backfill_tests {
     use super::*;
     use crate::database::repositories::test_pool;
+
+    #[test]
+    fn a_recorded_failure_is_handed_out_once() {
+        record_failure("boom".into());
+        assert_eq!(take_failure().as_deref(), Some("boom"));
+        assert_eq!(take_failure(), None);
+    }
 
     async fn exec(pool: &SqlitePool, sql: &str) {
         sqlx::query(sql).execute(pool).await.unwrap();

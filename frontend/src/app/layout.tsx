@@ -31,6 +31,7 @@ import { THEME_INIT_SCRIPT } from '@/lib/theme'
 import { AiSidebarProvider } from '@/components/AiSidebar/AiSidebarProvider'
 import { AiSidebar, CopilotOpenListener } from '@/components/AiSidebar/AiSidebar'
 import { CopilotProvider } from '@/contexts/CopilotContext'
+import { listenReleaseFailed } from '@/lib/recording-target'
 import { installBrowserPreview } from '@/lib/browser-preview'
 
 
@@ -155,6 +156,12 @@ function AppShell({
         description: `Supported formats: ${getAudioFormatsDisplayList()}`
       });
     }
+  }, []);
+
+  // The tray's dropped start could not give its empty row back.
+  useEffect(() => {
+    const un = listenReleaseFailed();
+    return () => { un.then((fn) => fn()).catch(() => {}); };
   }, []);
 
   // Listen for drag-drop events

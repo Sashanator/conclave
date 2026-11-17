@@ -3,10 +3,12 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   sonner: { ...await import('sonner') },
+  event: { ...await import('@tauri-apps/api/event') },
 };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('sonner', () => originals.sonner);
+  mock.module('@tauri-apps/api/event', () => originals.event);
 });
 
 let routeResult: () => Promise<unknown> = async () => ({ meetingId: 'm', title: 'T' });
@@ -14,7 +16,12 @@ const invoke = mock(async (_c: string, _a?: unknown) => routeResult());
 const toast = { warning: mock((_w: string, _o?: unknown) => {}), error: mock((_w: string, _o?: unknown) => {}), info: mock(() => {}), success: mock(() => {}) };
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
-const { routeRecordingStart, takeAutoStartMeetingId, routeOrFallback, releaseFailedStart, queueAutoStart } = await import('../../src/lib/recording-target');
+let eventHandler: ((e: { payload: string }) => void) | null = null;
+mock.module('@tauri-apps/api/event', () => ({
+  ...originals.event,
+  listen: mock(async (_name: string, h: (e: { payload: string }) => void) => { eventHandler = h; return () => {}; }),
+}));
+const { routeRecordingStart, takeAutoStartMeetingId, routeOrFallback, releaseFailedStart, queueAutoStart, listenReleaseFailed } = await import('../../src/lib/recording-target');
 
 beforeEach(() => { invoke.mockClear(); toast.warning.mockClear(); toast.error.mockClear(); routeResult = async () => ({ meetingId: 'm', title: 'T' }); });
 
@@ -94,6 +101,15 @@ describe('queueAutoStart', () => {
   });
 });
 
+describe('queueAutoStart without a row', () => {
+  test('queues only the flag and returns the id-less page', () => {
+    sessionStorage.clear();
+    expect(queueAutoStart(sessionStorage, null)).toBe('/meeting-details');
+    expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
+    expect(sessionStorage.getItem('autoStartMeetingId')).toBeNull();
+  });
+});
+
 describe('showRecordingView', () => {
   const { showRecordingView } = require('../../src/lib/recording-target');
   const base = { meetingId: 'm1', liveMeetingId: null, heldId: null, stopFlow: false };
@@ -120,5 +136,15 @@ describe('autoStartAllowed', () => {
     expect(autoStartAllowed(sessionStorage, pageKeyFor('a', '1000'), 1000 + 60_000)).toBe(false);
     expect(sessionStorage.getItem('autoStartKey')).toBeNull();
     expect(sessionStorage.getItem('autoStartRecording')).toBeNull();
+  });
+});
+
+describe('listenReleaseFailed', () => {
+  test('a tray release failure shows the left-behind toast', async () => {
+    await listenReleaseFailed();
+    eventHandler!({ payload: 'db locked' });
+    expect(toast.error).toHaveBeenCalledWith('An empty meeting was left behind', {
+      description: 'db locked Delete the empty started meeting by hand.',
+    });
   });
 });

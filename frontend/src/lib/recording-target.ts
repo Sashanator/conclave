@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { listen, type UnlistenFn } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 
 export type StartSourceArg = 'sidebar' | { page: string };
@@ -18,9 +19,11 @@ export function takeAutoStartMeetingId(storage: Storage): string | null {
 }
 
 /** Queues an auto-start into this meeting for the page that mounts `useRecordingStart`; returns that page's url. */
-export function queueAutoStart(storage: Storage, meetingId: string): string {
-  storage.setItem('autoStartMeetingId', meetingId);
+export function queueAutoStart(storage: Storage, meetingId: string | null): string {
   storage.setItem('autoStartRecording', 'true');
+  // No row (routing failed): the id-less page records into an unrouted view and the save makes the meeting.
+  if (!meetingId) return '/meeting-details';
+  storage.setItem('autoStartMeetingId', meetingId);
   return queuedPageUrl(storage, meetingId);
 }
 
@@ -64,10 +67,17 @@ export async function releaseFailedStart(routed: RoutedStart | null, _error: unk
     await invoke('api_release_routed_start', { meetingId: routed.meetingId });
   } catch (e) {
     console.error('Could not release the routed meeting row:', e);
-    toast.error('An empty meeting was left behind', {
-      description: `${String(e)} Delete the empty started meeting by hand.`,
-    });
+    toastLeftBehind(String(e));
   }
+}
+
+function toastLeftBehind(error: string) {
+  toast.error('An empty meeting was left behind', { description: `${error} Delete the empty started meeting by hand.` });
+}
+
+/** The tray's start dropped and Rust could not release its row: same toast as the frontend path. Mount app-wide. */
+export function listenReleaseFailed(): Promise<UnlistenFn> {
+  return listen<string>('routed-release-failed', (e) => toastLeftBehind(String(e.payload)));
 }
 
 /**

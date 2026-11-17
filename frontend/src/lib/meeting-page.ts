@@ -1,7 +1,4 @@
-import type { MeetingState } from './meetings';
 import type { TaskRow } from './tasks';
-
-export type PageView = 'new' | 'recording' | 'finished';
 
 export type TaskKeyAction = 'keep' | 'remove' | 'up' | 'down';
 
@@ -12,18 +9,6 @@ export type TaskKeyEvent = {
   altKey?: boolean;
   shiftKey?: boolean;
 };
-
-/**
- * Maps the high-level meeting state to the page view layout:
- * - 'recording' -> 'recording'
- * - 'finished' -> 'finished'
- * - all others ('new', 'cancelled', 'not-recorded') -> 'new'
- */
-export function pageView(state: MeetingState): PageView {
-  if (state === 'recording') return 'recording';
-  if (state === 'finished') return 'finished';
-  return 'new';
-}
 
 /**
  * Splits tasks for a specific meeting into kept vs removed:

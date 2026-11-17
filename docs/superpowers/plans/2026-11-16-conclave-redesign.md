@@ -74,7 +74,7 @@ At most 8 agents at once (reviewers count). Only one cargo runs at a time (the `
 
 Rust tests use `repositories::test_pool()` (`database/repositories/mod.rs:10-18`). The "previous schema" helper is the `Migrator` filter pattern of `existing_rows_migrate_as_user` (`meeting.rs:660-685`).
 
-Decisions (verified): `ended_at = created_at` (not `updated_at`, which renames and auto-titles also bump; `transcript.rs:193`, `meeting.rs:251,275`). `started_at = created_at − MAX(audio_end_time)`, else `created_at`. The backfill runs inside `DatabaseManager::new` right after `sqlx::migrate!` (`manager.rs:38`), which all three open paths reach (`setup.rs:62`, `database/commands.rs:129,181`), after the pre-upgrade backup (`lib.rs:655` before `:753`). A failed backfill is `log::error!` and not fatal (next start retries); this is a deliberate exception to the Global Constraint that errors reach an `Err`, toast or Settings (no user action fixes it, and the old data stays readable).
+Decisions (verified): `ended_at = created_at` (not `updated_at`, which renames and auto-titles also bump; `transcript.rs:193`, `meeting.rs:251,275`). `started_at = created_at − MAX(audio_end_time)`, else `created_at`. The backfill runs inside `DatabaseManager::new` right after `sqlx::migrate!` (`manager.rs:38`), which all three open paths reach (`setup.rs:62`, `database/commands.rs:129,181`), after the pre-upgrade backup (`lib.rs:655` before `:753`). A failed backfill is `log::error!`, not fatal (next start retries), and the error is kept and shown once at startup as a toast (`take_backfill_error`, read by `StartupChecks`).
 
 ### Task 1: Migration `20261116000001_redesign.sql`
 **Agent:** implementer · **Risky:** yes (rebuilds `meeting_preps`, rewrites every meeting row)
@@ -104,7 +104,7 @@ Decisions (verified): `ended_at = created_at` (not `updated_at`, which renames a
   - `backfill_gist`: completed summary + `gist NULL` → `gist_from_summary(markdown)`; `gist 'kept'` stays.
 - [ ] **RUST** `redesign_backfill`, `extract::tests::gist` → FAIL.
 - [ ] Implement. Gists: meetings with `gist IS NULL` and a `json_valid` result with `$.markdown`; `UPDATE … SET gist=? WHERE id=? AND gist IS NULL`. Preps: for each `meeting_id IS NULL AND event_uid IS NOT NULL` row by id, one transaction: pick `SELECT id FROM meetings m WHERE calendar_uid=? AND calendar_start=? AND NOT EXISTS (SELECT 1 FROM meeting_preps p WHERE p.meeting_id=m.id) ORDER BY created_at, id LIMIT 1`, else insert `meeting-{uuid}` (`created_at=updated_at=Utc::now()`); then `UPDATE meeting_preps SET meeting_id=? WHERE id=? AND meeting_id IS NULL`. `gist_from_summary`: first non-blank non-heading line; strip `-`, `*`, `N.` markers and `**`, `__`, backticks; sentence ends at `.`/`!`/`?` followed by space or end; cut at 159 chars + `…`.
-- [ ] Wire at `manager.rs:38`: `if let Err(e) = super::redesign_backfill::run(&pool).await { log::error!("redesign backfill failed; retried at next start: {e:#}"); }`.
+- [ ] Wire at `manager.rs:38`: `if let Err(e) = super::redesign_backfill::run(&pool).await { log::error!("redesign backfill failed; retried at next start: {e:#}"); redesign_backfill::record_failure(format!("{e:#}")); }`; `take_backfill_error` hands it to `StartupChecks`, which shows it once as a toast.
 - [ ] **RUST** `redesign_backfill`, `extract::`, `manager::` → PASS.
 - [ ] Commit `feat(db): idempotent redesign backfill (gists, a meeting row for every prep) at startup`.
 

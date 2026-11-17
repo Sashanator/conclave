@@ -323,15 +323,6 @@ pub(crate) async fn approve(pool: &SqlitePool, prep_id: i64) -> Result<MeetingPr
     Ok(prep)
 }
 
-pub(crate) async fn delete(pool: &SqlitePool, prep_id: i64) -> Result<(), String> {
-    sqlx::query("DELETE FROM meeting_preps WHERE id = ?")
-        .bind(prep_id)
-        .execute(pool)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
 pub(crate) async fn apply_chat(
     pool: &SqlitePool,
     prep_id: i64,
@@ -483,11 +474,6 @@ pub async fn prep_tick(
 #[tauri::command]
 pub async fn prep_approve(state: State<'_, AppState>, prep_id: i64) -> Result<MeetingPrep, String> {
     approve(state.db_manager.pool(), prep_id).await
-}
-
-#[tauri::command]
-pub async fn prep_delete(state: State<'_, AppState>, prep_id: i64) -> Result<(), String> {
-    delete(state.db_manager.pool(), prep_id).await
 }
 
 #[cfg(test)]
@@ -966,20 +952,6 @@ mod tests {
         assert_eq!(for_meeting(&pool, "M").await.unwrap(), Some(prep.clone()));
         assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
         assert_eq!(get(&pool, prep.event_uid.as_deref().unwrap(), prep.event_start.as_deref().unwrap()).await.unwrap(), None);
-    }
-
-    #[tokio::test]
-    async fn delete_removes_only_the_prep() {
-        let pool = test_pool().await;
-        linked_meeting(&pool).await;
-        let prep = seed(&pool, vec![]).await;
-        delete(&pool, prep.id).await.unwrap();
-        assert!(get_by_id(&pool, prep.id).await.unwrap().is_none());
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM meetings WHERE id = 'M'")
-            .fetch_one(&pool)
-            .await
-            .unwrap();
-        assert_eq!(count, 1);
     }
 
     #[test]

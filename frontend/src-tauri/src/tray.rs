@@ -177,6 +177,10 @@ async fn release_unused<R: Runtime>(app: &AppHandle<R>, meeting_id: Option<&str>
     let (Some(id), Some(state)) = (meeting_id, app.try_state::<crate::state::AppState>()) else { return };
     if let Err(e) = crate::recording::route::release_failed_start(state.db_manager.pool(), id).await {
         log::warn!("release of unused routed meeting {id} failed: {e}");
+        // The main window shows the same toast as the frontend's release failure.
+        if let Err(emit_err) = app.emit("routed-release-failed", e.to_string()) {
+            log::error!("Could not tell the window about the failed release of {id}: {emit_err}");
+        }
     }
 }
 

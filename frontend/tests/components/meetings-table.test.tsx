@@ -36,7 +36,7 @@ afterAll(() => {
 const mk = (id: string, p: Partial<MeetingRow> = {}): MeetingRow => ({
   id, title: id, titleSource: 'user', templateId: null, emoji: null, reviewed: false, gist: `gist ${id}`,
   startedAt: null, endedAt: null, createdAt: '2026-11-16 10:00:00+00:00', calendarUid: null,
-  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0, ...p,
+  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0, hasPrep: false, ...p,
 });
 const soon = new Date(Date.now() + 3600_000).toISOString();
 const fixture = [

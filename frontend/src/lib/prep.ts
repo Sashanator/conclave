@@ -59,7 +59,6 @@ export const tickItem = (prepId: number, itemId: string, ticked: boolean) =>
 
 export const approvePrep = (prepId: number) => invoke<MeetingPrep>('prep_approve', { prepId });
 
-export const deletePrep = (prepId: number) => invoke<void>('prep_delete', { prepId });
 
 export const sendPrep = (prepId: number, message: string) =>
   invoke<PrepReply>('prep_send', { prepId, message });

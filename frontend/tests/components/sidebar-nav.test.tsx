@@ -38,6 +38,7 @@ mock.module('../../src/contexts/ImportDialogContext', () => ({ ...originals.imp,
 mock.module('../../src/components/Feed/FeedBell', () => ({ FeedBell: () => null }));
 
 const Sidebar = (await import('../../src/components/Sidebar')).default;
+const { setUnsavedChanges } = await import('../../src/lib/unsaved-guard');
 
 async function render(): Promise<ReactTestRenderer> {
   let r!: ReactTestRenderer;
@@ -97,6 +98,38 @@ describe('Sidebar nav', () => {
     expect(push.mock.calls[0][0]).toMatch(/^\/meeting-details\?id=m9&start=\d+$/);
     expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
     expect(sessionStorage.getItem('autoStartMeetingId')).toBe('m9');
+  });
+
+  test('a declined leave routes nothing and queues nothing', async () => {
+    setUnsavedChanges(true);
+    const confirm = mock(() => false);
+    (globalThis as any).window.confirm = confirm;
+    try {
+      const r = await render();
+      await act(async () => { await buttons(r)[0].props.onClick(); });
+      expect(confirm).toHaveBeenCalled();
+      expect(invoke).not.toHaveBeenCalledWith('api_route_recording_start', expect.anything());
+      expect(push).not.toHaveBeenCalled();
+      expect(sessionStorage.getItem('autoStartRecording')).toBeNull();
+    } finally {
+      setUnsavedChanges(false);
+    }
+  });
+
+  test('a routing failure still records, as a new meeting on the id-less page', async () => {
+    const before = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd: string) => {
+      if (cmd === 'api_route_recording_start') throw 'db locked';
+      return before(cmd);
+    });
+    try {
+      const r = await render();
+      await act(async () => { await buttons(r)[0].props.onClick(); });
+      expect(push).toHaveBeenCalledWith('/meeting-details');
+      expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
+    } finally {
+      invoke.mockImplementation(before);
+    }
   });
 
   test('import opens the dialog', async () => {

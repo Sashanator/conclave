@@ -33,7 +33,7 @@ const { MeetingHeader } = await import('../../src/components/MeetingPage/Meeting
 const row: MeetingRow = {
   id: 'm1', title: 'Weekly', titleSource: 'user', templateId: null, emoji: null, reviewed: false, gist: null,
   startedAt: '2026-11-16 10:00:00+00:00', endedAt: '2026-11-16 11:00:00+00:00', createdAt: '2026-11-16 10:00:00+00:00', calendarUid: null,
-  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: true, hasSummary: true, prepPoints: 0,
+  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: true, hasSummary: true, prepPoints: 0, hasPrep: false,
 };
 beforeEach(() => { calls.length = 0; toasts.length = 0; failWith = null; deleteResult = null; deleteGate = null; });
 

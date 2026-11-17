@@ -31,7 +31,7 @@ afterAll(() => {
 const row = (id: string): MeetingRow => ({
   id, title: id, titleSource: 'user', templateId: null, emoji: null, reviewed: false, gist: null,
   startedAt: null, endedAt: null, createdAt: '2026-11-16 10:00:00+00:00', calendarUid: null,
-  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0,
+  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0, hasPrep: false,
 });
 const view = (id: string, position: number, builtin: boolean): MeetingView => ({ id, name: id, position, builtin, configJson: '{}' });
 

@@ -8,7 +8,7 @@ const { RowMenu } = await import('../../src/components/MeetingsTable/RowMenu');
 const row: MeetingRow = {
   id: 'm1', title: 'Weekly', titleSource: 'user', templateId: null, emoji: null, reviewed: false, gist: '',
   startedAt: null, endedAt: null, createdAt: '2026-11-16 10:00:00+00:00', calendarUid: null,
-  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0,
+  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0, hasPrep: false,
 };
 
 // The real Radix menu: it opens from the keyboard and renders into a portal on document.body.

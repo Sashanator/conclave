@@ -20,8 +20,8 @@ export function NameCell({ row }: { row: MeetingRow }) {
 export const DateCell = ({ row, now, state }: { row: MeetingRow; now: Date; state: MeetingState }) =>
   <span className={muted}>{formatMeetingDate(row, now, state === 'recording')}</span>;
 
-export function SummaryCell({ row, state, activeDuration, onDelete }: {
-  row: MeetingRow; state: MeetingState; activeDuration: number | null; onDelete: () => void;
+export function SummaryCell({ row, state, activeDuration, compact = false, onDelete }: {
+  row: MeetingRow; state: MeetingState; activeDuration: number | null; compact?: boolean; onDelete: () => void;
 }) {
   switch (state) {
     case 'recording':
@@ -46,7 +46,7 @@ export function SummaryCell({ row, state, activeDuration, onDelete }: {
         <button type="button" onClick={onDelete} className="text-foreground underline">Delete</button>
       </span>;
     default:
-      return <span className="line-clamp-2">{row.gist}</span>;
+      return <span className={compact ? 'block truncate' : 'line-clamp-2'}>{row.gist}</span>;
   }
 }
 
@@ -60,7 +60,7 @@ export function CategoryChip({ row, templates, onChange }: {
 }) {
   const i = templates.findIndex((t) => t.id === row.templateId);
   const label = i >= 0 ? templates[i].name : 'No template';
-  const color = `var(--cat-${i >= 0 ? (i % 5) + 1 : 5})`;
+  const color = `var(--cat-${i >= 0 ? (i % 4) + 1 : 5})`;
   return (
     <Popover>
       <PopoverTrigger asChild>

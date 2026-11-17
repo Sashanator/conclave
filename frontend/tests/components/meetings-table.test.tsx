@@ -87,7 +87,7 @@ mock.module('../../src/components/ui/command', () => ({
   Command: pass, CommandInput: () => null, CommandList: pass, CommandEmpty: pass, CommandItem: pass,
 }));
 
-const { MeetingsTable } = await import('../../src/components/MeetingsTable');
+const { MeetingsTable, DeleteMeetingDialog } = await import('../../src/components/MeetingsTable');
 
 const text = (n: ReactTestInstance): string => n.children.map((c) => (typeof c === 'string' ? c : text(c))).join('');
 const all = () => text(renderer!.root);
@@ -233,5 +233,12 @@ describe('meetings table', () => {
     await flush();
     expect(e.defaultPrevented).toBe(true);
     expect(push).toHaveBeenCalledWith('/meeting-details?id=preview-new');
+  });
+
+  test('the delete dialog names the brief of a calendar meeting', async () => {
+    let r: ReactTestRenderer;
+    await act(async () => { r = create(<DeleteMeetingDialog row={mk('cal', { calendarUid: 'u9' })} open onOpenChange={() => {}} onConfirm={() => {}} />); });
+    expect(text(r!.root)).toContain('This removes: notes, brief.');
+    await act(async () => { r.unmount(); });
   });
 });

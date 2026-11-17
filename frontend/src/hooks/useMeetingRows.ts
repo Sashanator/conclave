@@ -35,7 +35,7 @@ export function useMeetingRows() {
     void reload();
     const onFocus = () => void reload();
     window.addEventListener('focus', onFocus);
-    const unlisten = ['recording-started', 'recording-saved', 'recording-target'].map((n) => Promise.resolve(listen(n, () => void reload())).catch(() => () => {}));
+    const unlisten = ['recording-started', 'recording-saved', 'recording-target'].map((n) => Promise.resolve(listen(n, () => void reload())).catch((e) => { console.error(`Could not listen for ${n}`, e); return () => {}; }));
     return () => {
       alive.current = false;
       window.removeEventListener('focus', onFocus);
@@ -49,9 +49,11 @@ export function useMeetingRows() {
   const toggleReviewed = useCallback(async (id: string) => {
     const row = rows.find((r) => r.id === id);
     if (!row) return;
+    seq.current++; // an older reload must not undo this edit
     patch(id, { reviewed: !row.reviewed });
     try {
       await setReviewed(id, !row.reviewed);
+      seq.current++;
     } catch (e) {
       patch(id, { reviewed: row.reviewed });
       toast.error('Could not save Reviewed', { description: errText(e) });
@@ -61,9 +63,11 @@ export function useMeetingRows() {
   const changeTemplate = useCallback(async (id: string, templateId: string | null) => {
     const row = rows.find((r) => r.id === id);
     if (!row) return;
+    seq.current++;
     patch(id, { templateId });
     try {
       await setTemplate(id, templateId);
+      seq.current++;
     } catch (e) {
       patch(id, { templateId: row.templateId });
       toast.error('Could not save the template', { description: errText(e) });
@@ -71,8 +75,10 @@ export function useMeetingRows() {
   }, [rows]);
 
   const removeMeeting = useCallback(async (id: string) => {
+    seq.current++;
     try {
       const { folderWarning } = await deleteMeeting(id);
+      seq.current++;
       setRows((rs) => rs.filter((r) => r.id !== id));
       await refetchMeetings();
       if (folderWarning) toast.warning('The meeting was deleted, but its folder was kept', { description: folderWarning });

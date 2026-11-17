@@ -36,7 +36,9 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const { views, active, config, dispatch, addView, renameView, removeView, setActive } = useMeetingViews();
   const { availableTemplates } = useTemplates();
   const { activeDuration } = useRecordingState() as { activeDuration: number | null };
-  const [now] = useState(() => new Date());
+  const [now, setNow] = useState(() => new Date());
+  useEffect(() => { setNow(new Date()); }, [rows]); // every reload, so Today and Tomorrow roll over
+  useEffect(() => { const t = setInterval(() => setNow(new Date()), 60_000); return () => clearInterval(t); }, []);
   const [deleting, setDeleting] = useState<MeetingRow | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const searchRef = useRef<HTMLInputElement>(null);
@@ -107,10 +109,10 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
       col('name', (r) => <NameCell row={r} />),
       col('date', (r) => <DateCell row={r} now={now} state={stateOf(r)} />),
       col('category', (r) => <CategoryChip row={r} templates={availableTemplates} onChange={(t) => void changeTemplate(r.id, t)} />),
-      col('summary', (r) => <SummaryCell row={r} state={stateOf(r)} activeDuration={activeDuration} onDelete={() => setDeleting(r)} />),
+      col('summary', (r) => <SummaryCell row={r} state={stateOf(r)} activeDuration={activeDuration} compact={config.density === 'compact'} onDelete={() => setDeleting(r)} />),
       col('reviewed', (r) => <ReviewedCell row={r} onToggle={() => void toggleReviewed(r.id)} />),
     ];
-  }, [liveId, now, availableTemplates, activeDuration, changeTemplate, toggleReviewed]);
+  }, [liveId, now, availableTemplates, activeDuration, config.density, changeTemplate, toggleReviewed]);
 
   const hidden = effectiveHidden(config);
   const table = useReactTable({
@@ -180,7 +182,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
       ) : !data.length ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No meetings match this view.</p>
       ) : (
-      <div ref={scrollRef} className="overflow-auto" style={{ ['--row' as string]: config.density === 'compact' ? '32px' : '40px' }}>
+      <div ref={scrollRef} className={`min-h-0 flex-1 overflow-auto ${config.density === 'compact' ? 'compact' : ''}`}>
         <table className="w-full table-fixed border-collapse text-sm">
           <thead>
             <tr>
@@ -212,7 +214,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
                 <tr key={item.key} data-row-id={item.row.id} aria-current={selected === item.row.id || undefined} onClick={() => setSelectedId(item.row.id)}
                   className={`border-b ${selected === item.row.id ? 'bg-accent' : 'hover:bg-accent'}`} style={{ height: 'var(--row)' }}>
                   {row.getVisibleCells().map((cell) => (
-                    <td key={cell.id} className="overflow-hidden text-ellipsis px-[10px]">
+                    <td key={cell.id} className={`overflow-hidden text-ellipsis px-[10px] ${config.density === 'compact' ? 'whitespace-nowrap' : ''}`}>
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </td>
                   ))}

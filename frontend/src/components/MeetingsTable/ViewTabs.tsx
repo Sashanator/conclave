@@ -27,7 +27,8 @@ export function ViewTabs({ views, activeId, counts, onSelect, onAdd, onRename, o
   };
 
   return (
-    <div role="tablist" aria-label="Saved views" className="mb-2.5 flex items-center gap-0.5 border-b">
+    <div className="mb-2.5 flex items-center gap-0.5 border-b">
+      <div role="tablist" aria-label="Saved views" className="flex items-center gap-0.5">
       {views.map((v) => {
         const selected = v.id === activeId;
         if (renaming === v.id) {
@@ -42,7 +43,7 @@ export function ViewTabs({ views, activeId, counts, onSelect, onAdd, onRename, o
           );
         }
         return (
-          <span key={v.id} className="flex items-center">
+          <span key={v.id} role="presentation" className="flex items-center">
             <button type="button" role="tab" aria-selected={selected} onClick={() => onSelect(v.id)}
               className={`${tab} ${selected ? 'border-foreground font-semibold text-foreground' : 'border-transparent text-muted-foreground hover:text-foreground'}`}>
               {v.name}
@@ -64,6 +65,7 @@ export function ViewTabs({ views, activeId, counts, onSelect, onAdd, onRename, o
           </span>
         );
       })}
+      </div>
       <button type="button" aria-label="Add a view" onClick={onAdd} className={`${tab} border-transparent text-muted-foreground hover:text-foreground`}>+ View</button>
     </div>
   );

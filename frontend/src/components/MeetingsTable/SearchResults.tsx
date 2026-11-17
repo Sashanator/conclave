@@ -53,7 +53,7 @@ export function SearchResults({ query, hits, rows, templates, now, selectedId, o
     );
   }
   return (
-    <>
+    <div className="min-h-0 flex-1 overflow-auto">
       <p role="status" className="mb-2 inline-block rounded-full bg-muted px-2.5 py-0.5 text-xs">
         Searching all meetings · {groups.length} {groups.length === 1 ? 'match' : 'matches'} · <span className="text-muted-foreground">Esc clears</span>
       </p>
@@ -95,6 +95,6 @@ export function SearchResults({ query, hits, rows, templates, now, selectedId, o
           })}
         </tbody>
       </table>
-    </>
+    </div>
   );
 }

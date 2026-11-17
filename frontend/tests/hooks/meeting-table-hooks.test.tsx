@@ -167,11 +167,25 @@ describe('useMeetingRows fixes', () => {
     expect(rowsApi.loaded).toBe(true);
   });
   test('a rejected listen does not break mount or unmount', async () => {
+    const spy = mock((..._a: unknown[]) => {});
+    const orig = console.error;
+    console.error = spy;
     listenImpl = async () => { throw new Error('no events'); };
     await mountRows();
     await act(async () => renderer!.unmount());
     renderer = undefined;
     await wait(0);
+    console.error = orig;
+    expect(spy).toHaveBeenCalled();
+  });
+  test('an older reload cannot undo a later toggle', async () => {
+    await mountRows();
+    await act(async () => { void rowsApi.reload(); });
+    const stale = pending('api_list_meeting_rows')[1];
+    await act(async () => { void rowsApi.toggleReviewed('a'); });
+    await settle(pending('api_set_meeting_reviewed')[0], true);
+    await settle(stale, true, [row('a'), row('b')]); // the old snapshot still says unreviewed
+    expect(rowsApi.rows[0].reviewed).toBe(true);
   });
   test('changeTemplate rolls back and toasts on failure', async () => {
     await mountRows();
@@ -201,15 +215,41 @@ describe('useMeetingViews fixes', () => {
     await act(async () => { viewsApi.setActive('mine'); });
     await act(async () => { viewsApi.dispatch({ type: 'setGroup', group: 'day' }); });
     await act(async () => { void viewsApi.renameView('mine', 'Renamed'); });
-    const saves = pending('api_save_meeting_view').map(r => r.args.view as MeetingView);
-    expect(saves).toHaveLength(2);
+    // The rename waits until the queued edit has landed.
+    let saves = pending('api_save_meeting_view').map(r => r.args.view as MeetingView);
+    expect(saves).toHaveLength(1);
     expect(saves[0].name).toBe('mine');
     expect(cfg(saves[0]).group).toBe('day');
+    await settle(pending('api_save_meeting_view')[0], true);
+    saves = pending('api_save_meeting_view').map(r => r.args.view as MeetingView);
+    expect(saves).toHaveLength(2);
     expect(saves[1].name).toBe('Renamed');
     await wait(600);
     expect(pending('api_save_meeting_view')).toHaveLength(2);
-    await settle(pending('api_save_meeting_view')[0], true);
     await settle(pending('api_save_meeting_view')[1], true);
+  });
+  test('removeView waits for a save still in flight', async () => {
+    await mountViews();
+    await act(async () => { viewsApi.setActive('mine'); });
+    await act(async () => { viewsApi.dispatch({ type: 'setGroup', group: 'day' }); });
+    await wait(600); // the save is now on its way
+    await act(async () => { void viewsApi.removeView('mine'); });
+    expect(pending('api_delete_meeting_view')).toHaveLength(0);
+    await settle(pending('api_save_meeting_view')[0], true);
+    expect(pending('api_delete_meeting_view')).toHaveLength(1);
+    await settle(pending('api_delete_meeting_view')[0], true);
+  });
+  test('a failed removeView queues the unsaved edit again', async () => {
+    await mountViews();
+    await act(async () => { viewsApi.setActive('mine'); });
+    await act(async () => { viewsApi.dispatch({ type: 'setGroup', group: 'day' }); });
+    await act(async () => { void viewsApi.removeView('mine'); });
+    await settle(pending('api_delete_meeting_view')[0], false);
+    expect(pending('api_save_meeting_view')).toHaveLength(0);
+    await wait(600);
+    expect(pending('api_save_meeting_view')).toHaveLength(1);
+    expect(cfg(pending('api_save_meeting_view')[0].args.view as MeetingView).group).toBe('day');
+    await settle(pending('api_save_meeting_view')[0], true);
   });
   test('two dispatches in one handler both apply', async () => {
     await mountViews();

@@ -39,3 +39,9 @@ export async function releaseFailedStart(routed: RoutedStart | null, _error: unk
     });
   }
 }
+
+/** Leaves the routed meeting for useRecordingStart's auto-start, which runs the normal start path. */
+export function queueAutoStart(storage: Storage, meetingId: string): void {
+  storage.setItem('autoStartMeetingId', meetingId);
+  storage.setItem('autoStartRecording', 'true');
+}

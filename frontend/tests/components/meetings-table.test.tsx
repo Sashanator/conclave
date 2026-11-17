@@ -73,7 +73,7 @@ mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 mock.module('@tauri-apps/api/event', () => ({ ...originals.event, listen: async () => () => {} }));
 mock.module('sonner', () => ({ toast: { error: toastError, warning: () => {} } }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.rec, useRecordingState: () => ({ liveMeetingId: null, activeDuration: null }) }));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ ...originals.sidebar, useSidebar: () => ({ refetchMeetings: async () => {} }) }));
+mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ ...originals.sidebar, useSidebar: () => ({}) }));
 mock.module('../../src/components/ui/dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children?: ReactNode }) => (open ? <>{children}</> : null),
   DialogContent: pass, DialogDescription: pass, DialogFooter: pass, DialogHeader: pass, DialogTitle: pass,

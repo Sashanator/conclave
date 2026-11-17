@@ -87,7 +87,7 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
 }
 
 /// Constructs the JS snippet injected into the webview to start recording. It lands on the meeting page the
-/// start belongs to (the routed row, else the continued one); with neither, on the record screen.
+/// start belongs to (the routed row, else the continued one); with neither, on the id-less meeting page.
 fn autostart_script(meeting_id: Option<&str>, continue_id: Option<&str>, routing_failed: bool) -> String {
     // JSON-encode so an id is always a safe JS string literal.
     let set = |key: &str, id: Option<&str>| {

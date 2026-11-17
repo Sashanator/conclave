@@ -52,7 +52,8 @@ pub fn default_meeting_title(now: chrono::NaiveDateTime) -> String {
 /// "Nothing of the user's is in this row" (alias `m`). The delete in `release_routed_row` carries it in the same statement.
 pub(crate) const UNTOUCHED_SQL: &str = "m.started_at IS NULL AND m.title_source <> 'user' AND m.template_id IS NULL \
 AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = m.id) \
-AND NOT EXISTS (SELECT 1 FROM meeting_notes n WHERE n.meeting_id = m.id AND TRIM(COALESCE(n.notes_markdown,'')) <> '') \
+AND NOT EXISTS (SELECT 1 FROM meeting_notes n WHERE n.meeting_id = m.id \
+ AND (TRIM(COALESCE(n.notes_markdown,'')) <> '' OR TRIM(COALESCE(n.notes_json,'')) NOT IN ('','[]','null'))) \
 AND NOT EXISTS (SELECT 1 FROM meeting_preps p WHERE p.meeting_id = m.id \
  AND (TRIM(p.material) <> '' OR p.chat_json NOT IN ('','[]') OR p.items_json NOT IN ('','[]')))";
 
@@ -994,6 +995,8 @@ mod create_tests {
 
         for extra in [
             "INSERT INTO meeting_notes (meeting_id, notes_markdown, created_at, updated_at) VALUES ('r', 'a note', 'x', 'x')",
+            "INSERT INTO meeting_notes (meeting_id, notes_json, created_at, updated_at) VALUES ('r', '[{\"id\":\"n1\",\"at\":null,\"text\":\"real\"}]', 'x', 'x')",
+            "INSERT INTO meeting_preps (meeting_id, created_at, updated_at, material) VALUES ('r', 'x', 'x', 'some material')",
             "UPDATE meetings SET title_source = 'user' WHERE id = 'r'",
             "UPDATE meetings SET calendar_uid = 'u' WHERE id = 'r'",
         ] {

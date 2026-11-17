@@ -1053,11 +1053,13 @@ pub async fn api_save_transcript<R: Runtime>(
     let mut fallback = false;
     // The flag must not outlive its recording, whichever way the save goes.
     let fresh = meeting_id.as_deref().map(crate::recording::route::take_fresh).unwrap_or(false);
+    let mut release_error: Option<String> = None;
     let saved = if let Some(id) = continued_id {
         // Continue chosen mid-recording: the routed row is released (a failure only leaves its started_at).
         if let Some(routed) = meeting_id.as_deref() {
             if let Err(e) = MeetingsRepository::release_routed_row(pool, routed, fresh).await {
                 log_warn!("release of routed meeting {} failed: {}", routed, e);
+                release_error = Some(format!("Could not release the recording's meeting row: {e}"));
             }
         }
         Ok(id)
@@ -1091,7 +1093,8 @@ pub async fn api_save_transcript<R: Runtime>(
                 "meeting_id": meeting_id,
                 "continued": continued,
                 "continue_error": continue_error,
-                "fallback": fallback
+                "fallback": fallback,
+                "release_error": release_error
             }))
         }
         Err(e) => {

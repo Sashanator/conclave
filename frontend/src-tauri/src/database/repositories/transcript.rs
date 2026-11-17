@@ -178,7 +178,7 @@ impl TranscriptsRepository {
         if let Some(id) = target {
             let mut tx = pool.begin().await?;
             let now = Utc::now();
-            let claimed = sqlx::query("UPDATE meetings SET folder_path = ?, ended_at = ?, updated_at = ?, audio_deleted_at = NULL WHERE id = ? AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = ?)")
+            let claimed = sqlx::query("UPDATE meetings SET folder_path = ?, ended_at = ?, updated_at = ?, audio_deleted_at = NULL WHERE id = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = ?)")
                 .bind(&folder_path).bind(now).bind(now).bind(id).bind(id)
                 .execute(&mut *tx).await?.rows_affected();
             if claimed == 1 {
@@ -890,6 +890,24 @@ mod meeting_date_tests {
         let (id, fb) = save_to(&pool, Some("nope"), &[], false).await;
         assert!(fb && id != "nope");
         assert_eq!(lines(&pool, &id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn save_into_an_already_saved_silent_meeting_falls_back() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let silent = |p: &SqlitePool, f: &str| {
+            let f = f.to_string();
+            let p = p.clone();
+            async move {
+                TranscriptsRepository::save_into_or_new(&p, Some("m-t"), "Fresh", &[], Some(f), &[], false, &TitleOrigin::default()).await.unwrap()
+            }
+        };
+        assert_eq!(silent(&pool, "/a").await, ("m-t".to_string(), false));
+        let (id, fb) = silent(&pool, "/b").await;
+        assert!(fb && id != "m-t");
+        let folder: Option<String> = sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = 'm-t'").fetch_one(&pool).await.unwrap();
+        assert_eq!(folder.as_deref(), Some("/a"));
     }
 
     #[tokio::test]

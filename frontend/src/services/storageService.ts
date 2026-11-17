@@ -19,6 +19,7 @@ export interface SaveMeetingResponse {
   meeting_id: string;
   continued?: boolean;
   continue_error?: string | null;
+  release_error?: string | null;
 }
 
 export interface Meeting {

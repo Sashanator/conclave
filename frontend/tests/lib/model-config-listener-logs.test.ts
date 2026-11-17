@@ -6,7 +6,6 @@ import { join } from 'node:path';
 // ConfigContext is also covered by a behaviour test; this guards the other listeners.
 const LISTENERS = [
   'src/contexts/ConfigContext.tsx',
-  'src/components/Sidebar/index.tsx',
   'src/components/SummaryModelSettings.tsx',
   'src/hooks/meeting-details/useModelConfiguration.ts',
 ];

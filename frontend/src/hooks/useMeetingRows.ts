@@ -47,9 +47,10 @@ export function useMeetingRows(templates: CategoryInfo[] = []) {
   const patch = (id: string, p: Partial<MeetingRow>) =>
     setRows((rs) => rs.map((r) => (r.id === id ? { ...r, ...p } : r)));
   const hold = (id: string, p: Partial<MeetingRow>) => { pending.current.set(id, { ...pending.current.get(id), ...p }); patch(id, p); };
-  const release = (id: string, keys: (keyof MeetingRow)[]) => {
-    const cur = { ...pending.current.get(id) };
-    keys.forEach((k) => delete cur[k]);
+  // Clears only what this call set: a newer edit of the same field keeps its own pending value.
+  const release = (id: string, set: Partial<MeetingRow>) => {
+    const cur = { ...pending.current.get(id) } as Record<string, unknown>;
+    for (const [k, v] of Object.entries(set)) if (Object.is(cur[k], v)) delete cur[k];
     if (Object.keys(cur).length) pending.current.set(id, cur); else pending.current.delete(id);
   };
 
@@ -57,13 +58,14 @@ export function useMeetingRows(templates: CategoryInfo[] = []) {
     const row = rows.find((r) => r.id === id);
     if (!row) return;
     seq.current++; // an older reload must not undo this edit
-    hold(id, { reviewed: !row.reviewed });
+    const edit = { reviewed: !row.reviewed };
+    hold(id, edit);
     try {
-      await setReviewed(id, !row.reviewed);
+      await setReviewed(id, edit.reviewed);
       seq.current++;
-      release(id, ['reviewed']);
+      release(id, edit);
     } catch (e) {
-      release(id, ['reviewed']);
+      release(id, edit);
       patch(id, { reviewed: row.reviewed });
       toast.error('Could not save Reviewed', { description: errText(e) });
     }
@@ -73,17 +75,23 @@ export function useMeetingRows(templates: CategoryInfo[] = []) {
     const row = rows.find((r) => r.id === id);
     if (!row) return;
     seq.current++;
-    hold(id, { templateId, emoji: templates.find((t) => t.id === templateId)?.emoji ?? null });
+    const known = templateId === null || templates.some((t) => t.id === templateId);
+    // Template list not loaded yet: keep the old emoji now and reload after the save for the right one.
+    const edit: Partial<MeetingRow> = known
+      ? { templateId, emoji: templates.find((t) => t.id === templateId)?.emoji ?? null }
+      : { templateId };
+    hold(id, edit);
     try {
       await setTemplate(id, templateId);
       seq.current++;
-      release(id, ['templateId', 'emoji']);
+      release(id, edit);
+      if (!known) void reload();
     } catch (e) {
-      release(id, ['templateId', 'emoji']);
+      release(id, edit);
       patch(id, { templateId: row.templateId, emoji: row.emoji });
       toast.error('Could not save the template', { description: errText(e) });
     }
-  }, [rows, templates]);
+  }, [rows, templates, reload]);
 
   const removeMeeting = useCallback(async (id: string) => {
     seq.current++;

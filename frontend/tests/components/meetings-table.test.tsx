@@ -189,10 +189,11 @@ describe('meetings table', () => {
     expect(all()).toContain('Cancelled in calendar');
   });
 
-  test('a failed search toasts and shows the table again', async () => {
+  test('a failed search toasts and says so', async () => {
     searchImpl = () => { throw new Error('boom'); };
     await search('plan');
     expect(toastError.mock.calls.some((c) => c[0] === 'Search failed')).toBe(true);
+    expect(all()).toContain('The search failed');
     expect(all()).not.toContain('Searching all meetings');
   });
 
@@ -207,6 +208,35 @@ describe('meetings table', () => {
     await act(async () => { first.props.onClick(); });
     expect(all()).not.toContain('done1');
     expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false).length).toBe(1);
+  });
+
+  test('typing a new query never shows the old hits, and shows Searching… instead of the table', async () => {
+    searchImpl = () => [{ meetingId: 'done1', title: 'done1', source: 'transcript', snippet: 'old snippet', transcriptId: 't1', audioStart: 0, totalInMeeting: 1 }];
+    await search('plan');
+    expect(all()).toContain('old snippet');
+    await act(async () => { renderer!.root.findByProps({ 'aria-label': 'Search meetings, summaries and transcripts' }).props.onChange({ target: { value: 'plan b' } }); });
+    expect(all()).not.toContain('old snippet');
+    expect(all()).toContain('Searching…');
+    expect(all()).not.toContain('Cancelled in calendar');
+  });
+
+  test('before the first load there is a loading state, not "No meetings match"', async () => {
+    rowsImpl = () => new Promise(() => {}) as never;
+    await mount();
+    expect(all()).toContain('Loading meetings…');
+    expect(all()).not.toContain('No meetings match');
+  });
+
+  test('Ctrl N is prevented, and creates nothing, while a dialog is open', async () => {
+    const dlg = document.createElement('div');
+    dlg.setAttribute('role', 'dialog');
+    document.body.appendChild(dlg);
+    try {
+      const e = key('n', { ctrlKey: true });
+      await flush();
+      expect(e.defaultPrevented).toBe(true);
+      expect(push).not.toHaveBeenCalled();
+    } finally { dlg.remove(); }
   });
 
   test('the table ends with a New meeting row', async () => {

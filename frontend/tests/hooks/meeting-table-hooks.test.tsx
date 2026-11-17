@@ -42,12 +42,13 @@ const view = (id: string, position: number, builtin: boolean): MeetingView => ({
 let rowsApi: ReturnType<typeof useMeetingRows>;
 let viewsApi: ReturnType<typeof useMeetingViews>;
 let renderer: ReactTestRenderer | undefined;
-function Rows() { rowsApi = useMeetingRows(); return <output>{rowsApi.rows.map(r => `${r.id}:${r.reviewed}`).join(',')}</output>; }
+let tpls: { id: string; name: string; emoji?: string | null }[] = [];
+function Rows() { rowsApi = useMeetingRows(tpls); return <output>{rowsApi.rows.map(r => `${r.id}:${r.reviewed}`).join(',')}</output>; }
 function Views() { viewsApi = useMeetingViews(); return null; }
 const pending = (c: string) => requests.filter(r => r.command === c);
 const settle = async (r: Request, ok: boolean, v: unknown = null) => { await act(async () => { ok ? r.resolve(v) : r.reject(new Error('boom')); }); };
 
-beforeEach(() => { listenImpl = async () => () => {}; requests.length = 0; invoke.mockClear(); toastError.mockClear(); toastWarning.mockClear(); refetchMeetings.mockClear(); try { localStorage.clear(); } catch {} });
+beforeEach(() => { tpls = []; listenImpl = async () => () => {}; requests.length = 0; invoke.mockClear(); toastError.mockClear(); toastWarning.mockClear(); refetchMeetings.mockClear(); try { localStorage.clear(); } catch {} });
 afterEach(async () => { if (renderer) await act(async () => renderer!.unmount()); renderer = undefined; });
 
 async function mountRows() {
@@ -85,6 +86,51 @@ describe('useMeetingRows', () => {
     expect(rowsApi.rows[0].reviewed).toBe(true);
     await settle(pending('api_set_meeting_reviewed')[0], true);
     await p!;
+  });
+  test('a newer edit of the same field keeps its pending value when an older save ends', async () => {
+    await mountRows();
+    let p1: Promise<void>; let p2: Promise<void>;
+    await act(async () => { p1 = rowsApi.toggleReviewed('a'); }); // false -> true
+    await act(async () => { p2 = rowsApi.toggleReviewed('a'); }); // true -> false
+    await settle(pending('api_set_meeting_reviewed')[0], true);
+    await p1!;
+    await act(async () => { void rowsApi.reload(); });
+    await settle(pending('api_list_meeting_rows')[1], true, [row('a'), row('b')]); // the server still says false... then true
+    expect(rowsApi.rows[0].reviewed).toBe(false); // the newer edit is still laid over the reload
+    await settle(pending('api_set_meeting_reviewed')[1], true);
+    await p2!;
+  });
+  test('changeTemplate updates the emoji too, and a reload mid-save keeps both', async () => {
+    tpls = [{ id: 't1', name: 'Interview', emoji: '🤝' }];
+    await mountRows();
+    let p: Promise<void>;
+    await act(async () => { p = rowsApi.changeTemplate('a', 't1'); });
+    expect(rowsApi.rows[0]).toMatchObject({ templateId: 't1', emoji: '🤝' });
+    await act(async () => { void rowsApi.reload(); });
+    await settle(pending('api_list_meeting_rows')[1], true, [row('a'), row('b')]);
+    expect(rowsApi.rows[0]).toMatchObject({ templateId: 't1', emoji: '🤝' });
+    await settle(pending('api_set_meeting_template')[0], true);
+    await p!;
+    expect(rowsApi.rows[0]).toMatchObject({ templateId: 't1', emoji: '🤝' });
+  });
+  test('a failed template save restores the template and the emoji', async () => {
+    tpls = [{ id: 't1', name: 'Interview', emoji: '🤝' }];
+    await mountRows();
+    let p: Promise<void>;
+    await act(async () => { p = rowsApi.changeTemplate('a', 't1'); });
+    await settle(pending('api_set_meeting_template')[0], false);
+    await p!;
+    expect(rowsApi.rows[0]).toMatchObject({ templateId: null, emoji: null });
+    expect(toastError.mock.calls[0][0]).toBe('Could not save the template');
+  });
+  test('with the template list not loaded, the emoji is kept and the rows reload after the save', async () => {
+    await mountRows();
+    let p: Promise<void>;
+    await act(async () => { p = rowsApi.changeTemplate('a', 't9'); });
+    expect(rowsApi.rows[0]).toMatchObject({ templateId: 't9', emoji: null });
+    await settle(pending('api_set_meeting_template')[0], true);
+    await p!;
+    expect(pending('api_list_meeting_rows')).toHaveLength(2);
   });
   test('toggleReviewed rolls back and toasts on reject', async () => {
     await mountRows();

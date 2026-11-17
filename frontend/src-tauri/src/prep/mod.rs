@@ -2,7 +2,6 @@ use serde::{Deserialize, Serialize};
 
 pub mod chat;
 pub mod store;
-pub mod upcoming;
 
 pub(crate) const MAX_MATERIAL_CHARS: usize = 40_000;
 pub(crate) const MAX_PREP_ITEMS: usize = 50;

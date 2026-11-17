@@ -108,12 +108,11 @@ mock.module('../../src/contexts/ConfigContext', () => ({
   }),
 }));
 mock.module('../../src/components/Sidebar/SidebarProvider', () => ({
-  useSidebar: () => ({ serverAddress: '', refetchMeetings, startSummaryPolling: () => {}, stopSummaryPolling: () => {} }),
+  useSidebar: () => ({ serverAddress: '', startSummaryPolling: () => {}, stopSummaryPolling: () => {} }),
 }));
 mock.module('framer-motion', () => ({ motion: { div: ({ children }: { children?: ReactNode }) => <div>{children}</div> } }));
 const notify = mock(() => {});
 const push = mock((_u: string) => {});
-const refetchMeetings = mock(async () => {});
 const reload = mock(() => {});
 mock.module('sonner', () => ({ toast: { info: notify, error: notify, success: notify, warning: notify } }));
 mock.module('next/navigation', () => ({ ...originals.navigation, useRouter: () => ({ push }) }));
@@ -208,7 +207,7 @@ beforeEach(() => {
   recordingState = { isRecording: false, isStopping: false, isProcessing: false, isSaving: false, activeDuration: null, liveMeetingId: null };
   settings = { speakerIdActive: false, speakerSettingsLoaded: true };
   transcriptRows = []; aiSummary = null; dirty = false; headerProps = undefined;
-  push.mockClear(); refetchMeetings.mockClear(); reload.mockClear(); updateMeetingTitle.mockClear(); handleTemplateSelection.mockClear();
+  push.mockClear(); reload.mockClear(); updateMeetingTitle.mockClear(); handleTemplateSelection.mockClear();
   onRowChange = mock((_r: unknown) => {}); onMeetingUpdated = mock(async () => {});
   Object.defineProperty(window, 'location', { configurable: true, value: { ...realLocation, reload } });
 });
@@ -226,10 +225,9 @@ async function show() {
   });
 }
 
-test('Delete meeting refetches the list then leaves for it', async () => {
+test('Delete meeting leaves for the list', async () => {
   await show();
   await act(async () => { headerProps!.onMeetingDeleted(); await sleep(0); });
-  expect(refetchMeetings).toHaveBeenCalled();
   expect(push).toHaveBeenCalledWith('/');
 });
 

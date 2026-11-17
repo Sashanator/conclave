@@ -1,7 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import { MeetingSummary, Summary, Transcript } from '@/types';
 import { BlockNoteSummaryViewRef } from '@/components/AISummary/BlockNoteSummaryView';
-import { CurrentMeeting, useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { hasVisibleSummaryContent } from '@/lib/summary-content';
@@ -23,9 +22,6 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
 
   // Ref for BlockNoteSummaryView
   const blockNoteSummaryRef = useRef<BlockNoteSummaryViewRef>(null);
-
-  // Sidebar context
-  const { setCurrentMeeting, setMeetings, meetings: sidebarMeetings } = useSidebar();
 
   // Sync aiSummary state when summaryData prop changes (fixes display of fetched summaries)
   useEffect(() => {
@@ -81,12 +77,7 @@ export function useMeetingData({ meeting, summaryData, onMeetingUpdated }: UseMe
   const updateMeetingTitle = useCallback((newTitle: string) => {
     console.log('📝 Updating meeting title, chars:', newTitle.length);
     setMeetingTitle(newTitle);
-    const updatedMeetings = sidebarMeetings.map((m: CurrentMeeting) =>
-      m.id === meeting.id ? { id: m.id, title: newTitle } : m
-    );
-    setMeetings(updatedMeetings);
-    setCurrentMeeting({ id: meeting.id, title: newTitle });
-  }, [meeting.id, sidebarMeetings, setMeetings, setCurrentMeeting]);
+  }, []);
 
   return {
     // State

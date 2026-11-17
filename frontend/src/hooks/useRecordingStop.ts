@@ -4,7 +4,6 @@ import { listen } from '@tauri-apps/api/event';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { useTranscripts } from '@/contexts/TranscriptContext';
-import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { storageService } from '@/services/storageService';
 import { transcriptService } from '@/services/transcriptService';
@@ -63,14 +62,6 @@ export function useRecordingStop(
     markMeetingAsSaved,
     currentMeetingId,
   } = useTranscripts();
-
-  const {
-    refetchMeetings,
-    setCurrentMeeting,
-    setMeetings,
-    meetings,
-    setIsMeetingActive,
-  } = useSidebar();
 
   const router = useRouter();
 
@@ -288,7 +279,7 @@ export function useRecordingStop(
 
         try {
           const responseData = await storageService.saveMeeting(
-            savedMeetingName || meetingTitle || 'New Meeting',  // PREFER savedMeetingName (backend source)
+            savedMeetingName || meetingTitle || 'Untitled',  // PREFER savedMeetingName (backend source)
             freshTranscripts,
             folderPath,
             (sameRecording ? [...notesRef.current] : stoppedNotes),
@@ -371,23 +362,6 @@ export function useRecordingStop(
             sessionStorage.removeItem('recording_title_origin');
           }
 
-          // Refetch meetings and set current meeting
-          await refetchMeetings();
-
-          try {
-            const meetingData = await storageService.getMeeting(meetingId);
-            if (meetingData && isCurrent()) {
-              setCurrentMeeting({
-                id: meetingId,
-                title: meetingData.title
-              });
-              console.log('✅ Current meeting set, title chars:', meetingData.title?.length ?? 0);
-            }
-          } catch (error) {
-            console.warn('Could not fetch meeting details, using ID only:', error);
-            if (isCurrent()) setCurrentMeeting({ id: meetingId, title: savedMeetingName || meetingTitle || 'New Meeting' });
-          }
-
           // Mark as completed
           setStatusIfCurrent(RecordingStatus.COMPLETED);
 
@@ -428,7 +402,6 @@ export function useRecordingStop(
         setStatusIfCurrent(RecordingStatus.IDLE);
       }
 
-      if (isCurrent()) setIsMeetingActive(false);
       // isRecording already set to false at function start
       setIsRecordingDisabled(false);
     } catch (error) {
@@ -456,11 +429,6 @@ export function useRecordingStop(
     calendarLink,
     markMeetingAsSaved,
     currentMeetingId,
-    refetchMeetings,
-    setCurrentMeeting,
-    setMeetings,
-    meetings,
-    setIsMeetingActive,
     router,
   ]);
 

@@ -106,8 +106,7 @@ export default function PageContent({
   const manuallySelectedTabMeetingIdsRef = useRef(new Set<string>());
   const autoGenerationStartedMeetingIdRef = useRef<string | null>(null);
 
-  // Sidebar context
-  const { serverAddress, refetchMeetings } = useSidebar();
+  const { serverAddress } = useSidebar();
 
   // Get model config from ConfigContext
   const { modelConfig, setModelConfig, isModelConfigLoading, speakerIdActive, speakerSettingsLoaded } = useConfig();
@@ -294,7 +293,7 @@ export default function PageContent({
             live={liveMeetingId === meeting.id} // the recording/saving view takes over this page, so only the live target matters
             onChange={(r) => { onRowChange?.(r); if (r.title !== row.title) meetingData.updateMeetingTitle(r.title); }}
             onTitleSaved={onMeetingUpdated}
-            onMeetingDeleted={() => { void refetchMeetings().finally(() => router.push('/')); }}
+            onMeetingDeleted={() => router.push('/')}
             onRecordingDeleted={() => window.location.reload()}
             onRegenerateSummary={(id) => {
               const name = templates.availableTemplates.find((t) => t.id === id)?.name ?? id;

@@ -6,7 +6,6 @@ const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   sonner: { ...await import('sonner') },
   nav: { ...await import('next/navigation') },
-  sidebar: { ...await import('../../src/components/Sidebar/SidebarProvider') },
   recording: { ...await import('../../src/contexts/RecordingStateContext') },
   recovery: { ...await import('../../src/hooks/useTranscriptRecovery') },
   dialog: { ...await import('../../src/components/TranscriptRecovery') },
@@ -18,7 +17,6 @@ afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('sonner', () => originals.sonner);
   mock.module('next/navigation', () => originals.nav);
-  mock.module('../../src/components/Sidebar/SidebarProvider', () => originals.sidebar);
   mock.module('../../src/contexts/RecordingStateContext', () => originals.recording);
   mock.module('../../src/hooks/useTranscriptRecovery', () => originals.recovery);
   mock.module('../../src/components/TranscriptRecovery', () => originals.dialog);
@@ -42,7 +40,6 @@ let dialogProps: { isOpen: boolean; onRecover: (id: string) => Promise<void> } =
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 mock.module('sonner', () => ({ toast }));
 mock.module('next/navigation', () => ({ useRouter: () => ({ push: mock(() => {}) }) }));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => ({ refetchMeetings: async () => {} }) }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({
   ...originals.recording,
   useRecordingState: () => recording,

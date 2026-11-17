@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useTranscripts } from '@/contexts/TranscriptContext';
-import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { recordingService } from '@/services/recordingService';
@@ -62,7 +61,6 @@ export function useRecordingStart(
   const isStartingRef = useRef(false);
 
   const { clearTranscripts, setStartTitle } = useTranscripts();
-  const { setIsMeetingActive } = useSidebar();
   const { selectedDevices } = useConfig();
   const { setStatus } = useRecordingState();
 
@@ -168,7 +166,6 @@ export function useRecordingStart(
       console.log('Setting isRecordingState to true');
       setIsRecording(true); // This will also update the sidebar via the useEffect
       clearTranscripts(); // Clear previous transcripts when starting new recording
-      setIsMeetingActive(true);
 
       // Show recording notification if enabled
       await showRecordingNotification();
@@ -203,7 +200,7 @@ export function useRecordingStart(
     } finally {
       isStartingRef.current = false;
     }
-  }, [setStartTitle, setIsRecording, clearTranscripts, setIsMeetingActive, checkModelReady, checkIfModelDownloading, selectedDevices, showModal, setStatus]);
+  }, [setStartTitle, setIsRecording, clearTranscripts, checkModelReady, checkIfModelDownloading, selectedDevices, showModal, setStatus]);
 
   // Check for autoStartRecording flag and start recording automatically
   useEffect(() => {
@@ -277,7 +274,6 @@ export function useRecordingStart(
             setStartTitle({ title: routed.title ?? '', source: 'default' });
             setIsRecording(true);
             clearTranscripts();
-            setIsMeetingActive(true);
 
             // Show recording notification if enabled
             await showRecordingNotification();
@@ -313,7 +309,6 @@ export function useRecordingStart(
     setStartTitle,
     setIsRecording,
     clearTranscripts,
-    setIsMeetingActive,
     checkModelReady,
     checkIfModelDownloading,
     showModal,
@@ -373,7 +368,6 @@ export function useRecordingStart(
         setStartTitle({ title: routed.title ?? '', source: 'default' });
         setIsRecording(true);
         clearTranscripts();
-        setIsMeetingActive(true);
 
         // Show recording notification if enabled
         await showRecordingNotification();
@@ -410,7 +404,6 @@ export function useRecordingStart(
     setStartTitle,
     setIsRecording,
     clearTranscripts,
-    setIsMeetingActive,
     checkModelReady,
     checkIfModelDownloading,
     showModal,

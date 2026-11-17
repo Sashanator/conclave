@@ -4,7 +4,6 @@ import { useState, useEffect, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { useTranscriptRecovery } from '@/hooks/useTranscriptRecovery';
 import { TranscriptRecovery } from '@/components/TranscriptRecovery';
@@ -19,7 +18,6 @@ export function StartupChecks() {
   const navTimer = useRef<ReturnType<typeof setTimeout>>();
   useEffect(() => () => clearTimeout(navTimer.current), []);
   const router = useRouter();
-  const { refetchMeetings } = useSidebar();
   const recordingState = useRecordingState();
   const { status } = recordingState;
 
@@ -117,9 +115,6 @@ export function StartupChecks() {
           } : undefined,
           duration: 10000,
         });
-
-        // Refresh sidebar to show the newly recovered meeting
-        await refetchMeetings();
 
         // If no more recoverable meetings, clear session flag so dialog can show again
         if (recoverableMeetings.length === 0) {

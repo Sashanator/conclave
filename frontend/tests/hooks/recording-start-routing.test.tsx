@@ -6,7 +6,6 @@ const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   sonner: { ...await import('sonner') },
   transcript: { ...await import('../../src/contexts/TranscriptContext') },
-  sidebar: { ...await import('../../src/components/Sidebar/SidebarProvider') },
   config: { ...await import('../../src/contexts/ConfigContext') },
   state: { ...await import('../../src/contexts/RecordingStateContext') },
   recording: { ...await import('../../src/services/recordingService') },
@@ -16,7 +15,6 @@ afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/contexts/TranscriptContext', () => originals.transcript);
-  mock.module('../../src/components/Sidebar/SidebarProvider', () => originals.sidebar);
   mock.module('../../src/contexts/ConfigContext', () => originals.config);
   mock.module('../../src/contexts/RecordingStateContext', () => originals.state);
   mock.module('../../src/services/recordingService', () => originals.recording);
@@ -41,13 +39,11 @@ const toast = {
 const startRecordingWithDevices = mock(async (..._a: unknown[]) => startResult());
 const setStartTitle = mock((_t: unknown) => {});
 const transcripts = { clearTranscripts() {}, setStartTitle };
-const sidebar = { setIsMeetingActive() {} };
 const recordingState = { setStatus() {} };
 const devices = { micDevice: 'mic', systemDevice: 'sys' }; // stable, like the real context
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
 mock.module('../../src/contexts/TranscriptContext', () => ({ useTranscripts: () => transcripts }));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => sidebar }));
 mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ selectedDevices: devices }) }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.state, useRecordingState: () => recordingState }));
 mock.module('../../src/services/recordingService', () => ({ recordingService: { startRecordingWithDevices } }));

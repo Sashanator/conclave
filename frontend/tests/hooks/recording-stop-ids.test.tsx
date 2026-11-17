@@ -8,7 +8,6 @@ const originals = {
   nav: { ...await import('next/navigation') },
   sonner: { ...await import('sonner') },
   transcript: { ...await import('../../src/contexts/TranscriptContext') },
-  sidebar: { ...await import('../../src/components/Sidebar/SidebarProvider') },
   state: { ...await import('../../src/contexts/RecordingStateContext') },
   storage: { ...await import('../../src/services/storageService') },
   transcriptService: { ...await import('../../src/services/transcriptService') },
@@ -20,7 +19,6 @@ afterAll(() => {
   mock.module('next/navigation', () => originals.nav);
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/contexts/TranscriptContext', () => originals.transcript);
-  mock.module('../../src/components/Sidebar/SidebarProvider', () => originals.sidebar);
   mock.module('../../src/contexts/RecordingStateContext', () => originals.state);
   mock.module('../../src/services/storageService', () => originals.storage);
   mock.module('../../src/services/transcriptService', () => originals.transcriptService);
@@ -32,7 +30,6 @@ const notesRef: { current: unknown[] } = { current: [] };
 const clearTranscripts = mock(() => {});
 const markMeetingAsSaved = mock(async (_id?: string) => {});
 const setStatus = mock((..._a: unknown[]) => {});
-const setIsMeetingActive = mock((_v: boolean) => {});
 let flushBufferImpl: () => void = () => {};
 let onStatusPoll: () => void = () => {};
 type Handler = (event: { payload: unknown }) => void;
@@ -54,9 +51,6 @@ mock.module('../../src/contexts/TranscriptContext', () => ({
     transcriptsRef, notesRef, flushBuffer: () => flushBufferImpl(), clearTranscripts,
     meetingTitle: 'Standup', titleSource: 'default', calendarLink: null, markMeetingAsSaved, currentMeetingId: null,
   }),
-}));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({
-  useSidebar: () => ({ refetchMeetings: async () => {}, setCurrentMeeting() {}, setMeetings() {}, meetings: [], setIsMeetingActive }),
 }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({
   ...originals.state,
@@ -92,7 +86,7 @@ async function stopAndSave() {
 const emitStopped = (payload: Record<string, unknown>) => act(async () => { handlers.get('recording-stopped')!({ payload }); await new Promise((r) => setTimeout(r, 0)); });
 
 beforeEach(() => {
-  saveMeeting.mockClear(); invoke.mockClear(); push.mockClear(); clearTranscripts.mockClear(); markMeetingAsSaved.mockClear(); setStatus.mockClear(); setIsMeetingActive.mockClear(); flushBufferImpl = () => {};
+  saveMeeting.mockClear(); invoke.mockClear(); push.mockClear(); clearTranscripts.mockClear(); markMeetingAsSaved.mockClear(); setStatus.mockClear(); flushBufferImpl = () => {};
   transcriptsRef.current = [{ text: 'hi' }]; onStatusPoll = () => {};
   for (const t of Object.values(toast)) t.mockClear();
   saveResult = { meeting_id: 'saved-1' };
@@ -212,7 +206,6 @@ describe('a save never touches the recording that started during it', () => {
     expect(transcriptsRef.current).toEqual([{ text: 'B line' }]);
     expect(sessionStorage.getItem('indexeddb_current_meeting_id')).toBe('idb-B');
     expect(setStatus).not.toHaveBeenCalled();
-    expect(setIsMeetingActive).not.toHaveBeenCalled();
   });
 
   test('A\'s IndexedDB record is marked saved by the id taken at its stop', async () => {

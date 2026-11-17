@@ -6,6 +6,7 @@ import { toast } from 'sonner';
 import { prepForMeeting, savePrep, type MeetingPrep } from '@/lib/prep';
 import type { MeetingRow } from '@/lib/meetings';
 import { PrepTickList } from '@/components/Prep/PrepTickList';
+import { PrepChat } from '@/components/Prep/PrepChat';
 import { AudioLine } from './AudioLine';
 
 /** A meeting with no recording yet: prep notes, the Audio line and Start recording. */
@@ -31,13 +32,15 @@ export function NewMeetingView({ row, live, disabled, onStart }: {
     return () => { active = false; };
   }, [row.id]);
 
-  const saveMaterial = async () => {
-    if (!loaded || material === saved.current) return;
+  const saveMaterial = async (): Promise<MeetingPrep | null> => {
+    if (!loaded) return null;
+    if (material === saved.current && prep?.id) return prep;
     try {
       const next = await savePrep({ meetingId: row.id, eventUid: prep?.eventUid ?? null, eventStart: prep?.eventStart ?? null, eventTitle: row.title, material, templateId: row.templateId, items: prep?.items ?? [] });
       saved.current = material;
       setPrep(next);
-    } catch (e) { toast.error(`Failed to save Prep: ${String(e)}`); }
+      return next;
+    } catch (e) { toast.error(`Failed to save Prep: ${String(e)}`); return null; }
   };
 
   return (
@@ -48,13 +51,14 @@ export function NewMeetingView({ row, live, disabled, onStart }: {
           aria-labelledby="prep-notes"
           value={material}
           onChange={(e) => setMaterial(e.target.value)}
-          onBlur={saveMaterial}
+          onBlur={() => material !== saved.current ? saveMaterial() : undefined}
           readOnly={!loaded}
           rows={6}
           placeholder="Agenda, questions, context for this meeting"
           className="w-full rounded-md border border-border bg-background p-3 text-sm"
         />
         {prep && prep.items.length > 0 && <PrepTickList prep={prep} onChange={setPrep} />}
+        {loaded && <PrepChat meetingId={row.id} title={row.title} templateId={row.templateId} prep={prep} onChange={setPrep} save={saveMaterial} />}
       </section>
       <AudioLine disabled={false} />
       {live ? (

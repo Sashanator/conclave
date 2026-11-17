@@ -90,6 +90,13 @@ pub(crate) async fn apply_extraction(
         .execute(&mut *tx)
         .await?;
     }
+    if let Some(gist) = &ex.gist {
+        sqlx::query("UPDATE meetings SET gist = ? WHERE id = ?")
+            .bind(gist)
+            .bind(meeting_id)
+            .execute(&mut *tx)
+            .await?;
+    }
     let written = set_extract(
         &mut *tx,
         meeting_id,
@@ -168,13 +175,15 @@ fn found(rows: u64) -> anyhow::Result<()> {
 
 /// Open tasks (meeting date desc, then extraction order, manual last) or done tasks (latest done first).
 pub(crate) async fn list(pool: &SqlitePool, status: &str) -> anyhow::Result<Vec<TaskRow>> {
+    let d = crate::database::repositories::meeting::meeting_date_sql("m");
+    let open = format!("t.meeting_id IS NULL, julianday({d}) DESC, t.created_at, t.rowid");
     let order = match status {
-        "open" => "t.meeting_id IS NULL, m.created_at DESC, t.created_at, t.rowid",
+        "open" => open.as_str(),
         "done" => "t.done_at DESC, t.rowid DESC",
         _ => anyhow::bail!("unknown task list"),
     };
     let sql = format!(
-        "SELECT t.id, t.meeting_id, m.title AS meeting_title, m.created_at AS meeting_date, t.text, t.owner, \
+        "SELECT t.id, t.meeting_id, m.title AS meeting_title, {d} AS meeting_date, t.text, t.owner, \
          t.due, t.at, t.status, t.source, t.created_at \
          FROM tasks t LEFT JOIN meetings m ON m.id = t.meeting_id \
          WHERE t.status = ? ORDER BY {order}"
@@ -375,6 +384,7 @@ mod tests {
             tasks,
             decisions: vec!["Ship it".to_string()],
             requests: vec![],
+            gist: None,
         }
     }
 
@@ -429,6 +439,20 @@ mod tests {
                 ("E", "open", 0),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn apply_extraction_writes_gist() {
+        let pool = crate::database::repositories::test_pool().await;
+        insert_meeting(&pool, "M").await;
+        sqlx::query("UPDATE meetings SET gist = 'fallback' WHERE id = 'M'").execute(&pool).await.unwrap();
+        let mut ex = extraction(vec![]);
+        assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        let gist = || sqlx::query_scalar::<_, Option<String>>("SELECT gist FROM meetings WHERE id = 'M'").fetch_one(&pool);
+        assert_eq!(gist().await.unwrap().as_deref(), Some("fallback"));
+        ex.gist = Some("New gist".to_string());
+        assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        assert_eq!(gist().await.unwrap().as_deref(), Some("New gist"));
     }
 
     #[tokio::test]
@@ -695,5 +719,32 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(rows, vec![(x, "open".to_string())]);
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn open_tasks_order_by_meeting_date() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "mid", "2026-11-05 10:00:00.000+00:00", None, None).await;
+        for (id, m) in [("t1", "mid"), ("t2", "moved")] {
+            exec(&pool, &format!("INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES ('{id}', '{m}', 'x', 'me', 'open', 'ai', 0, 'c')")).await;
+        }
+        let rows = list(&pool, "open").await.unwrap();
+        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["t2", "t1"]);
+        assert_eq!(rows[0].meeting_date.as_deref(), Some("2026-11-09T10:00:00.000+00:00"));
     }
 }

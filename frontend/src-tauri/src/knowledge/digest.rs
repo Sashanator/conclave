@@ -1,6 +1,7 @@
 //! The weekly digest: what the week's meetings and open tasks add up to. Made on Friday 09:00 local and listed in Briefs & digests.
 
 use crate::copilot;
+use crate::database::repositories::meeting::meeting_date_sql;
 use crate::knowledge::briefs::{self, is_duplicate, start_key, BriefSummary};
 use crate::knowledge::extract::{self, Reply, UNTRUSTED};
 use crate::knowledge::feed;
@@ -483,11 +484,15 @@ struct PeriodMeeting {
     created_at: DateTime<Utc>,
 }
 
-/// The meetings created in [from, to), oldest first. The SQL test is loose by a day either side, because the stored
+/// The meetings dated in [from, to) (with a transcript), oldest first. The SQL test is loose by a day either side, because the stored
 /// text's fraction digits can move a boundary; the exact test is then made in Rust.
 async fn period_meetings(pool: &SqlitePool, from: DateTime<Utc>, to: DateTime<Utc>) -> Result<Vec<PeriodMeeting>, String> {
     let rows: Vec<(String, String, DateTime<Utc>)> =
-        sqlx::query_as("SELECT id, title, created_at FROM meetings WHERE created_at >= ? AND created_at < ?")
+        sqlx::query_as(&format!(
+            "SELECT id, title, {d} FROM meetings WHERE julianday({d}) >= julianday(?) AND julianday({d}) < julianday(?) \
+             AND EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = meetings.id)",
+            d = meeting_date_sql("")
+        ))
             .bind(start_key(from - Duration::days(1)))
             .bind(start_key(to + Duration::days(1)))
             .fetch_all(pool)
@@ -672,6 +677,12 @@ mod tests {
             .bind(id)
             .bind(created_at)
             .bind(created_at)
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES (?, ?, 'x', 't')")
+            .bind(format!("t-{id}"))
+            .bind(id)
             .execute(pool)
             .await
             .unwrap();
@@ -1121,5 +1132,33 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].kind, "digest");
         assert_eq!(rows[0].title, "Weekly digest: 16–23 Oct");
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn the_week_holds_meetings_by_meeting_date_and_only_those_with_a_transcript() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "bare", "2026-11-01 10:00:00.000+00:00", None, Some("2026-11-10T10:00:00+00:00")).await;
+        row(&pool, "early", "2026-11-10 10:00:00.000+00:00", Some("2026-11-02T10:00:00.000+00:00"), None).await;
+        for id in ["moved", "early"] {
+            exec(&pool, &format!("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t-{id}', '{id}', 'x', 't')")).await;
+        }
+        let from = Utc.with_ymd_and_hms(2026, 11, 9, 0, 0, 0).unwrap();
+        let got = period_meetings(&pool, from, from + Duration::days(7)).await.unwrap();
+        assert_eq!(got.iter().map(|m| m.id.as_str()).collect::<Vec<_>>(), ["moved"]);
     }
 }

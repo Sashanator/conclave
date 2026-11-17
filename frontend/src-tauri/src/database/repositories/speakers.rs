@@ -455,12 +455,13 @@ impl SpeakersRepository {
     }
 
     pub async fn list_people(pool: &SqlitePool) -> Result<Vec<PersonView>, SqlxError> {
-        let rows: Vec<(String, String, i64, i64, Option<String>)> = sqlx::query_as(
+        let rows: Vec<(String, String, i64, i64, Option<String>)> = sqlx::query_as(&format!(
             "SELECT p.id, p.name, p.is_self,
                (SELECT COUNT(DISTINCT ms.meeting_id) FROM meeting_speakers ms WHERE ms.person_id = p.id),
-               (SELECT MAX(m.created_at) FROM meeting_speakers ms JOIN meetings m ON m.id = ms.meeting_id WHERE ms.person_id = p.id)
+               (SELECT {d} FROM meeting_speakers ms JOIN meetings m ON m.id = ms.meeting_id WHERE ms.person_id = p.id ORDER BY julianday({d}) DESC LIMIT 1)
              FROM people p ORDER BY p.is_self DESC, p.name COLLATE NOCASE, p.id",
-        )
+            d = super::meeting::meeting_date_sql("m"),
+        ))
         .fetch_all(pool)
         .await?;
         Ok(rows
@@ -1229,5 +1230,32 @@ mod tests {
         SpeakersRepository::rename_person(&pool, &alice, "  Bob  ").await.unwrap();
         let people = SpeakersRepository::list_people(&pool).await.unwrap();
         assert_eq!(people.into_iter().find(|p| p.id == alice).unwrap().name, "Bob");
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn last_heard_is_the_latest_meeting_date() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "mid", "2026-11-05 10:00:00.000+00:00", None, None).await;
+        exec(&pool, "INSERT INTO people (id,name,is_self,created_at) VALUES ('p1','Anna',0,'t')").await;
+        for m in ["moved", "mid"] {
+            exec(&pool, &format!("INSERT INTO meeting_speakers (meeting_id, idx, name, seconds, person_id) VALUES ('{m}', 1, 'Anna', 1.0, 'p1')")).await;
+        }
+        let people = SpeakersRepository::list_people(&pool).await.unwrap();
+        assert_eq!(people.iter().find(|p| p.id == "p1").unwrap().last_heard.as_deref(), Some("2026-11-09T10:00:00.000+00:00"));
     }
 }

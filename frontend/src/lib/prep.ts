@@ -19,9 +19,9 @@ export interface ChatMessage {
 
 export interface MeetingPrep {
   id: number;
-  eventUid: string;
-  eventStart: string;
-  eventTitle: string;
+  eventUid: string | null;
+  eventStart: string | null;
+  eventTitle: string | null;
   templateId: string | null;
   material: string;
   chat: ChatMessage[];
@@ -75,8 +75,9 @@ export const prepForMeeting = (meetingId: string) =>
   invoke<MeetingPrep | null>('prep_for_meeting', { meetingId });
 
 export const savePrep = (args: {
-  eventUid: string;
-  eventStart: string;
+  meetingId?: string;
+  eventUid?: string | null;
+  eventStart?: string | null;
   eventTitle: string;
   material: string;
   templateId: string | null;

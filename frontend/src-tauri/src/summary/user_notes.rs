@@ -74,8 +74,8 @@ mod tests {
 
     fn prep(material: &str) -> crate::prep::MeetingPrep {
         crate::prep::MeetingPrep {
-            id: 1, event_uid: "event".into(), event_start: "start".into(),
-            event_title: "title".into(), template_id: None, material: material.into(),
+            id: 1, event_uid: Some("event".into()), event_start: Some("start".into()),
+            event_title: Some("title".into()), template_id: None, material: material.into(),
             chat: vec![], items: vec![], approved_at: None,
             created_at: "created".into(), updated_at: "updated".into(),
         }

@@ -68,6 +68,15 @@ pub(crate) fn start_key(start: DateTime<Utc>) -> String {
     start.to_rfc3339_opts(SecondsFormat::Secs, true)
 }
 
+/// A stored meeting date (space or T separator, any offset, or a bare legacy time read as UTC) as an instant.
+pub(crate) fn parse_date(s: &str) -> Option<DateTime<Utc>> {
+    let t = s.replacen(' ', "T", 1);
+    DateTime::parse_from_rfc3339(&t)
+        .map(|d| d.with_timezone(&Utc))
+        .or_else(|_| chrono::NaiveDateTime::parse_from_str(&t, "%Y-%m-%dT%H:%M:%S%.f").map(|n| n.and_utc()))
+        .ok()
+}
+
 /// The feed and toast line, with the start in local time.
 fn brief_line(occ: &Occurrence) -> String {
     format!("Brief: {} at {}", occ.title, occ.start.with_timezone(&Local).format("%H:%M"))
@@ -82,11 +91,12 @@ struct Past {
 
 /// Meetings with a completed summary of this template and a matching title, newest first.
 async fn matching_meetings(pool: &SqlitePool, template_id: &str, title: &str) -> Result<Vec<Past>, String> {
-    let rows: Vec<(String, String, String)> = sqlx::query_as(
-        "SELECT m.id, m.title, m.created_at FROM meetings m JOIN summary_processes s ON s.meeting_id = m.id \
+    let d = crate::database::repositories::meeting::meeting_date_sql("m");
+    let rows: Vec<(String, String, String)> = sqlx::query_as(&format!(
+        "SELECT m.id, m.title, {d} FROM meetings m JOIN summary_processes s ON s.meeting_id = m.id \
          WHERE s.status = 'completed' AND CASE WHEN json_valid(s.result) THEN json_extract(s.result, '$.template_id') END = ? \
-         ORDER BY m.created_at DESC",
-    )
+         ORDER BY julianday({d}) DESC",
+    ))
     .bind(template_id)
     .fetch_all(pool)
     .await
@@ -230,7 +240,11 @@ pub(crate) async fn get(pool: &SqlitePool, id: &str) -> Result<Option<BriefConte
     let mut meeting_ids: Vec<String> = matching_meetings(pool, &template_id, &title)
         .await?
         .into_iter()
-        .filter(|p| p.created_at <= stored.content.previous_date)
+        .filter(|p| match (parse_date(&p.created_at), parse_date(&stored.content.previous_date)) {
+            (Some(a), Some(b)) => a <= b,
+            // Unparseable dates: text order is all there is.
+            _ => p.created_at <= stored.content.previous_date,
+        })
         .map(|p| p.id)
         .collect();
     // The previous meeting stays even while its summary is regenerated and it does not match right now.
@@ -626,5 +640,59 @@ mod tests {
         let _flight = extract::hold_in_flight("ivan-queued");
         assert_eq!(make_brief(app.handle(), &pool, &occ, &one_on_one, &|| at(10, 30)).await.unwrap(), None);
         assert_eq!(brief_rows(&pool).await, 0);
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn a_same_day_earlier_meeting_in_the_other_format_keeps_its_open_tasks() {
+        let pool = test_pool().await;
+        row(&pool, "early", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T09:00:00.000+00:00"), None).await;
+        exec(&pool, "INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('early', 'completed', 't', 't', '{\"template_id\":\"one_on_one\"}')").await;
+        exec(&pool, "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES ('t1', 'early', 'x', 'me', 'open', 'ai', 0, 'c')").await;
+        let content = serde_json::json!({
+            "eventTitle": "T", "eventStart": "s", "templateName": "1:1", "previousMeetingId": "prev", "previousTitle": "T",
+            "previousDate": "2026-11-09 10:00:00.000+00:00", "requests": [], "decisions": [], "openTasks": []
+        });
+        sqlx::query("INSERT INTO briefs (id, event_uid, event_start, title, template_id, previous_meeting_id, content_json, created_at) VALUES ('b1', 'u', 's', 'T', 'one_on_one', 'prev', ?, 'c')")
+            .bind(content.to_string()).execute(&pool).await.unwrap();
+        // As text, "...T09" sorts after "... 10", so a text comparison would drop 'early' and its task.
+        let got = get(&pool, "b1").await.unwrap().unwrap();
+        assert_eq!(got.open_tasks.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["t1"]);
+    }
+
+    #[test]
+    fn dates_in_both_formats_compare_as_instants() {
+        let space = parse_date("2026-11-09 10:00:00.000+00:00").unwrap();
+        let t = parse_date("2026-11-09T09:00:00.000+00:00").unwrap();
+        assert!(t < space); // as text, 'T' sorts after ' ' and would say the opposite
+        assert_eq!(parse_date("2026-11-09T12:00:00+02:00"), parse_date("2026-11-09T10:00:00Z"));
+        assert_eq!(parse_date("2026-10-05 12:00:00").unwrap().to_rfc3339(), "2026-10-05T12:00:00+00:00");
+        assert!(parse_date("d").is_none());
+    }
+
+    #[tokio::test]
+    async fn the_previous_meeting_is_the_one_with_the_latest_meeting_date() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "mid", "2026-11-05 10:00:00.000+00:00", None, None).await;
+        for id in ["moved", "mid"] {
+            exec(&pool, &format!("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('{id}', 'completed', 't', 't', '{{\"template_id\":\"one_on_one\"}}')")).await;
+        }
+        let got = matching_meetings(&pool, "one_on_one", "T").await.unwrap();
+        assert_eq!(got.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["moved", "mid"]);
+        assert_eq!(got[0].created_at, "2026-11-09T10:00:00.000+00:00");
     }
 }

@@ -36,6 +36,9 @@ impl DatabaseManager {
         let pool = SqlitePool::connect(tauri_db_path).await?;
 
         sqlx::migrate!("./migrations").run(&pool).await?;
+        if let Err(e) = super::redesign_backfill::run(&pool).await {
+            log::error!("redesign backfill failed; retried at next start: {e:#}");
+        }
 
         Ok(DatabaseManager { pool })
     }

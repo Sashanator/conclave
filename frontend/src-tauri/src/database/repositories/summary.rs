@@ -180,6 +180,17 @@ impl SummaryProcessesRepository {
         if let (true, Some(name)) = (completed, name) {
             MeetingsRepository::rename_if_default(&mut *transaction, meeting_id, name).await?;
         }
+        if completed {
+            // A new summary refreshes the gist (the old one stays only if it yields none); a set category is never overwritten.
+            let gist = result["markdown"].as_str().and_then(crate::knowledge::extract::gist_from_summary);
+            let template = result["template_id"].as_str().filter(|t| !t.trim().is_empty());
+            sqlx::query("UPDATE meetings SET gist = COALESCE(?, gist), template_id = COALESCE(template_id, ?) WHERE id = ?")
+                .bind(gist)
+                .bind(template)
+                .bind(meeting_id)
+                .execute(&mut *transaction)
+                .await?;
+        }
         transaction.commit().await?;
         Ok(completed)
     }
@@ -399,6 +410,29 @@ mod tests {
         assert_eq!(regenerated["markdown"], "g2");
     }
 
+    #[tokio::test]
+    async fn completion_sets_fallback_gist_and_template() {
+        let pool = crate::database::repositories::test_pool().await;
+        for (id, gist, tpl) in [("a", None, None), ("b", Some("old"), Some("x"))] {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, gist, template_id) VALUES (?, 'M', 't', 't', ?, ?)")
+                .bind(id).bind(gist).bind(tpl).execute(&pool).await.unwrap();
+            let started = Utc::now();
+            SummaryProcessesRepository::create_or_reset_process(&pool, id, started).await.unwrap();
+            assert!(SummaryProcessesRepository::update_process_completed(
+                &pool, id, started, json!({"markdown": "## S\nShipped it.", "template_id": "interview"}), 1, 1.0, None,
+            ).await.unwrap());
+        }
+        let row = |id: &'static str| sqlx::query_as::<_, (Option<String>, Option<String>)>("SELECT gist, template_id FROM meetings WHERE id = ?").bind(id).fetch_one(&pool);
+        assert_eq!(row("a").await.unwrap(), (Some("Shipped it.".into()), Some("interview".into())));
+        assert_eq!(row("b").await.unwrap(), (Some("Shipped it.".into()), Some("x".into())));
+        // Stale completion (no pending process): nothing written.
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('c', 'M', 't', 't')").execute(&pool).await.unwrap();
+        assert!(!SummaryProcessesRepository::update_process_completed(
+            &pool, "c", Utc::now(), json!({"markdown": "Hi.", "template_id": "interview"}), 1, 1.0, None,
+        ).await.unwrap());
+        assert_eq!(row("c").await.unwrap(), (None, None));
+    }
+
     async fn test_pool() -> SqlitePool {
         let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
         sqlx::query(
@@ -526,7 +560,12 @@ mod tests {
 
     #[tokio::test]
     async fn terminal_compare_and_set_preserves_first_writer() {
-        let pool = test_pool().await;
+        // Migrated schema: completion also updates meetings.
+        let pool = crate::database::repositories::test_pool().await;
+        for id in ["completed-first", "cancelled-first"] {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, 'M', 't', 't')")
+                .bind(id).execute(&pool).await.unwrap();
+        }
         let completed_start = Utc::now();
         seed_pending(&pool, "completed-first", completed_start, None, None).await;
         assert!(

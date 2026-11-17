@@ -18,6 +18,9 @@ pub struct TemplateSection {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Template {
     pub name: String,
+    /// One emoji shown before meetings of this kind; `Some("")` means cleared on purpose.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub emoji: Option<String>,
     /// Kept so Meetily-era files parse; not shown in the editor.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub description: String,
@@ -39,6 +42,79 @@ pub struct Template {
     pub style: Option<String>,
 }
 
+const VS16: u32 = 0xFE0F;
+
+/// Symbols that are text by default: an emoji only when followed by VS16.
+fn needs_vs16(cp: u32) -> bool {
+    matches!(cp, 0xA9 | 0xAE | 0x203C | 0x2049 | 0x2122 | 0x2139 | 0x2194..=0x2199 | 0x21A9 | 0x21AA | 0x24C2
+        | 0x25AA | 0x25AB | 0x25B6 | 0x25C0 | 0x25FB..=0x25FE | 0x2B05..=0x2B07)
+}
+
+fn emoji_base(cp: u32) -> bool {
+    needs_vs16(cp) || matches!(cp,
+        0x231A | 0x231B | 0x2328 | 0x23CF | 0x23E9..=0x23F3 | 0x23F8..=0x23FA | 0x2600..=0x2604 | 0x260E | 0x2611
+        | 0x2614 | 0x2615 | 0x2618 | 0x261D | 0x2620 | 0x2622 | 0x2623 | 0x2626 | 0x262A | 0x262E | 0x262F
+        | 0x2638..=0x263A | 0x2640 | 0x2642 | 0x2648..=0x2653 | 0x265F | 0x2660 | 0x2663 | 0x2665 | 0x2666
+        | 0x2668 | 0x267B | 0x267E | 0x267F | 0x2692..=0x2697 | 0x2699 | 0x269B | 0x269C | 0x26A0 | 0x26A1
+        | 0x26A7 | 0x26AA | 0x26AB | 0x26B0 | 0x26B1 | 0x26BD | 0x26BE | 0x26C4 | 0x26C5 | 0x26C8 | 0x26CE
+        | 0x26CF | 0x26D1 | 0x26D3 | 0x26D4 | 0x26E9 | 0x26EA | 0x26F0..=0x26F5 | 0x26F7..=0x26FA | 0x26FD
+        | 0x2702 | 0x2705 | 0x2708..=0x270D | 0x270F | 0x2712 | 0x2714 | 0x2716 | 0x271D | 0x2721 | 0x2728
+        | 0x2733 | 0x2734 | 0x2744 | 0x2747 | 0x274C | 0x274E | 0x2753..=0x2755 | 0x2757 | 0x2763 | 0x2764
+        | 0x2795..=0x2797 | 0x27A1 | 0x27B0 | 0x27BF | 0x2934 | 0x2935 | 0x2B1B | 0x2B1C | 0x2B50 | 0x2B55
+        | 0x3030 | 0x303D | 0x3297 | 0x3299 | 0x1F000..=0x1FAFF)
+}
+
+fn skin(cp: u32) -> bool { (0x1F3FB..=0x1F3FF).contains(&cp) }
+fn regional(cp: u32) -> bool { (0x1F1E6..=0x1F1FF).contains(&cp) }
+
+/// Parses one element at `i` (keycap, flag, or pictograph with VS16 / one skin tone / tags); returns the next index.
+fn emoji_element(c: &[u32], i: usize) -> Option<usize> {
+    let cp = *c.get(i)?;
+    if matches!(cp, 0x30..=0x39 | 0x23 | 0x2A) {
+        return (c.get(i + 1) == Some(&VS16) && c.get(i + 2) == Some(&0x20E3)).then_some(i + 3);
+    }
+    if regional(cp) {
+        return c.get(i + 1).copied().filter(|&n| regional(n)).map(|_| i + 2);
+    }
+    if !emoji_base(cp) { return None; }
+    let mut j = i + 1;
+    let vs = c.get(j) == Some(&VS16);
+    if vs { j += 1; }
+    if needs_vs16(cp) && !vs { return None; }
+    if !vs && c.get(j).is_some_and(|&n| skin(n)) { j += 1; }
+    while c.get(j).is_some_and(|n| (0xE0020..=0xE007F).contains(n)) { j += 1; }
+    Some(j)
+}
+
+/// Exactly one emoji: a keycap, a flag, or pictographs joined by ZWJ (each with optional VS16, one skin tone or
+/// tags). Text, several emoji, arrows and other plain symbols are rejected. At most 32 bytes.
+/// shortcut: a hand-made table, not full Unicode emoji data; refresh it if new emoji blocks appear.
+pub fn valid_emoji(s: &str) -> bool {
+    let s = s.trim();
+    if s.is_empty() || s.len() > 32 { return false; }
+    let c: Vec<u32> = s.chars().map(|c| c as u32).collect();
+    let Some(mut i) = emoji_element(&c, 0) else { return false };
+    while c.get(i) == Some(&0x200D) {
+        match emoji_element(&c, i + 1) { Some(n) => i = n, None => return false }
+    }
+    i == c.len()
+}
+
+pub fn builtin_emoji(id: &str) -> Option<&'static str> {
+    Some(match id {
+        "standard_meeting" => "📝",
+        "german_lessons" => "🎓",
+        "interview" => "🤝",
+        "one_to_one" => "👥",
+        "one_two_one_rasulov" => "🧭",
+        "rasulov_lpr" => "🎯",
+        "portfolio_meetings" => "📊",
+        "scrum_of_scrums" => "🔄",
+        "delivery_management" => "🚚",
+        _ => return None,
+    })
+}
+
 fn non_blank(s: &Option<String>) -> Option<&str> {
     s.as_deref().map(str::trim).filter(|s| !s.is_empty())
 }
@@ -47,6 +123,11 @@ impl Template {
     pub fn validate(&self) -> Result<(), String> {
         if self.name.trim().is_empty() {
             return Err("Template name cannot be empty".into());
+        }
+        if let Some(e) = self.emoji.as_deref() {
+            if !e.is_empty() && !valid_emoji(e) {
+                return Err("Emoji must be a single emoji".into());
+            }
         }
         if self.sections.is_empty() {
             return Err("Template must have at least one section".into());
@@ -125,9 +206,42 @@ mod tests {
         TemplateSection { title: title.into(), instruction: instruction.into(), format: None, item_format: None, example_item_format: None }
     }
 
+    #[test]
+    fn emoji_validation() {
+        let with = |e: Option<&str>| Template { emoji: e.map(String::from), ..template() };
+        assert!(with(None).validate().is_ok());
+        assert!(with(Some("")).validate().is_ok());
+        assert!(with(Some("📝")).validate().is_ok());
+        assert!(with(Some("📝 Notes")).validate().is_err());
+        assert!(with(Some("ab")).validate().is_err());
+    }
+
+    #[test]
+    fn valid_emoji_means_exactly_one_emoji() {
+        for ok in ["📝", "👩\u{200D}💻", "👍🏽", "🇩🇪", "❤\u{FE0F}", "🎓", "1\u{FE0F}\u{20E3}", "#\u{FE0F}\u{20E3}",
+            "*\u{FE0F}\u{20E3}", "✅", "☕", "❤", "✍\u{FE0F}", "⬆\u{FE0F}", "🗓\u{FE0F}", "🫠",
+            "👨\u{200D}👩\u{200D}👧\u{200D}👦", "🧑🏽\u{200D}🚀", "🏴\u{E0067}\u{E0062}\u{E0065}\u{E006E}\u{E0067}\u{E007F}", "©\u{FE0F}"] {
+            assert!(valid_emoji(ok), "{ok}");
+        }
+        for bad in ["Заметки", "中文", "📝🎯📅", "—", "", "a", "📝x", "\u{200D}", "📝\u{200D}", "→", "★", "©", "🇩", "📝🏽🏽", "1", "#", "1\u{FE0F}", "⬆"] {
+            assert!(!valid_emoji(bad), "{bad}");
+        }
+    }
+
+    #[test]
+    fn every_bundled_template_has_its_builtin_emoji() {
+        use crate::summary::templates::defaults::{SEED_TEMPLATES, SEED_TEMPLATES_V2};
+        for (id, json) in SEED_TEMPLATES.iter().chain(SEED_TEMPLATES_V2.iter()) {
+            let t: Template = serde_json::from_str(json).unwrap();
+            assert!(valid_emoji(t.emoji.as_deref().unwrap_or("")), "{id}");
+            assert_eq!(t.emoji.as_deref(), builtin_emoji(id), "{id}");
+        }
+    }
+
     fn template() -> Template {
         Template {
             name: "1-2-1".into(),
+            emoji: None,
             description: String::new(),
             use_when: Some("1-on-1 with my HoD".into()),
             title_keywords: vec!["1-2-1".into()],

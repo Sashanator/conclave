@@ -32,27 +32,29 @@ pub(crate) fn moves(
     preps
         .iter()
         .filter_map(|prep| {
-            let key = (prep.event_uid.clone(), prep.event_start.clone());
+            // A prep kept only by meeting id has no calendar event to move.
+            let (uid, event_start) = (prep.event_uid.clone()?, prep.event_start.clone()?);
+            let key = (uid.clone(), event_start.clone());
             if keys.contains(&key)
                 || linked.contains(&key)
-                || occ.iter().any(|o| o.uid == prep.event_uid && o.recurring)
+                || occ.iter().any(|o| o.uid == uid && o.recurring)
             {
                 return None;
             }
-            let start = DateTime::parse_from_rfc3339(&prep.event_start).ok()?;
+            let start = DateTime::parse_from_rfc3339(&event_start).ok()?;
             if now >= start - Duration::minutes(10) {
                 return None;
             }
             let mut candidates = occ
                 .iter()
-                .filter(|o| o.uid == prep.event_uid && o.start > now);
+                .filter(|o| o.uid == uid && o.start > now);
             let target = candidates.next()?;
             if candidates.next().is_some() {
                 return None;
             }
             let new_start = target.start.to_rfc3339();
             if preps.iter().any(|p| {
-                p.id != prep.id && p.event_uid == prep.event_uid && p.event_start == new_start
+                p.id != prep.id && p.event_uid.as_deref() == Some(uid.as_str()) && p.event_start.as_deref() == Some(new_start.as_str())
             }) {
                 return None;
             }
@@ -145,7 +147,7 @@ pub(crate) fn overview(
         let start = o.start.to_rfc3339();
         let prep = preps
             .iter()
-            .find(|p| p.event_uid == o.uid && p.event_start == start);
+            .find(|p| p.event_uid.as_deref() == Some(o.uid.as_str()) && p.event_start.as_deref() == Some(start.as_str()));
         if !(o.end > now && (o.start < now + Duration::days(PREP_AHEAD_DAYS) || prep.is_some())) {
             continue;
         }
@@ -171,14 +173,14 @@ pub(crate) fn overview(
     }
     let other = preps
         .iter()
-        .filter(|p| !shown.contains(&p.id))
+        .filter(|p| !shown.contains(&p.id) && p.event_uid.is_some())
         .map(|p| OtherPrep {
             id: p.id,
-            event_uid: p.event_uid.clone(),
-            event_start: p.event_start.clone(),
-            event_title: p.event_title.clone(),
+            event_uid: p.event_uid.clone().unwrap_or_default(),
+            event_start: p.event_start.clone().unwrap_or_default(),
+            event_title: p.event_title.clone().unwrap_or_default(),
             approved: p.approved_at.is_some(),
-            reason: if DateTime::parse_from_rfc3339(&p.event_start)
+            reason: if DateTime::parse_from_rfc3339(p.event_start.as_deref().unwrap_or_default())
                 .map_or(true, |start| start < now)
             {
                 "past"
@@ -289,9 +291,9 @@ mod tests {
     fn prep(id: i64, uid: &str, days: i64) -> MeetingPrep {
         MeetingPrep {
             id,
-            event_uid: uid.into(),
-            event_start: occurrence(uid, days).start.to_rfc3339(),
-            event_title: "Planning".into(),
+            event_uid: Some(uid.into()),
+            event_start: Some(occurrence(uid, days).start.to_rfc3339()),
+            event_title: Some("Planning".into()),
             template_id: None,
             material: "Material".into(),
             chat: vec![ChatMessage {
@@ -332,9 +334,9 @@ mod tests {
             assert_eq!(good.prep.as_ref().unwrap().id, 2);
             assert_eq!(result.other, vec![OtherPrep {
                 id: corrupt.id,
-                event_uid: corrupt.event_uid,
-                event_start: corrupt.event_start,
-                event_title: corrupt.event_title,
+                event_uid: corrupt.event_uid.unwrap(),
+                event_start: corrupt.event_start.unwrap(),
+                event_title: corrupt.event_title.unwrap(),
                 approved: true,
                 reason: "unreadable".into(),
             }]);
@@ -367,7 +369,7 @@ mod tests {
     fn prep_inside_recording_window_does_not_move() {
         for minutes in [5, 10] {
             let mut p = prep(1, "u", 1);
-            p.event_start = (now() + Duration::minutes(minutes)).to_rfc3339();
+            p.event_start = Some((now() + Duration::minutes(minutes)).to_rfc3339());
             assert!(moves(&[p], &HashSet::new(), &[occurrence("u", 2)], now()).is_empty());
         }
     }
@@ -378,7 +380,7 @@ mod tests {
         ended.start = now() - Duration::hours(1);
         ended.end = ended.start + Duration::minutes(30);
         let mut p = prep(1, "u", 0);
-        p.event_start = ended.start.to_rfc3339();
+        p.event_start = Some(ended.start.to_rfc3339());
         let result = overview(&[p], &[ended], &[], now(), true);
         assert!(result.upcoming.is_empty());
         assert_eq!(result.other.len(), 1);
@@ -400,7 +402,7 @@ mod tests {
     #[test]
     fn linked_or_past_prep_does_not_move() {
         let p = prep(1, "u", 1);
-        let linked = HashSet::from([(p.event_uid.clone(), p.event_start.clone())]);
+        let linked = HashSet::from([(p.event_uid.clone().unwrap(), p.event_start.clone().unwrap())]);
         assert!(moves(&[p], &linked, &[occurrence("u", 2)], now()).is_empty());
         for days in [-1, 0] {
             assert!(moves(
@@ -412,7 +414,7 @@ mod tests {
             .is_empty());
         }
         let mut invalid = prep(1, "u", 1);
-        invalid.event_start = "invalid".into();
+        invalid.event_start = Some("invalid".into());
         assert!(moves(&[invalid], &HashSet::new(), &[occurrence("u", 2)], now()).is_empty());
     }
 
@@ -464,13 +466,13 @@ mod tests {
         insert(&pool, &p).await;
         let target = occurrence("u", 2);
         assert_eq!(relocate(&pool, &[target.clone()], now()).await, Ok(1));
-        assert!(store::get(&pool, "u", &p.event_start)
+        assert!(store::get(&pool, "u", p.event_start.as_deref().unwrap())
             .await
             .unwrap()
             .is_none());
-        p.event_start = target.start.to_rfc3339();
+        p.event_start = Some(target.start.to_rfc3339());
         assert_eq!(
-            store::get(&pool, "u", &p.event_start).await.unwrap(),
+            store::get(&pool, "u", p.event_start.as_deref().unwrap()).await.unwrap(),
             Some(p)
         );
     }
@@ -491,7 +493,7 @@ mod tests {
         let mut approved = prep(1, "saved", 10);
         approved.approved_at = Some(now().to_rfc3339());
         let mut invalid = prep(4, "invalid", 1);
-        invalid.event_start = "invalid".into();
+        invalid.event_start = Some("invalid".into());
         let preps = vec![
             approved,
             prep(2, "orphan", 2),

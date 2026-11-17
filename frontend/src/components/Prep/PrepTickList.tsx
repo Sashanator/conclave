@@ -6,7 +6,7 @@ import { toast } from 'sonner';
 import { prepCounter, tickItem, type MeetingPrep } from '@/lib/prep';
 
 export function PrepTickList({ prep, onChange }: { prep: MeetingPrep; onChange(p: MeetingPrep): void }) {
-  const href = `/prep?${new URLSearchParams({ event: prep.eventUid, start: prep.eventStart })}`;
+  const href = `/prep?${new URLSearchParams({ event: prep.eventUid ?? '', start: prep.eventStart ?? '' })}`;
   const latest = useRef(prep);
   latest.current = prep;
   const queue = useRef<Promise<void>>(Promise.resolve());

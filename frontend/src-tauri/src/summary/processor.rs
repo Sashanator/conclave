@@ -764,8 +764,8 @@ mod tests {
         use crate::prep::{MeetingPrep, PrepItem};
         use crate::summary::user_notes::{render_prep_block, PREP_INSTRUCTION};
         let prep = MeetingPrep {
-            id: 1, event_uid: "event".into(), event_start: "start".into(),
-            event_title: "title".into(), template_id: None, material: "Background".into(),
+            id: 1, event_uid: Some("event".into()), event_start: Some("start".into()),
+            event_title: Some("title".into()), template_id: None, material: "Background".into(),
             chat: vec![], items: [("A", true), ("B", false)].into_iter().map(|(text, ticked)| PrepItem {
                 id: text.into(), text: text.into(), kind: "question".into(), ticked, by_user: false,
             }).collect(), approved_at: None, created_at: "created".into(), updated_at: "updated".into(),

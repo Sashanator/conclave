@@ -86,6 +86,8 @@ pub struct Extraction {
     pub tasks: Vec<ExtractedTask>,
     pub decisions: Vec<String>,
     pub requests: Vec<String>,
+    #[serde(default)]
+    pub gist: Option<String>,
 }
 
 /// One model reply and the provider and model it came from, for the usage log.
@@ -96,7 +98,7 @@ pub(crate) struct Reply {
 }
 
 const SYSTEM: &str = "You extract tasks, decisions and requests from one meeting summary.\n\
-Return only JSON matching {\"tasks\":[{\"text\":\"...\",\"owner\":\"me\" or \"unassigned\",\"due\":\"...\",\"at\":seconds}],\"decisions\":[\"...\"],\"requests\":[\"...\"]}. \
+Return only JSON matching {\"tasks\":[{\"text\":\"...\",\"owner\":\"me\" or \"unassigned\",\"due\":\"...\",\"at\":seconds}],\"decisions\":[\"...\"],\"requests\":[\"...\"],\"gist\":\"one sentence, at most 160 characters, what the meeting was about\"}. \
 Leave out \"due\" and \"at\" when unknown. No other text.\n\
 \"me\", \"I\", \"я\", \"мне\", \"мой\" and the names the user gives all mean the user.\n\
 Include a task only if its owner is the user, or it has no owner. A task with no owner is \"me\" only if the user's own lines show they took it on; otherwise it is \"unassigned\".\n\
@@ -143,6 +145,39 @@ fn capped_lines(own_lines: &[String]) -> String {
     out.trim_end().to_string()
 }
 
+pub(crate) const GIST_MAX_CHARS: usize = 160;
+
+/// A gist of at most GIST_MAX_CHARS chars: longer text is cut at 159 chars plus `…` (char-boundary safe). None when blank.
+pub(crate) fn cut_gist(s: &str) -> Option<String> {
+    let s = s.trim();
+    if s.is_empty() {
+        return None;
+    }
+    Some(if s.chars().count() > GIST_MAX_CHARS {
+        s.chars().take(GIST_MAX_CHARS - 1).collect::<String>() + "…"
+    } else {
+        s.to_string()
+    })
+}
+
+/// One-line gist of a summary: the first sentence of the first non-heading line with text, markdown markers stripped.
+pub(crate) fn gist_from_summary(md: &str) -> Option<String> {
+    md.lines().map(str::trim).filter(|l| !l.starts_with('#')).find_map(|line| {
+        let line = line.trim_start_matches(['-', '*']).trim_start();
+        let digits = line.chars().take_while(char::is_ascii_digit).count();
+        let line = match line[digits..].strip_prefix('.') {
+            Some(rest) if digits > 0 && rest.starts_with(char::is_whitespace) => rest,
+            _ => line,
+        };
+        let line = line.replace("**", "").replace("__", "").replace('`', "");
+        let chars: Vec<char> = line.trim().chars().collect();
+        let end = (0..chars.len())
+            .find(|&i| matches!(chars[i], '.' | '!' | '?') && chars.get(i + 1).map_or(true, |c| c.is_whitespace()))
+            .map_or(chars.len(), |i| i + 1);
+        cut_gist(&chars[..end].iter().collect::<String>())
+    })
+}
+
 /// Parses the model's JSON. The reply is untrusted: a code fence is stripped, the three arrays are required, a task
 /// with an unknown owner or an empty text is dropped, every text is trimmed and cut to MAX_TASK_CHARS, every list is
 /// capped at EXTRACT_MAX_ITEMS, and an `at` that is negative or not finite is dropped.
@@ -168,6 +203,8 @@ pub fn parse_extraction(raw: &str) -> Result<Extraction, String> {
         tasks,
         decisions: clipped(ex.decisions),
         requests: clipped(ex.requests),
+        // First line only: the gist is one line.
+        gist: ex.gist.as_deref().and_then(|g| cut_gist(g.trim().lines().next().unwrap_or(""))),
     })
 }
 
@@ -525,6 +562,22 @@ pub async fn extraction_status(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn gist() {
+        assert_eq!(gist_from_summary("## Summary\nWe agreed to ship. Then more.").as_deref(), Some("We agreed to ship."));
+        assert_eq!(gist_from_summary("# T\n\n- **Ship** on Friday\n## Next").as_deref(), Some("Ship on Friday"));
+        assert_eq!(gist_from_summary("1. Done: v1.2 shipped").as_deref(), Some("Done: v1.2 shipped"));
+        assert_eq!(gist_from_summary("---\nWe agreed.").as_deref(), Some("We agreed."));
+        assert_eq!(gist_from_summary("2.5x faster load times").as_deref(), Some("2.5x faster load times"));
+        assert_eq!(gist_from_summary("## A\n## B"), None);
+        assert_eq!(gist_from_summary(""), None);
+        let long = gist_from_summary(&"a".repeat(400)).unwrap();
+        assert_eq!(long.chars().count(), 160);
+        assert!(long.ends_with('…'));
+        let ru = gist_from_summary(&"щ".repeat(400)).unwrap();
+        assert_eq!(ru.chars().count(), 160);
+    }
+
     use super::*;
     use crate::database::repositories::test_pool;
     use crate::summary::llm_client::LlmCompletion;
@@ -541,6 +594,21 @@ mod tests {
         assert_eq!(minutes(4), 80);
         assert_eq!(minutes(5), 120);
         assert_eq!(minutes(u32::MAX), 120);
+    }
+
+    #[test]
+    fn gist_is_first_line_trimmed_and_bounded() {
+        let g = |j: &str| parse_extraction(&format!(r#"{{"tasks":[],"decisions":[],"requests":[],"gist":{j}}}"#));
+        assert_eq!(g(r#""  Agreed to ship.\nextra ""#).unwrap().gist.as_deref(), Some("Agreed to ship."));
+        assert_eq!(g(r#""""#).unwrap().gist, None);
+        assert_eq!(g("null").unwrap().gist, None);
+        assert_eq!(parse_extraction(r#"{"tasks":[],"decisions":[],"requests":[]}"#).unwrap().gist, None);
+        // A leading blank line is trimmed first, so the gist is the next line.
+        assert_eq!(g(r#""\nSecond line""#).unwrap().gist.as_deref(), Some("Second line"));
+        assert!(g("5").is_err());
+        let long = format!("\"{}\"", "я".repeat(300));
+        assert_eq!(g(&long).unwrap().gist.unwrap().chars().count(), GIST_MAX_CHARS);
+        assert_eq!(parse_extraction(VALID).unwrap().gist, None);
     }
 
     const VALID: &str = r#"{"tasks":[{"text":"Send the deck","owner":"me","at":62.5}],"decisions":["Ship"],"requests":[]}"#;

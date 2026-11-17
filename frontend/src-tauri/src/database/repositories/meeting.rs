@@ -37,13 +37,48 @@ impl Default for TitleOrigin {
     }
 }
 
+/// The one SQL expression for "which date a meeting has" (spec 6.1). `alias` is the meetings table alias ("" for none).
+/// The columns mix formats (space and T separators), so compare and order through `julianday(..)`, never as text.
+pub fn meeting_date_sql(alias: &str) -> String {
+    let p = if alias.is_empty() { String::new() } else { format!("{alias}.") };
+    format!("COALESCE({p}started_at, {p}calendar_start, {p}created_at)")
+}
+
+/// "Untitled · Mon 14:02": the title of a meeting created by hand without one.
+pub fn default_meeting_title(now: chrono::NaiveDateTime) -> String {
+    format!("Untitled · {}", now.format("%a %H:%M"))
+}
+
 impl MeetingsRepository {
+    /// Inserts an empty meeting (no recording yet) and returns its id. A blank title gets the default one.
+    pub async fn create_meeting(pool: &SqlitePool, title: Option<&str>, now_local: chrono::NaiveDateTime) -> Result<String, SqlxError> {
+        let given = title.map(str::trim).filter(|t| !t.is_empty());
+        let (title, source) = match given {
+            Some(t) => (t.chars().take(200).collect::<String>(), "user"),
+            None => (default_meeting_title(now_local), "default"),
+        };
+        let id = format!("meeting-{}", uuid::Uuid::new_v4());
+        let now = Utc::now().to_rfc3339();
+        sqlx::query("INSERT INTO meetings (id, title, title_source, reviewed, created_at, updated_at) VALUES (?, ?, ?, 0, ?, ?)")
+            .bind(&id).bind(title).bind(source).bind(&now).bind(&now)
+            .execute(pool).await?;
+        Ok(id)
+    }
+
     pub async fn get_meetings(pool: &SqlitePool) -> Result<Vec<MeetingModel>, sqlx::Error> {
-        let meetings =
-            sqlx::query_as::<_, MeetingModel>("SELECT * FROM meetings ORDER BY created_at DESC")
-                .fetch_all(pool)
-                .await?;
+        let sql = format!("SELECT * FROM meetings ORDER BY julianday({}) DESC, rowid DESC", meeting_date_sql(""));
+        let meetings = sqlx::query_as::<_, MeetingModel>(&sql).fetch_all(pool).await?;
         Ok(meetings)
+    }
+
+    /// The meeting's date (`meeting_date_sql`); `None` when there is no such meeting.
+    pub async fn meeting_date(pool: &SqlitePool, id: &str) -> Result<Option<DateTime<Utc>>, SqlxError> {
+        let sql = format!("SELECT {} FROM meetings WHERE id = ?", meeting_date_sql(""));
+        Ok(sqlx::query_as::<_, (crate::database::models::DateTimeUtc,)>(&sql)
+            .bind(id)
+            .fetch_optional(pool)
+            .await?
+            .map(|(d,)| d.0))
     }
 
     pub async fn delete_meeting(pool: &SqlitePool, meeting_id: &str) -> Result<bool, SqlxError> {
@@ -746,5 +781,165 @@ mod migration_tests {
                 .await
                 .unwrap();
         assert_eq!((text.as_str(), start, idx, sentences), ("hi", Some(1.5), None, None));
+    }
+}
+
+#[cfg(test)]
+mod redesign_migration_tests {
+    use super::*;
+    use sqlx::migrate::Migrator;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use std::path::Path;
+
+    const REDESIGN_VERSION: i64 = 20261116000001;
+
+    async fn exec(pool: &SqlitePool, sql: &str) {
+        sqlx::query(sql).execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn redesign_migration_on_previous_schema() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let mut m = Migrator::new(Path::new("./migrations")).await.unwrap();
+        let all = m.migrations.clone();
+        m.migrations = all.iter().filter(|x| x.version < REDESIGN_VERSION).cloned().collect::<Vec<_>>().into();
+        m.run(&pool).await.unwrap();
+
+        exec(&pool, "INSERT INTO meetings (id,title,created_at,updated_at) VALUES ('old','Old','2026-11-01T10:00:00+00:00','2026-11-01T10:00:00+00:00'),('legacy','Legacy','2026-10-05 12:00:00','2026-10-05 12:00:00')").await;
+        exec(&pool, "INSERT INTO meetings (id,title,created_at,updated_at,calendar_uid,calendar_start) VALUES ('cal','Cal','2026-11-02T10:00:00+00:00','2026-11-02T10:00:00+00:00','u1','2026-11-20T09:00:00+00:00')").await;
+        exec(&pool, "INSERT INTO transcripts (id,meeting_id,transcript,timestamp,audio_end_time) VALUES ('t1','old','a','x',1200.0),('t2','old','b','x',2700.0),('t3','legacy','c','x',NULL)").await;
+        exec(&pool, "INSERT INTO summary_processes (meeting_id,status,created_at,updated_at,result) VALUES ('old','completed','t','t','{\"markdown\":\"## Summary\\nWe agreed. More.\",\"template_id\":\"interview\"}'),('legacy','completed','t','t','not json')").await;
+        exec(&pool, "INSERT INTO meeting_preps (event_uid,event_start,event_title,created_at,updated_at) VALUES ('u4','2026-11-23T09:00:00+00:00','T','c','u')").await;
+        for (uid, start) in [("u1", "2026-11-20T09:00:00+00:00"), ("u2", "2026-11-21T09:00:00+00:00"), ("u3", "2026-11-22T09:00:00+00:00")] {
+            sqlx::query("INSERT INTO meeting_preps (event_uid,event_start,event_title,template_id,material,chat_json,items_json,approved_at,created_at,updated_at) VALUES (?,?,'T','one_on_one','mat','[{\"a\":1}]','[{\"b\":2}]','2026-11-15T00:00:00Z','c','u')")
+                .bind(uid).bind(start).execute(&pool).await.unwrap();
+        }
+        exec(&pool, "DELETE FROM meeting_preps WHERE event_uid='u3'").await;
+        exec(&pool, "INSERT INTO meetings (id,title,created_at,updated_at) VALUES ('frac','Frac','2026-11-01T10:00:00.123456789+00:00','2026-11-01T10:00:00.123456789+00:00')").await;
+        exec(&pool, "INSERT INTO transcripts (id,meeting_id,transcript,timestamp,audio_end_time) VALUES ('t4','frac','a','x',300.0),('t5','frac','b','x',600.0)").await;
+        type Prep = (i64, Option<String>, Option<String>, Option<String>, Option<String>, String, String, String, Option<String>, String, String);
+        let prep_sql = "SELECT id,event_uid,event_start,event_title,template_id,material,chat_json,items_json,approved_at,created_at,updated_at FROM meeting_preps ORDER BY id";
+        let before: Vec<Prep> = sqlx::query_as(prep_sql).fetch_all(&pool).await.unwrap();
+        assert_eq!(before.len(), 3);
+        assert!(before[0].4.is_none() && before[0].8.is_none()); // u4: NULL template_id and approved_at
+        let (seq_before,): (i64,) = sqlx::query_as("SELECT seq FROM sqlite_sequence WHERE name='meeting_preps'").fetch_one(&pool).await.unwrap();
+        assert!(seq_before > before[2].0); // u3 was the newest row when deleted
+
+        Migrator::new(Path::new("./migrations")).await.unwrap().run(&pool).await.unwrap();
+
+        let (n_unreviewed,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meetings WHERE reviewed <> 1").fetch_one(&pool).await.unwrap();
+        assert_eq!(n_unreviewed, 0);
+        type Row = (Option<String>, Option<String>, Option<String>, String);
+        let row = |id: &'static str| {
+            let pool = pool.clone();
+            async move {
+                sqlx::query_as::<_, Row>("SELECT template_id, started_at, ended_at, created_at FROM meetings WHERE id=?")
+                    .bind(id).fetch_one(&pool).await.unwrap()
+            }
+        };
+        let old = row("old").await;
+        assert_eq!(old.0.as_deref(), Some("interview"));
+        assert_eq!(old.2.as_deref(), Some(old.3.as_str()));
+        let started = chrono::DateTime::parse_from_rfc3339(old.1.as_deref().unwrap()).unwrap();
+        assert_eq!(started.with_timezone(&Utc).to_rfc3339(), "2026-11-01T09:15:00+00:00");
+        let legacy = row("legacy").await;
+        let frac = row("frac").await;
+        let started = chrono::DateTime::parse_from_rfc3339(frac.1.as_deref().unwrap()).unwrap();
+        let created = chrono::DateTime::parse_from_rfc3339(&frac.3).unwrap();
+        assert_eq!((created - chrono::Duration::seconds(600) - started).num_milliseconds().abs(), 0);
+        assert_eq!(legacy.0, None);
+        assert_eq!(legacy.1.as_deref(), Some(legacy.3.as_str()));
+
+        let after: Vec<Prep> = sqlx::query_as(prep_sql).fetch_all(&pool).await.unwrap();
+        assert_eq!(after, before);
+        let (linked,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_preps WHERE meeting_id IS NOT NULL").fetch_one(&pool).await.unwrap();
+        assert_eq!(linked, 0);
+        let (seq_after,): (i64,) = sqlx::query_as("SELECT seq FROM sqlite_sequence WHERE name='meeting_preps'").fetch_one(&pool).await.unwrap();
+        assert_eq!(seq_after, seq_before);
+        let (leftover,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM sqlite_sequence WHERE name='meeting_preps_new'").fetch_one(&pool).await.unwrap();
+        assert_eq!(leftover, 0);
+
+        let ins = "INSERT INTO meeting_preps (created_at,updated_at,meeting_id) VALUES ('c','u',?)";
+        sqlx::query(ins).bind("cal").execute(&pool).await.unwrap();
+        let (new_id,): (i64,) = sqlx::query_as("SELECT MAX(id) FROM meeting_preps").fetch_one(&pool).await.unwrap();
+        assert!(new_id > seq_before);
+        sqlx::query(ins).bind("old").execute(&pool).await.unwrap(); // second NULL-event prep
+        assert!(sqlx::query(ins).bind("cal").execute(&pool).await.is_err());
+
+        let views: Vec<(String, i64, i64)> = sqlx::query_as("SELECT id, position, builtin FROM meeting_views ORDER BY position").fetch_all(&pool).await.unwrap();
+        assert_eq!(views, vec![("all".into(), 0, 1), ("week".into(), 1, 1), ("unreviewed".into(), 2, 1)]);
+        let dis = "INSERT INTO dismissed_occurrences (calendar_uid,original_start,dismissed_at) VALUES ('u1','s','n')";
+        exec(&pool, dis).await;
+        assert!(sqlx::query(dis).execute(&pool).await.is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+
+    #[test]
+    fn the_expression_follows_the_alias() {
+        assert_eq!(meeting_date_sql("m"), "COALESCE(m.started_at, m.calendar_start, m.created_at)");
+        assert_eq!(meeting_date_sql(""), "COALESCE(started_at, calendar_start, created_at)");
+    }
+
+    #[tokio::test]
+    async fn meetings_order_and_date_follow_started_at_then_calendar_then_created() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "mid", "2026-11-05 10:00:00.000+00:00", None, None).await;
+        row(&pool, "cal", "2026-11-02 10:00:00.000+00:00", None, Some("2026-11-07T10:00:00+00:00")).await;
+        // Same day, mixed formats: the T-format 09:00 is earlier than the space-format 10:00 (text order would say later).
+        row(&pool, "t9", "2026-10-20 08:00:00.000+00:00", Some("2026-10-20T09:00:00.000+00:00"), None).await;
+        row(&pool, "s10", "2026-10-20 10:00:00.000+00:00", None, None).await;
+        let ids: Vec<String> = MeetingsRepository::get_meetings(&pool).await.unwrap().into_iter().map(|m| m.id).collect();
+        assert_eq!(ids, ["moved", "cal", "mid", "s10", "t9"]);
+        let d = MeetingsRepository::meeting_date(&pool, "moved").await.unwrap().unwrap();
+        assert_eq!(d.to_rfc3339(), "2026-11-09T10:00:00+00:00");
+        let d = MeetingsRepository::meeting_date(&pool, "cal").await.unwrap().unwrap();
+        assert_eq!(d.to_rfc3339(), "2026-11-07T10:00:00+00:00");
+        assert!(MeetingsRepository::meeting_date(&pool, "nope").await.unwrap().is_none());
+    }
+}
+
+#[cfg(test)]
+mod create_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+    use chrono::NaiveDate;
+
+    fn at() -> chrono::NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 11, 16).unwrap().and_hms_opt(14, 2, 0).unwrap()
+    }
+
+    #[test]
+    fn default_title_has_weekday_and_time() {
+        assert_eq!(default_meeting_title(at()), "Untitled · Mon 14:02");
+    }
+
+    #[tokio::test]
+    async fn create_meeting_titles() {
+        let pool = test_pool().await;
+        let long = "x".repeat(300);
+        for (input, title, src) in [
+            (None, "Untitled · Mon 14:02".to_string(), "default"),
+            (Some("  "), "Untitled · Mon 14:02".to_string(), "default"),
+            (Some(" Board "), "Board".to_string(), "user"),
+            (Some(long.as_str()), "x".repeat(200), "user"),
+        ] {
+            let id = MeetingsRepository::create_meeting(&pool, input, at()).await.unwrap();
+            let row: (String, String, i64, Option<String>) =
+                sqlx::query_as("SELECT title, title_source, reviewed, started_at FROM meetings WHERE id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+            assert_eq!((row.0, row.1.as_str(), row.2, row.3), (title, src, 0, None));
+        }
     }
 }

@@ -170,7 +170,7 @@ function PrepEditor({ event, guard, onUpdated, onDeleted }: {
       const version = revision.current;
       const sentItems = value.items.filter(item => item.text.trim() !== '');
       try {
-        const saved = await savePrep({ eventUid: value.eventUid, eventStart: value.eventStart, eventTitle: value.eventTitle, material: value.material, templateId: value.templateId, items: sentItems });
+        const saved = await savePrep({ eventUid: value.eventUid, eventStart: value.eventStart, eventTitle: value.eventTitle ?? "", material: value.material, templateId: value.templateId, items: sentItems });
         savedRevision.current = version;
         // A write completing must never replace edits made while it was in flight.
         if (version === revision.current) replace({ ...saved, items: attachSaved(current.current!.items, sentItems, saved.items, true) });

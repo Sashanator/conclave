@@ -14,7 +14,7 @@ const invoke = mock(async (_c: string, _a?: unknown) => routeResult());
 const toast = { warning: mock((_w: string, _o?: unknown) => {}), error: mock((_w: string, _o?: unknown) => {}), info: mock(() => {}), success: mock(() => {}) };
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
-const { routeRecordingStart, takeAutoStartMeetingId, routeOrFallback, releaseFailedStart } = await import('../../src/lib/recording-target');
+const { routeRecordingStart, takeAutoStartMeetingId, routeOrFallback, releaseFailedStart, queueAutoStart } = await import('../../src/lib/recording-target');
 
 beforeEach(() => { invoke.mockClear(); toast.warning.mockClear(); toast.error.mockClear(); routeResult = async () => ({ meetingId: 'm', title: 'T' }); });
 
@@ -80,5 +80,45 @@ describe('releaseFailedStart', () => {
     await releaseFailedStart({ meetingId: 'm9', title: 'T' }, new Error('x'));
     console.error = logged;
     expect(toast.error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('queueAutoStart', () => {
+  test('sets both keys and returns the meeting page url', () => {
+    sessionStorage.clear();
+    const url = queueAutoStart(sessionStorage, 'm 1');
+    expect(url).toMatch(/^\/meeting-details\?id=m%201&start=\d+$/);
+    expect(sessionStorage.getItem('autoStartKey')).toBe(`m 1:${url.split('start=')[1]}`);
+    expect(sessionStorage.getItem('autoStartMeetingId')).toBe('m 1');
+    expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
+  });
+});
+
+describe('showRecordingView', () => {
+  const { showRecordingView } = require('../../src/lib/recording-target');
+  const base = { meetingId: 'm1', liveMeetingId: null, heldId: null, stopFlow: false };
+  test('live here, held through the save, and no hold once the save is over', () => {
+    expect(showRecordingView({ ...base, liveMeetingId: 'm1' })).toBe(true);
+    expect(showRecordingView({ ...base, heldId: 'm1', stopFlow: true })).toBe(true);
+    expect(showRecordingView({ ...base, heldId: 'm1', stopFlow: false })).toBe(false);
+    expect(showRecordingView({ ...base, heldId: 'm2', stopFlow: true })).toBe(false);
+    expect(showRecordingView({ ...base, meetingId: null, liveMeetingId: null })).toBe(false);
+  });
+});
+
+describe('autoStartAllowed', () => {
+  const { autoStartAllowed, pageKeyFor } = require('../../src/lib/recording-target');
+  test('no key: any page may start; a key: only its page, only while fresh', () => {
+    sessionStorage.clear();
+    expect(autoStartAllowed(sessionStorage, undefined)).toBe(true);
+    sessionStorage.setItem('autoStartKey', 'a:1000');
+    sessionStorage.setItem('autoStartRecording', 'true');
+    expect(autoStartAllowed(sessionStorage, pageKeyFor('b', null), 2000)).toBe(false);
+    expect(autoStartAllowed(sessionStorage, pageKeyFor('a', '1000'), 2000)).toBe(true);
+    expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
+    // stale: dropped for good, flags included
+    expect(autoStartAllowed(sessionStorage, pageKeyFor('a', '1000'), 1000 + 60_000)).toBe(false);
+    expect(sessionStorage.getItem('autoStartKey')).toBeNull();
+    expect(sessionStorage.getItem('autoStartRecording')).toBeNull();
   });
 });

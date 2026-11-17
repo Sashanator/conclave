@@ -28,6 +28,8 @@ interface RecordingControlsProps {
     systemDevice: string | null;
   };
   meetingName?: string;
+  /** The meeting page's bar: text buttons ('Pause', 'Stop and summarize') instead of icons. */
+  labeled?: boolean;
 }
 
 export const RecordingControls: React.FC<RecordingControlsProps> = ({
@@ -43,6 +45,7 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
   isParentProcessing,
   selectedDevices,
   meetingName,
+  labeled,
 }) => {
   // Use global recording state context for pause state (syncs with tray operations)
   const recordingState = useRecordingState();
@@ -415,12 +418,13 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                               }
                             }}
                             disabled={isPausing || isResuming || isStopping}
-                            className={`w-10 h-10 flex items-center justify-center ${isPausing || isResuming || isStopping
+                            className={`${labeled ? 'h-9 gap-2 px-3 text-sm' : 'w-10 h-10'} flex items-center justify-center ${isPausing || isResuming || isStopping
                               ? 'bg-muted border-2 border-border text-muted-foreground'
                               : 'bg-card border-2 border-border text-muted-foreground hover:border-border hover:bg-accent'
                               } rounded-full transition-colors relative`}
                           >
                             {isPaused ? <Play size={16} /> : <Pause size={16} />}
+                            {labeled && (isPaused ? 'Resume' : 'Pause')}
                             {(isPausing || isResuming) && (
                               <div className="absolute -top-8 text-muted-foreground font-medium text-xs">
                                 {isPausing ? 'Pausing...' : 'Resuming...'}
@@ -440,10 +444,11 @@ export const RecordingControls: React.FC<RecordingControlsProps> = ({
                               handleStopRecording();
                             }}
                             disabled={isStopping || isPausing || isResuming || isStartingRecording}
-                            className={`w-10 h-10 flex items-center justify-center ${isStopping || isPausing || isResuming || isStartingRecording ? 'bg-muted-foreground/60' : 'bg-red-500 hover:bg-red-600'
+                            className={`${labeled ? 'h-9 gap-2 px-3 text-sm' : 'w-10 h-10'} flex items-center justify-center ${isStopping || isPausing || isResuming || isStartingRecording ? 'bg-muted-foreground/60' : 'bg-red-500 hover:bg-red-600'
                               } rounded-full text-white transition-colors relative`}
                           >
                             <Square size={16} />
+                            {labeled && 'Stop and summarize'}
                             {isStopping && (
                               <div className="absolute -top-8 text-muted-foreground font-medium text-xs">
                                 Stopping...

@@ -40,19 +40,25 @@ const toast = {
 };
 const startRecordingWithDevices = mock(async (..._a: unknown[]) => startResult());
 const setStartTitle = mock((_t: unknown) => {});
+const transcripts = { clearTranscripts() {}, setStartTitle };
+const sidebar = { setIsMeetingActive() {} };
+const recordingState = { setStatus() {} };
+const devices = { micDevice: 'mic', systemDevice: 'sys' }; // stable, like the real context
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
-mock.module('../../src/contexts/TranscriptContext', () => ({ useTranscripts: () => ({ clearTranscripts() {}, setStartTitle }) }));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => ({ setIsMeetingActive() {} }) }));
-mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ selectedDevices: { micDevice: 'mic', systemDevice: 'sys' } }) }));
-mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.state, useRecordingState: () => ({ setStatus() {} }) }));
+mock.module('../../src/contexts/TranscriptContext', () => ({ useTranscripts: () => transcripts }));
+mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => sidebar }));
+mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ selectedDevices: devices }) }));
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.state, useRecordingState: () => recordingState }));
 mock.module('../../src/services/recordingService', () => ({ recordingService: { startRecordingWithDevices } }));
 mock.module('../../src/lib/recordingNotification', () => ({ showRecordingNotification: async () => {} }));
 const { useRecordingStart } = await import('../../src/hooks/useRecordingStart');
 
 let hook: UseRecordingStartReturn;
 let renderer: ReactTestRenderer | undefined;
-function View() { hook = useRecordingStart(false, () => {}); return null; }
+const noop = () => {};
+let released = 0;
+function View({ k }: { k?: string }) { hook = useRecordingStart(false, noop, undefined, k, () => { released++; }); return null; }
 async function mount() {
   await act(async () => { renderer = create(<View />); });
   await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
@@ -67,6 +73,7 @@ beforeEach(() => {
   routeResult = async () => ({ meetingId: 'routed-1', title: 'Untitled · Mon 14:02' });
   startResult = async () => {};
   sessionStorage.clear();
+  released = 0;
 });
 afterEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
@@ -125,6 +132,17 @@ describe('manual start', () => {
 });
 
 describe('auto-start', () => {
+  test('a flag queued for another meeting page starts when the page key changes', async () => {
+    await mount();
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    sessionStorage.setItem('autoStartRecording', 'true');
+    sessionStorage.setItem('autoStartMeetingId', 'm-b');
+    await act(async () => { renderer!.update(<View k="m-b" />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(routeCalls()[0][1]).toEqual({ source: { page: 'm-b' } });
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+  });
+
   test('a continue auto-start skips routing', async () => {
     sessionStorage.setItem('autoStartRecording', 'true');
     sessionStorage.setItem('autoStartContinueId', 'earlier-1');
@@ -169,5 +187,100 @@ describe('auto-start', () => {
     await mount();
     console.error = logged; globalThis.alert = alerted;
     expect(releaseCalls()).toEqual([['api_release_routed_start', { meetingId: 'routed-1' }]]);
+  });
+});
+
+describe('queued starts are bound to one page visit', () => {
+  const queue = (id: string, at = Date.now()) => {
+    sessionStorage.setItem('autoStartRecording', 'true');
+    sessionStorage.setItem('autoStartContinueId', id);
+    sessionStorage.setItem('autoStartKey', `${id}:${at}`);
+    return `${id}:${at}`;
+  };
+  const rerender = async (k: string) => {
+    await act(async () => { renderer!.update(<View k={k} />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  };
+  test('Resume on the same meeting id starts when the key changes', async () => {
+    renderer = undefined;
+    await act(async () => { renderer = create(<View k="m1:" />); });
+    const key = queue('m1');
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    await rerender(key);
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+    expect(sessionStorage.getItem('autoStartKey')).toBeNull();
+  });
+  test('a flag queued for another page is not consumed here and fires on its own page', async () => {
+    const key = queue('m1');
+    renderer = undefined;
+    await act(async () => { renderer = create(<View k="m2:" />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
+    await rerender(key);
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+  });
+  test('a stale flag fires nowhere and is cleared', async () => {
+    const key = queue('m1', Date.now() - 60_000);
+    renderer = undefined;
+    await act(async () => { renderer = create(<View k={key} />); });
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    expect(sessionStorage.getItem('autoStartRecording')).toBeNull();
+  });
+});
+
+describe('a released row', () => {
+  test('a failed manual start tells the page its row was given back', async () => {
+    startResult = async () => { throw new Error('device busy'); };
+    const logged = console.error; console.error = () => {};
+    await mount();
+    await act(async () => { await hook.handleRecordingStart('routed-1').catch(() => {}); });
+    console.error = logged;
+    expect(released).toBe(1);
+  });
+  test('a failed auto-start does too', async () => {
+    sessionStorage.setItem('autoStartRecording', 'true');
+    startResult = async () => { throw new Error('device busy'); };
+    const logged = console.error; console.error = () => {};
+    const alerted = globalThis.alert; globalThis.alert = () => {};
+    await mount();
+    console.error = logged; globalThis.alert = alerted;
+    expect(released).toBe(1);
+  });
+  test('a speech runtime failure is shown, not only logged', async () => {
+    startResult = async () => { throw 'TRANSCRIPTION_RUNTIME_INITIALIZATION_FAILED'; };
+    const logged = console.error; console.error = () => {};
+    await mount();
+    await act(async () => { await hook.handleRecordingStart(); });
+    console.error = logged;
+    expect(toast.error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('tray-style queued starts', () => {
+  const rerender = async (k: string) => {
+    await act(async () => { renderer!.update(<View k={k} />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  };
+  test('a stale key followed by a tray-style queued start still starts', async () => {
+    sessionStorage.setItem('autoStartKey', `m0:${Date.now() - 60_000}`);
+    renderer = undefined;
+    await act(async () => { renderer = create(<View k="m1:" />); });
+    // What the tray script writes: a fresh key for its landing page, over the old one.
+    const key = `m1:${Date.now()}`;
+    sessionStorage.setItem('autoStartKey', key);
+    sessionStorage.setItem('autoStartMeetingId', 'm1');
+    sessionStorage.setItem('autoStartRecording', 'true');
+    await rerender(key);
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+  });
+  test('a tray start to the record screen (key removed) starts with no page key', async () => {
+    sessionStorage.setItem('autoStartKey', `m0:${Date.now() - 60_000}`);
+    sessionStorage.removeItem('autoStartKey'); // the tray script clears it
+    sessionStorage.setItem('autoStartRecording', 'true');
+    renderer = undefined;
+    await act(async () => { renderer = create(<View />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
   });
 });

@@ -1,5 +1,6 @@
 import { toast } from 'sonner';
 import type { SaveMeetingResponse } from '@/services/storageService';
+import { queuedPageUrl } from '@/lib/recording-target';
 
 /** Where a save landed: the meeting page, and whether the recording joined an earlier meeting. */
 export function saveOutcome(r: SaveMeetingResponse): { url: string; continued: boolean; continueError: string | null; fallback: boolean } {
@@ -20,11 +21,11 @@ export interface ContinueStatus {
   target: ContinueMeeting | null;
 }
 
-/** Meeting page's "Resume recording": the next start continues this meeting, then goes to record to start it. */
+/** Meeting page's "Resume recording": the next start continues this meeting, then opens its page, which starts it. */
 export function requestResume(meetingId: string, push: (url: string) => void): void {
   sessionStorage.setItem('autoStartContinueId', meetingId);
   sessionStorage.setItem('autoStartRecording', 'true');
-  push('/record');
+  push(queuedPageUrl(sessionStorage, meetingId));
 }
 
 /** Reads and clears the continue id, so a later auto-start does not reuse it. */

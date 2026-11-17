@@ -9,10 +9,11 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
-import { MeetingDetailsSplitView, type MeetingDetailsTab } from '@/components/MeetingDetails/MeetingDetailsSplitView';
+import { FinishedTabs, type MeetingDetailsTab } from '@/components/MeetingPage/FinishedTabs';
+import { MeetingTasksPanel } from '@/components/MeetingPage/MeetingTasksPanel';
+import { PrepTab } from '@/components/MeetingPage/PrepTab';
 import { AudioPlayerBar } from '@/components/MeetingDetails/AudioPlayerBar';
 import { NotesPane } from '@/components/MeetingNotes/NotesPane';
-import { NotesWithPrep } from '@/components/Prep/NotesWithPrep';
 import { ModelConfig } from '@/components/ModelSettingsModal';
 
 // Custom hooks
@@ -27,11 +28,11 @@ import { useMeetingSpeakers } from '@/hooks/useMeetingSpeakers';
 import { useConfig } from '@/contexts/ConfigContext';
 import { lineSpeakerName } from '@/lib/speakers';
 import { readSummaryMetadata } from '@/lib/summary-content';
-import { pickTemplateIfAllowed } from '@/lib/regenerate-guard';
+import { pickTemplateIfAllowed, shouldRegenerate } from '@/lib/regenerate-guard';
+import { MeetingHeader } from '@/components/MeetingPage/MeetingHeader';
+import type { MeetingRow } from '@/lib/meetings';
 import { audioMissingMessage } from '@/lib/meeting-audio';
 import { requestResume } from '@/lib/resume';
-import { notesCollapsedOnScreen, readFlag, readMeetingPageLayout, writeFlag } from '@/lib/meeting-page-layout';
-import { useIsDesktop } from '@/hooks/useIsDesktop';
 
 export default function PageContent({
   meeting,
@@ -53,6 +54,9 @@ export default function PageContent({
   onSetTranscriptSpeaker,
   focusSegmentId = null,
   requestedTab = null,
+  reviewed = false,
+  row = null,
+  onRowChange,
 }: {
   meeting: any;
   summaryData: MeetingSummary | null;
@@ -74,7 +78,11 @@ export default function PageContent({
   onSetTranscriptSpeaker?: (id: string, idx: number | null) => void;
   // From a search hit: the transcript line to scroll to, and the summary or notes view to open
   focusSegmentId?: string | null;
-  requestedTab?: 'summary' | 'notes' | null;
+  requestedTab?: MeetingDetailsTab | null;
+  reviewed?: boolean;
+  // The row feeds the header and its menu; none for an old link without a row
+  row?: MeetingRow | null;
+  onRowChange?: (row: MeetingRow) => void;
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
@@ -85,16 +93,11 @@ export default function PageContent({
   // State
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const isRecording = false;
-  const [activeTab, setActiveTab] = useState<MeetingDetailsTab>('transcript');
-  const layout = useMemo(readMeetingPageLayout, []);
+  const [activeTab, setActiveTab] = useState<MeetingDetailsTab>('summary');
   const notes = useMeetingNotes(meeting.id);
   const audio = useMeetingAudio(meeting.id);
   const router = useRouter();
-  const { isRecording: recordingNow, isStopping, isProcessing, isSaving } = useRecordingState();
-  const [notesCollapsed, setNotesCollapsed] = useState(() => readFlag('conclave.notesPaneCollapsed'));
-  const toggleNotesCollapsed = () => setNotesCollapsed((c) => { writeFlag('conclave.notesPaneCollapsed', !c); return !c; });
-  const isDesktop = useIsDesktop();
-  const notesStripShown = notesCollapsedOnScreen(layout, notesCollapsed, isDesktop);
+  const { isRecording: recordingNow, isStopping, isProcessing, isSaving, liveMeetingId } = useRecordingState();
 
   // Ref to store the modal open function from SummaryGeneratorButtonGroup
   const openModelSettingsRef = useRef<(() => void) | null>(null);
@@ -103,7 +106,7 @@ export default function PageContent({
   const autoGenerationStartedMeetingIdRef = useRef<string | null>(null);
 
   // Sidebar context
-  const { serverAddress } = useSidebar();
+  const { serverAddress, refetchMeetings } = useSidebar();
 
   // Get model config from ConfigContext
   const { modelConfig, setModelConfig, isModelConfigLoading, speakerIdActive, speakerSettingsLoaded } = useConfig();
@@ -221,7 +224,6 @@ export default function PageContent({
   useEffect(() => {
     if (!focusSegmentId && !requestedTab) return;
     manuallySelectedTabMeetingIdsRef.current.add(meeting.id);
-    if (requestedTab === 'notes') setNotesCollapsed(false);
     setActiveTab(requestedTab ?? 'transcript');
   }, [meeting.id, focusSegmentId, requestedTab]);
 
@@ -283,30 +285,45 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen min-w-0 bg-muted/50"
     >
+      {row && (
+        <div className="border-b border-border bg-background px-6 pt-4 pb-2">
+          <MeetingHeader
+            row={row}
+            finished
+            live={liveMeetingId === meeting.id} // the recording/saving view takes over this page, so only the live target matters
+            onChange={(r) => { onRowChange?.(r); if (r.title !== row.title) meetingData.updateMeetingTitle(r.title); }}
+            onTitleSaved={onMeetingUpdated}
+            onMeetingDeleted={() => { void refetchMeetings().finally(() => router.push('/')); }}
+            onRecordingDeleted={() => window.location.reload()}
+            onRegenerateSummary={(id) => {
+              const name = templates.availableTemplates.find((t) => t.id === id)?.name ?? id;
+              pickTemplateIfAllowed(meetingData.isSummaryDirty, () => templates.handleTemplateSelection(id, name), () => regenerateSummary(id));
+            }}
+          />
+        </div>
+      )}
       <div className="flex flex-1 min-w-0 overflow-hidden">
-        <MeetingDetailsSplitView
+        <FinishedTabs
           activeTab={activeTab}
           onTabChange={(tab) => {
             manuallySelectedTabMeetingIdsRef.current.add(meeting.id);
             setActiveTab(tab);
           }}
-          layout={layout}
           notesCount={notes.notes.length}
-          notesCollapsed={notesStripShown}
+          tasks={<MeetingTasksPanel meetingId={meeting.id} reviewed={reviewed} />}
+          prep={<PrepTab meetingId={meeting.id} briefSlot={null} />}
           notes={
-            <NotesWithPrep meetingId={meeting.id} notes={
-              <NotesPane
-                disabled={!notes.loaded}
-                disabledHint="Loading notes…"
-                notes={notes.notes}
-                onAdd={notes.addNote}
-                onUpdate={notes.updateNote}
-                onDelete={notes.deleteNote}
-                onTimeClick={audio.info?.path ? audio.playFrom : undefined}
-                collapsed={notesStripShown}
-                onToggleCollapsed={toggleNotesCollapsed}
-              />
-            }
+            <NotesPane
+              disabled={!notes.loaded}
+              disabledHint="Loading notes…"
+              notes={notes.notes}
+              onAdd={notes.addNote}
+              onUpdate={notes.updateNote}
+              onDelete={notes.deleteNote}
+              onTimeClick={audio.info?.path ? audio.playFrom : undefined}
+              collapsed={false}
+              onToggleCollapsed={() => {}}
+              hideHeader
             />
           }
           transcript={

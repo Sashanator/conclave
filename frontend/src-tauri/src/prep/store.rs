@@ -203,6 +203,13 @@ pub(crate) async fn save_prep(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|e| e.to_string())?;
+    // Calendar sync may have deleted an untouched meeting; saving then would write a prep no screen can show.
+    if let Some(id) = meeting_id {
+        let alive: Option<i64> = sqlx::query_scalar("SELECT 1 FROM meetings WHERE id = ?").bind(id).fetch_optional(&mut *tx).await.map_err(|e| e.to_string())?;
+        if alive.is_none() {
+            return Err("This meeting was removed from your calendar.".into());
+        }
+    }
     let by_event = match event {
         Some((uid, start)) => one(&mut tx, "event_uid = ? AND event_start = ?", uid, Some(start)).await?,
         None => None,
@@ -937,6 +944,15 @@ mod tests {
         assert_eq!(for_meeting(&pool, &other).await.unwrap().unwrap().id, calendar.id);
         assert!(save_prep(&pool, Some(&id), Some(("u", "2026-10-29T12:00:00Z")), "Event", "", None, vec![]).await.is_err());
         assert!(save_prep(&pool, None, None, "x", "", None, vec![]).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn save_for_a_removed_meeting_is_refused_and_writes_nothing() {
+        let pool = test_pool().await;
+        let err = save_prep(&pool, Some("gone"), None, "T", "m", None, vec![item("a", "x")]).await.unwrap_err();
+        assert!(err.contains("removed"));
+        let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM meeting_preps").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0);
     }
 
     #[tokio::test]

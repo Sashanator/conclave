@@ -217,6 +217,8 @@ pub async fn apply(pool: &SqlitePool, actions: &[Action], marker: &str, now: Dat
             .execute(pool).await.map_err(ctx)?.rows_affected(),
             Action::Move { id, start, end } => {
                 let mut tx = pool.begin().await.map_err(ctx)?;
+                let old: Option<(Option<String>, Option<String>)> = sqlx::query_as("SELECT calendar_uid, calendar_start FROM meetings WHERE id = ?")
+                    .bind(id).fetch_optional(&mut *tx).await.map_err(ctx)?;
                 let n = sqlx::query(&format!("UPDATE meetings SET calendar_start = ?, calendar_end = ? WHERE id = ? AND {GUARD}"))
                     .bind(start).bind(end).bind(id).bind(marker)
                     .execute(&mut *tx).await.map_err(ctx)?.rows_affected();
@@ -228,6 +230,12 @@ pub async fn apply(pool: &SqlitePool, actions: &[Action], marker: &str, now: Dat
                     )
                     .bind(start).bind(id).bind(start)
                     .execute(&mut *tx).await.map_err(ctx)?;
+                    // The brief follows the event, else it is unreachable (it joins on uid and start). Update only; OR IGNORE keeps an occupied slot.
+                    if let Some((Some(uid), Some(old_start))) = old {
+                        sqlx::query("UPDATE OR IGNORE briefs SET event_start = ? WHERE event_uid = ? AND datetime(event_start) = datetime(?)")
+                            .bind(start).bind(uid).bind(old_start)
+                            .execute(&mut *tx).await.map_err(ctx)?;
+                    }
                 }
                 tx.commit().await.map_err(ctx)?;
                 n
@@ -605,6 +613,28 @@ mod tests {
             assert_eq!((r.get::<String, _>(0), r.get::<String, _>(1)), (ts(12), ts(13)));
             let s: String = sqlx::query("SELECT event_start FROM meeting_preps").fetch_one(&pool).await.unwrap().get(0);
             assert_eq!(s, ts(12));
+        }
+
+        #[tokio::test]
+        async fn move_carries_the_brief_so_it_stays_reachable() {
+            let pool = test_pool().await;
+            put(&pool, "a", 10).await;
+            sqlx::query("INSERT INTO briefs (id,event_uid,event_start,title,template_id,previous_meeting_id,content_json,created_at) VALUES ('br','u',?,'T','t','p','{}','c')")
+                .bind(zs(10)).execute(&pool).await.unwrap();
+            let mv = Action::Move { id: "a".into(), start: zs(12), end: zs(13) };
+            assert_eq!(apply(&pool, &[mv], M, now()).await.unwrap(), 1);
+            assert_eq!(crate::knowledge::briefs::meeting_for_brief(&pool, "br").await.unwrap(), Some("a".into()));
+            assert_eq!(crate::knowledge::briefs::for_meeting(&pool, "a").await.unwrap().brief_id, Some("br".into()));
+        }
+
+        #[tokio::test]
+        async fn row_with_a_recording_folder_is_cancelled_not_deleted() {
+            let pool = test_pool().await;
+            put(&pool, "a", 10).await;
+            sqlx::query("UPDATE meetings SET folder_path = '/rec'").execute(&pool).await.unwrap();
+            assert_eq!(apply(&pool, &[gone("a")], M, now()).await.unwrap(), 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM meetings").await, 1);
+            assert!(cancelled(&pool, "a").await);
         }
 
         #[tokio::test]

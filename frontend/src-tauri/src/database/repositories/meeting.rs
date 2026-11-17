@@ -50,7 +50,7 @@ pub fn default_meeting_title(now: chrono::NaiveDateTime) -> String {
 }
 
 /// "Nothing of the user's is in this row" (alias `m`). The delete in `release_routed_row` carries it in the same statement.
-pub(crate) const UNTOUCHED_SQL: &str = "m.started_at IS NULL AND m.title_source <> 'user' AND m.template_id IS NULL \
+pub(crate) const UNTOUCHED_SQL: &str = "m.started_at IS NULL AND m.folder_path IS NULL AND m.title_source <> 'user' AND m.template_id IS NULL \
 AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = m.id) \
 AND NOT EXISTS (SELECT 1 FROM meeting_notes n WHERE n.meeting_id = m.id \
  AND (TRIM(COALESCE(n.notes_markdown,'')) <> '' OR TRIM(COALESCE(n.notes_json,'')) NOT IN ('','[]','null'))) \

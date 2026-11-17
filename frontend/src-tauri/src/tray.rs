@@ -81,29 +81,33 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
             stop_recording_and_save(&app_clone).await;
         } else {
             log::info!("Emitting start recording event from tray");
-            request_recording_start(&app_clone, None, None);
+            request_recording_start(&app_clone, crate::recording::route::StartSource::Tray, None);
         }
     });
 }
 
 /// Constructs the JS snippet injected into the webview to start recording on the record screen.
-fn autostart_script(continue_id: Option<&str>, title_prefix: &str) -> String {
-    // JSON-encode so the prefix is always a safe JS string literal.
-    let prefix = serde_json::to_string(title_prefix).unwrap_or_else(|_| "\"\"".to_string());
-    let continuation = continue_id
-        .map(|id| {
+fn autostart_script(meeting_id: Option<&str>, continue_id: Option<&str>) -> String {
+    // JSON-encode so an id is always a safe JS string literal.
+    let set = |key: &str, id: Option<&str>| {
+        id.map(|id| {
             let id = serde_json::to_string(id).expect("a string is JSON serializable");
-            format!("sessionStorage.setItem('autoStartContinueId', {id}); ")
+            format!("sessionStorage.setItem('{key}', {id}); ")
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+    };
     format!(
-        "{continuation}sessionStorage.setItem('autoStartTitlePrefix', {prefix}); sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/record')"
+        "{}{}sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/')",
+        set("autoStartMeetingId", meeting_id),
+        set("autoStartContinueId", continue_id)
     )
 }
 
+static ROUTING_START: AtomicBool = AtomicBool::new(false);
+
 /// Starts recording through the main webview's normal start path (model check, recording notice), without
-/// bringing the window forward. `title_prefix` (a call app name) goes in front of the generated meeting title.
-pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Option<&str>, continue_id: Option<&str>) {
+/// bringing the window forward. Routes the start to a meeting row first; a continuation keeps its own row.
+pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, source: crate::recording::route::StartSource, continue_id: Option<&str>) {
     // An automatic start must never reload the page over a live, starting or saving recording.
     if crate::audio::recording_commands::is_recording_now()
         || crate::audio::recording_commands::start_in_flight()
@@ -112,10 +116,43 @@ pub fn request_recording_start<R: Runtime>(app: &AppHandle<R>, title_prefix: Opt
         log::info!("Start ignored: a recording is starting, running or saving");
         return;
     }
+    // A second start during the routing await would create a second row.
+    if ROUTING_START.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire).is_err() {
+        log::info!("Start ignored: another start is being routed");
+        return;
+    }
     set_tray_state(app, RecordingState::Starting);
-    if let Some(window) = app.get_webview_window("main") {
-        let script = autostart_script(continue_id, title_prefix.unwrap_or(""));
-        let _ = window.eval(&script);
+    let app = app.clone();
+    let continue_id = continue_id.map(str::to_owned);
+    tauri::async_runtime::spawn(async move {
+        let meeting_id = if continue_id.is_some() { None } else { route_start(&app, source).await };
+        if let Some(window) = app.get_webview_window("main") {
+            let _ = window.eval(&autostart_script(meeting_id.as_deref(), continue_id.as_deref()));
+        }
+        ROUTING_START.store(false, Ordering::Release);
+    });
+}
+
+/// Routing failure must not drop the recording: retry as a sidebar start, then record with no row
+/// so the save creates one.
+async fn route_start<R: Runtime>(app: &AppHandle<R>, source: crate::recording::route::StartSource) -> Option<String> {
+    use crate::recording::route::{resolve_target, StartSource};
+    let Some(state) = app.try_state::<crate::state::AppState>() else {
+        log::error!("Start routing: AppState missing, recording into a new meeting");
+        return None;
+    };
+    let pool = state.db_manager.pool();
+    let mut result = resolve_target(pool, chrono::Utc::now(), source).await;
+    if let Err(e) = &result {
+        log::warn!("Start routing failed ({e}), retrying as a new meeting");
+        result = resolve_target(pool, chrono::Utc::now(), StartSource::Sidebar).await;
+    }
+    match result {
+        Ok(r) => Some(r.meeting_id),
+        Err(e) => {
+            log::error!("Start routing failed twice ({e}), recording into a new meeting");
+            None
+        }
     }
 }
 
@@ -684,8 +721,23 @@ mod tests {
 
     #[test]
     fn autostart_script_sets_meeting_id() {
-        let script = autostart_script(Some("test-meeting-123"), "Zoom");
-        assert!(script.contains("window.location.assign('/record')"));
-        assert!(script.contains("sessionStorage.setItem('autoStartContinueId', \"test-meeting-123\")"));
+        let script = autostart_script(Some("m-1"), None);
+        assert!(script.contains("sessionStorage.setItem('autoStartMeetingId', \"m-1\")"));
+        assert!(!script.contains("autoStartContinueId") && !script.contains("autoStartTitlePrefix"));
+        assert!(script.ends_with("window.location.assign('/')"));
+    }
+
+    #[test]
+    fn autostart_script_escapes_ids() {
+        let script = autostart_script(Some("x\"); alert(1)//"), Some("y\"); alert(2)//"));
+        assert!(script.contains(r#""x\"); alert(1)//""#));
+        assert!(script.contains(r#""y\"); alert(2)//""#));
+    }
+
+    #[test]
+    fn autostart_script_continue_has_no_meeting_id() {
+        let script = autostart_script(None, Some("c-1"));
+        assert!(!script.contains("autoStartMeetingId"));
+        assert!(script.contains("sessionStorage.setItem('autoStartContinueId', \"c-1\")"));
     }
 }

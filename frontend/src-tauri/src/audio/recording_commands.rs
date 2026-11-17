@@ -155,6 +155,10 @@ pub fn recording_target_id() -> Option<String> {
     RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner).clone()
 }
 
+fn set_recording_target(id: Option<String>) {
+    *RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner) = id;
+}
+
 fn take_recording_target() -> Option<String> {
     RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
@@ -165,6 +169,13 @@ pub(crate) fn ensure_not_live(live: Option<&str>, id: &str) -> Result<(), String
         return Err("This meeting is being recorded. Stop the recording first.".to_string());
     }
     Ok(())
+}
+
+/// `ensure_not_live` against both live meetings: the routed target and the one a Continue appends to.
+pub(crate) fn ensure_not_live_now(id: &str) -> Result<(), String> {
+    ensure_not_live(recording_target_id().as_deref(), id)?;
+    let cont = super::continuation::current_target(recordings_started()).map(|m| m.meeting_id);
+    ensure_not_live(cont.as_deref(), id)
 }
 
 /// Marks the routed row started and tells the UI. A failure only warns: the save falls back to a new meeting.
@@ -186,7 +197,7 @@ async fn claim_target<R: Runtime>(app: &AppHandle<R>, meeting_id: Option<&str>) 
 /// the mic-recovery budget already exhausted).
 fn finalize_recording_start(meeting_id: Option<String>) {
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
-    *RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner) = meeting_id;
+    set_recording_target(meeting_id);
     IS_RECORDING.store(true, Ordering::SeqCst);
     RECORDINGS_STARTED.fetch_add(1, Ordering::SeqCst);
     MIC_FALLBACK_FAILED_ATTEMPTS.store(0, Ordering::SeqCst); // fresh mic-recovery budget per session
@@ -1877,12 +1888,11 @@ mod tests {
 
     #[test]
     fn recording_target_is_set_by_finalize_and_taken_once() {
-        finalize_recording_start(Some("m-1".to_string()));
+        set_recording_target(Some("m-1".to_string()));
         assert_eq!(recording_target_id().as_deref(), Some("m-1"));
         assert_eq!(take_recording_target().as_deref(), Some("m-1"));
         assert_eq!(take_recording_target(), None);
         assert_eq!(recording_target_id(), None);
-        IS_RECORDING.store(false, Ordering::SeqCst);
     }
 
     #[test]

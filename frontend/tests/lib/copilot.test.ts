@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  actionLabel, addAlertWord, answerToNote, buildCopilotRequest, resolveAnswerLanguage,
+  actionLabel, addAlertWord, answerToNote, buildCopilotRequest, resolveAnswerLanguage, splitTimes,
 } from '../../src/lib/copilot';
 import { NOTE_MAX_CHARS } from '../../src/lib/meeting-notes';
 import type { MeetingNote, Transcript } from '../../src/types';
@@ -137,5 +137,20 @@ describe('copilot request building', () => {
   test('recording id rides on every copilot request', () => {
     expect(buildCopilotRequest('ask', [line(10)], [], 'en', 'What now?', 'meeting-1').request.recording_id).toBe('meeting-1');
     expect(buildCopilotRequest('catch_up', [line(10)], [], 'en').request.recording_id).toBeNull();
+  });
+});
+
+describe('splitTimes', () => {
+  test('finds minute and hour times', () => {
+    expect(splitTimes('Sam takes QA. 17:30 Then 1:02:03 ok')).toEqual([
+      { kind: 'text', text: 'Sam takes QA. ' },
+      { kind: 'time', label: '17:30', seconds: 1050 },
+      { kind: 'text', text: ' Then ' },
+      { kind: 'time', label: '1:02:03', seconds: 3723 },
+      { kind: 'text', text: ' ok' },
+    ]);
+  });
+  test('out-of-range stays text', () => {
+    expect(splitTimes('ratio 3:75')).toEqual([{ kind: 'text', text: 'ratio 3:75' }]);
   });
 });

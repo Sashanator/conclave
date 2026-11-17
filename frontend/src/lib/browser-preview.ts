@@ -201,6 +201,16 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
 };
 
 export const previewHandlers: Record<string, (args: any) => unknown> = {
+  get_whisper_backend_status: () => ({ label: 'CUDA (preview)', cuda_runtime_missing: false }),
+  set_language_preference: () => null,
+  set_allowed_languages: () => null,
+  set_recording_post_processing: () => null,
+  api_get_api_key: ({ provider }) => (provider === 'claude' ? 'sk-preview-key' : ''),
+  api_get_custom_openai_config: () => null,
+  extraction_status: () => null,
+  api_get_meeting_summary_language: () => ({ language: null, storage: 'metadata' }),
+  whisper_get_models_directory: () => 'C:\\Users\\preview\\AppData\\Roaming\\Conclave\\models',
+  get_default_recordings_folder_path: () => 'C:\\Users\\preview\\Music\\Conclave',
   get_onboarding_status: () => ({ completed: true, current_step: 4, model_status: { parakeet: 'downloaded' } }),
   check_first_launch: () => false,
   get_recording_state: () => ({ is_recording: false, is_paused: false, is_active: false, recording_duration: null, active_duration: null }),

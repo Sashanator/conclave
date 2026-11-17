@@ -48,8 +48,8 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const [query, setQuery] = useState('');
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const found = useMeetingSearch(query);
-  const hits = query.trim() !== '' ? found : null;
-  const searchMode = hits !== null;
+  const searchMode = query.trim() !== '';
+  const hits = found ? found.hits : undefined;
 
   const sections = useMemo(
     () => arrangeRows(rows, config, { liveId, now, templates: availableTemplates }),
@@ -59,7 +59,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
   const toggleGroup = (key: string) => setCollapsed((c) => { const n = new Set(c); if (!n.delete(key)) n.add(key); return n; });
   const items = useMemo<Item[]>(() => sections.flatMap((s) => {
-    const closed = !!s.label && collapsed.has(s.key);
+    const closed = !!s.label && s.key !== 'now' && collapsed.has(s.key);
     const i = config.group === 'category' ? availableTemplates.findIndex((t) => t.id === s.key) : -1;
     return [
       ...(s.label ? [{ kind: 'group' as const, key: `g-${s.key}`, label: s.label, count: s.rows.length, collapsed: closed,
@@ -189,7 +189,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
       <Toolbar onNew={() => void newMeeting()} query={query} onQuery={setQuery} searchRef={searchRef} config={config} dispatch={dispatch} onAsk={onAsk} />
       {!searchMode && <FilterChips filter={config.filter} now={now} templates={availableTemplates} dispatch={dispatch} />}
       {searchMode ? (
-        <SearchResults query={query} hits={hits ?? []} rows={rows} templates={availableTemplates} now={now} selectedId={selected}
+        <SearchResults query={query} hits={hits} rows={rows} templates={availableTemplates} now={now} selectedId={selected}
           onClear={() => setQuery('')} onToggleReviewed={(id) => void toggleReviewed(id)} onChangeTemplate={(id, t) => void changeTemplate(id, t)} />
       ) : !loaded ? (
         <p role="status" className="py-8 text-center text-sm text-muted-foreground">Loading meetings…</p>
@@ -221,6 +221,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
             {shown.map((item) => {
               if (item.kind === 'group') {
                 const gk = item.key.slice(2);
+                if (gk === 'now') return <tr key={item.key}><th colSpan={colCount} scope="colgroup" className="px-[10px] pt-3 text-left text-xs font-semibold text-foreground">{item.label}</th></tr>;
                 return (
                   <tr key={item.key}>
                     <th colSpan={colCount} scope="colgroup" className="px-[10px] pt-3 text-left text-xs font-semibold text-muted-foreground">

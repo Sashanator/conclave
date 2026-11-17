@@ -203,6 +203,7 @@ async fn start_recording<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     log_info!("🔥 CALLED start_recording with meeting chars: {:?}", meeting_name.as_ref().map(|n| n.chars().count()));
     log_info!(
@@ -222,6 +223,7 @@ async fn start_recording<R: Runtime>(
         mic_device_name,
         system_device_name,
         meeting_name.clone(),
+        meeting_id,
     )
     .await
     {
@@ -407,7 +409,7 @@ async fn start_recording_with_devices<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
 ) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, None).await
 }
 
 #[tauri::command]
@@ -416,6 +418,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting chars: {:?}",
              mic_device_name, system_device_name, meeting_name.as_ref().map(|n| n.chars().count()));
@@ -430,7 +433,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
                 "No devices specified, starting with defaults and meeting chars: {:?}",
                 meeting_name.as_ref().map(|n| n.chars().count())
             );
-            audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name)
+            audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name, meeting_id)
                 .await
         }
         _ => {
@@ -445,6 +448,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
                 mic_device_name,
                 system_device_name,
                 meeting_name,
+                meeting_id,
             )
             .await
         }
@@ -907,6 +911,7 @@ pub fn run() {
             api::meetings::api_list_meeting_views,
             api::meetings::api_save_meeting_view,
             api::meetings::api_delete_meeting_view,
+            api::meetings::api_delete_recording,
             audio::retention::old_audio_list,
             audio::retention::delete_old_audio,
             api::api_get_meeting,
@@ -919,6 +924,7 @@ pub fn run() {
             api::api_save_meeting_title,
             api::api_save_transcript,
             recording::route::api_route_recording_start,
+            recording::route::api_release_routed_start,
             api::open_meeting_folder,
             api::test_backend_connection,
             api::debug_backend_connection,
@@ -1007,6 +1013,7 @@ pub fn run() {
             // Database and Models path commands
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            database::commands::open_log_file,
             backup::commands::backup_now,
             backup::commands::backup_list,
             backup::commands::backup_open_folder,

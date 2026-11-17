@@ -29,8 +29,8 @@ import { usePathname, useRouter } from 'next/navigation'
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext'
 import { THEME_INIT_SCRIPT } from '@/lib/theme'
 import { AiSidebarProvider } from '@/components/AiSidebar/AiSidebarProvider'
-import { AiSidebar } from '@/components/AiSidebar/AiSidebar'
-import { CopilotProvider, writeLiveSideTab } from '@/contexts/CopilotContext'
+import { AiSidebar, CopilotOpenListener } from '@/components/AiSidebar/AiSidebar'
+import { CopilotProvider } from '@/contexts/CopilotContext'
 import { writeFlag } from '@/lib/meeting-page-layout'
 import { installBrowserPreview } from '@/lib/browser-preview'
 
@@ -149,20 +149,6 @@ function AppShell({
       unlisten.then(fn => fn());
     };
   }, [showOnboarding]);
-
-  // The name-alert banner's click. On the live page it selects the tab itself; from another page the stored
-  // choice is read when the live page mounts. Never window.location: that would reload over a live recording.
-  useEffect(() => {
-    const unlisten = listen('copilot-open', () => {
-      writeLiveSideTab('copilot');
-      writeFlag('conclave.notesPaneCollapsed', false);
-      if (pathname !== '/record') router.push('/record');
-    });
-
-    return () => {
-      unlisten.then(fn => fn());
-    };
-  }, [pathname, router]);
 
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
@@ -291,6 +277,7 @@ function AppShell({
                                 <Sidebar />
                                 <MainContent>{children}</MainContent>
                                 <AiSidebar />
+                                <CopilotOpenListener />
                               </div>
                             )}
                             {/* Import audio overlay and dialog */}

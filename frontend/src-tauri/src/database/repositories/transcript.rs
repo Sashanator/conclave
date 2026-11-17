@@ -99,10 +99,11 @@ impl TranscriptsRepository {
 
         // 1. Create the new meeting
         let result = sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, title_source, calendar_uid, calendar_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO meetings (id, title, created_at, updated_at, ended_at, folder_path, title_source, calendar_uid, calendar_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
         .bind(meeting_title)
+        .bind(now)
         .bind(now)
         .bind(now)
         .bind(&folder_path)
@@ -159,6 +160,38 @@ impl TranscriptsRepository {
         transaction.commit().await?;
 
         Ok(meeting_id)
+    }
+
+    /// Saves a recording into the meeting row it was routed to. Falls back to a new meeting (`true`) when the
+    /// row is gone or already has a transcript. Never touches title, `title_source` or calendar columns.
+    /// An error rolls everything back, so a failed save never leaves a half-written row.
+    pub async fn save_into_or_new(
+        pool: &SqlitePool,
+        target: Option<&str>,
+        meeting_title: &str,
+        transcripts: &[TranscriptSegment],
+        folder_path: Option<String>,
+        notes: &[MeetingNote],
+        enqueue_speakers: bool,
+        title: &TitleOrigin,
+    ) -> Result<(String, bool), SqlxError> {
+        if let Some(id) = target {
+            let mut tx = pool.begin().await?;
+            let now = Utc::now();
+            let claimed = sqlx::query("UPDATE meetings SET folder_path = ?, ended_at = ?, updated_at = ?, audio_deleted_at = NULL WHERE id = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = ?)")
+                .bind(&folder_path).bind(now).bind(now).bind(id).bind(id)
+                .execute(&mut *tx).await?.rows_affected();
+            if claimed == 1 {
+                Self::append_in_tx(&mut tx, id, transcripts, 0.0, notes, enqueue_speakers).await?;
+                tx.commit().await?;
+                return Ok((id.to_string(), false));
+            }
+            tx.rollback().await?;
+            let new_id = Self::save_transcript(pool, meeting_title, transcripts, folder_path, notes, enqueue_speakers, title).await?;
+            return Ok((new_id, true));
+        }
+        let id = Self::save_transcript(pool, meeting_title, transcripts, folder_path, notes, enqueue_speakers, title).await?;
+        Ok((id, false))
     }
 
     /// Appends a recording part to an existing meeting: lines shifted by `offset`, new notes
@@ -797,6 +830,7 @@ mod tests {
 mod meeting_date_tests {
     use super::*;
     use crate::database::repositories::test_pool;
+    use crate::database::repositories::meeting_notes::{MeetingNote, MeetingNotesRepository};
 
     /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
     async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
@@ -815,5 +849,104 @@ mod meeting_date_tests {
         exec(&pool, "UPDATE meetings SET title = 'Budget b' WHERE id = 'moved'").await;
         let hits = search_all(&pool, "budget").await.unwrap();
         assert_eq!(hits.iter().map(|h| h.meeting_id.as_str()).collect::<Vec<_>>(), ["moved", "mid"]);
+    }
+
+    fn seg(text: &str, start: f64, _mark: Option<&str>) -> TranscriptSegment {
+        TranscriptSegment {
+            id: "x".into(), text: text.into(), timestamp: "t".into(),
+            audio_start_time: Some(start), audio_end_time: Some(start + 1.0), duration: Some(1.0),
+            mark: None, sentences: None, speaker_idx: None,
+        }
+    }
+
+    async fn target(pool: &SqlitePool) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, title_source) VALUES ('m-t', 'Untitled · Mon 14:02', datetime('now'), datetime('now'), 'default')")
+            .execute(pool).await.unwrap();
+    }
+
+    async fn save_to(pool: &SqlitePool, t: Option<&str>, notes: &[MeetingNote], speakers: bool) -> (String, bool) {
+        TranscriptsRepository::save_into_or_new(pool, t, "Fresh", &[seg("hi", 0.0, None)], Some("/f".into()), notes, speakers, &TitleOrigin::default()).await.unwrap()
+    }
+
+    async fn lines(pool: &SqlitePool, id: &str) -> i64 {
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?").bind(id).fetch_one(pool).await.unwrap().0
+    }
+
+    #[tokio::test]
+    async fn save_into_existing_keeps_title_and_sets_ended_at() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        assert_eq!(save_to(&pool, Some("m-t"), &[], false).await, ("m-t".to_string(), false));
+        let (title, folder, ended): (String, Option<String>, Option<String>) =
+            sqlx::query_as("SELECT title, folder_path, ended_at FROM meetings WHERE id = 'm-t'").fetch_one(&pool).await.unwrap();
+        assert_eq!((title.as_str(), folder.as_deref()), ("Untitled · Mon 14:02", Some("/f")));
+        assert!(ended.is_some());
+        assert_eq!(lines(&pool, "m-t").await, 1);
+    }
+
+    #[tokio::test]
+    async fn save_into_missing_meeting_falls_back_to_new() {
+        let pool = crate::database::repositories::test_pool().await;
+        let (id, fb) = save_to(&pool, Some("nope"), &[], false).await;
+        assert!(fb && id != "nope");
+        assert_eq!(lines(&pool, &id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn save_into_an_already_saved_silent_meeting_falls_back() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let silent = |p: &SqlitePool, f: &str| {
+            let f = f.to_string();
+            let p = p.clone();
+            async move {
+                TranscriptsRepository::save_into_or_new(&p, Some("m-t"), "Fresh", &[], Some(f), &[], false, &TitleOrigin::default()).await.unwrap()
+            }
+        };
+        assert_eq!(silent(&pool, "/a").await, ("m-t".to_string(), false));
+        let (id, fb) = silent(&pool, "/b").await;
+        assert!(fb && id != "m-t");
+        let folder: Option<String> = sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = 'm-t'").fetch_one(&pool).await.unwrap();
+        assert_eq!(folder.as_deref(), Some("/a"));
+    }
+
+    #[tokio::test]
+    async fn save_into_meeting_with_transcripts_never_merges() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        save_to(&pool, Some("m-t"), &[], false).await;
+        let (id, fb) = save_to(&pool, Some("m-t"), &[], false).await;
+        assert!(fb && id != "m-t");
+        assert_eq!(lines(&pool, "m-t").await, 1);
+    }
+
+    #[tokio::test]
+    async fn save_into_keeps_existing_notes_first() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let n = |id: &str| MeetingNote { id: id.into(), at: None, text: id.into() };
+        let mut c = pool.acquire().await.unwrap();
+        MeetingNotesRepository::save(&mut *c, "m-t", &[n("n1")]).await.unwrap();
+        drop(c);
+        save_to(&pool, Some("m-t"), &[n("n2")], false).await;
+        assert_eq!(MeetingNotesRepository::get(&pool, "m-t").await.unwrap(), vec![n("n1"), n("n2")]);
+    }
+
+    #[tokio::test]
+    async fn save_into_queues_speakers_when_active() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        save_to(&pool, Some("m-t"), &[], true).await;
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speaker_jobs WHERE meeting_id = 'm-t'").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn save_without_target_sets_ended_at() {
+        let pool = crate::database::repositories::test_pool().await;
+        let (id, fb) = save_to(&pool, None, &[], false).await;
+        assert!(!fb);
+        let (ended,): (Option<String>,) = sqlx::query_as("SELECT ended_at FROM meetings WHERE id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert!(ended.is_some());
     }
 }

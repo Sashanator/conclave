@@ -56,7 +56,6 @@ mock.module('../../src/components/Copilot/CopilotPane', () => ({ CopilotPane: ()
 
 const { LiveTranscriptAndNotes } = await import('../../src/app/_components/LiveTranscriptAndNotes');
 const { NotesWithPrep } = await import('../../src/components/Prep/NotesWithPrep');
-const { readLiveSideTab, LIVE_SIDE_TAB_KEY } = await import('../../src/contexts/CopilotContext');
 const live = () => <LiveTranscriptAndNotes isProcessingStop={false} isStopping={false} showModal={() => {}} />;
 const notes = <div>Original notes</div>;
 const postCall = (meetingId = 'meeting-1') => <NotesWithPrep meetingId={meetingId} notes={notes} />;
@@ -84,14 +83,12 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => { renderers.splice(0).forEach((r) => r.unmount()); }); });
 
-test('no prep: no points and no tab; the stored side tab is not touched', async () => {
+test('no prep: no points and no tab', async () => {
   result = null;
-  localStorage.setItem(LIVE_SIDE_TAB_KEY, 'prep');
   const r = await render();
   expect(invoke).toHaveBeenCalledWith('prep_get', { eventUid: fixture().eventUid!, eventStart: fixture().eventStart! });
   expect(prepTab(r)).toBeUndefined();
   expect(boxes(r)).toHaveLength(0);
-  expect(localStorage.getItem(LIVE_SIDE_TAB_KEY)).toBe('prep');
 });
 
 test('prep points sit under My notes with kind tags, draft label and encoded Open in Prep link', async () => {
@@ -143,11 +140,6 @@ test('post-call prep can be ticked and both bodies stay mounted', async () => {
   await act(async () => { prepTab(r)!.props.onClick(); });
   expect(json(r)).toContain('Original notes');
   await act(async () => { boxes(r)[1].props.onChange(); });
-});
-
-test('readLiveSideTab accepts prep', () => {
-  localStorage.setItem(LIVE_SIDE_TAB_KEY, 'prep');
-  expect(readLiveSideTab()).toBe('prep');
 });
 
 test('live fetch runs once per link strings and clears when recording stops', async () => {

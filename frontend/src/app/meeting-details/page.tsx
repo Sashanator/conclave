@@ -1,6 +1,6 @@
 "use client"
 import { useSidebar } from "@/components/Sidebar/SidebarProvider";
-import { useState, useEffect, useCallback, Suspense } from "react";
+import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { MeetingSummary, SummaryProcessResponse, Transcript, TranscriptMark } from "@/types";
 import PageContent from "./page-content";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -11,7 +11,7 @@ import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
 import { toast } from "sonner";
 import { lineAtTime, parseMeetingTarget } from "@/lib/meeting-target";
-import { pageKeyFor, showRecordingView } from "@/lib/recording-target";
+import { heldMeetingId, pageKeyFor, showRecordingView } from "@/lib/recording-target";
 import { useRecordingStart } from "@/hooks/useRecordingStart";
 import { useModalState } from "@/hooks/useModalState";
 import { SettingsModals } from "@/app/_components/SettingsModal";
@@ -62,14 +62,16 @@ function MeetingDetailsContent() {
   }, [meetingId, router]);
   const { handleRecordingStart, isAutoStarting } = useRecordingStart(startingLocally, setStartingLocally, showModal, pageKeyFor(meetingId, searchParams.get('start')), checkRowAfterRelease);
   // The backend clears liveMeetingId when the stop lands; the save that follows stays on this view, and so does a failed one.
-  const [heldId, setHeldId] = useState<string | null>(null);
   const stopFlow = isStopping || isProcessing || isSaving || status === RecordingStatus.ERROR;
-  const recordingHere = showRecordingView({ meetingId, liveMeetingId, heldId, stopFlow });
+  const recordingHere = showRecordingView({ meetingId, liveMeetingId, heldId: heldMeetingId(stopFlow), stopFlow });
+  useAiSidebarScreen(meetingId ? (meetingId === liveMeetingId ? 'live' : 'meeting') : null, { label: 'This meeting', meetingIds: meetingId ? [meetingId] : [] });
+  // When the hold ends the page's data is from before the recording: load it again (and auto-summarize).
+  const [savedEpoch, setSavedEpoch] = useState(0);
+  const wasHeld = useRef(false);
   useEffect(() => {
-    if (meetingId && liveMeetingId === meetingId) setHeldId(meetingId);
-    else if (!stopFlow) setHeldId(null);
-  }, [meetingId, liveMeetingId, stopFlow]);
-  useAiSidebarScreen(meetingId ? (recordingHere ? 'live' : 'meeting') : null, { label: 'This meeting', meetingIds: meetingId ? [meetingId] : [] });
+    if (wasHeld.current && !recordingHere) setSavedEpoch((e) => e + 1);
+    wasHeld.current = recordingHere;
+  }, [recordingHere]);
   const [meetingDetails, setMeetingDetails] = useState<MeetingDetailsResponse | null>(null);
   const [summaryResponse, setSummaryResponse] = useState<SummaryProcessResponse | null>(null);
   const [meetingSummary, setMeetingSummary] = useState<MeetingSummary | null>(null);
@@ -209,6 +211,8 @@ function MeetingDetailsContent() {
     }
   }, [metadata, transcripts, meetingId, isLoadingTranscripts, setCurrentMeeting]);
 
+  useEffect(() => { if (savedEpoch) void refetch(); }, [savedEpoch, refetch]);
+
   // Handle transcript loading errors
   useEffect(() => {
     if (transcriptError) {
@@ -238,7 +242,7 @@ function MeetingDetailsContent() {
     // Reset auto-generation state to allow new meeting to be checked
     setHasCheckedAutoGen(false);
     setShouldAutoGenerate(false);
-  }, [meetingId]);
+  }, [meetingId, savedEpoch, source]);
 
   useEffect(() => {
     console.log('MeetingDetails useEffect triggered - meetingId:', meetingId);
@@ -285,7 +289,7 @@ function MeetingDetailsContent() {
 
     loadData();
     return () => { cancelled = true; };
-  }, [meetingId]);
+  }, [meetingId, savedEpoch, source]);
 
   // Auto-generation check: runs when meeting is loaded with no summary
   useEffect(() => {

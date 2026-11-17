@@ -33,10 +33,10 @@ export function RecordingView({ row, onChange, onTitleSaved, showModal }: { row:
       <div className="border-b border-border bg-background px-6 pt-4"><MeetingHeader row={row} live onChange={onChange} onTitleSaved={onTitleSaved} /></div>
       <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background px-6 py-3">
         <span className="flex items-center gap-2 text-sm text-foreground" role="status">
-          <span aria-hidden className="h-2 w-2 rounded-full bg-red-500" />
-          {`Recording ${formatRecordingTime(activeDuration)}`}
+          {isRecording && <span aria-hidden className="h-2 w-2 rounded-full" style={{ backgroundColor: 'hsl(var(--rec))' }} />}
+          {isRecording ? `Recording ${formatRecordingTime(activeDuration)}` : failed ? 'Not saved' : 'Saving…'}
         </span>
-        {!saving && (isRecording || isStopping) && (
+        {isRecording && (
           <RecordingControls
             labeled
             isRecording={isRecording}

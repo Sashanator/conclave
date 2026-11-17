@@ -8,20 +8,6 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { actionLabel, buildCopilotRequest, resolveAnswerLanguage, type CopilotAction, type CopilotSettings } from '@/lib/copilot';
 import { readPinnedSummaryLanguageDefault } from '@/lib/summary-language-preferences';
 
-export const LIVE_SIDE_TAB_KEY = 'conclave.liveSideTab'; // 'notes' | 'prep'; the old live layout's, removed with it
-export type LiveSideTab = 'notes' | 'prep';
-
-export function readLiveSideTab(): LiveSideTab {
-  try {
-    const tab = localStorage.getItem(LIVE_SIDE_TAB_KEY);
-    return tab === 'prep' ? tab : 'notes';
-  } catch { return 'notes'; }
-}
-
-export function writeLiveSideTab(tab: LiveSideTab): void {
-  try { localStorage.setItem(LIVE_SIDE_TAB_KEY, tab); } catch { /* optional */ }
-}
-
 export interface CopilotCard {
   id: number;
   action: CopilotAction;

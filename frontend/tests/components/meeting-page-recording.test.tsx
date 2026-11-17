@@ -140,3 +140,25 @@ test('a failed save says so, keeps the lines and offers a retry', async () => {
   await act(async () => { buttonWith(r, 'Try saving again')!.props.onClick(); });
   expect(handleRecordingStop).toHaveBeenCalledWith(true);
 });
+
+test('after the stop the bar says Saving and shows no controls or red dot', async () => {
+  Object.assign(recording, { isRecording: false, isStopping: false, isSaving: true, status: 'saving', activeDuration: null });
+  const r = await mount();
+  const t = text(r.root);
+  expect(t).toContain('Saving');
+  expect(t).not.toContain('Recording --:--');
+  expect(buttonWith(r, 'Stop and summarize')).toBeUndefined();
+  expect(r.root.findAll((n) => typeof n.props.style === 'object' && n.props.style?.backgroundColor === 'hsl(var(--rec))')).toHaveLength(0);
+});
+
+test('a failed save says Not saved, not Recording', async () => {
+  Object.assign(recording, { isRecording: false, status: 'error', activeDuration: null });
+  const t = text((await mount()).root);
+  expect(t).toContain('Not saved');
+  expect(t).not.toContain('Recording --:--');
+});
+
+test('while recording the live dot uses the rec token', async () => {
+  const r = await mount();
+  expect(r.root.findAll((n) => typeof n.props.style === 'object' && n.props.style?.backgroundColor === 'hsl(var(--rec))').length).toBeGreaterThan(0);
+});

@@ -678,38 +678,38 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 
 | Task | Status |
 |---|---|
-| 0 DESIGN.md | todo |
-| 1 redesign migration | todo |
-| 2 backfill + gist_from_summary | todo |
-| 3 meeting date readers | todo |
-| 4 gist from extraction | todo |
-| 5 template emoji | todo |
-| 6 emoji suggestion | todo |
-| 7 rows, create, setters, views | todo |
-| 8 Delete recording / Delete meeting | todo |
-| 9 recording::route | todo |
+| 0 DESIGN.md | done (pre-crash) |
+| 1 redesign migration | done (pre-crash) |
+| 2 backfill + gist_from_summary | done (pre-crash) |
+| 3 meeting date readers | done (pre-crash) |
+| 4 gist from extraction | done (pre-crash) |
+| 5 template emoji | done (pre-crash) |
+| 6 emoji suggestion | done (pre-crash) |
+| 7 rows, create, setters, views | done (pre-crash) |
+| 8 Delete recording / Delete meeting | fix round (rd-r8) |
+| 9 recording::route | done (pre-crash) |
 | 10 save into row + release routed row | todo |
 | 11 meeting id start→stop + live delete guard | todo |
 | 12 tray/pop-up/detector routing | todo |
 | 13 frontend start/save + liveMeetingId | todo |
 | 14 recovery into target | todo |
 | 15 category = manual pick | todo |
-| 16 /record + StartupChecks | todo |
-| 17 lib/meetings.ts | todo |
-| 18 view config + arrangeRows | todo |
-| 19 search totals + snippets | todo |
-| 20 keyboard map | todo |
-| 21 react-table + mocks | todo |
+| 16 /record + StartupChecks | done (pre-crash) |
+| 17 lib/meetings.ts | done (pre-crash) |
+| 18 view config + arrangeRows | done (pre-crash) |
+| 19 search totals + snippets | done (pre-crash) |
+| 20 keyboard map | done (pre-crash) |
+| 21 react-table + mocks | done (pre-crash) |
 | 22 rows/views hooks | todo |
 | 23 table rows + delete dialog | todo |
 | 24 tabs, toolbar, search, empty | todo |
 | 25 Phase 3 check | todo |
-| 26 AiSidebar shell | todo |
-| 27 ask_meetings scope | todo |
+| 26 AiSidebar shell | done (pre-crash) |
+| 27 ask_meetings scope | done (pre-crash) |
 | 28 Ask in sidebar | todo |
-| 29 copilot-alert | todo |
+| 29 copilot-alert | done (pre-crash) |
 | 30 Copilot in sidebar | todo |
-| 31 prep by meeting id | todo |
+| 31 prep by meeting id | done (pre-crash) |
 | 32 meeting-page helpers | todo |
 | 33 page shell + New + autostart URL | todo |
 | 34 Recording state | todo |
@@ -735,6 +735,8 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 | 54 What's new | todo |
 | 55 final UI QA | todo |
 | 56 checkpoint + Windows checklist | todo |
+
+2026-11-17: the VM crashed mid-session; uncommitted work in rd-e (Tasks 39+) and rd-r (Task 10) was corrupted (NUL bytes) and discarded (backups in the session scratchpad). Committed lanes merged into `redesign`. "done (pre-crash)" tasks get covered by their phase-end reviews.
 
 ## Open items for the user
 

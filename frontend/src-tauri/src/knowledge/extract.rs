@@ -897,6 +897,10 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at) VALUES ('M', 'completed', 't', 't'), ('N', 'completed', 't', 't')")
+            .execute(&pool)
+            .await
+            .unwrap();
         set_extract(&pool, "M", "done", None, Some(("[\"x\"]", "[]")), None)
             .await
             .unwrap();

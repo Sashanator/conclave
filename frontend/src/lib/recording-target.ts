@@ -17,6 +17,13 @@ export function takeAutoStartMeetingId(storage: Storage): string | null {
   return id;
 }
 
+/** Queues an auto-start into this meeting for the page that mounts `useRecordingStart`; returns that page's url. */
+export function queueAutoStart(storage: Storage, meetingId: string): string {
+  storage.setItem('autoStartMeetingId', meetingId);
+  storage.setItem('autoStartRecording', 'true');
+  return `/meeting-details?id=${encodeURIComponent(meetingId)}`;
+}
+
 /** A failed route never blocks the recording: it starts with no target and the save makes a new meeting (§4). */
 export async function routeOrFallback(source: StartSourceArg): Promise<RoutedStart> {
   try {

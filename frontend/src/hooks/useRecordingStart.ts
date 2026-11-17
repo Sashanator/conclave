@@ -43,7 +43,9 @@ interface TranscriptConfig {
 export function useRecordingStart(
   isRecording: boolean,
   setIsRecording: (value: boolean) => void,
-  showModal?: (name: 'modelSelector', message?: string) => void
+  showModal?: (name: 'modelSelector', message?: string) => void,
+  // The meeting page stays mounted across meetings: a new key re-checks the auto-start flag queued for it.
+  pageKey?: string
 ): UseRecordingStartReturn {
   const [isAutoStarting, setIsAutoStarting] = useState(false);
 
@@ -295,6 +297,7 @@ export function useRecordingStart(
 
     checkAutoStartRecording();
   }, [
+    pageKey,
     isRecording,
     isAutoStarting,
     selectedDevices,

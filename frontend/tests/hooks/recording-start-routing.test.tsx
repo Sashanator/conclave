@@ -40,19 +40,24 @@ const toast = {
 };
 const startRecordingWithDevices = mock(async (..._a: unknown[]) => startResult());
 const setStartTitle = mock((_t: unknown) => {});
+const transcripts = { clearTranscripts() {}, setStartTitle };
+const sidebar = { setIsMeetingActive() {} };
+const recordingState = { setStatus() {} };
+const devices = { micDevice: 'mic', systemDevice: 'sys' }; // stable, like the real context
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
-mock.module('../../src/contexts/TranscriptContext', () => ({ useTranscripts: () => ({ clearTranscripts() {}, setStartTitle }) }));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => ({ setIsMeetingActive() {} }) }));
-mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ selectedDevices: { micDevice: 'mic', systemDevice: 'sys' } }) }));
-mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.state, useRecordingState: () => ({ setStatus() {} }) }));
+mock.module('../../src/contexts/TranscriptContext', () => ({ useTranscripts: () => transcripts }));
+mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => sidebar }));
+mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ selectedDevices: devices }) }));
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.state, useRecordingState: () => recordingState }));
 mock.module('../../src/services/recordingService', () => ({ recordingService: { startRecordingWithDevices } }));
 mock.module('../../src/lib/recordingNotification', () => ({ showRecordingNotification: async () => {} }));
 const { useRecordingStart } = await import('../../src/hooks/useRecordingStart');
 
 let hook: UseRecordingStartReturn;
 let renderer: ReactTestRenderer | undefined;
-function View() { hook = useRecordingStart(false, () => {}); return null; }
+const noop = () => {};
+function View({ k }: { k?: string }) { hook = useRecordingStart(false, noop, undefined, k); return null; }
 async function mount() {
   await act(async () => { renderer = create(<View />); });
   await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
@@ -125,6 +130,17 @@ describe('manual start', () => {
 });
 
 describe('auto-start', () => {
+  test('a flag queued for another meeting page starts when the page key changes', async () => {
+    await mount();
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    sessionStorage.setItem('autoStartRecording', 'true');
+    sessionStorage.setItem('autoStartMeetingId', 'm-b');
+    await act(async () => { renderer!.update(<View k="m-b" />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(routeCalls()[0][1]).toEqual({ source: { page: 'm-b' } });
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+  });
+
   test('a continue auto-start skips routing', async () => {
     sessionStorage.setItem('autoStartRecording', 'true');
     sessionStorage.setItem('autoStartContinueId', 'earlier-1');

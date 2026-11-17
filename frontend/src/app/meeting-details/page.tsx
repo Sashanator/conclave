@@ -10,6 +10,14 @@ import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
 import { lineAtTime, parseMeetingTarget } from "@/lib/meeting-target";
+import { useRecordingStart } from "@/hooks/useRecordingStart";
+import { useModalState } from "@/hooks/useModalState";
+import { SettingsModals } from "@/app/_components/SettingsModal";
+import { useRecordingState } from "@/contexts/RecordingStateContext";
+import { useAiSidebarScreen } from "@/components/AiSidebar/AiSidebarProvider";
+import { listMeetingRows, type MeetingRow } from "@/lib/meetings";
+import { MeetingHeader } from "@/components/MeetingPage/MeetingHeader";
+import { NewMeetingView } from "@/components/MeetingPage/NewMeetingView";
 
 interface MeetingDetailsResponse {
   id: string;
@@ -27,7 +35,17 @@ function MeetingDetailsContent() {
   const continued = searchParams.get('continued') === '1'; // A recording was added to this meeting: replace its summary
   const target = parseMeetingTarget(searchParams); // Search hits: a line to scroll to, or a tab to open
   const { setCurrentMeeting, refetchMeetings } = useSidebar();
-  const { isAutoSummary } = useConfig(); // Get auto-summary toggle state
+  const { isAutoSummary, transcriptModelConfig } = useConfig(); // Get auto-summary toggle state
+  const { liveMeetingId, isStopping, isProcessing, isSaving } = useRecordingState();
+  const { meetings } = useSidebar();
+  // undefined: loading; null: no row (an old link), shown as the finished page
+  const [row, setRow] = useState<MeetingRow | null | undefined>(undefined);
+  // The page mounts the start hook for every non-page start (tray, detector, Resume): they land here.
+  const [startingLocally, setStartingLocally] = useState(false);
+  const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
+  const { handleRecordingStart } = useRecordingStart(startingLocally, setStartingLocally, showModal, meetingId ?? undefined);
+  const recordingHere = !!meetingId && liveMeetingId === meetingId;
+  useAiSidebarScreen(meetingId ? (recordingHere ? 'live' : 'meeting') : null, { label: 'This meeting', meetingIds: meetingId ? [meetingId] : [] });
   const router = useRouter();
   const [meetingDetails, setMeetingDetails] = useState<MeetingDetailsResponse | null>(null);
   const [summaryResponse, setSummaryResponse] = useState<SummaryProcessResponse | null>(null);
@@ -63,6 +81,17 @@ function MeetingDetailsContent() {
     const last = segments[segments.length - 1];
     if (!last || last.timestamp <= targetTime) loadMore();
   }, [targetTime, targetLine, hasMore, isLoadingMore, segments, loadMore]);
+
+  // The row decides New or finished. It reloads when a recording ends so the saved meeting shows as finished.
+  useEffect(() => { setRow(undefined); }, [meetingId]);
+  useEffect(() => {
+    if (!meetingId || meetingId === 'intro-call') { setRow(null); return; }
+    let cancelled = false;
+    listMeetingRows()
+      .then((rows) => { if (!cancelled) setRow(rows.find((r) => r.id === meetingId) ?? null); })
+      .catch((e) => { console.error('Could not load the meeting row:', e); if (!cancelled) setRow(null); });
+    return () => { cancelled = true; };
+  }, [meetingId, liveMeetingId]);
 
   // Check if gemma3:1b model is available in Ollama
   const checkForGemmaModel = useCallback(async (): Promise<boolean> => {
@@ -260,9 +289,35 @@ function MeetingDetailsContent() {
     checkAutoGen();
   }, [meetingDetails, meetingSummary, summaryResponse, isLoading, hasCheckedAutoGen, setupAutoGeneration]);
 
+  const busy = startingLocally || isStopping || isProcessing || isSaving;
+  const liveElsewhere = liveMeetingId && liveMeetingId !== meetingId
+    ? { id: liveMeetingId, title: meetings.find((m) => m.id === liveMeetingId)?.title ?? 'another meeting' }
+    : null;
+  let shell: React.ReactNode = null;
+  if (meetingId && row === undefined) {
+    shell = <div className="flex items-center justify-center h-screen"><LoaderIcon className="animate-spin size-6" /></div>;
+  } else if (row && recordingHere) {
+    // Task 34 replaces this with the live transcript and notes.
+    shell = (
+      <div className="mx-auto w-full max-w-3xl space-y-4 p-6">
+        <MeetingHeader row={row} live onChange={setRow} />
+        <p className="text-sm text-muted-foreground">Recording in progress.</p>
+      </div>
+    );
+  } else if (row && !row.startedAt && !row.hasTranscript) {
+    shell = (
+      <div className="h-screen overflow-y-auto bg-muted/50">
+        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} onChange={setRow} /></div>
+        <NewMeetingView row={row} live={liveElsewhere} disabled={busy} onStart={() => { void handleRecordingStart(row.id).catch(() => {}); }} />
+      </div>
+    );
+  }
+  const modalsEl = <SettingsModals modals={modals} messages={messages} onClose={hideModal} />;
+  if (shell) return <>{modalsEl}{shell}</>;
+
   if (error) {
     return (
-      <div className="flex items-center justify-center h-screen">
+      <div className="flex items-center justify-center h-screen">{modalsEl}
         <div className="text-center">
           <p className="text-red-500 mb-4">{error}</p>
           <button
@@ -279,11 +334,12 @@ function MeetingDetailsContent() {
   // Show loading spinner while initial data loads
   if (isLoading || !meetingDetails || meetingDetails.id !== meetingId) {
     return <div className="flex items-center justify-center h-screen">
+      {modalsEl}
       <LoaderIcon className="animate-spin size-6 " />
     </div>;
   }
 
-  return <PageContent
+  return <>{modalsEl}<PageContent
     key={meetingId}
     initialSummary={summaryResponse}
     meeting={meetingDetails}
@@ -309,7 +365,7 @@ function MeetingDetailsContent() {
     onSetTranscriptSpeaker={setTranscriptSpeaker}
     focusSegmentId={targetLine ?? timeLine}
     requestedTab={target?.tab === 'summary' || target?.tab === 'notes' ? target.tab : null}
-  />;
+  /></>;
 }
 
 export default function MeetingDetails() {

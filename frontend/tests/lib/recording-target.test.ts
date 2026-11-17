@@ -14,7 +14,7 @@ const invoke = mock(async (_c: string, _a?: unknown) => routeResult());
 const toast = { warning: mock((_w: string, _o?: unknown) => {}), error: mock((_w: string, _o?: unknown) => {}), info: mock(() => {}), success: mock(() => {}) };
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
-const { routeRecordingStart, takeAutoStartMeetingId, routeOrFallback, releaseFailedStart } = await import('../../src/lib/recording-target');
+const { routeRecordingStart, takeAutoStartMeetingId, routeOrFallback, releaseFailedStart, queueAutoStart } = await import('../../src/lib/recording-target');
 
 beforeEach(() => { invoke.mockClear(); toast.warning.mockClear(); toast.error.mockClear(); routeResult = async () => ({ meetingId: 'm', title: 'T' }); });
 
@@ -80,5 +80,14 @@ describe('releaseFailedStart', () => {
     await releaseFailedStart({ meetingId: 'm9', title: 'T' }, new Error('x'));
     console.error = logged;
     expect(toast.error).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('queueAutoStart', () => {
+  test('sets both keys and returns the meeting page url', () => {
+    sessionStorage.clear();
+    expect(queueAutoStart(sessionStorage, 'm 1')).toBe('/meeting-details?id=m%201');
+    expect(sessionStorage.getItem('autoStartMeetingId')).toBe('m 1');
+    expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
   });
 });

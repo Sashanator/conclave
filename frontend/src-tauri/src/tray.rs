@@ -86,7 +86,8 @@ fn toggle_recording_handler<R: Runtime>(app: &AppHandle<R>) {
     });
 }
 
-/// Constructs the JS snippet injected into the webview to start recording on the record screen.
+/// Constructs the JS snippet injected into the webview to start recording. It lands on the meeting page the
+/// start belongs to (the routed row, else the continued one); with neither, on the record screen.
 fn autostart_script(meeting_id: Option<&str>, continue_id: Option<&str>, routing_failed: bool) -> String {
     // JSON-encode so an id is always a safe JS string literal.
     let set = |key: &str, id: Option<&str>| {
@@ -97,8 +98,15 @@ fn autostart_script(meeting_id: Option<&str>, continue_id: Option<&str>, routing
         .unwrap_or_default()
     };
     let failed = if routing_failed { "sessionStorage.setItem('autoStartRoutingFailed', 'true'); " } else { "" };
+    let landing = match meeting_id.or(continue_id) {
+        Some(id) => format!(
+            "'/meeting-details?id=' + encodeURIComponent({})",
+            serde_json::to_string(id).expect("a string is JSON serializable")
+        ),
+        None => "'/record'".to_string(),
+    };
     format!(
-        "{}{}{failed}sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign('/record')",
+        "{}{}{failed}sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign({landing})",
         set("autoStartMeetingId", meeting_id),
         set("autoStartContinueId", continue_id)
     )
@@ -762,7 +770,7 @@ mod tests {
         assert!(script.contains("sessionStorage.setItem('autoStartMeetingId', \"m-1\")"));
         assert!(!script.contains("autoStartContinueId") && !script.contains("autoStartTitlePrefix"));
         assert!(!script.contains("autoStartRoutingFailed"));
-        assert!(script.ends_with("window.location.assign('/record')"));
+        assert!(script.ends_with("window.location.assign('/meeting-details?id=' + encodeURIComponent(\"m-1\"))"));
     }
 
     #[test]
@@ -777,6 +785,7 @@ mod tests {
         let script = autostart_script(None, Some("c-1"), false);
         assert!(!script.contains("autoStartMeetingId"));
         assert!(script.contains("sessionStorage.setItem('autoStartContinueId', \"c-1\")"));
+        assert!(script.ends_with("window.location.assign('/meeting-details?id=' + encodeURIComponent(\"c-1\"))"));
     }
 
     #[test]
@@ -784,6 +793,8 @@ mod tests {
         let script = autostart_script(None, None, true);
         assert!(script.contains("sessionStorage.setItem('autoStartRoutingFailed', 'true')"));
         assert!(script.contains("autoStartRecording"));
+        // No meeting to land on: the record screen still mounts the start hook.
+        assert!(script.ends_with("window.location.assign('/record')"));
     }
 
     #[tokio::test]

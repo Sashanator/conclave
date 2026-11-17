@@ -25,7 +25,7 @@ pub const CALENDAR_AHEAD_DAYS: i64 = 14;
 pub const CALENDAR_BEHIND_DAYS: i64 = 1;
 
 /// Timing for auto-titles, briefs and feed retention.
-pub const AUTO_TITLE_LEAD_MINS: i64 = 10;
+pub const AUTO_TITLE_LEAD_MINS: i64 = 15;
 pub const BRIEF_LEAD_MINS: i64 = 60;
 pub const FEED_RETENTION_DAYS: i64 = 30;
 

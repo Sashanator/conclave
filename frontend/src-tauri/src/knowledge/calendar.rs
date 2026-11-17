@@ -863,6 +863,24 @@ pub fn event_for_start(occ: &[Occurrence], now: DateTime<Utc>) -> Option<&Occurr
         .min_by_key(|o| (o.start - now).num_milliseconds().abs())
 }
 
+/// Pure: strips the calls marker from an event title.
+/// Returns None if the title does not contain the marker or marker is empty.
+/// Otherwise removes every occurrence of the marker, collapses whitespace, trims,
+/// and returns "Call" if the remaining title is empty.
+pub fn strip_marker(title: &str, marker: &str) -> Option<String> {
+    let marker = marker.trim();
+    if marker.is_empty() || !title.contains(marker) {
+        return None;
+    }
+    let stripped = title.replace(marker, "");
+    let collapsed: Vec<&str> = stripped.split_whitespace().collect();
+    if collapsed.is_empty() {
+        Some("Call".to_string())
+    } else {
+        Some(collapsed.join(" "))
+    }
+}
+
 /// The event a recording starting now is named after.
 #[derive(Serialize)]
 pub struct CalendarTitle {
@@ -874,7 +892,16 @@ pub struct CalendarTitle {
 #[tauri::command]
 pub async fn calendar_title_now() -> Option<CalendarTitle> {
     let occurrences = upcoming();
-    event_for_start(&occurrences, Utc::now()).map(|o| CalendarTitle {
+    let marker = settings::current().calendar_marker;
+    let calls: Vec<_> = occurrences
+        .into_iter()
+        .filter_map(|mut o| {
+            let stripped = strip_marker(&o.title, &marker)?;
+            o.title = stripped;
+            Some(o)
+        })
+        .collect();
+    event_for_start(&calls, Utc::now()).map(|o| CalendarTitle {
         title: o.title.clone(),
         uid: o.uid.clone(),
         start: o.start.to_rfc3339(),
@@ -1770,12 +1797,20 @@ mod tests {
     }
 
     #[test]
+    fn strip_marker_cases() {
+        assert_eq!(strip_marker("📞 Sync with Ivan", "📞").as_deref(), Some("Sync with Ivan"));
+        assert_eq!(strip_marker("Sync 📞  Ivan", "📞").as_deref(), Some("Sync Ivan"));
+        assert_eq!(strip_marker("📞", "📞").as_deref(), Some("Call"));
+        assert_eq!(strip_marker("Lunch", "📞"), None);
+    }
+
+    #[test]
     fn event_for_start_window() {
         let now = utc(2026, 10, 22, 9, 0);
-        let ten_before = [occ("a", utc(2026, 10, 22, 9, 10), 30)];
-        assert_eq!(event_for_start(&ten_before, now).map(|o| o.uid.as_str()), Some("a"));
-        let eleven_before = [occ("a", utc(2026, 10, 22, 9, 11), 30)];
-        assert!(event_for_start(&eleven_before, now).is_none());
+        let fifteen_before = [occ("a", utc(2026, 10, 22, 9, 15), 30)];
+        assert_eq!(event_for_start(&fifteen_before, now).map(|o| o.uid.as_str()), Some("a"));
+        let sixteen_before = [occ("a", utc(2026, 10, 22, 9, 16), 30)];
+        assert!(event_for_start(&sixteen_before, now).is_none());
         // Ends exactly at now: already over.
         let at_end = [occ("a", utc(2026, 10, 22, 8, 30), 30)];
         assert!(event_for_start(&at_end, now).is_none());

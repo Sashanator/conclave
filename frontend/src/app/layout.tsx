@@ -31,7 +31,6 @@ import { THEME_INIT_SCRIPT } from '@/lib/theme'
 import { AiSidebarProvider } from '@/components/AiSidebar/AiSidebarProvider'
 import { AiSidebar, CopilotOpenListener } from '@/components/AiSidebar/AiSidebar'
 import { CopilotProvider } from '@/contexts/CopilotContext'
-import { writeFlag } from '@/lib/meeting-page-layout'
 import { installBrowserPreview } from '@/lib/browser-preview'
 
 

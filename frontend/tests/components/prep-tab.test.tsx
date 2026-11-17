@@ -55,10 +55,7 @@ mock.module('../../src/app/_components/TranscriptPanel', () => ({ TranscriptPane
 mock.module('../../src/components/Copilot/CopilotPane', () => ({ CopilotPane: () => <div>Copilot body</div> }));
 
 const { LiveTranscriptAndNotes } = await import('../../src/app/_components/LiveTranscriptAndNotes');
-const { NotesWithPrep } = await import('../../src/components/Prep/NotesWithPrep');
 const live = () => <LiveTranscriptAndNotes isProcessingStop={false} isStopping={false} showModal={() => {}} />;
-const notes = <div>Original notes</div>;
-const postCall = (meetingId = 'meeting-1') => <NotesWithPrep meetingId={meetingId} notes={notes} />;
 const renderers: ReactTestRenderer[] = [];
 async function render(node: ReactNode = live()) {
   let r!: ReactTestRenderer;
@@ -125,22 +122,6 @@ test('tick failure reverts and shows a toast', async () => {
   expect(errorToast).toHaveBeenCalledTimes(1);
 });
 
-test('post-call notes column shows Prep only with a prep', async () => {
-  result = null;
-  const r = await render(postCall());
-  expect(invoke).toHaveBeenCalledWith('prep_for_meeting', { meetingId: 'meeting-1' });
-  expect(tabs(r)).toHaveLength(0);
-  expect(json(r)).toContain('Original notes');
-});
-
-test('post-call prep can be ticked and both bodies stay mounted', async () => {
-  const r = await render(postCall());
-  expect(tabs(r).map(textOf)).toEqual(['My notes', 'Prep 1/2']);
-  await act(async () => { prepTab(r)!.props.onClick(); });
-  expect(json(r)).toContain('Original notes');
-  await act(async () => { boxes(r)[1].props.onChange(); });
-});
-
 test('live fetch runs once per link strings and clears when recording stops', async () => {
   const r = await render();
   tx.calendarLink = { ...tx.calendarLink! };
@@ -174,37 +155,10 @@ test('late live result is ignored after link changes or unmount', async () => {
   await act(async () => { resolves[2](fixture()); });
 });
 
-test('late post-call result is ignored after meeting changes', async () => {
-  const resolves: Array<(p: MeetingPrep | null) => void> = [];
-  load = () => new Promise((resolve) => resolves.push(resolve));
-  const r = await render(postCall());
-  await act(async () => { r.update(postCall('meeting-2')); });
-  await act(async () => { resolves[1](null); resolves[0](fixture()); });
-  expect(prepTab(r)).toBeUndefined();
-});
-
-test('live and post-call load failures show toasts', async () => {
+test('a live load failure shows a toast', async () => {
   load = async () => { throw new Error('read failed'); };
   await render();
-  await render(postCall());
-  expect(errorToast).toHaveBeenCalledTimes(2);
-});
-
-test('the notes child stays mounted when the prep arrives', async () => {
-  let finish!: (p: MeetingPrep | null) => void;
-  load = () => new Promise((resolve) => { finish = resolve; });
-  let mounts = 0;
-  let unmounts = 0;
-  const Probe = () => {
-    useEffect(() => { mounts++; return () => { unmounts++; }; }, []);
-    return <div>Probe notes</div>;
-  };
-  const r = await render(<NotesWithPrep meetingId="meeting-1" notes={<Probe />} />);
-  expect(mounts).toBe(1);
-  await act(async () => { finish(fixture()); });
-  expect(prepTab(r)).toBeDefined();
-  expect(mounts).toBe(1);
-  expect(unmounts).toBe(0);
+  expect(errorToast).toHaveBeenCalledTimes(1);
 });
 
 test('two quick ticks on different boxes serialize and both stay ticked', async () => {

@@ -30,7 +30,10 @@ const routerPush = mock((_href: string) => {});
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('next/navigation', () => ({ useRouter: () => ({ push: routerPush }) }));
 
-const { default: AskPage } = await import('../../src/app/ask/page');
+const { AskChat } = await import('../../src/components/Ask/AskChat');
+
+let scope = { label: 'This week', meetingIds: ['a', 'b'] as string[] | null };
+let allowAll = true;
 
 let renderer: ReactTestRenderer | null = null;
 
@@ -107,16 +110,18 @@ beforeEach(async () => {
   calls = [];
   asks = [];
   routerPush.mockClear();
+  scope = { label: 'This week', meetingIds: ['a', 'b'] };
+  allowAll = true;
   await act(async () => {
-    renderer = create(<AskPage />);
+    renderer = create(<AskChat scope={scope} allowAll={allowAll} />);
   });
   await flush();
 });
 
-describe('Ask page', () => {
+describe('AskChat', () => {
   test('sending calls ask_meetings with the history of answered turns', async () => {
     await send('First?');
-    expect(askCalls()[0]).toEqual({ requestId: expect.any(Number), question: 'First?', history: [] });
+    expect(askCalls()[0]).toEqual({ requestId: expect.any(Number), question: 'First?', history: [], meetingIds: ['a', 'b'] });
 
     await resolveAsk({ text: 'One [E1].', citations: [] });
     await send('Second?');
@@ -128,6 +133,7 @@ describe('Ask page', () => {
         { role: 'user', text: 'First?' },
         { role: 'assistant', text: 'One [E1].' },
       ],
+      meetingIds: ['a', 'b'],
     });
     expect(askCalls()[1].requestId as number).toBeGreaterThan(askCalls()[0].requestId as number);
   });
@@ -208,7 +214,7 @@ describe('Ask page', () => {
     });
     await flush();
     expect(askCalls()).toHaveLength(2);
-    expect(askCalls()[1]).toEqual({ requestId: expect.any(Number), question: 'Q', history: [] });
+    expect(askCalls()[1]).toEqual({ requestId: expect.any(Number), question: 'Q', history: [], meetingIds: ['a', 'b'] });
   });
 
   test('the textarea has an accessible name and the turns are a polite log', async () => {
@@ -230,5 +236,28 @@ describe('Ask page', () => {
     renderer = null;
 
     expect(calls.filter((c) => c.command === 'ask_cancel')).toEqual([{ command: 'ask_cancel', args: { requestId } }]);
+  });
+
+  test('the scope chip names the view and count; All meetings sends null and keeps the chat', async () => {
+    expect(pageText()).toContain('This week · 2 meetings');
+    await send('Q1');
+    await resolveAsk({ text: 'A', citations: [] });
+
+    await act(async () => buttonWith('This week · 2 meetings').props.onClick());
+    await act(async () => buttonWith('All meetings').props.onClick());
+    expect(pageText()).toContain('Q1');
+    await send('Q2');
+    expect(askCalls()[1].meetingIds).toBeNull();
+  });
+
+  test('allowAll=false shows a plain chip without a menu', async () => {
+    allowAll = false;
+    scope = { label: 'This meeting', meetingIds: ['m1'] };
+    await act(async () => {
+      renderer!.unmount();
+      renderer = create(<AskChat scope={scope} allowAll={allowAll} />);
+    });
+    expect(pageText()).toContain('This meeting · 1 meeting');
+    expect(renderer!.root.findAll((n) => n.props['aria-haspopup'] === 'menu')).toHaveLength(0);
   });
 });

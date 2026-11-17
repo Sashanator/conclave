@@ -86,7 +86,9 @@ describe('releaseFailedStart', () => {
 describe('queueAutoStart', () => {
   test('sets both keys and returns the meeting page url', () => {
     sessionStorage.clear();
-    expect(queueAutoStart(sessionStorage, 'm 1')).toBe('/meeting-details?id=m%201');
+    const url = queueAutoStart(sessionStorage, 'm 1');
+    expect(url).toMatch(/^\/meeting-details\?id=m%201&start=\d+$/);
+    expect(sessionStorage.getItem('autoStartKey')).toBe(`m 1:${url.split('start=')[1]}`);
     expect(sessionStorage.getItem('autoStartMeetingId')).toBe('m 1');
     expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
   });
@@ -101,5 +103,22 @@ describe('showRecordingView', () => {
     expect(showRecordingView({ ...base, heldId: 'm1', stopFlow: false })).toBe(false);
     expect(showRecordingView({ ...base, heldId: 'm2', stopFlow: true })).toBe(false);
     expect(showRecordingView({ ...base, meetingId: null, liveMeetingId: null })).toBe(false);
+  });
+});
+
+describe('autoStartAllowed', () => {
+  const { autoStartAllowed, pageKeyFor } = require('../../src/lib/recording-target');
+  test('no key: any page may start; a key: only its page, only while fresh', () => {
+    sessionStorage.clear();
+    expect(autoStartAllowed(sessionStorage, undefined)).toBe(true);
+    sessionStorage.setItem('autoStartKey', 'a:1000');
+    sessionStorage.setItem('autoStartRecording', 'true');
+    expect(autoStartAllowed(sessionStorage, pageKeyFor('b', null), 2000)).toBe(false);
+    expect(autoStartAllowed(sessionStorage, pageKeyFor('a', '1000'), 2000)).toBe(true);
+    expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
+    // stale: dropped for good, flags included
+    expect(autoStartAllowed(sessionStorage, pageKeyFor('a', '1000'), 1000 + 60_000)).toBe(false);
+    expect(sessionStorage.getItem('autoStartKey')).toBeNull();
+    expect(sessionStorage.getItem('autoStartRecording')).toBeNull();
   });
 });

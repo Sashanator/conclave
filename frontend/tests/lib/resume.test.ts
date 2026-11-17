@@ -33,7 +33,9 @@ describe('requestResume and takeAutoStartContinueId', () => {
     requestResume('m1', push);
     expect(sessionStorage.getItem('autoStartContinueId')).toBe('m1');
     expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
-    expect(pushed).toEqual(['/meeting-details?id=m1']);
+    expect(pushed).toHaveLength(1);
+    const start = pushed[0].match(/^\/meeting-details\?id=m1&start=(\d+)$/)![1];
+    expect(sessionStorage.getItem('autoStartKey')).toBe(`m1:${start}`);
   });
 
   test('takeAutoStartContinueId reads once', () => {

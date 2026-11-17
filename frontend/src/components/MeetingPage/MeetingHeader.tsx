@@ -7,7 +7,7 @@ import { formatMeetingDate, setTemplate, type MeetingRow } from '@/lib/meetings'
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 
 /** Emoji above the title, then category and date. The row menu (Delete) arrives with Task 36. */
-export function MeetingHeader({ row, live = false, onChange }: { row: MeetingRow; live?: boolean; onChange: (row: MeetingRow) => void }) {
+export function MeetingHeader({ row, live = false, onChange, onTitleSaved }: { row: MeetingRow; live?: boolean; onChange: (row: MeetingRow) => void; onTitleSaved?: () => void }) {
   const { availableTemplates } = useTemplates();
   const [title, setTitle] = useState(row.title);
   useEffect(() => setTitle(row.title), [row.title]);
@@ -20,6 +20,7 @@ export function MeetingHeader({ row, live = false, onChange }: { row: MeetingRow
     try {
       await invoke('api_save_meeting_title', { meetingId: row.id, title: next });
       onChange({ ...row, title: next });
+      onTitleSaved?.();
     } catch (error) {
       setTitle(row.title);
       toast.error(`Failed to save the title: ${String(error)}`);

@@ -20,19 +20,21 @@ export function NewMeetingView({ row, live, disabled, onStart }: {
   const [prep, setPrep] = useState<MeetingPrep | null>(null);
   const [material, setMaterial] = useState('');
   const saved = useRef('');
+  // The notes stay read-only until the load answered: saving over a prep that failed to load would replace it.
+  const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     let active = true;
-    setPrep(null); setMaterial(''); saved.current = '';
+    setPrep(null); setMaterial(''); saved.current = ''; setLoaded(false);
     prepForMeeting(row.id)
-      .then((p) => { if (active && p) { setPrep(p); setMaterial(p.material); saved.current = p.material; } })
+      .then((p) => { if (!active) return; if (p) { setPrep(p); setMaterial(p.material); saved.current = p.material; } setLoaded(true); })
       .catch((e) => { if (active) toast.error(`Failed to load Prep: ${String(e)}`); });
     return () => { active = false; };
   }, [row.id]);
 
   const saveMaterial = async () => {
-    if (material === saved.current) return;
+    if (!loaded || material === saved.current) return;
     try {
-      const next = await savePrep({ meetingId: row.id, eventTitle: row.title, material, templateId: row.templateId, items: prep?.items ?? [] });
+      const next = await savePrep({ meetingId: row.id, eventUid: prep?.eventUid ?? null, eventStart: prep?.eventStart ?? null, eventTitle: row.title, material, templateId: row.templateId, items: prep?.items ?? [] });
       saved.current = material;
       setPrep(next);
     } catch (e) { toast.error(`Failed to save Prep: ${String(e)}`); }
@@ -47,6 +49,7 @@ export function NewMeetingView({ row, live, disabled, onStart }: {
           value={material}
           onChange={(e) => setMaterial(e.target.value)}
           onBlur={saveMaterial}
+          readOnly={!loaded}
           rows={6}
           placeholder="Agenda, questions, context for this meeting"
           className="w-full rounded-md border border-border bg-background p-3 text-sm"
@@ -64,7 +67,7 @@ export function NewMeetingView({ row, live, disabled, onStart }: {
             type="button"
             onClick={onStart}
             disabled={disabled}
-            className="rounded-md bg-primary px-4 py-2 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
+            className="rounded-md bg-primary px-8 py-3 text-base font-semibold text-primary-foreground hover:bg-primary/90 disabled:opacity-50"
           >
             Start recording
           </button>

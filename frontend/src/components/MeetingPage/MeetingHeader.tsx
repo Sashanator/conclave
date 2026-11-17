@@ -3,11 +3,30 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
-import { formatMeetingDate, setTemplate, type MeetingRow } from '@/lib/meetings';
+import { MoreHorizontal } from 'lucide-react';
+import { deleteMeeting, deleteRecording, formatMeetingDate, setTemplate, type MeetingRow } from '@/lib/meetings';
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { DeleteMeetingDialog } from '@/components/MeetingsTable';
+import { DeleteRecordingDialog } from '@/components/MeetingPage/DeleteRecordingDialog';
 
-/** Emoji above the title, then category and date. The row menu (Delete) arrives with Task 36. */
-export function MeetingHeader({ row, live = false, onChange, onTitleSaved }: { row: MeetingRow; live?: boolean; onChange: (row: MeetingRow) => void; onTitleSaved?: () => void }) {
+type Props = {
+  row: MeetingRow;
+  live?: boolean;
+  /** A finished meeting: offers Delete recording and the Regenerate action after a category change. */
+  finished?: boolean;
+  onChange: (row: MeetingRow) => void;
+  onTitleSaved?: () => void;
+  onMeetingDeleted?: () => void;
+  onRecordingDeleted?: () => void;
+  onRegenerateSummary?: (templateId: string) => void;
+};
+
+const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
+
+/** Emoji above the title, then category and date, with the page menu (the two deletes). */
+export function MeetingHeader({ row, live = false, finished = false, onChange, onTitleSaved, onMeetingDeleted, onRecordingDeleted, onRegenerateSummary }: Props) {
+  const [dialog, setDialog] = useState<'meeting' | 'recording' | null>(null);
   const { availableTemplates } = useTemplates();
   const [title, setTitle] = useState(row.title);
   useEffect(() => setTitle(row.title), [row.title]);
@@ -30,20 +49,48 @@ export function MeetingHeader({ row, live = false, onChange, onTitleSaved }: { r
     try {
       await setTemplate(row.id, templateId || null);
       onChange({ ...row, templateId: templateId || null });
+      const name = availableTemplates.find((t) => t.id === templateId)?.name;
+      if (finished && name && onRegenerateSummary) {
+        toast.success('Category changed', { action: { label: `Regenerate summary with ${name}`, onClick: () => onRegenerateSummary(templateId) } });
+      }
     } catch (error) { toast.error(`Failed to save the category: ${String(error)}`); }
+  };
+  // A failed delete keeps the page and the dialog's meeting; a folder warning is shown, the delete still counts.
+  const runDelete = async (kind: 'meeting' | 'recording') => {
+    setDialog(null);
+    try {
+      const { folderWarning } = await (kind === 'meeting' ? deleteMeeting(row.id) : deleteRecording(row.id));
+      if (folderWarning) toast.warning(`The ${kind} was deleted, but its folder was kept`, { description: folderWarning });
+      (kind === 'meeting' ? onMeetingDeleted : onRecordingDeleted)?.();
+    } catch (e) {
+      toast.error(`Could not delete the ${kind}`, { description: errText(e) });
+    }
   };
 
   return (
     <header className="space-y-1">
       {emoji && <div className="text-3xl" aria-hidden>{emoji}</div>}
+      <div className="flex items-start gap-2">
       <input
         aria-label="Meeting title"
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         onBlur={saveTitle}
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-        className="w-full bg-transparent text-2xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+        className="min-w-0 flex-1 bg-transparent text-2xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
       />
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <button type="button" aria-label="Meeting actions" className="mt-1 rounded p-1 text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+            <MoreHorizontal className="h-5 w-5" aria-hidden />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          {finished && <DropdownMenuItem disabled={live} onSelect={() => setDialog('recording')}>Delete recording…</DropdownMenuItem>}
+          <DropdownMenuItem disabled={live} onSelect={() => setDialog('meeting')}>Delete meeting…</DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+      </div>
       <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
         <select
           aria-label="Category"
@@ -56,6 +103,8 @@ export function MeetingHeader({ row, live = false, onChange, onTitleSaved }: { r
         </select>
         <span>{formatMeetingDate(row, new Date(), live)}</span>
       </div>
+      <DeleteMeetingDialog row={row} open={dialog === 'meeting'} onOpenChange={(o) => !o && setDialog(null)} onConfirm={() => runDelete('meeting')} />
+      <DeleteRecordingDialog title={row.title} open={dialog === 'recording'} onOpenChange={(o) => !o && setDialog(null)} onConfirm={() => runDelete('recording')} />
     </header>
   );
 }

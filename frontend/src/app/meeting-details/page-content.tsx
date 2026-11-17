@@ -28,7 +28,9 @@ import { useMeetingSpeakers } from '@/hooks/useMeetingSpeakers';
 import { useConfig } from '@/contexts/ConfigContext';
 import { lineSpeakerName } from '@/lib/speakers';
 import { readSummaryMetadata } from '@/lib/summary-content';
-import { pickTemplateIfAllowed } from '@/lib/regenerate-guard';
+import { pickTemplateIfAllowed, shouldRegenerate } from '@/lib/regenerate-guard';
+import { MeetingHeader } from '@/components/MeetingPage/MeetingHeader';
+import type { MeetingRow } from '@/lib/meetings';
 import { audioMissingMessage } from '@/lib/meeting-audio';
 import { requestResume } from '@/lib/resume';
 
@@ -53,6 +55,8 @@ export default function PageContent({
   focusSegmentId = null,
   requestedTab = null,
   reviewed = false,
+  row = null,
+  onRowChange,
 }: {
   meeting: any;
   summaryData: MeetingSummary | null;
@@ -76,6 +80,9 @@ export default function PageContent({
   focusSegmentId?: string | null;
   requestedTab?: MeetingDetailsTab | null;
   reviewed?: boolean;
+  // The row feeds the header and its menu; none for an old link without a row
+  row?: MeetingRow | null;
+  onRowChange?: (row: MeetingRow) => void;
 }) {
   console.log('📄 PAGE CONTENT: Initializing with data:', {
     meetingId: meeting.id,
@@ -99,7 +106,7 @@ export default function PageContent({
   const autoGenerationStartedMeetingIdRef = useRef<string | null>(null);
 
   // Sidebar context
-  const { serverAddress } = useSidebar();
+  const { serverAddress, refetchMeetings } = useSidebar();
 
   // Get model config from ConfigContext
   const { modelConfig, setModelConfig, isModelConfigLoading, speakerIdActive, speakerSettingsLoaded } = useConfig();
@@ -278,6 +285,20 @@ export default function PageContent({
       transition={{ duration: 0.3, ease: 'easeOut' }}
       className="flex flex-col h-screen min-w-0 bg-muted/50"
     >
+      {row && (
+        <div className="border-b border-border bg-background px-6 pt-4 pb-2">
+          <MeetingHeader
+            row={row}
+            finished
+            live={recordingNow || isStopping || isProcessing || isSaving}
+            onChange={(r) => onRowChange?.(r)}
+            onTitleSaved={onMeetingUpdated}
+            onMeetingDeleted={() => { void refetchMeetings().finally(() => router.push('/')); }}
+            onRecordingDeleted={() => window.location.reload()}
+            onRegenerateSummary={(id) => { if (shouldRegenerate(meetingData.isSummaryDirty)) void regenerateSummary(id); }}
+          />
+        </div>
+      )}
       <div className="flex flex-1 min-w-0 overflow-hidden">
         <FinishedTabs
           activeTab={activeTab}

@@ -383,6 +383,8 @@ function MeetingDetailsContent() {
     focusSegmentId={targetLine ?? timeLine}
     requestedTab={target?.tab ?? null}
     reviewed={row?.reviewed ?? false}
+    row={row}
+    onRowChange={setRow}
   /></>;
 }
 

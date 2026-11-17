@@ -1,20 +1,31 @@
 'use client';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
+import { invoke } from '@tauri-apps/api/core';
 import { useRouter } from 'next/navigation';
 import { Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useCopilot, type CopilotCard } from '@/contexts/CopilotContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
-import { actionLabel, answerToNote, MAX_QUESTION_CHARS, type CopilotAction } from '@/lib/copilot';
+import { actionLabel, answerToNote, MAX_QUESTION_CHARS, splitTimes, type CopilotAction, type CopilotSettings } from '@/lib/copilot';
 import { formatRecordingTime } from '@/lib/meeting-notes';
 
 const ACTIONS: CopilotAction[] = ['catch_up', 'what_to_ask', 'explain'];
 
+const timeChip = 'rounded bg-muted px-1 font-mono text-xs text-primary hover:underline';
+
 export function CopilotPane({ locked }: { locked: boolean }) {
+  const router = useRouter();
   const { transcripts } = useTranscripts();
   const { isRecording } = useRecordingState();
-  const { cards, pending, ask } = useCopilot();
+  const { cards, alerts, pending, ask, setFocusAt } = useCopilot();
+  const [alertWords, setAlertWords] = useState<string[] | null>(null);
+  useEffect(() => {
+    invoke<CopilotSettings>('copilot_get_settings')
+      .then((s) => setAlertWords(s?.alert_words ?? []))
+      .catch(() => setAlertWords([]));
+  }, []);
+  const edit = () => router.push('/settings?tab=copilot');
   const [draft, setDraft] = useState('');
   const hasFinal = transcripts.some((t) => !t.is_partial);
   const blocked = pending || locked || !hasFinal;
@@ -29,6 +40,16 @@ export function CopilotPane({ locked }: { locked: boolean }) {
 
   return (
     <section aria-label="Copilot" className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
+      <div className="border-b border-border px-3 py-2">
+        <h3 className="text-sm font-medium">Copilot · this call</h3>
+        {alertWords && (
+          <p className="text-xs text-muted-foreground">
+            {alertWords.length ? `Alerts: ${alertWords.join(', ')}` : 'No alert words'}
+            {' · '}
+            <button type="button" className="underline hover:text-foreground" onClick={edit}>{alertWords.length ? 'edit' : 'add'}</button>
+          </p>
+        )}
+      </div>
       <div className="flex flex-wrap gap-1.5 border-b border-border p-2">
         {ACTIONS.map((action) => (
           <Button key={action} variant="outline" size="sm" disabled={blocked} onClick={() => ask(action)}>
@@ -38,9 +59,21 @@ export function CopilotPane({ locked }: { locked: boolean }) {
       </div>
       {hint && <p className="px-3 pt-2 text-xs text-muted-foreground">{hint}</p>}
       <div className="flex-1 space-y-2 overflow-y-auto p-3">
+        {alerts.map((a, i) => {
+          const at = formatRecordingTime(a.at);
+          return (
+            <article key={`${a.at}-${i}`} aria-label={`Alert · ${at}`} className="rounded-md border border-primary/40 bg-primary/5 p-3 text-sm">
+              <div className="flex items-start justify-between gap-2">
+                <h4 className="font-medium">Alert · <button type="button" className={timeChip} onClick={() => setFocusAt(a.at)}>{at}</button></h4>
+                <span className="text-xs text-muted-foreground">{a.word}</span>
+              </div>
+              <p className="mt-2 whitespace-pre-wrap break-words">{a.line}</p>
+            </article>
+          );
+        })}
         {cards.map((card) => <CopilotCardView key={card.id} card={card} locked={locked} />)}
       </div>
-      <div className="border-t border-border p-2 pb-24">
+      <div className="border-t border-border p-2">
         <textarea
           aria-label="Ask Copilot"
           disabled={blocked}
@@ -55,6 +88,17 @@ export function CopilotPane({ locked }: { locked: boolean }) {
         />
       </div>
     </section>
+  );
+}
+
+function Answer({ text }: { text: string }) {
+  const { setFocusAt } = useCopilot();
+  return (
+    <>
+      {splitTimes(text).map((p, i) => p.kind === 'text'
+        ? p.text
+        : <button key={i} type="button" className={timeChip} onClick={() => setFocusAt(p.seconds)}>{p.label}</button>)}
+    </>
   );
 }
 
@@ -85,7 +129,7 @@ function CopilotCardView({ card, locked }: { card: CopilotCard; locked: boolean 
       {card.status === 'done' && (
         <>
           {/* Text children only: the answer is model output and must never be parsed as markup. */}
-          <div className="mt-2 whitespace-pre-wrap break-words">{answer}</div>
+          <div className="mt-2 whitespace-pre-wrap break-words"><Answer text={answer} /></div>
           <div className="mt-2 flex gap-2">
             <Button variant="outline" size="sm" disabled={locked || card.added}
               onClick={() => { addNote(answerToNote(card.label, answer), activeDuration ?? card.askedAt); markAdded(card.id); }}>

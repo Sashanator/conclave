@@ -1,11 +1,9 @@
 'use client';
 import { ContinueControl } from './ContinueControl';
 import { useEffect, useState, type ReactNode } from 'react';
-import { listen } from '@tauri-apps/api/event';
 import { ChevronRight } from 'lucide-react';
 import { TranscriptPanel } from './TranscriptPanel';
 import { NotesPane } from '@/components/MeetingNotes/NotesPane';
-import { CopilotPane } from '@/components/Copilot/CopilotPane';
 import { SplitHandle, useSplitRatio } from '@/hooks/useSplitRatio';
 import { readFlag, writeFlag } from '@/lib/meeting-page-layout';
 import { useTranscripts } from '@/contexts/TranscriptContext';
@@ -29,7 +27,7 @@ export function LiveTranscriptAndNotes({ children, ...props }: { isProcessingSto
   const [collapsed, setCollapsed] = useState(() => readFlag('conclave.notesPaneCollapsed'));
   const [tab, setTab] = useState<LiveSideTab>(readLiveSideTab);
   const [prep, setPrep] = useState<MeetingPrep | null>(null);
-  const shownTab = tab === 'prep' && !prep ? 'notes' : tab;
+  const shownTab = tab === 'prep' && prep ? 'prep' : 'notes';
   const uid = calendarLink?.uid;
   const start = calendarLink?.start;
 
@@ -57,18 +55,6 @@ export function LiveTranscriptAndNotes({ children, ...props }: { isProcessingSto
     disabledHint: !isRecording ? 'Notes start with a recording' : locked ? 'Saving the meeting' : 'Starting the recording',
   };
 
-  // The name-alert banner's click: show the Copilot tab, expanded.
-  useEffect(() => {
-    const unlisten = listen('copilot-open', () => {
-      selectTab('copilot');
-      setCollapsed(false);
-      writeFlag('conclave.notesPaneCollapsed', false);
-    });
-    return () => {
-      unlisten.then((fn) => fn());
-    };
-  }, []);
-
   return (
     <div ref={split.containerRef} className="flex flex-1 min-w-0 overflow-hidden" {...split.containerHandlers}>
       <div className="relative flex min-w-0" style={collapsed ? { flex: 1 } : { width: `${split.ratio * 100}%`, flex: 'none' }}>
@@ -85,9 +71,6 @@ export function LiveTranscriptAndNotes({ children, ...props }: { isProcessingSto
             <button type="button" role="tab" aria-selected={shownTab === 'notes'} className={tabClass(shownTab === 'notes')} onClick={() => selectTab('notes')}>
               {`Notes (${notes.length})`}
             </button>
-            <button type="button" role="tab" aria-selected={shownTab === 'copilot'} className={tabClass(shownTab === 'copilot')} onClick={() => selectTab('copilot')}>
-              Copilot
-            </button>
             {prep && <button type="button" role="tab" aria-selected={shownTab === 'prep'} className={tabClass(shownTab === 'prep')} onClick={() => selectTab('prep')}>
               {prepCounter(prep.items)}
             </button>}
@@ -99,9 +82,6 @@ export function LiveTranscriptAndNotes({ children, ...props }: { isProcessingSto
           {/* All bodies stay mounted, so a half-typed note or question survives a tab switch. */}
           <div className={bodyClass(shownTab === 'notes')}>
             <NotesPane {...notesProps} collapsed={false} hideHeader />
-          </div>
-          <div className={bodyClass(shownTab === 'copilot')}>
-            <CopilotPane locked={locked} />
           </div>
           <div className={bodyClass(shownTab === 'prep')}>
             {prep && <PrepTickList prep={prep} onChange={setPrep} />}

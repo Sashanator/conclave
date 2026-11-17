@@ -65,7 +65,7 @@ mock.module('../../src/contexts/TranscriptContext', () => ({
 }));
 mock.module('../../src/app/_components/TranscriptPanel', () => ({ TranscriptPanel: () => null }));
 
-const { CopilotProvider } = await import('../../src/contexts/CopilotContext');
+const { CopilotProvider, useCopilot } = await import('../../src/contexts/CopilotContext');
 const { CopilotPane } = await import('../../src/components/Copilot/CopilotPane');
 const { LiveTranscriptAndNotes } = await import('../../src/app/_components/LiveTranscriptAndNotes');
 
@@ -254,36 +254,35 @@ describe('CopilotPane', () => {
   });
 });
 
-describe('Live right column tabs', () => {
-  const side = () => (
-    <CopilotProvider>
-      <LiveTranscriptAndNotes isProcessingStop={false} isStopping={false} showModal={() => {}} />
-    </CopilotProvider>
-  );
-  const tab = (r: ReactTestRenderer, label: string) => r.root.findAll((n) => n.props.role === 'tab' && textOf(n).trim() === label)[0];
-
-  test('tab_persists', async () => {
-    const r = render(side());
+describe('Copilot in the sidebar', () => {
+  test('alert_card_shows_time_and_line', async () => {
+    const r = render();
     await flush();
-    act(() => tab(r, 'Copilot').props.onClick());
-    expect(localStorage.getItem('conclave.liveSideTab')).toBe('copilot');
-    expect(tab(r, 'Copilot').props['aria-selected']).toBe(true);
-    act(() => r.unmount());
-    const again = render(side());
-    await flush();
-    expect(tab(again, 'Copilot').props['aria-selected']).toBe(true);
-    expect(askBox(again).props.disabled).toBe(false);
+    await act(async () => { handlers.get('copilot-alert')!({ payload: { word: 'deadline', line: 'The deadline moved', at: 1421 } }); });
+    expect(card(r, 'Alert · 23:41').length).toBe(1);
+    expect(JSON.stringify(r.toJSON())).toContain('The deadline moved');
   });
 
-  test('copilot_open_selects_copilot_tab_and_expands', async () => {
-    localStorage.setItem('conclave.notesPaneCollapsed', '1');
-    const r = render(side());
+  test('time_button_sets_focus', async () => {
+    let focus = null as number | null;
+    const Probe = () => { focus = useCopilot().focusAt; return null; };
+    const r = render(<CopilotProvider><Probe /><CopilotPane locked={false} /></CopilotProvider>);
     await flush();
-    expect(r.root.findAll((n) => n.props['aria-label'] === 'Show notes').length).toBe(1);
-    await act(async () => { handlers.get('copilot-open')!({ payload: undefined }); });
+    await act(async () => { handlers.get('copilot-alert')!({ payload: { word: 'x', line: 'l', at: 724 } }); });
+    act(() => button(r, '12:04').props.onClick());
+    expect(focus).toBe(724);
+    click(r, 'Catch me up');
     await flush();
-    expect(tab(r, 'Copilot').props['aria-selected']).toBe(true);
-    expect(localStorage.getItem('conclave.liveSideTab')).toBe('copilot');
-    expect(localStorage.getItem('conclave.notesPaneCollapsed')).toBe('0');
+    await act(async () => { asks[0].resolve('Decision at 17:30 ok'); });
+    act(() => button(r, '17:30').props.onClick());
+    expect(focus).toBe(1050);
+  });
+
+  test('alert_line_and_edit', async () => {
+    const r = render();
+    await flush();
+    expect(r.root.findAll((n) => n.type === 'p' && textOf(n).includes('No alert words')).length).toBe(1);
+    act(() => button(r, 'add').props.onClick());
+    expect(push).toHaveBeenCalledWith('/settings?tab=copilot');
   });
 });

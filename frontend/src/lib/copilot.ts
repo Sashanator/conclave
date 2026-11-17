@@ -102,3 +102,27 @@ export function addAlertWord(words: string[], word: string): string[] {
   if (words.some((x) => x.toLowerCase() === lower)) return words;
   return [...words, w];
 }
+
+export type TimePart = { kind: 'text'; text: string } | { kind: 'time'; label: string; seconds: number };
+
+/** Splits an answer into text and clock times (`17:30`, `1:02:03`); minutes and seconds must be below 60. */
+export function splitTimes(answer: string): TimePart[] {
+  const parts: TimePart[] = [];
+  let last = 0;
+  const push = (text: string) => {
+    if (!text) return;
+    const prev = parts[parts.length - 1];
+    if (prev?.kind === 'text') prev.text += text;
+    else parts.push({ kind: 'text', text });
+  };
+  for (const m of answer.matchAll(/\b(\d{1,2}:)?\d{1,2}:\d{2}\b/g)) {
+    const nums = m[0].split(':').map(Number);
+    if (nums.slice(1).some((n) => n >= 60)) continue;
+    const seconds = nums.reduce((acc, n) => acc * 60 + n, 0);
+    push(answer.slice(last, m.index));
+    parts.push({ kind: 'time', label: m[0], seconds });
+    last = m.index! + m[0].length;
+  }
+  push(answer.slice(last));
+  return parts;
+}

@@ -97,7 +97,7 @@ export default function PageContent({
   const notes = useMeetingNotes(meeting.id);
   const audio = useMeetingAudio(meeting.id);
   const router = useRouter();
-  const { isRecording: recordingNow, isStopping, isProcessing, isSaving } = useRecordingState();
+  const { isRecording: recordingNow, isStopping, isProcessing, isSaving, liveMeetingId } = useRecordingState();
 
   // Ref to store the modal open function from SummaryGeneratorButtonGroup
   const openModelSettingsRef = useRef<(() => void) | null>(null);
@@ -290,12 +290,15 @@ export default function PageContent({
           <MeetingHeader
             row={row}
             finished
-            live={recordingNow || isStopping || isProcessing || isSaving}
-            onChange={(r) => onRowChange?.(r)}
+            live={liveMeetingId === meeting.id} // the recording/saving view takes over this page, so only the live target matters
+            onChange={(r) => { onRowChange?.(r); if (r.title !== row.title) meetingData.updateMeetingTitle(r.title); }}
             onTitleSaved={onMeetingUpdated}
             onMeetingDeleted={() => { void refetchMeetings().finally(() => router.push('/')); }}
             onRecordingDeleted={() => window.location.reload()}
-            onRegenerateSummary={(id) => { if (shouldRegenerate(meetingData.isSummaryDirty)) void regenerateSummary(id); }}
+            onRegenerateSummary={(id) => {
+              const name = templates.availableTemplates.find((t) => t.id === id)?.name ?? id;
+              pickTemplateIfAllowed(meetingData.isSummaryDirty, () => templates.handleTemplateSelection(id, name), () => regenerateSummary(id));
+            }}
           />
         </div>
       )}

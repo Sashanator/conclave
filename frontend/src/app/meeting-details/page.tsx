@@ -328,7 +328,7 @@ function MeetingDetailsContent() {
   } else if (row && !row.startedAt && !row.hasTranscript) {
     shell = (
       <div className="h-screen overflow-y-auto bg-muted/50">
-        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} onChange={setRow} onTitleSaved={refetchMeetings} /></div>
+        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} live={busy} onChange={setRow} onTitleSaved={refetchMeetings} onMeetingDeleted={() => { void refetchMeetings().finally(() => router.push('/')); }} /></div>
         <NewMeetingView row={row} live={liveElsewhere} disabled={busy} onStart={() => { handleRecordingStart(row.id).catch((e) => toast.error('Could not start recording', { description: e instanceof Error ? e.message : String(e) })); }} />
       </div>
     );
@@ -373,6 +373,8 @@ function MeetingDetailsContent() {
       await fetchMeetingDetails();
       // Refetch meetings list to update sidebar
       await refetchMeetings();
+      // The header shows the row's title, which a summary rename changed
+      await listMeetingRows().then((rows) => { const r = rows.find((x) => x.id === meetingId); if (r) setRow(r); }).catch(() => {});
     }}
     onRefetchTranscripts={refetch}
     // Pagination props for efficient transcript loading

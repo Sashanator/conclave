@@ -38,7 +38,7 @@ afterAll(() => {
 
 const newRow = { id: 'm1', title: 'Weekly', startedAt: null, hasTranscript: false };
 let rows: () => Promise<unknown[]> = async () => [newRow];
-const invoke = mock(async (command: string) => (command === 'api_list_meeting_rows' ? rows() : null));
+const invoke = mock(async (command: string) => (command === 'api_list_meeting_rows' ? rows() : command === 'api_get_summary' ? { status: 'idle', data: null } : null));
 const toast = { error: mock((..._a: unknown[]) => {}), warning() {}, success() {}, info() {} };
 const push = mock((_u: string) => {});
 const refetchMeetings = mock(async () => {});
@@ -46,6 +46,9 @@ const recording: Record<string, unknown> = {};
 let startArgs: unknown[] = [];
 const refetchTranscripts = mock(() => {});
 let screenKind: unknown;
+let pageMetadata: unknown = null;
+const setCurrentMeeting = () => {};
+const noRows: never[] = []; // stable: the page's metadata effect depends on it
 let autoStarting = false;
 let startResult: () => Promise<void> = async () => {};
 const handleRecordingStart = mock(async (_id?: unknown) => startResult());
@@ -55,11 +58,11 @@ let params = new URLSearchParams('id=m1');
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
 mock.module('next/navigation', () => ({ useSearchParams: () => params, useRouter: () => ({ push }) }));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => ({ setCurrentMeeting() {}, refetchMeetings, meetings: [] }) }));
+mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => ({ setCurrentMeeting, refetchMeetings, meetings: noRows }) }));
 mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ isAutoSummary: false, transcriptModelConfig: { provider: 'parakeet' } }) }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recording, useRecordingState: () => recording }));
 mock.module('../../src/hooks/usePaginatedTranscripts', () => ({
-  usePaginatedTranscripts: () => ({ metadata: null, segments: [], transcripts: [], isLoading: false, isLoadingMore: false, hasMore: false, totalCount: 0, loadedCount: 0, loadMore() {}, refetch: refetchTranscripts, error: null, setTranscriptMark() {}, setTranscriptSpeaker() {} }),
+  usePaginatedTranscripts: () => ({ metadata: pageMetadata, segments: noRows, transcripts: noRows, isLoading: false, isLoadingMore: false, hasMore: false, totalCount: 0, loadedCount: 0, loadMore() {}, refetch: refetchTranscripts, error: null, setTranscriptMark() {}, setTranscriptSpeaker() {} }),
 }));
 mock.module('../../src/hooks/useRecordingStart', () => ({
   useRecordingStart: (...args: unknown[]) => { startArgs = args; return { handleRecordingStart, isAutoStarting: autoStarting }; },
@@ -67,10 +70,12 @@ mock.module('../../src/hooks/useRecordingStart', () => ({
 mock.module('../../src/hooks/useModalState', () => ({ useModalState: () => ({ modals: {}, messages: {}, showModal() {}, hideModal() {} }) }));
 mock.module('../../src/app/_components/SettingsModal', () => ({ SettingsModals: () => null }));
 mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...originals.aiSidebar, useAiSidebarScreen: (kind: unknown) => { screenKind = kind; } }));
-mock.module('../../src/app/meeting-details/page-content', () => ({ default: () => null }));
+let contentProps: { onMeetingUpdated: () => Promise<void> } | undefined;
+mock.module('../../src/app/meeting-details/page-content', () => ({ default: (p: NonNullable<typeof contentProps>) => { contentProps = p; return null; } }));
 mock.module('../../src/components/MeetingPage/NewMeetingView', () => ({ NewMeetingView: (p: typeof newProps) => { newProps = p; return <div>New view</div>; } }));
 mock.module('../../src/components/MeetingPage/RecordingView', () => ({ RecordingView: () => <div>Recording view</div> }));
-mock.module('../../src/components/MeetingPage/MeetingHeader', () => ({ MeetingHeader: () => null }));
+let headerProps: { live?: boolean; onMeetingDeleted?: () => void } | undefined;
+mock.module('../../src/components/MeetingPage/MeetingHeader', () => ({ MeetingHeader: (p: NonNullable<typeof headerProps>) => { headerProps = p; return null; } }));
 
 const { default: MeetingDetails } = await import('../../src/app/meeting-details/page');
 
@@ -85,10 +90,10 @@ beforeEach(async () => {
   if (renderer) await act(async () => renderer!.unmount());
   renderer = undefined;
   rows = async () => [newRow];
-  autoStarting = false; startResult = async () => {}; newProps = undefined;
+  autoStarting = false; startResult = async () => {}; newProps = undefined; headerProps = undefined; contentProps = undefined; pageMetadata = null;
   params = new URLSearchParams('id=m1');
   Object.assign(recording, { liveMeetingId: null, isStopping: false, isProcessing: false, isSaving: false, isRecording: false, status: 'idle' });
-  push.mockClear(); toast.error.mockClear(); handleRecordingStart.mockClear(); refetchTranscripts.mockClear();
+  push.mockClear(); refetchMeetings.mockClear(); toast.error.mockClear(); handleRecordingStart.mockClear(); refetchTranscripts.mockClear();
   sessionStorage.clear(); screenKind = undefined;
 });
 
@@ -194,4 +199,32 @@ test('a stop flow of another meeting does not take this page', async () => {
   sessionStorage.setItem('last_recording_meeting_id', 'm2');
   await mount();
   expect(shows()).toBe(false);
+});
+
+test('Delete meeting on a new meeting refetches the list then leaves for it', async () => {
+  await mount();
+  await act(async () => { headerProps!.onMeetingDeleted!(); await new Promise((r) => setTimeout(r, 0)); });
+  expect(refetchMeetings).toHaveBeenCalled();
+  expect(push).toHaveBeenCalledWith('/');
+});
+
+test('the new meeting menu is disabled while a start is in flight', async () => {
+  await mount();
+  expect(headerProps!.live).toBe(false);
+  await act(async () => { (startArgs[1] as (v: boolean) => void)(true); });
+  expect(headerProps!.live).toBe(true);
+});
+
+test('a summary rename reloads the header row too', async () => {
+  const finished = { id: 'm1', title: 'Weekly', startedAt: '2026-11-16 10:00:00+00:00', hasTranscript: true };
+  rows = async () => [finished];
+  await mount();
+  pageMetadata = { id: 'm1', title: 'Weekly', created_at: '2026-11-16', updated_at: '2026-11-16', folder_path: null }; // arrives after the mount resets, as in the app
+  await rerender();
+  await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  const loads = () => invoke.mock.calls.filter(([c]) => c === 'api_list_meeting_rows').length;
+  expect(contentProps).toBeDefined();
+  const before = loads();
+  await act(async () => { await contentProps?.onMeetingUpdated(); });
+  expect(loads()).toBeGreaterThan(before);
 });

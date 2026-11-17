@@ -15,11 +15,12 @@ afterAll(() => {
 const calls: Array<[string, unknown]> = [];
 let failWith: string | null = null;
 let deleteResult: unknown = null;
+let deleteGate: Promise<void> | null = null;
 const invoke = mock(async (command: string, args?: unknown) => {
   calls.push([command, args]);
   if (command === 'api_list_templates') return { templates: [{ id: 'one', name: '1:1', emoji: '🗣' }], errors: [] };
   if (command.startsWith('api_delete_') && failWith) throw new Error(failWith);
-  if (command.startsWith('api_delete_')) return deleteResult;
+  if (command.startsWith('api_delete_')) { await deleteGate; return deleteResult; }
   return null;
 });
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
@@ -34,7 +35,7 @@ const row: MeetingRow = {
   startedAt: '2026-11-16 10:00:00+00:00', endedAt: '2026-11-16 11:00:00+00:00', createdAt: '2026-11-16 10:00:00+00:00', calendarUid: null,
   calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: true, hasSummary: true, prepPoints: 0,
 };
-beforeEach(() => { calls.length = 0; toasts.length = 0; failWith = null; deleteResult = null; });
+beforeEach(() => { calls.length = 0; toasts.length = 0; failWith = null; deleteResult = null; deleteGate = null; });
 
 type Props = Partial<Parameters<typeof MeetingHeader>[0]>;
 async function mount(props: Props = {}) {
@@ -144,5 +145,20 @@ test('category change on a finished meeting offers Regenerate, never regenerates
   expect(regenerated).toBeNull();
   await act(async () => { (toast![2] as { action: { onClick: () => void } }).action.onClick(); });
   expect(regenerated).toBe('one');
+  await m.close();
+});
+
+test('the menu stays disabled until the delete request settles', async () => {
+  let release!: () => void;
+  deleteGate = new Promise<void>((r) => { release = r; });
+  const m = await mount({ finished: true });
+  await m.openMenu();
+  await m.click(m.items().find((i) => i.textContent === 'Delete meeting…')!);
+  await m.click(m.button('Delete meeting'));
+  await m.openMenu();
+  for (const i of m.items()) expect(i.getAttribute('aria-disabled')).toBe('true');
+  await act(async () => { release(); });
+  await m.openMenu();
+  for (const i of m.items()) expect(i.getAttribute('aria-disabled')).toBeNull();
   await m.close();
 });

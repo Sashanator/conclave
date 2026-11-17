@@ -27,6 +27,7 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 /** Emoji above the title, then category and date, with the page menu (the two deletes). */
 export function MeetingHeader({ row, live = false, finished = false, onChange, onTitleSaved, onMeetingDeleted, onRecordingDeleted, onRegenerateSummary }: Props) {
   const [dialog, setDialog] = useState<'meeting' | 'recording' | null>(null);
+  const [deleting, setDeleting] = useState(false);
   const { availableTemplates } = useTemplates();
   const [title, setTitle] = useState(row.title);
   useEffect(() => setTitle(row.title), [row.title]);
@@ -58,13 +59,14 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
   // A failed delete keeps the page and the dialog's meeting; a folder warning is shown, the delete still counts.
   const runDelete = async (kind: 'meeting' | 'recording') => {
     setDialog(null);
+    setDeleting(true);
     try {
       const { folderWarning } = await (kind === 'meeting' ? deleteMeeting(row.id) : deleteRecording(row.id));
       if (folderWarning) toast.warning(`The ${kind} was deleted, but its folder was kept`, { description: folderWarning });
       (kind === 'meeting' ? onMeetingDeleted : onRecordingDeleted)?.();
     } catch (e) {
       toast.error(`Could not delete the ${kind}`, { description: errText(e) });
-    }
+    } finally { setDeleting(false); }
   };
 
   return (
@@ -86,8 +88,8 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="end">
-          {finished && <DropdownMenuItem disabled={live} onSelect={() => setDialog('recording')}>Delete recording…</DropdownMenuItem>}
-          <DropdownMenuItem disabled={live} onSelect={() => setDialog('meeting')}>Delete meeting…</DropdownMenuItem>
+          {finished && <DropdownMenuItem disabled={live || deleting} onSelect={() => setDialog('recording')}>Delete recording…</DropdownMenuItem>}
+          <DropdownMenuItem disabled={live || deleting} onSelect={() => setDialog('meeting')}>Delete meeting…</DropdownMenuItem>
         </DropdownMenuContent>
       </DropdownMenu>
       </div>

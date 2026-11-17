@@ -25,7 +25,7 @@ export function SummaryCell({ row, state, activeDuration, onDelete }: {
 }) {
   switch (state) {
     case 'recording':
-      return <span className="rounded-full px-2 text-xs font-semibold text-white" style={{ background: 'hsl(var(--rec, 0 72% 51%))' }}>
+      return <span className="rounded-full px-2 text-xs font-semibold text-white" style={{ background: 'hsl(var(--rec))' }}>
         {`Recording · ${clock(activeDuration ?? 0)}`}
       </span>;
     case 'new':
@@ -60,7 +60,7 @@ export function CategoryChip({ row, templates, onChange }: {
 }) {
   const i = templates.findIndex((t) => t.id === row.templateId);
   const label = i >= 0 ? templates[i].name : 'No template';
-  const color = `var(--cat-${i >= 0 ? (i % 5) + 1 : 5}, 220 10% 50%)`;
+  const color = `var(--cat-${i >= 0 ? (i % 5) + 1 : 5})`;
   return (
     <Popover>
       <PopoverTrigger asChild>

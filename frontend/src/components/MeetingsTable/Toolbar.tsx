@@ -57,7 +57,7 @@ export function Toolbar({ onNew, query, onQuery, searchRef, config, dispatch, on
       </DropdownMenu>
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" className={`${btn} ${config.group !== 'none' ? 'bg-accent text-foreground' : ''}`}>Group: {GROUP_TITLES[config.group]}</button>
+          <button type="button" className={`${btn} ${config.group !== 'none' ? 'bg-accent !text-foreground' : ''}`}>Group: {GROUP_TITLES[config.group]}</button>
         </DropdownMenuTrigger>
         <DropdownMenuContent align="start">
           <DropdownMenuRadioGroup value={config.group} onValueChange={(g) => dispatch({ type: 'setGroup', group: g as ViewGroup })}>

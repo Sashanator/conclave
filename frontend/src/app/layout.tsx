@@ -334,6 +334,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning style={transparent}>
       <head>
+        <title>Conclave</title>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className={`${sourceSans3.variable} font-sans antialiased`} style={transparent}>

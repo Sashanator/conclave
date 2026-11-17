@@ -469,6 +469,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                aria-label="Home"
                 onClick={() => go(homeRoute(isRecording, status))}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isHomePage ? 'bg-muted' : 'hover:bg-accent'
                   }`}
@@ -593,6 +594,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                aria-label={isRecording ? "Recording in progress" : "Start recording"}
                 onClick={handleRecordingToggle}
                 disabled={isRecording}
                 className={`p-2 ${isRecording ? 'bg-red-500 cursor-not-allowed' : 'bg-red-500 hover:bg-red-600'} rounded-full transition-colors duration-150 shadow-sm`}
@@ -613,6 +615,7 @@ const Sidebar: React.FC = () => {
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
+                  aria-label="Import Audio"
                   onClick={() => openImportDialog()}
                   className="p-2 rounded-lg transition-colors duration-150 hover:bg-blue-100 dark:hover:bg-blue-900/50 bg-blue-50 dark:bg-blue-950/40"
                 >
@@ -628,6 +631,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                aria-label="Meeting Notes"
                 onClick={() => {
                   if (isCollapsed) toggleCollapse();
                   toggleFolder('meetings');
@@ -648,6 +652,7 @@ const Sidebar: React.FC = () => {
           <Tooltip>
             <TooltipTrigger asChild>
               <button
+                aria-label="Settings"
                 onClick={() => go('/settings')}
                 className={`p-2 rounded-lg transition-colors duration-150 ${isSettingsPage ? 'bg-muted' : 'hover:bg-accent'
                   }`}
@@ -791,6 +796,7 @@ const Sidebar: React.FC = () => {
       {/* Floating collapse button */}
       <button
         onClick={toggleCollapse}
+        aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         className="absolute -right-6 top-20 z-50 p-1 bg-card hover:bg-accent rounded-full shadow-lg border"
         style={{ transform: 'translateX(50%)' }}
       >

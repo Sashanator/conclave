@@ -193,7 +193,7 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
 
       if (saveResponse.fallback) {
         toast.info('Recovered as a new meeting', {
-          description: 'Its meeting was deleted or recorded again.',
+          description: 'Its meeting was deleted, or it already holds a recording.',
         });
       }
 

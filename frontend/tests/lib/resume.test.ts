@@ -13,6 +13,11 @@ describe('saveOutcome', () => {
     expect(outcome.continueError).toBeNull();
   });
 
+  test('fallback is reported, missing means false', () => {
+    expect(saveOutcome({ meeting_id: 'm', fallback: true }).fallback).toBe(true);
+    expect(saveOutcome({ meeting_id: 'm' }).fallback).toBe(false);
+  });
+
   test('surfaces continue_error', () => {
     const outcome = saveOutcome({ meeting_id: 'm2', continue_error: 'Merging the audio failed: x' });
     expect(outcome.continueError).toBe('Merging the audio failed: x');

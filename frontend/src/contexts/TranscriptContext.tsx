@@ -130,7 +130,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
         await indexedDBService.init();
 
         // Listen for recording-started event
-        unlistenRecordingStarted = await recordingService.onRecordingStarted(async () => {
+        unlistenRecordingStarted = await recordingService.onRecordingStarted(async (payload) => {
           try {
             // Generate unique meeting ID
             const meetingId = `meeting-${Date.now()}`;
@@ -144,7 +144,7 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
             const meetingName = await recordingService.getRecordingMeetingName();
 
             // Use a better fallback that matches the backend's naming pattern
-            const effectiveTitle = meetingName || `Meeting ${new Date().toISOString().slice(0, 19).replace('T', '_').replace(/:/g, '-')}`;
+            const effectiveTitle = meetingName || 'Untitled';
 
             // Initialize meeting metadata in IndexedDB
             await indexedDBService.saveMeetingMetadata({
@@ -154,7 +154,8 @@ export function TranscriptProvider({ children }: { children: ReactNode }) {
               lastUpdated: Date.now(),
               transcriptCount: 0,
               savedToSQLite: false,
-              folderPath: undefined // Will update shortly
+              folderPath: undefined, // Will update shortly
+              targetMeetingId: payload?.meetingId ?? undefined
             });
 
             // Synchronize meeting title to state (fixes tray stop title issue)

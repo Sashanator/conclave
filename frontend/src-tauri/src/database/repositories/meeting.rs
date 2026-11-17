@@ -49,7 +49,34 @@ pub fn default_meeting_title(now: chrono::NaiveDateTime) -> String {
     format!("Untitled · {}", now.format("%a %H:%M"))
 }
 
+/// "Nothing of the user's is in this row" (alias `m`). The delete in `release_routed_row` carries it in the same statement.
+pub(crate) const UNTOUCHED_SQL: &str = "m.started_at IS NULL AND m.title_source <> 'user' AND m.template_id IS NULL \
+AND NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.meeting_id = m.id) \
+AND NOT EXISTS (SELECT 1 FROM meeting_notes n WHERE n.meeting_id = m.id \
+ AND (TRIM(COALESCE(n.notes_markdown,'')) <> '' OR TRIM(COALESCE(n.notes_json,'')) NOT IN ('','[]','null'))) \
+AND NOT EXISTS (SELECT 1 FROM meeting_preps p WHERE p.meeting_id = m.id \
+ AND (TRIM(p.material) <> '' OR p.chat_json NOT IN ('','[]') OR p.items_json NOT IN ('','[]')))";
+
 impl MeetingsRepository {
+    /// Gives a routed row back when its recording was continued into another meeting: clears `started_at`
+    /// (only while it has no transcript) and, when `fresh` (we created it), deletes it if still untouched. True = deleted.
+    pub async fn release_routed_row(pool: &SqlitePool, id: &str, fresh: bool) -> Result<bool, SqlxError> {
+        let mut tx = pool.begin().await?;
+        sqlx::query("UPDATE meetings SET started_at = NULL WHERE id = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = ?)")
+            .bind(id).bind(id).execute(&mut *tx).await?;
+        let mut deleted = false;
+        if fresh {
+            let sql = format!("DELETE FROM meetings AS m WHERE m.id = ? AND m.calendar_uid IS NULL AND {UNTOUCHED_SQL}");
+            deleted = sqlx::query(&sql).bind(id).execute(&mut *tx).await?.rows_affected() == 1;
+            if deleted {
+                sqlx::query("DELETE FROM meeting_preps WHERE meeting_id = ?").bind(id).execute(&mut *tx).await?;
+                sqlx::query("DELETE FROM meeting_notes WHERE meeting_id = ?").bind(id).execute(&mut *tx).await?;
+            }
+        }
+        tx.commit().await?;
+        Ok(deleted)
+    }
+
     /// Inserts an empty meeting (no recording yet) and returns its id. A blank title gets the default one.
     pub async fn create_meeting(pool: &SqlitePool, title: Option<&str>, now_local: chrono::NaiveDateTime) -> Result<String, SqlxError> {
         let given = title.map(str::trim).filter(|t| !t.is_empty());
@@ -1069,6 +1096,51 @@ mod create_tests {
             let row: (String, String, i64, Option<String>) =
                 sqlx::query_as("SELECT title, title_source, reviewed, started_at FROM meetings WHERE id = ?").bind(&id).fetch_one(&pool).await.unwrap();
             assert_eq!((row.0, row.1.as_str(), row.2, row.3), (title, src, 0, None));
+        }
+    }
+
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    async fn routed(pool: &SqlitePool, extra: &str) {
+        exec(pool, "INSERT INTO meetings (id, title, created_at, updated_at, started_at, title_source) VALUES ('r', 'Untitled', '2026-11-17T10:00:00Z', '2026-11-17T10:00:00Z', '2026-11-17T10:00:00Z', 'default')").await;
+        if !extra.is_empty() { exec(pool, extra).await; }
+    }
+
+    async fn state(pool: &SqlitePool) -> Option<Option<String>> {
+        sqlx::query_as::<_, (Option<String>,)>("SELECT started_at FROM meetings WHERE id = 'r'").fetch_optional(pool).await.unwrap().map(|r| r.0)
+    }
+
+    #[tokio::test]
+    async fn release_keeps_started_at_of_finished_meeting() {
+        let pool = test_pool().await;
+        routed(&pool, "UPDATE meetings SET ended_at = '2026-11-17T11:00:00Z' WHERE id = 'r'").await;
+        assert!(!MeetingsRepository::release_routed_row(&pool, "r", false).await.unwrap());
+        assert_eq!(state(&pool).await, Some(Some("2026-11-17T10:00:00Z".to_string())));
+    }
+
+    #[tokio::test]
+    async fn continue_releases_fresh_routed_row() {
+        let pool = test_pool().await;
+        routed(&pool, "").await;
+        assert!(MeetingsRepository::release_routed_row(&pool, "r", true).await.unwrap());
+        assert_eq!(state(&pool).await, None);
+
+        let pool = test_pool().await;
+        routed(&pool, "").await;
+        assert!(!MeetingsRepository::release_routed_row(&pool, "r", false).await.unwrap());
+        assert_eq!(state(&pool).await, Some(None));
+
+        for extra in [
+            "INSERT INTO meeting_notes (meeting_id, notes_markdown, created_at, updated_at) VALUES ('r', 'a note', 'x', 'x')",
+            "INSERT INTO meeting_notes (meeting_id, notes_json, created_at, updated_at) VALUES ('r', '[{\"id\":\"n1\",\"at\":null,\"text\":\"real\"}]', 'x', 'x')",
+            "INSERT INTO meeting_preps (meeting_id, created_at, updated_at, material) VALUES ('r', 'x', 'x', 'some material')",
+            "UPDATE meetings SET title_source = 'user' WHERE id = 'r'",
+            "UPDATE meetings SET calendar_uid = 'u' WHERE id = 'r'",
+        ] {
+            let pool = test_pool().await;
+            routed(&pool, extra).await;
+            assert!(!MeetingsRepository::release_routed_row(&pool, "r", true).await.unwrap(), "{extra}");
+            assert_eq!(state(&pool).await, Some(None), "{extra}");
         }
     }
 }

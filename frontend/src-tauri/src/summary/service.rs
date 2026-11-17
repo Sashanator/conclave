@@ -88,6 +88,21 @@ fn strip_title_if_present(markdown: &str) -> String {
     }
 }
 
+/// The category picked before recording (meetings.template_id), used as the manual template pick.
+async fn meeting_category(pool: &SqlitePool, meeting_id: &str) -> Option<String> {
+    match sqlx::query_scalar::<_, Option<String>>("SELECT template_id FROM meetings WHERE id=?")
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await
+    {
+        Ok(row) => row.flatten(),
+        Err(e) => {
+            warn!("Could not read the category of meeting {}: {}", meeting_id, e);
+            None
+        }
+    }
+}
+
 /// One row per summary call that got a response. Called after the summary, with no lock held.
 async fn record_summary_usage(
     pool: &SqlitePool,
@@ -380,7 +395,7 @@ impl SummaryService {
             None
         });
         let listing = templates::list_templates();
-        let (template_id, source) = match choose_without_model(manual_template_id.as_deref(), stored, prep.as_ref().and_then(|p| p.template_id.as_deref()), &title, &listing.templates) {
+        let (template_id, source) = match choose_without_model(manual_template_id.clone().or(meeting_category(&pool, &meeting_id).await).as_deref(), stored, prep.as_ref().and_then(|p| p.template_id.as_deref()), &title, &listing.templates) {
             Choice::Decided(id, source) => (id, source),
             Choice::AskModel => {
                 let (system, user) = auto_pick_prompts(&text, &listing.templates);
@@ -669,6 +684,15 @@ mod tests {
             meeting_info_for_prompt(" X ", Some("user"), old, old, None).title.as_deref(),
             Some("X")
         );
+    }
+
+    #[tokio::test]
+    async fn meeting_category_reads_template_id() {
+        let pool = test_pool().await;
+        let id = MeetingsRepository::create_meeting(&pool, Some("X"), Local::now().naive_local()).await.unwrap();
+        sqlx::query("UPDATE meetings SET template_id = 'one_on_one' WHERE id = ?").bind(&id).execute(&pool).await.unwrap();
+        assert_eq!(meeting_category(&pool, &id).await.as_deref(), Some("one_on_one"));
+        assert_eq!(meeting_category(&pool, "missing").await, None);
     }
 
     #[test]

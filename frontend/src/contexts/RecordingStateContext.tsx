@@ -3,6 +3,7 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback, useMemo, useReducer } from 'react';
 import { recordingService } from '@/services/recordingService';
 import { toast } from 'sonner';
+import { listen } from '@tauri-apps/api/event';
 import { initialMicFollowing, reduceMicFollowing, type MicFollowingState } from '@/lib/mic-following';
 
 /**
@@ -50,6 +51,9 @@ interface RecordingStateContextType extends RecordingState {
 
   // Mic following (meeting detection); kept here so start-time events are never missed
   micFollowing: MicFollowingState;
+
+  // The meeting row the live recording writes into (routed or continued); null when idle
+  liveMeetingId: string | null;
 }
 
 const RecordingStateContext = createContext<RecordingStateContextType | null>(null);
@@ -73,7 +77,10 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     statusMessage: undefined,       // NEW: No message initially
   });
 
+  const [liveMeetingId, setLiveMeetingId] = useState<string | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Bumped on every recording-stopped, so a poll that started before it can be dropped.
+  const stopCountRef = useRef(0);
   const [micFollowing, dispatchMicFollowing] = useReducer(reduceMicFollowing, initialMicFollowing);
 
   // NEW: Status setter with logging
@@ -92,8 +99,11 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
    * Called on mount (fixes refresh desync) and periodically while recording
    */
   const syncWithBackend = async () => {
+    const stopsBefore = stopCountRef.current;
     try {
       const backendState = await recordingService.getRecordingState();
+      // A stop landed while this read was in flight: its reply still says "recording".
+      if (stopCountRef.current !== stopsBefore) return;
 
       setState(prev => ({
         ...prev,
@@ -103,6 +113,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
         recordingDuration: backendState.recording_duration,
         activeDuration: backendState.active_duration,
       }));
+      setLiveMeetingId(backendState.is_recording ? backendState.meeting_id ?? null : null);
 
       console.log('[RecordingStateContext] Synced with backend:', backendState);
     } catch (error) {
@@ -153,6 +164,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
             isActive: true,
             status: RecordingStatus.RECORDING,  // NEW: Set status to RECORDING
           }));
+          syncWithBackend();
           startPolling();
         });
         unsubscribers.push(unlistenStarted);
@@ -192,9 +204,16 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
               activeDuration: null,
             };
           });
+          stopCountRef.current += 1;
+          setLiveMeetingId(null);
           stopPolling();
         });
         unsubscribers.push(unlistenStopped);
+
+        // The routed or continued meeting changed mid-recording: re-read it
+        for (const event of ['recording-target', 'continue-target-changed']) {
+          unsubscribers.push(await listen(event, () => { syncWithBackend(); }));
+        }
 
         // Recording paused
         const unlistenPaused = await recordingService.onRecordingPaused(() => {
@@ -401,7 +420,8 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
     isSaving: state.status === RecordingStatus.SAVING,
     isStartingRecording: state.status === RecordingStatus.STARTING,
     micFollowing,
-  }), [state, setStatus, micFollowing]);
+    liveMeetingId,
+  }), [state, setStatus, micFollowing, liveMeetingId]);
 
   return (
     <RecordingStateContext.Provider value={contextValue}>

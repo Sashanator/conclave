@@ -787,6 +787,7 @@ pub async fn api_delete_meeting<R: Runtime>(
         auth_token.is_some()
     );
 
+    crate::audio::recording_commands::ensure_not_live_now(&meeting_id)?;
     let pool = state.db_manager.pool();
 
     let base = crate::audio::recording_preferences::get_default_recordings_folder();
@@ -988,6 +989,7 @@ pub async fn api_save_transcript<R: Runtime>(
     calendar_start: Option<String>,
     recording_id: Option<String>,
     live: Option<bool>,
+    meeting_id: Option<String>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
         "api_save_transcript called, title chars: {}, transcripts: {}, folder_path set: {}, auth_token: {}",
@@ -1045,11 +1047,23 @@ pub async fn api_save_transcript<R: Runtime>(
             }
         }
     }
+    let mut fallback = false;
+    // The flag must not outlive its recording, whichever way the save goes.
+    let fresh = meeting_id.as_deref().map(crate::recording::route::take_fresh).unwrap_or(false);
+    let mut release_error: Option<String> = None;
     let saved = if let Some(id) = continued_id {
+        // Continue chosen mid-recording: the routed row is released (a failure only leaves its started_at).
+        if let Some(routed) = meeting_id.as_deref() {
+            if let Err(e) = MeetingsRepository::release_routed_row(pool, routed, fresh).await {
+                log_warn!("release of routed meeting {} failed: {}", routed, e);
+                release_error = Some(format!("Could not release the recording's meeting row: {e}"));
+            }
+        }
         Ok(id)
     } else {
-        TranscriptsRepository::save_transcript(pool, &meeting_title, &transcripts_to_save,
+        TranscriptsRepository::save_into_or_new(pool, meeting_id.as_deref(), &meeting_title, &transcripts_to_save,
             folder_path, &notes, speakers_active, &title).await
+            .map(|(id, fb)| { fallback = fb; id })
     };
     match saved {
         Ok(meeting_id) => {
@@ -1075,7 +1089,9 @@ pub async fn api_save_transcript<R: Runtime>(
                 "message": "Transcript saved successfully",
                 "meeting_id": meeting_id,
                 "continued": continued,
-                "continue_error": continue_error
+                "continue_error": continue_error,
+                "fallback": fallback,
+                "release_error": release_error
             }))
         }
         Err(e) => {

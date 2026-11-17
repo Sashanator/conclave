@@ -44,6 +44,8 @@ const push = mock((_u: string) => {});
 const refetchMeetings = mock(async () => {});
 const recording: Record<string, unknown> = {};
 let startArgs: unknown[] = [];
+const refetchTranscripts = mock(() => {});
+let screenKind: unknown;
 let autoStarting = false;
 let startResult: () => Promise<void> = async () => {};
 const handleRecordingStart = mock(async (_id?: unknown) => startResult());
@@ -57,14 +59,14 @@ mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar:
 mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ isAutoSummary: false, transcriptModelConfig: { provider: 'parakeet' } }) }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recording, useRecordingState: () => recording }));
 mock.module('../../src/hooks/usePaginatedTranscripts', () => ({
-  usePaginatedTranscripts: () => ({ metadata: null, segments: [], transcripts: [], isLoading: false, isLoadingMore: false, hasMore: false, totalCount: 0, loadedCount: 0, loadMore() {}, refetch() {}, error: null, setTranscriptMark() {}, setTranscriptSpeaker() {} }),
+  usePaginatedTranscripts: () => ({ metadata: null, segments: [], transcripts: [], isLoading: false, isLoadingMore: false, hasMore: false, totalCount: 0, loadedCount: 0, loadMore() {}, refetch: refetchTranscripts, error: null, setTranscriptMark() {}, setTranscriptSpeaker() {} }),
 }));
 mock.module('../../src/hooks/useRecordingStart', () => ({
   useRecordingStart: (...args: unknown[]) => { startArgs = args; return { handleRecordingStart, isAutoStarting: autoStarting }; },
 }));
 mock.module('../../src/hooks/useModalState', () => ({ useModalState: () => ({ modals: {}, messages: {}, showModal() {}, hideModal() {} }) }));
 mock.module('../../src/app/_components/SettingsModal', () => ({ SettingsModals: () => null }));
-mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...originals.aiSidebar, useAiSidebarScreen() {} }));
+mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...originals.aiSidebar, useAiSidebarScreen: (kind: unknown) => { screenKind = kind; } }));
 mock.module('../../src/app/meeting-details/page-content', () => ({ default: () => null }));
 mock.module('../../src/components/MeetingPage/NewMeetingView', () => ({ NewMeetingView: (p: typeof newProps) => { newProps = p; return <div>New view</div>; } }));
 mock.module('../../src/components/MeetingPage/RecordingView', () => ({ RecordingView: () => <div>Recording view</div> }));
@@ -86,7 +88,8 @@ beforeEach(async () => {
   autoStarting = false; startResult = async () => {}; newProps = undefined;
   params = new URLSearchParams('id=m1');
   Object.assign(recording, { liveMeetingId: null, isStopping: false, isProcessing: false, isSaving: false, isRecording: false, status: 'idle' });
-  push.mockClear(); toast.error.mockClear(); handleRecordingStart.mockClear();
+  push.mockClear(); toast.error.mockClear(); handleRecordingStart.mockClear(); refetchTranscripts.mockClear();
+  sessionStorage.clear(); screenKind = undefined;
 });
 
 test('a start that reached the backend does not leave the page busy once the recording ends', async () => {
@@ -140,14 +143,55 @@ test('a row load failure is shown', async () => {
   expect(toast.error).toHaveBeenCalledWith('Could not load the meeting: Error: db locked');
 });
 
-test('the Recording view stays through the save, once the live id is gone', async () => {
-  recording.liveMeetingId = 'm1'; recording.isRecording = true; recording.status = 'recording';
+const shows = () => JSON.stringify(renderer!.toJSON()).includes('Recording view');
+const setState = (patch: Record<string, unknown>) => Object.assign(recording, patch);
+const live = { liveMeetingId: 'm1', isRecording: true, status: 'recording' };
+const stopping = { liveMeetingId: null, isRecording: false, isStopping: true, status: 'stopping' };
+const saving = { isStopping: false, isSaving: true, status: 'saving' };
+const done = { isSaving: false, isStopping: false, isProcessing: false, status: 'completed' };
+
+test('live, stopping, saving, completed: the view holds until the save is done, then the page refetches', async () => {
+  setState(live);
   await mount();
-  expect(JSON.stringify(renderer!.toJSON())).toContain('Recording view');
-  Object.assign(recording, { liveMeetingId: null, isRecording: false, isStopping: true, status: 'stopping' });
-  await rerender();
-  expect(JSON.stringify(renderer!.toJSON())).toContain('Recording view');
-  Object.assign(recording, { isStopping: false, isProcessing: false, isSaving: false, status: 'completed' });
-  await rerender();
-  expect(JSON.stringify(renderer!.toJSON())).not.toContain('Recording view');
+  expect(shows()).toBe(true);
+  expect(screenKind).toBe('live');
+  sessionStorage.setItem('last_recording_meeting_id', 'm1'); // the stop listener writes it
+  setState(stopping); await rerender();
+  expect(shows()).toBe(true);
+  expect(screenKind).toBe('meeting'); // Copilot is live-only
+  setState(saving); await rerender();
+  expect(shows()).toBe(true);
+  expect(refetchTranscripts).not.toHaveBeenCalled();
+  sessionStorage.removeItem('last_recording_meeting_id'); // a successful save removes it
+  setState(done); await rerender();
+  await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+  expect(shows()).toBe(false);
+  expect(refetchTranscripts).toHaveBeenCalled();
+});
+
+test('a failed save keeps the view, also after a remount', async () => {
+  setState(live);
+  await mount();
+  sessionStorage.setItem('last_recording_meeting_id', 'm1');
+  setState(stopping); await rerender();
+  setState({ isStopping: false, status: 'error' }); await rerender();
+  expect(shows()).toBe(true);
+  await act(async () => renderer!.unmount());
+  renderer = undefined;
+  await mount(); // remount with nothing but the shared state
+  expect(shows()).toBe(true);
+});
+
+test('a remount during the save still shows the view', async () => {
+  setState({ ...stopping, ...saving, isStopping: false });
+  sessionStorage.setItem('last_recording_meeting_id', 'm1');
+  await mount();
+  expect(shows()).toBe(true);
+});
+
+test('a stop flow of another meeting does not take this page', async () => {
+  setState({ ...stopping });
+  sessionStorage.setItem('last_recording_meeting_id', 'm2');
+  await mount();
+  expect(shows()).toBe(false);
 });

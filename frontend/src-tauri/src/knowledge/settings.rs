@@ -27,6 +27,12 @@ const KEY: &str = "settings";
 /// The calendar URL lives here, outside the plugin store, which the webview can read.
 const CALENDAR_FILE: &str = "calendar.json";
 
+pub const DEFAULT_CALENDAR_MARKER: &str = "📞";
+
+fn default_calendar_marker() -> String {
+    DEFAULT_CALENDAR_MARKER.to_string()
+}
+
 #[derive(Serialize, Deserialize, Clone, PartialEq)]
 pub struct KnowledgeSettings {
     /// None means the summary model. Both are set, or neither.
@@ -41,6 +47,9 @@ pub struct KnowledgeSettings {
     /// A credential. It is kept in calendar.json, never in the plugin store or the frontend.
     #[serde(skip)]
     pub calendar_url: Option<String>,
+    /// Marker in event titles that flags calls/meetings to import and sync.
+    #[serde(default = "default_calendar_marker")]
+    pub calendar_marker: String,
     /// Set once the names have been seeded from Copilot's alert words, so a cleared list stays empty.
     pub names_seeded: bool,
 }
@@ -62,6 +71,7 @@ impl std::fmt::Debug for KnowledgeSettings {
                     "<unset>"
                 },
             )
+            .field("calendar_marker", &self.calendar_marker)
             .field("names_seeded", &self.names_seeded)
             .finish()
     }
@@ -77,6 +87,7 @@ impl Default for KnowledgeSettings {
             digest_enabled: true,
             digest_since: None,
             calendar_url: None,
+            calendar_marker: DEFAULT_CALENDAR_MARKER.to_string(),
             names_seeded: false,
         }
     }
@@ -91,6 +102,7 @@ pub struct KnowledgeSettingsView {
     pub digest_enabled: bool,
     /// The calendar host only. The path and query are secrets and are never sent.
     pub calendar_host: Option<String>,
+    pub calendar_marker: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -100,6 +112,8 @@ pub struct KnowledgeSettingsInput {
     pub my_names: Vec<String>,
     pub extract_enabled: bool,
     pub digest_enabled: bool,
+    #[serde(default)]
+    pub calendar_marker: Option<String>,
 }
 
 static CACHE: LazyLock<RwLock<KnowledgeSettings>> =
@@ -127,6 +141,8 @@ pub fn sanitize(raw: Option<Value>) -> KnowledgeSettings {
         digest_enabled: flag(&obj, "digest_enabled", true),
         digest_since: text_field(&obj, "digest_since"),
         calendar_url: None,
+        calendar_marker: text_field(&obj, "calendar_marker")
+            .unwrap_or_else(|| DEFAULT_CALENDAR_MARKER.to_string()),
         names_seeded: flag(&obj, "names_seeded", false),
     };
     normalise(candidate, false).unwrap_or_default()
@@ -211,6 +227,17 @@ fn normalise(s: KnowledgeSettings, strict: bool) -> Result<KnowledgeSettings, St
         }
     }
 
+    let marker = s.calendar_marker.trim();
+    let calendar_marker = if marker.is_empty() || marker.chars().count() > 16 {
+        reject(
+            strict,
+            "The calls marker must be 1–16 characters".to_string(),
+        )?;
+        DEFAULT_CALENDAR_MARKER.to_string()
+    } else {
+        marker.to_string()
+    };
+
     Ok(KnowledgeSettings {
         provider,
         model,
@@ -219,6 +246,7 @@ fn normalise(s: KnowledgeSettings, strict: bool) -> Result<KnowledgeSettings, St
         digest_enabled: s.digest_enabled,
         digest_since: s.digest_since.filter(|t| DateTime::parse_from_rfc3339(t).is_ok()),
         calendar_url: s.calendar_url,
+        calendar_marker,
         names_seeded: s.names_seeded,
     })
 }
@@ -247,6 +275,9 @@ fn apply_input(stored: &KnowledgeSettings, input: KnowledgeSettingsInput) -> Kno
         digest_enabled: input.digest_enabled,
         digest_since: stored.digest_since.clone(),
         calendar_url: stored.calendar_url.clone(),
+        calendar_marker: input
+            .calendar_marker
+            .unwrap_or_else(|| stored.calendar_marker.clone()),
         names_seeded: stored.names_seeded,
     }
 }
@@ -339,6 +370,7 @@ fn view(s: &KnowledgeSettings) -> KnowledgeSettingsView {
         extract_enabled: s.extract_enabled,
         digest_enabled: s.digest_enabled,
         calendar_host: s.calendar_url.as_deref().and_then(host_of),
+        calendar_marker: s.calendar_marker.clone(),
     }
 }
 
@@ -555,6 +587,7 @@ mod tests {
             my_names: names.iter().map(|n| n.to_string()).collect(),
             extract_enabled: true,
             digest_enabled: true,
+            calendar_marker: None,
         }
     }
 
@@ -851,5 +884,20 @@ mod tests {
 
         let s = sanitize(Some(json!({"provider": "groq"})));
         assert_eq!((s.provider, s.model), (None, None));
+    }
+
+    #[test]
+    fn calendar_marker_validation_and_sanitize() {
+        let empty_sanitized = sanitize(Some(json!({"calendar_marker": ""})));
+        assert_eq!(empty_sanitized.calendar_marker, "📞");
+
+        let whitespace_sanitized = sanitize(Some(json!({"calendar_marker": "   "})));
+        assert_eq!(whitespace_sanitized.calendar_marker, "📞");
+
+        let s_whitespace = KnowledgeSettings {
+            calendar_marker: "  ".to_string(),
+            ..Default::default()
+        };
+        assert!(normalise(s_whitespace, true).is_err());
     }
 }

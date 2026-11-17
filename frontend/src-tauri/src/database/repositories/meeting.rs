@@ -418,6 +418,30 @@ impl MeetingsRepository {
     }
 }
 
+/// The event's brief and its feed item go unless another meeting shares the occurrence. Briefs store `Z`, meetings `+00:00`.
+pub(crate) async fn delete_event_brief(conn: &mut SqliteConnection, meeting_id: &str, uid: &str, start: &str) -> Result<(), SqlxError> {
+    let shared: Option<(i64,)> = sqlx::query_as(
+        "SELECT 1 FROM meetings WHERE id <> ? AND calendar_uid = ? AND datetime(calendar_start) = datetime(?)",
+    )
+    .bind(meeting_id)
+    .bind(uid)
+    .bind(start)
+    .fetch_optional(&mut *conn)
+    .await?;
+    if shared.is_none() {
+        let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM briefs WHERE event_uid = ? AND datetime(event_start) = datetime(?)")
+            .bind(uid)
+            .bind(start)
+            .fetch_all(&mut *conn)
+            .await?;
+        for (id,) in &ids {
+            feed::delete_for_target(&mut *conn, "brief", id).await?;
+            sqlx::query("DELETE FROM briefs WHERE id = ?").bind(id).execute(&mut *conn).await?;
+        }
+    }
+    Ok(())
+}
+
 async fn delete_meeting_with_transaction(
     transaction: &mut SqliteConnection,
     meeting_id: &str,
@@ -449,26 +473,7 @@ async fn delete_meeting_with_transaction(
         .await?;
 
     if let (Some(uid), Some(start)) = (uid.as_deref(), start.as_deref()) {
-        // The event's brief goes unless another meeting shares the occurrence. Briefs store `Z`, meetings `+00:00`.
-        let shared: Option<(i64,)> = sqlx::query_as(
-            "SELECT 1 FROM meetings WHERE id <> ? AND calendar_uid = ? AND datetime(calendar_start) = datetime(?)",
-        )
-        .bind(meeting_id)
-        .bind(uid)
-        .bind(start)
-        .fetch_optional(&mut *transaction)
-        .await?;
-        if shared.is_none() {
-            let ids: Vec<(String,)> = sqlx::query_as("SELECT id FROM briefs WHERE event_uid = ? AND datetime(event_start) = datetime(?)")
-                .bind(uid)
-                .bind(start)
-                .fetch_all(&mut *transaction)
-                .await?;
-            for (id,) in &ids {
-                feed::delete_for_target(&mut *transaction, "brief", id).await?;
-                sqlx::query("DELETE FROM briefs WHERE id = ?").bind(id).execute(&mut *transaction).await?;
-            }
-        }
+        delete_event_brief(&mut *transaction, meeting_id, uid, start).await?;
     }
     if let Some(uid) = uid.as_deref() {
         if let Some(occurrence) = original_start.as_deref().or(start.as_deref()) {

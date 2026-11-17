@@ -284,6 +284,7 @@ mod tests {
             title: "Planning".into(),
             start,
             end: start + Duration::hours(1),
+            original_start: start,
             recurring: false,
         }
     }

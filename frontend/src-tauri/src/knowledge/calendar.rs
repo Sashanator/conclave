@@ -1,6 +1,7 @@
 // The calendar link: a user-pasted iCal (secret) address, fetched and expanded into the next
 // occurrences. The URL is a credential; it is stored by settings, never logged or returned.
 
+pub mod reconcile;
 use super::settings;
 use super::{
     AUTO_TITLE_LEAD_MINS, CALENDAR_AHEAD_DAYS, CALENDAR_BEHIND_DAYS, CALENDAR_FETCH_TIMEOUT_SECS, CALENDAR_MAX_BYTES,

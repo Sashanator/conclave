@@ -15,24 +15,29 @@ const invoke = mock(async (command: string) => {
   return undefined;
 });
 mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
-mock.module('sonner', () => ({ toast: { success() {}, warning() {}, error() {} } }));
+const infoToast = mock((..._args: unknown[]) => {});
+mock.module('sonner', () => ({ toast: { success() {}, warning() {}, error() {}, info: infoToast } }));
 // The lines the checkpoint holds; set per test.
 let storedTranscripts: Array<Record<string, unknown>> = [
   { id: 't1', text: 'hello', timestamp: '2026-10-16T10:00:00Z', sequenceId: 1, confidence: 0.9 },
 ];
+let metadataExtra: Record<string, unknown> = {};
+let saveResult: Record<string, unknown> = { meeting_id: 'meeting-1' };
+const saveArgs: unknown[][] = [];
 const savedMeetings: Array<{ transcripts: Array<Record<string, unknown>> }> = [];
 mock.module('../../src/services/indexedDBService', () => ({
   indexedDBService: {
-    getMeetingMetadata: async () => ({ meetingId: 'meeting-local-1', title: 'Standup', folderPath: '/recordings/Standup' }),
+    getMeetingMetadata: async () => ({ meetingId: 'meeting-local-1', title: 'Standup', folderPath: '/recordings/Standup', ...metadataExtra }),
     getTranscripts: async () => storedTranscripts,
     markMeetingSaved: async () => {},
   },
 }));
 mock.module('../../src/services/storageService', () => ({
   storageService: {
-    saveMeeting: async (_title: string, transcripts: Array<Record<string, unknown>>) => {
-      savedMeetings.push({ transcripts });
-      return { meeting_id: 'meeting-1' };
+    saveMeeting: async (...args: unknown[]) => {
+      saveArgs.push(args);
+      savedMeetings.push({ transcripts: args[1] as Array<Record<string, unknown>> });
+      return saveResult;
     },
   },
 }));
@@ -58,6 +63,10 @@ function View() {
 const realConsoleError = console.error;
 beforeEach(() => {
   invoke.mockClear();
+  infoToast.mockClear();
+  saveArgs.length = 0;
+  metadataExtra = {};
+  saveResult = { meeting_id: 'meeting-1' };
   console.error = () => {}; // the hook logs a recovery failure by design
 });
 afterEach(async () => {
@@ -112,5 +121,31 @@ describe('recovery keeps the speaker fields', () => {
     expect(second).not.toHaveProperty('speaker_idx');
     expect(second).not.toHaveProperty('sentences');
     storedTranscripts = [{ id: 't1', text: 'hello', timestamp: '2026-10-16T10:00:00Z', sequenceId: 1, confidence: 0.9 }];
+  });
+});
+
+describe('recovery targets the meeting the recording belonged to', () => {
+  test('saves into the target meeting', async () => {
+    metadataExtra = { targetMeetingId: 'meeting-target' };
+    await recoverAndCountCleanups();
+    expect(saveArgs[0][7]).toBe('meeting-target');
+  });
+
+  test('a recording without a target saves with null', async () => {
+    await recoverAndCountCleanups();
+    expect(saveArgs[0][7]).toBeNull();
+  });
+
+  test('a fallback save shows the new-meeting toast once', async () => {
+    metadataExtra = { targetMeetingId: 'meeting-target' };
+    saveResult = { meeting_id: 'meeting-2', fallback: true };
+    await recoverAndCountCleanups();
+    expect(infoToast).toHaveBeenCalledTimes(1);
+    expect(infoToast.mock.calls[0][0]).toBe('Recovered as a new meeting');
+  });
+
+  test('a normal save shows no info toast', async () => {
+    await recoverAndCountCleanups();
+    expect(infoToast).not.toHaveBeenCalled();
   });
 });

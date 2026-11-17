@@ -126,7 +126,7 @@ fn apply<R: Runtime>(app: &AppHandle<R>, action: Action) {
             banner::show(app, BannerKind::Detected { call, certain, offer: continuation::offer() });
         }
         Action::Start { app: call } => {
-            crate::tray::request_recording_start(app, Some(call.label()), None);
+            crate::tray::request_recording_start(app, crate::recording::route::StartSource::AutoDetect, None);
             if let Some(offer) = continuation::offer() {
                 let app = app.clone();
                 tauri::async_runtime::spawn(async move {

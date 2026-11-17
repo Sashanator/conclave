@@ -17,6 +17,7 @@ export interface MeetingMetadata {
   folderPath?: string;        // Path to recording folder
   notes?: MeetingNote[];                       // Live notes, kept across reload
   marks?: Record<string, TranscriptMark>;      // Line marks keyed by sequence_id
+  targetMeetingId?: string;   // Row this recording continues; recovery saves back into it
 }
 
 export interface StoredTranscript {

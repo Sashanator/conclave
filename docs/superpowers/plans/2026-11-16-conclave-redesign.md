@@ -678,48 +678,48 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 
 | Task | Status |
 |---|---|
-| 0 DESIGN.md | todo |
-| 1 redesign migration | todo |
-| 2 backfill + gist_from_summary | todo |
-| 3 meeting date readers | todo |
-| 4 gist from extraction | todo |
-| 5 template emoji | todo |
-| 6 emoji suggestion | todo |
-| 7 rows, create, setters, views | todo |
-| 8 Delete recording / Delete meeting | todo |
-| 9 recording::route | todo |
-| 10 save into row + release routed row | todo |
-| 11 meeting id start→stop + live delete guard | todo |
-| 12 tray/pop-up/detector routing | todo |
-| 13 frontend start/save + liveMeetingId | todo |
-| 14 recovery into target | todo |
-| 15 category = manual pick | todo |
-| 16 /record + StartupChecks | todo |
-| 17 lib/meetings.ts | todo |
-| 18 view config + arrangeRows | todo |
-| 19 search totals + snippets | todo |
-| 20 keyboard map | todo |
-| 21 react-table + mocks | todo |
-| 22 rows/views hooks | todo |
-| 23 table rows + delete dialog | todo |
-| 24 tabs, toolbar, search, empty | todo |
-| 25 Phase 3 check | todo |
-| 26 AiSidebar shell | todo |
-| 27 ask_meetings scope | todo |
+| 0 DESIGN.md | done (pre-crash) |
+| 1 redesign migration | done (pre-crash) |
+| 2 backfill + gist_from_summary | done (pre-crash) |
+| 3 meeting date readers | done (pre-crash) |
+| 4 gist from extraction | done (pre-crash) |
+| 5 template emoji | done (pre-crash) |
+| 6 emoji suggestion | done (pre-crash) |
+| 7 rows, create, setters, views | done (pre-crash) |
+| 8 Delete recording / Delete meeting | done |
+| 9 recording::route | done (pre-crash) |
+| 10 save into row + release routed row | done |
+| 11 meeting id start→stop + live delete guard | done |
+| 12 tray/pop-up/detector routing | done |
+| 13 frontend start/save + liveMeetingId | done |
+| 14 recovery into target | done |
+| 15 category = manual pick | done |
+| 16 /record + StartupChecks | done (pre-crash) |
+| 17 lib/meetings.ts | done (pre-crash) |
+| 18 view config + arrangeRows | done (pre-crash) |
+| 19 search totals + snippets | done (pre-crash) |
+| 20 keyboard map | done (pre-crash) |
+| 21 react-table + mocks | done (pre-crash) |
+| 22 rows/views hooks | done (rd-c, not merged) |
+| 23 table rows + delete dialog | done (rd-c, not merged) |
+| 24 tabs, toolbar, search, empty | done (rd-c, not merged) |
+| 25 Phase 3 check | in progress (rd-c QA + phase review) |
+| 26 AiSidebar shell | done (pre-crash) |
+| 27 ask_meetings scope | done (pre-crash) |
 | 28 Ask in sidebar | todo |
-| 29 copilot-alert | todo |
-| 30 Copilot in sidebar | todo |
-| 31 prep by meeting id | todo |
-| 32 meeting-page helpers | todo |
+| 29 copilot-alert | done (pre-crash) |
+| 30 Copilot in sidebar | done |
+| 31 prep by meeting id | done (pre-crash) |
+| 32 meeting-page helpers | done |
 | 33 page shell + New + autostart URL | todo |
 | 34 Recording state | todo |
 | 35 Finished state + tasks | todo |
 | 36 page menu + category | todo |
 | 37 remove old layouts | todo |
 | 38 meeting page mocks + a11y | todo |
-| 39 original_start + cache v2 | todo |
-| 40 expansion completeness | todo |
-| 41 marker + 15-min window | todo |
+| 39 original_start + cache v2 | in progress (rd-e) |
+| 40 expansion completeness | in progress (rd-e) |
+| 41 marker + 15-min window | in progress (rd-e) |
 | 42 reconcile plan | todo |
 | 43 reconcile executor | todo |
 | 44 reconcile scheduling + sync error | todo |
@@ -730,11 +730,15 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 | 49 brief in Prep, Digests | todo |
 | 50 nav | todo |
 | 51 removals | todo |
-| 52 open_log_file | todo |
+| 52 open_log_file | done |
 | 53 CHANGELOG v1.3.0 | todo |
 | 54 What's new | todo |
 | 55 final UI QA | todo |
 | 56 checkpoint + Windows checklist | todo |
+
+2026-11-17: the VM crashed mid-session; uncommitted work in rd-e (Tasks 39+) and rd-r (Task 10) was corrupted (NUL bytes) and discarded (backups in the session scratchpad). Committed lanes merged into `redesign`. "done (pre-crash)" tasks get covered by their phase-end reviews.
+
+2026-11-17 session: lanes write code in parallel; every build/test (cargo, pnpm, tsc, bun) runs under `flock /workspace/.superpowers/cargo.lock`. Phase 2 merged into `redesign` from rd-b (Phase 2 review running). Review-found plan errors fixed in code: `UNTOUCHED_SQL` also checks `notes_json`; autostart script goes to `/record` (Task 16), not `/`; brief store and `set_extract` require a `summary_processes` row (Task 8).
 
 ## Open items for the user
 

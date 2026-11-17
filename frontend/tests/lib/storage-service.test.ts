@@ -56,6 +56,12 @@ describe('saveMeeting', () => {
     expect(invoke).toHaveBeenCalledWith('api_save_transcript', expect.objectContaining({ live: true }));
   });
 
+  test('saveMeeting sends the meeting id with live', async () => {
+    invoke.mockClear();
+    await storageService.saveMeeting('T', [], null, [], null, { source: 'default' }, true, 'm-t');
+    expect(invoke).toHaveBeenCalledWith('api_save_transcript', expect.objectContaining({ meetingId: 'm-t', live: true }));
+  });
+
   test('sends no recording id when none is given', async () => {
     invoke.mockClear();
     await storageService.saveMeeting('Standup', [], null);

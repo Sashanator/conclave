@@ -10,6 +10,8 @@ import { usePermissionCheck } from '@/hooks/usePermissionCheck';
 import { ModalType } from '@/hooks/useModalState';
 import { useIsLinux } from '@/hooks/usePlatform';
 import { useMemo } from 'react';
+import { useCopilot } from '@/contexts/CopilotContext';
+import { lineAtTime } from '@/lib/meeting-target';
 import { annotationsLocked } from '@/lib/meeting-notes';
 import { lineSpeakerName } from '@/lib/speakers';
 import type { TranscriptSegmentData } from '@/types';
@@ -37,6 +39,7 @@ export function TranscriptPanel({
   const { transcripts, transcriptContainerRef, copyTranscript, setTranscriptMark } = useTranscripts();
   const { transcriptModelConfig, speakerIdActive } = useConfig();
   const { isRecording, isPaused, isSaving } = useRecordingState();
+  const { focusAt } = useCopilot();
   // Marks freeze with the notes once a stop begins (the save takes a snapshot)
   const marksLocked = annotationsLocked({ isRecording, isStopping, isProcessing: isProcessingStop, isSaving });
   const { checkPermissions, isChecking, hasSystemAudio, hasMicrophone } = usePermissionCheck();
@@ -128,6 +131,7 @@ export function TranscriptPanel({
               showConfidence={true}
               onMarkChange={marksLocked ? undefined : setTranscriptMark}
               getSpeakerLabel={getSpeakerLabel}
+              focusSegmentId={focusAt === null ? null : lineAtTime(segments, focusAt, false)}
             />
           </div>
         </div>

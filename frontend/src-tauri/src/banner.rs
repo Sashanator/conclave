@@ -154,21 +154,21 @@ pub async fn meeting_banner_action<R: Runtime>(
     }
     let _ = window.close();
     if action == "record" {
-        if let Some(BannerKind::Detected { call, .. }) = kind {
+        if let Some(BannerKind::Detected { .. }) = kind {
             // Starting again would reload the main webview mid-recording and queue a recording nobody asked for.
             if crate::meeting_detector::busy().await {
                 log::info!("Meeting banner: Record ignored, a recording is already active");
             } else {
-                crate::tray::request_recording_start(&app, Some(call.label()), None);
+                crate::tray::request_recording_start(&app, crate::recording::route::StartSource::Popup, None);
             }
         }
     } else if action == "continue" {
         match kind {
-            Some(BannerKind::Detected { call, offer: Some(offer), .. }) => {
+            Some(BannerKind::Detected { offer: Some(offer), .. }) => {
                 if crate::meeting_detector::busy().await {
                     log::info!("Meeting banner: Continue ignored, a recording is already active");
                 } else {
-                    crate::tray::request_recording_start(&app, Some(call.label()), Some(&offer.meeting_id));
+                    crate::tray::request_recording_start(&app, crate::recording::route::StartSource::Popup, Some(&offer.meeting_id));
                 }
             }
             Some(BannerKind::Continue { offer, .. }) => {

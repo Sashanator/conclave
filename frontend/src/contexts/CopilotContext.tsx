@@ -1,5 +1,6 @@
 'use client';
 
+import { listen } from '@tauri-apps/api/event';
 import { createContext, useContext, useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
@@ -7,13 +8,13 @@ import { useTranscripts } from '@/contexts/TranscriptContext';
 import { actionLabel, buildCopilotRequest, resolveAnswerLanguage, type CopilotAction, type CopilotSettings } from '@/lib/copilot';
 import { readPinnedSummaryLanguageDefault } from '@/lib/summary-language-preferences';
 
-export const LIVE_SIDE_TAB_KEY = 'conclave.liveSideTab'; // 'notes' | 'copilot' | 'prep'
-export type LiveSideTab = 'notes' | 'copilot' | 'prep';
+export const LIVE_SIDE_TAB_KEY = 'conclave.liveSideTab'; // 'notes' | 'prep'; the old live layout's, removed with it
+export type LiveSideTab = 'notes' | 'prep';
 
 export function readLiveSideTab(): LiveSideTab {
   try {
     const tab = localStorage.getItem(LIVE_SIDE_TAB_KEY);
-    return tab === 'copilot' || tab === 'prep' ? tab : 'notes';
+    return tab === 'prep' ? tab : 'notes';
   } catch { return 'notes'; }
 }
 
@@ -35,8 +36,14 @@ export interface CopilotCard {
   added?: boolean;
 }
 
+export interface CopilotAlert { word: string; line: string; at: number }
+
 interface CopilotContextType {
   cards: CopilotCard[];
+  alerts: CopilotAlert[];
+  /** Recording second a clicked time chip points at; the live transcript scrolls to it. */
+  focusAt: number | null;
+  setFocusAt(t: number | null): void;
   pending: boolean;
   ask(action: CopilotAction, question?: string): void;
   cancel(): void;
@@ -53,6 +60,8 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
   const { transcriptsRef, notesRef, currentMeetingId } = useTranscripts();
   const { isRecording, isStopping, activeDuration } = useRecordingState();
   const [cards, setCards] = useState<CopilotCard[]>([]);
+  const [alerts, setAlerts] = useState<CopilotAlert[]>([]);
+  const [focusAt, setFocusAt] = useState<number | null>(null);
   // Seeded from the clock so ids from before a webview reload never repeat (the Rust slot guard keys on them).
   const seqRef = useRef(Date.now());
   const inFlightRef = useRef<InFlight | null>(null);
@@ -65,6 +74,15 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
     if (f) invoke('copilot_cancel', { requestId: f.requestId }).catch(() => {});
     setCards([]);
   }, [isRecording, isStopping]);
+
+  // Every mention goes to the sidebar; a new recording starts with none.
+  useEffect(() => {
+    const un = listen<CopilotAlert>('copilot-alert', (e) => setAlerts((prev) => [e.payload, ...prev]));
+    return () => { un.then((fn) => fn()); };
+  }, []);
+  useEffect(() => {
+    if (isRecording) { setAlerts([]); setFocusAt(null); }
+  }, [isRecording]);
 
   const run = (cardId: number, action: CopilotAction, question: string | undefined, askedAt: number) => {
     const f: InFlight = { cardId, requestId: ++seqRef.current };
@@ -125,6 +143,9 @@ export function CopilotProvider({ children }: { children: ReactNode }) {
 
   const value: CopilotContextType = {
     cards,
+    alerts,
+    focusAt,
+    setFocusAt,
     pending: cards.some((c) => c.status === 'pending'),
     ask,
     cancel,

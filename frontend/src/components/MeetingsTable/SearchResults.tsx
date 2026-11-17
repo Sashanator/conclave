@@ -11,23 +11,23 @@ import { CategoryChip, ReviewedCell } from './cells';
 
 /** Debounced search; only the newest request may write results. `hits` is null while not searching. */
 export function useMeetingSearch(query: string) {
-  const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [found, setFound] = useState<{ q: string; hits: SearchHit[] } | null>(null);
   const seq = useRef(0);
   useEffect(() => {
     const mine = ++seq.current;
     const q = query.trim();
-    if (!q) { setHits(null); return; }
+    if (!q) { setFound(null); return; }
     const t = setTimeout(async () => {
       try {
-        const found = await invoke<SearchHit[]>('api_search_transcripts', { query: q });
-        if (mine === seq.current) setHits(found);
+        const hits = await invoke<SearchHit[]>('api_search_transcripts', { query: q });
+        if (mine === seq.current) setFound({ q, hits });
       } catch (e) {
-        if (mine === seq.current) toast.error('Search failed', { description: e instanceof Error ? e.message : String(e) });
+        if (mine === seq.current) { setFound(null); toast.error('Search failed', { description: e instanceof Error ? e.message : String(e) }); }
       }
     }, 250);
     return () => clearTimeout(t);
   }, [query]);
-  return hits;
+  return found && found.q === query.trim() ? found.hits : null;
 }
 
 const th = 'px-[10px] py-1 text-left text-xs font-semibold text-muted-foreground';

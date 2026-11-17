@@ -9,6 +9,7 @@ export type TableKeyAction =
 
 export type TableKeyEvent = {
   key: string;
+  code?: string;
   ctrlKey?: boolean;
   metaKey?: boolean;
   shiftKey?: boolean;
@@ -27,7 +28,7 @@ export function tableKeyAction(e: TableKeyEvent, ctx: TableKeyContext): TableKey
     if (e.shiftKey || e.altKey) {
       return null;
     }
-    if (e.key === 'n' || e.key === 'N') {
+    if (e.key === 'n' || e.key === 'N' || e.code === 'KeyN') {
       return 'new-meeting';
     }
     return null;

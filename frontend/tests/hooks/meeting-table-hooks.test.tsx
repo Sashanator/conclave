@@ -76,6 +76,16 @@ describe('useMeetingRows', () => {
     await p!;
     expect(rowsApi.rows[0].reviewed).toBe(true);
   });
+  test('a reload during a save keeps the optimistic value', async () => {
+    await mountRows();
+    let p: Promise<void>;
+    await act(async () => { p = rowsApi.toggleReviewed('a'); });
+    await act(async () => { void rowsApi.reload(); });
+    await settle(pending('api_list_meeting_rows')[1], true, [row('a'), row('b')]);
+    expect(rowsApi.rows[0].reviewed).toBe(true);
+    await settle(pending('api_set_meeting_reviewed')[0], true);
+    await p!;
+  });
   test('toggleReviewed rolls back and toasts on reject', async () => {
     await mountRows();
     let p: Promise<void>;

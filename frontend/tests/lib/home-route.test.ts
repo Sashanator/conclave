@@ -8,7 +8,7 @@ test('Home goes to the live recording while recording, and to / otherwise', () =
 });
 
 test('Home stays on /record through the stop and save flow', () => {
-  for (const s of [S.STOPPING, S.PROCESSING_TRANSCRIPTS, S.SAVING]) {
+  for (const s of [S.STARTING, S.STOPPING, S.PROCESSING_TRANSCRIPTS, S.SAVING]) {
     expect(homeRoute(false, s)).toBe('/record');
   }
   expect(homeRoute(false, S.COMPLETED)).toBe('/');

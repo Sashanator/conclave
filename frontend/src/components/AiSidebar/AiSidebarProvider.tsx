@@ -37,7 +37,7 @@ export function AiSidebarProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!kind) return;
     const onKey = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && e.key.toLowerCase() === 'j') {
+      if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key.toLowerCase() === 'j' || e.code === 'KeyJ')) {
         e.preventDefault();
         toggle();
       } else if (e.key === 'Escape' && open && !e.defaultPrevented) {

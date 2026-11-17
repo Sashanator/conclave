@@ -37,7 +37,7 @@ export function ViewTabs({ views, activeId, counts, onSelect, onAdd, onRename, o
               className="mx-1 h-7 rounded-md border bg-card px-2 text-sm"
               onKeyDown={(e) => {
                 if (e.key === 'Enter') finish(v.id, e.currentTarget.value, true);
-                if (e.key === 'Escape') finish(v.id, '', false);
+                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); finish(v.id, '', false); }
               }}
               onBlur={(e) => finish(v.id, e.currentTarget.value, true)} />
           );

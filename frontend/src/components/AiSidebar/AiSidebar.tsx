@@ -28,8 +28,7 @@ export function AiSidebar({ children }: { children?: ReactNode }) {
 export function CopilotOpenListener() {
   const router = useRouter();
   const { kind, open, toggle } = useAiSidebar();
-  // liveMeetingId comes from Task 13 (recording-target); until it lands the field is absent and we only open the sidebar.
-  const { liveMeetingId } = useRecordingState() as { liveMeetingId?: string | null };
+  const { liveMeetingId } = useRecordingState();
   const ref = useRef({ kind, open, toggle, liveMeetingId });
   ref.current = { kind, open, toggle, liveMeetingId };
   useEffect(() => {

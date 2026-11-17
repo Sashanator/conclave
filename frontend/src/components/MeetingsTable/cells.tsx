@@ -1,5 +1,6 @@
 'use client';
 
+import { useState } from 'react';
 import Link from 'next/link';
 import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from '@/components/ui/command';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
@@ -61,8 +62,10 @@ export function CategoryChip({ row, templates, onChange }: {
   const i = templates.findIndex((t) => t.id === row.templateId);
   const label = i >= 0 ? templates[i].name : 'No template';
   const color = `var(--cat-${i >= 0 ? (i % 4) + 1 : 5})`;
+  const [open, setOpen] = useState(false);
+  const pick = (id: string | null) => { setOpen(false); onChange(id); };
   return (
-    <Popover>
+    <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" aria-label={`Template: ${label}`}
           className="rounded-full px-2 text-xs" style={{ background: `hsl(${color} / .12)` }}>
@@ -74,9 +77,9 @@ export function CategoryChip({ row, templates, onChange }: {
           <CommandInput placeholder="Find a template" />
           <CommandList>
             <CommandEmpty>No match</CommandEmpty>
-            <CommandItem onSelect={() => onChange(null)}>No template</CommandItem>
+            <CommandItem onSelect={() => pick(null)}>No template</CommandItem>
             {templates.map((t) => (
-              <CommandItem key={t.id} value={t.name} onSelect={() => onChange(t.id)}>{t.name}</CommandItem>
+              <CommandItem key={t.id} value={t.name} onSelect={() => pick(t.id)}>{t.name}</CommandItem>
             ))}
           </CommandList>
         </Command>

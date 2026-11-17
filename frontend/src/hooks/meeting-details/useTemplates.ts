@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { toast } from 'sonner';
 import { invoke as invokeTauri } from '@tauri-apps/api/core';
 
 export function useTemplates() {
@@ -19,6 +20,7 @@ export function useTemplates() {
         setAvailableTemplates(res.templates.map(({ id, name, emoji }) => ({ id, name, emoji })));
       } catch (error) {
         console.error('Failed to fetch templates:', error);
+        toast.error('Could not load templates', { description: error instanceof Error ? error.message : String(error) });
       }
     };
     fetchTemplates();

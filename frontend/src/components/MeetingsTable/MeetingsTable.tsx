@@ -32,10 +32,10 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   onAsk?: () => void;
   onScopeChange?: (s: { viewName: string; meetingIds: string[] }) => void;
 }) {
-  const { rows, loaded, error, reload, liveId, toggleReviewed, changeTemplate, removeMeeting } = useMeetingRows();
   const { views, active, config, dispatch, addView, renameView, removeView, setActive } = useMeetingViews();
   const { availableTemplates } = useTemplates();
-  const { activeDuration } = useRecordingState() as { activeDuration: number | null };
+  const { rows, loaded, error, reload, liveId, toggleReviewed, changeTemplate, removeMeeting } = useMeetingRows(availableTemplates);
+  const { activeDuration } = useRecordingState();
   const [now, setNow] = useState(() => new Date());
   useEffect(() => { setNow(new Date()); }, [rows]); // every reload, so Today and Tomorrow roll over
   useEffect(() => { const t = setInterval(() => setNow(new Date()), 60_000); return () => clearInterval(t); }, []);
@@ -81,7 +81,11 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.defaultPrevented || document.querySelector('[role="dialog"]')) return;
+      if (e.defaultPrevented) return;
+      if (document.querySelector('[role="dialog"]')) {
+        if (tableKeyAction(e, { inEditable: true, searching: false }) === 'new-meeting') e.preventDefault(); // not a new WebView2 window
+        return;
+      }
       const inEditable = !!(e.target as Element | null)?.closest?.('input,textarea,select,button,a,[contenteditable="true"],[role="menuitem"],[role="option"]');
       const action = tableKeyAction(e, { inEditable, searching: query.trim() !== '' });
       if (!action) return;
@@ -179,6 +183,8 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
       {searchMode ? (
         <SearchResults query={query} hits={hits ?? []} rows={rows} templates={availableTemplates} now={now} selectedId={selected}
           onClear={() => setQuery('')} onToggleReviewed={(id) => void toggleReviewed(id)} onChangeTemplate={(id, t) => void changeTemplate(id, t)} />
+      ) : !loaded ? (
+        <p role="status" className="py-8 text-center text-sm text-muted-foreground">Loading meetings…</p>
       ) : !data.length ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No meetings match this view.</p>
       ) : (
@@ -225,6 +231,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
             {padBottom > 0 && <tr aria-hidden style={{ height: padBottom }}><td colSpan={colCount} /></tr>}
           </tbody>
         </table>
+        <button type="button" onClick={() => void newMeeting()} className="px-[10px] py-2 text-sm text-muted-foreground hover:text-foreground">+ New meeting</button>
       </div>
       )}
       <DeleteMeetingDialog

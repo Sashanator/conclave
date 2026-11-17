@@ -39,6 +39,9 @@ describe('tableKeyAction', () => {
   });
 
   describe('Ctrl N (new-meeting)', () => {
+    test('a non-Latin layout still matches by physical key', () => {
+      expect(tableKeyAction(event('т', { ctrlKey: true, code: 'KeyN' }), normalCtx)).toBe('new-meeting');
+    });
     test('Ctrl N maps to new-meeting outside editable', () => {
       expect(tableKeyAction(event('n', { ctrlKey: true }), normalCtx)).toBe('new-meeting');
       expect(tableKeyAction(event('N', { ctrlKey: true }), normalCtx)).toBe('new-meeting');

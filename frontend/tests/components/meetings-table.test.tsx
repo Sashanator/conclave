@@ -187,6 +187,19 @@ describe('meetings table', () => {
     expect(all()).toContain('Cancelled in calendar');
   });
 
+  test('a failed search toasts and shows the table again', async () => {
+    searchImpl = () => { throw new Error('boom'); };
+    await search('plan');
+    expect(toastError.mock.calls.some((c) => c[0] === 'Search failed')).toBe(true);
+    expect(all()).not.toContain('Searching all meetings');
+  });
+
+  test('the table ends with a New meeting row', async () => {
+    await act(async () => { button('+ New meeting').props.onClick(); });
+    await flush();
+    expect(push).toHaveBeenCalledWith('/meeting-details?id=preview-new');
+  });
+
   test('search lists snippets and the rest of the matches', async () => {
     const hit = (i: number) => ({ meetingId: 'done1', title: 'done1', source: 'transcript', snippet: `snippet ${i}`, transcriptId: `t${i}`, audioStart: i * 60, totalInMeeting: 5 });
     searchImpl = () => [hit(1), hit(2)];

@@ -1,16 +1,18 @@
 'use client';
 
-import type { RefObject } from 'react';
+import { useState, type RefObject } from 'react';
 import { addDays, format } from 'date-fns';
 import { ArrowDown, ArrowUp, ChevronDown, MessageCircleQuestion, Plus, Search, X } from 'lucide-react';
 import {
   DropdownMenu, DropdownMenuCheckboxItem, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel,
   DropdownMenuRadioGroup, DropdownMenuRadioItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
+import type { MeetingState } from '@/lib/meetings';
 import { COLUMNS, effectiveHidden, weekRange, type CategoryInfo, type SortId, type ViewAction, type ViewConfig, type ViewFilter, type ViewGroup } from '@/lib/meeting-views';
 
 type Dispatch = (a: ViewAction) => void;
 const btn = 'inline-flex h-[30px] items-center gap-1.5 rounded-md border border-transparent px-2.5 text-sm text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring';
+const STATE_FILTERS: [MeetingState, string][] = [['recording', 'Recording'], ['finished', 'Finished'], ['cancelled', 'Cancelled'], ['not-recorded', 'Not recorded'], ['new', 'New']];
 const kbd = 'rounded border px-1 text-[11px] text-muted-foreground';
 
 export const SORTABLE: SortId[] = ['name', 'date', 'category', 'reviewed'];
@@ -95,6 +97,8 @@ function chipsOf(f: ViewFilter, now: Date, templates: CategoryInfo[]): { key: ke
 export function FilterChips({ filter, now, templates, dispatch }: { filter: ViewFilter; now: Date; templates: CategoryInfo[]; dispatch: Dispatch }) {
   const set = (next: ViewFilter) => dispatch({ type: 'setFilter', filter: next });
   const cats = filter.categories ?? [];
+  const states = filter.states ?? [];
+  const [custom, setCustom] = useState(false);
   const toggleCat = (c: string | null) => set({ ...filter, categories: cats.includes(c) ? cats.filter((x) => x !== c) : [...cats, c] });
   return (
     <div className="mb-2 flex flex-wrap items-center gap-1.5 text-xs">
@@ -114,6 +118,12 @@ export function FilterChips({ filter, now, templates, dispatch }: { filter: View
           <DropdownMenuItem onSelect={() => set({ ...filter, reviewed: true })}>Reviewed: Yes</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => set({ ...filter, calendar: true })}>Calendar: Yes</DropdownMenuItem>
           <DropdownMenuItem onSelect={() => set({ ...filter, calendar: false })}>Calendar: No</DropdownMenuItem>
+          <DropdownMenuItem onSelect={() => setCustom(true)}>Date: Custom range…</DropdownMenuItem>
+          <DropdownMenuSeparator />
+          <DropdownMenuLabel>Status</DropdownMenuLabel>
+          {STATE_FILTERS.map(([s, name]) => (
+            <DropdownMenuCheckboxItem key={s} checked={states.includes(s)} onCheckedChange={() => { const next = states.includes(s) ? states.filter((x) => x !== s) : [...states, s]; set({ ...filter, states: next.length ? next : undefined }); }}>{name}</DropdownMenuCheckboxItem>
+          ))}
           <DropdownMenuSeparator />
           <DropdownMenuLabel>Category</DropdownMenuLabel>
           {[...templates.map((t) => ({ id: t.id as string | null, name: t.name })), { id: null, name: 'No template' }].map((c) => (
@@ -121,6 +131,22 @@ export function FilterChips({ filter, now, templates, dispatch }: { filter: View
           ))}
         </DropdownMenuContent>
       </DropdownMenu>
+      {custom && (
+        <form className="flex items-center gap-1" onSubmit={(e) => {
+          e.preventDefault();
+          const d = new FormData(e.currentTarget);
+          const from = String(d.get('from') ?? ''), to = String(d.get('to') ?? '');
+          if (!from || !to) return;
+          set({ ...filter, range: from <= to ? { from, to } : { from: to, to: from } });
+          setCustom(false);
+        }}>
+          <input type="date" name="from" required aria-label="From date" className="h-7 rounded-md border bg-card px-1.5" />
+          <span aria-hidden>–</span>
+          <input type="date" name="to" required aria-label="To date" className="h-7 rounded-md border bg-card px-1.5" />
+          <button type="submit" className="h-7 rounded-md bg-primary px-2 font-semibold text-primary-foreground">Apply</button>
+          <button type="button" onClick={() => setCustom(false)} className="h-7 rounded-md px-2 text-muted-foreground hover:text-foreground">Cancel</button>
+        </form>
+      )}
     </div>
   );
 }

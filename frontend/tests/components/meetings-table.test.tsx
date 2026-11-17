@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingRow } from '../../src/lib/meetings';
 
+let renderer: ReactTestRenderer | null = null;
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   event: { ...await import('@tauri-apps/api/event') },
@@ -15,6 +16,8 @@ const originals = {
   command: { ...await import('../../src/components/ui/command') },
 };
 afterAll(() => {
+  // A mounted table would re-render against the restored real context and throw into later files.
+  renderer?.unmount();
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('sonner', () => originals.sonner);
@@ -72,7 +75,6 @@ mock.module('../../src/components/ui/command', () => ({
 
 const { MeetingsTable } = await import('../../src/components/MeetingsTable');
 
-let renderer: ReactTestRenderer | null = null;
 const text = (n: ReactTestInstance): string => n.children.map((c) => (typeof c === 'string' ? c : text(c))).join('');
 const all = () => text(renderer!.root);
 const button = (label: string) => renderer!.root.findAll((n) => n.type === 'button' && text(n) === label)[0];

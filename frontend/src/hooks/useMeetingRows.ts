@@ -10,17 +10,23 @@ const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 export function useMeetingRows() {
   const [rows, setRows] = useState<MeetingRow[]>([]);
   const [loaded, setLoaded] = useState(false);
+  const [error, setError] = useState(false);
+  const seq = useRef(0); // a slower, older reload must not overwrite a newer one
+  const errorToasted = useRef(false);
   // shortcut: cast until `liveMeetingId` is on the context type (Task 13); drop the cast then.
   const liveId = (useRecordingState() as { liveMeetingId?: string | null }).liveMeetingId ?? null;
   const { refetchMeetings } = useSidebar();
   const alive = useRef(true);
 
   const reload = useCallback(async () => {
+    const mine = ++seq.current;
     try {
       const next = await listMeetingRows();
-      if (alive.current) { setRows(next); setLoaded(true); }
+      if (alive.current && mine === seq.current) { setRows(next); setLoaded(true); setError(false); errorToasted.current = false; }
     } catch (e) {
-      toast.error('Could not load meetings', { description: errText(e) });
+      if (!alive.current || mine !== seq.current) return;
+      setError(true);
+      if (!errorToasted.current) { errorToasted.current = true; toast.error('Could not load meetings', { description: errText(e) }); }
     }
   }, []);
 
@@ -29,11 +35,11 @@ export function useMeetingRows() {
     void reload();
     const onFocus = () => void reload();
     window.addEventListener('focus', onFocus);
-    const unlisten = ['recording-started', 'recording-saved', 'recording-target'].map((n) => listen(n, () => void reload()));
+    const unlisten = ['recording-started', 'recording-saved', 'recording-target'].map((n) => Promise.resolve(listen(n, () => void reload())).catch(() => () => {}));
     return () => {
       alive.current = false;
       window.removeEventListener('focus', onFocus);
-      unlisten.forEach((u) => u.then((f) => f()));
+      unlisten.forEach((u) => u.then((f) => f()).catch(() => {}));
     };
   }, [reload]);
 
@@ -75,5 +81,5 @@ export function useMeetingRows() {
     }
   }, [refetchMeetings]);
 
-  return { rows, loaded, liveId, reload, toggleReviewed, changeTemplate, removeMeeting };
+  return { rows, loaded, error, liveId, reload, toggleReviewed, changeTemplate, removeMeeting };
 }

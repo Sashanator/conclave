@@ -13,11 +13,12 @@ const requests: Request[] = [];
 const invoke = mock((command: string, args: Record<string, unknown>) => new Promise((resolve, reject) => {
   requests.push({ command, args, resolve, reject });
 }));
+let listenImpl: (...a: unknown[]) => Promise<() => void> = async () => () => {};
 const toastError = mock((_m: string, _o?: unknown) => {});
 const toastWarning = mock((_m: string, _o?: unknown) => {});
 const refetchMeetings = mock(async () => {});
 mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
-mock.module('@tauri-apps/api/event', () => ({ ...originalEvent, listen: async () => () => {} }));
+mock.module('@tauri-apps/api/event', () => ({ ...originalEvent, listen: (...a: unknown[]) => listenImpl(...a) }));
 mock.module('sonner', () => ({ toast: { error: toastError, warning: toastWarning } }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originalRec, useRecordingState: () => ({ liveMeetingId: 'live1' }) }));
 mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ ...originalSidebar, useSidebar: () => ({ refetchMeetings }) }));
@@ -46,7 +47,7 @@ function Views() { viewsApi = useMeetingViews(); return null; }
 const pending = (c: string) => requests.filter(r => r.command === c);
 const settle = async (r: Request, ok: boolean, v: unknown = null) => { await act(async () => { ok ? r.resolve(v) : r.reject(new Error('boom')); }); };
 
-beforeEach(() => { requests.length = 0; invoke.mockClear(); toastError.mockClear(); toastWarning.mockClear(); refetchMeetings.mockClear(); try { localStorage.clear(); } catch {} });
+beforeEach(() => { listenImpl = async () => () => {}; requests.length = 0; invoke.mockClear(); toastError.mockClear(); toastWarning.mockClear(); refetchMeetings.mockClear(); try { localStorage.clear(); } catch {} });
 afterEach(async () => { if (renderer) await act(async () => renderer!.unmount()); renderer = undefined; });
 
 async function mountRows() {
@@ -137,5 +138,125 @@ describe('useMeetingViews', () => {
     await mountViews();
     await act(async () => { await viewsApi.removeView('all'); });
     expect(pending('api_delete_meeting_view')).toHaveLength(0);
+  });
+});
+
+const cfg = (v: MeetingView | undefined) => JSON.parse(v!.configJson);
+const wait = (ms: number) => act(async () => { await new Promise(r => setTimeout(r, ms)); });
+
+describe('useMeetingRows fixes', () => {
+  test('a stale reload reply is dropped', async () => {
+    await mountRows();
+    await act(async () => { void rowsApi.reload(); void rowsApi.reload(); });
+    const [first, second] = pending('api_list_meeting_rows').slice(1);
+    await settle(second, true, [row('new')]);
+    await settle(first, true, [row('old')]);
+    expect(rowsApi.rows.map(r => r.id)).toEqual(['new']);
+  });
+  test('a failed first load exposes error, toasts once and a retry clears it', async () => {
+    await act(async () => { renderer = create(<Rows />); });
+    await settle(pending('api_list_meeting_rows')[0], false);
+    expect(rowsApi.loaded).toBe(false);
+    expect(rowsApi.error).toBe(true);
+    await act(async () => { void rowsApi.reload(); });
+    await settle(pending('api_list_meeting_rows')[1], false);
+    expect(toastError).toHaveBeenCalledTimes(1);
+    await act(async () => { void rowsApi.reload(); });
+    await settle(pending('api_list_meeting_rows')[2], true, [row('a')]);
+    expect(rowsApi.error).toBe(false);
+    expect(rowsApi.loaded).toBe(true);
+  });
+  test('a rejected listen does not break mount or unmount', async () => {
+    listenImpl = async () => { throw new Error('no events'); };
+    await mountRows();
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    await wait(0);
+  });
+  test('changeTemplate rolls back and toasts on failure', async () => {
+    await mountRows();
+    let p: Promise<void>;
+    await act(async () => { p = rowsApi.changeTemplate('a', 'interview'); });
+    expect(rowsApi.rows[0].templateId).toBe('interview');
+    await settle(pending('api_set_meeting_template')[0], false);
+    await p!;
+    expect(rowsApi.rows[0].templateId).toBeNull();
+    expect(toastError.mock.calls[0][0]).toBe('Could not save the template');
+  });
+});
+
+describe('useMeetingViews fixes', () => {
+  test('removeView cancels a queued save for that view', async () => {
+    await mountViews();
+    await act(async () => { viewsApi.setActive('mine'); });
+    await act(async () => { viewsApi.dispatch({ type: 'setGroup', group: 'day' }); });
+    await act(async () => { void viewsApi.removeView('mine'); });
+    await wait(600);
+    expect(pending('api_save_meeting_view')).toHaveLength(0);
+    expect(pending('api_delete_meeting_view')).toHaveLength(1);
+    await settle(pending('api_delete_meeting_view')[0], true);
+  });
+  test('renameView sends the queued save first', async () => {
+    await mountViews();
+    await act(async () => { viewsApi.setActive('mine'); });
+    await act(async () => { viewsApi.dispatch({ type: 'setGroup', group: 'day' }); });
+    await act(async () => { void viewsApi.renameView('mine', 'Renamed'); });
+    const saves = pending('api_save_meeting_view').map(r => r.args.view as MeetingView);
+    expect(saves).toHaveLength(2);
+    expect(saves[0].name).toBe('mine');
+    expect(cfg(saves[0]).group).toBe('day');
+    expect(saves[1].name).toBe('Renamed');
+    await wait(600);
+    expect(pending('api_save_meeting_view')).toHaveLength(2);
+    await settle(pending('api_save_meeting_view')[0], true);
+    await settle(pending('api_save_meeting_view')[1], true);
+  });
+  test('two dispatches in one handler both apply', async () => {
+    await mountViews();
+    await act(async () => {
+      viewsApi.dispatch({ type: 'setGroup', group: 'day' });
+      viewsApi.dispatch({ type: 'setDensity', density: 'compact' });
+    });
+    expect(viewsApi.config.group).toBe('day');
+    expect(viewsApi.config.density).toBe('compact');
+    await wait(600);
+    const saved = cfg(pending('api_save_meeting_view')[0].args.view as MeetingView);
+    expect(saved.group).toBe('day');
+    expect(saved.density).toBe('compact');
+  });
+  test('a failed debounced save rolls back to the last saved config', async () => {
+    await mountViews();
+    const before = viewsApi.config.group;
+    await act(async () => { viewsApi.dispatch({ type: 'setGroup', group: before === 'day' ? 'none' : 'day' }); });
+    expect(viewsApi.config.group).not.toBe(before);
+    await wait(600);
+    await settle(pending('api_save_meeting_view')[0], false);
+    expect(viewsApi.config.group).toBe(before);
+    expect(toastError.mock.calls[0][0]).toBe('Could not save the view');
+  });
+  test('unmount flushes the queued edit', async () => {
+    await mountViews();
+    await act(async () => { viewsApi.dispatch({ type: 'setGroup', group: 'day' }); });
+    await act(async () => renderer!.unmount());
+    renderer = undefined;
+    expect(pending('api_save_meeting_view')).toHaveLength(1);
+  });
+  test('addView failure rolls back and re-activates the previous view', async () => {
+    await mountViews();
+    const prev = viewsApi.active!.id;
+    await act(async () => { void viewsApi.addView(); });
+    await settle(pending('api_save_meeting_view')[0], false);
+    expect(viewsApi.views.map(v => v.id)).not.toContain('New view');
+    expect(viewsApi.views).toHaveLength(3);
+    expect(viewsApi.active?.id).toBe(prev);
+    expect(toastError).toHaveBeenCalledTimes(1);
+  });
+  test('renameView failure restores the old name', async () => {
+    await mountViews();
+    await act(async () => { void viewsApi.renameView('mine', 'Renamed'); });
+    expect(viewsApi.views.find(v => v.id === 'mine')?.name).toBe('Renamed');
+    await settle(pending('api_save_meeting_view')[0], false);
+    expect(viewsApi.views.find(v => v.id === 'mine')?.name).toBe('mine');
+    expect(toastError).toHaveBeenCalledTimes(1);
   });
 });

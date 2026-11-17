@@ -13,10 +13,14 @@ export function useMeetingViews() {
   const [activeId, setActiveId] = useState<string | null>(readActive);
   const timer = useRef<ReturnType<typeof setTimeout>>();
   const pending = useRef<MeetingView | null>(null);
+  const saved = useRef(new Map<string, string>()); // last configJson known to be stored, per view
 
   useEffect(() => {
     listViews()
-      .then((v) => setViews([...v].sort((a, b) => a.position - b.position)))
+      .then((v) => {
+        v.forEach((x) => saved.current.set(x.id, x.configJson));
+        setViews([...v].sort((a, b) => a.position - b.position));
+      })
       .catch((e) => toast.error('Could not load views', { description: errText(e) }));
   }, []);
 
@@ -24,7 +28,12 @@ export function useMeetingViews() {
   const config = useMemo(() => parseViewConfig(active?.id ?? '', active?.configJson ?? '{}'), [active]);
 
   const save = useCallback((view: MeetingView) =>
-    saveView(view).catch((e) => toast.error('Could not save the view', { description: errText(e) })), []);
+    saveView(view).then(() => { saved.current.set(view.id, view.configJson); }).catch((e) => {
+      const old = saved.current.get(view.id);
+      // A failed debounced save must not leave the screen showing a config that was never stored.
+      if (old !== undefined && pending.current?.id !== view.id) setViews((vs) => vs.map((v) => (v.id === view.id ? { ...v, configJson: old } : v)));
+      toast.error('Could not save the view', { description: errText(e) });
+    }), []);
 
   const flush = useCallback(() => {
     clearTimeout(timer.current);
@@ -38,7 +47,9 @@ export function useMeetingViews() {
     if (!active) return;
     // A queued edit for another view goes out before this one replaces it.
     if (pending.current && pending.current.id !== active.id) flush();
-    const next = { ...active, configJson: JSON.stringify(viewReducer(config, action)) };
+    // Two dispatches in one handler share a stale `config`; build on the queued edit instead.
+    const base = pending.current?.id === active.id ? parseViewConfig(active.id, pending.current.configJson) : config;
+    const next = { ...active, configJson: JSON.stringify(viewReducer(base, action)) };
     setViews((vs) => vs.map((v) => (v.id === next.id ? next : v)));
     pending.current = next;
     clearTimeout(timer.current);
@@ -59,6 +70,7 @@ export function useMeetingViews() {
     activate(view.id);
     try {
       await saveView(view);
+      saved.current.set(view.id, view.configJson);
     } catch (e) {
       setViews((vs) => vs.filter((v) => v.id !== view.id));
       activate(active.id);
@@ -69,6 +81,7 @@ export function useMeetingViews() {
   const renameView = useCallback(async (id: string, name: string) => {
     const old = views.find((v) => v.id === id);
     if (!old || old.builtin) return;
+    flush(); // a queued save carries the old name and would undo this one
     setViews((vs) => vs.map((v) => (v.id === id ? { ...v, name } : v)));
     try {
       await saveView({ ...old, name });
@@ -76,11 +89,13 @@ export function useMeetingViews() {
       setViews((vs) => vs.map((v) => (v.id === id ? old : v)));
       toast.error('Could not save the view', { description: errText(e) });
     }
-  }, [views]);
+  }, [views, flush]);
 
   const removeView = useCallback(async (id: string) => {
     const old = views.find((v) => v.id === id);
     if (!old || old.builtin) return;
+    // A queued save would upsert the view back after the delete.
+    if (pending.current?.id === id) { clearTimeout(timer.current); pending.current = null; }
     try {
       await deleteView(id);
     } catch (e) {

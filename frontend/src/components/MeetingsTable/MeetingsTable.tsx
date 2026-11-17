@@ -24,7 +24,7 @@ export function MeetingsTable({ onScopeChange }: {
   onAsk?: () => void; // wired by the toolbar (Task 24)
   onScopeChange?: (s: { viewName: string; meetingIds: string[] }) => void;
 }) {
-  const { rows, loaded, liveId, toggleReviewed, changeTemplate, removeMeeting } = useMeetingRows();
+  const { rows, loaded, error, reload, liveId, toggleReviewed, changeTemplate, removeMeeting } = useMeetingRows();
   const { active, config, dispatch } = useMeetingViews();
   const { availableTemplates } = useTemplates();
   const { activeDuration } = useRecordingState() as { activeDuration: number | null };
@@ -93,6 +93,9 @@ export function MeetingsTable({ onScopeChange }: {
   const colCount = table.getVisibleLeafColumns().length + 1;
   const rowById = new Map(table.getRowModel().rows.map((r) => [r.id, r]));
 
+  if (!loaded && error) {
+    return <p className="text-sm text-muted-foreground">Could not load meetings. <button type="button" className="underline" onClick={() => void reload()}>Try again</button></p>;
+  }
   if (loaded && !data.length) return <p className="text-sm text-muted-foreground">No meetings here yet.</p>;
 
   return (

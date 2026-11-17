@@ -1248,14 +1248,20 @@ pub async fn is_recording_paused() -> bool {
     }
 }
 
+/// The meeting the UI shows as live: a continue target wins over the routed row (the save goes to it).
+/// The delete guard (`ensure_not_live_now`) protects both.
+fn displayed_target(continued: Option<String>, routed: Option<String>) -> Option<String> {
+    continued.or(routed)
+}
+
 /// Get detailed recording state
 #[tauri::command]
 pub async fn get_recording_state() -> serde_json::Value {
     let is_recording = IS_RECORDING.load(Ordering::SeqCst);
-    // Routed target, else the continue target (display only).
-    let meeting_id = recording_target_id().or_else(|| {
-        super::continuation::current_target(recordings_started()).map(|m| m.meeting_id)
-    });
+    let meeting_id = displayed_target(
+        super::continuation::current_target(recordings_started()).map(|m| m.meeting_id),
+        recording_target_id(),
+    );
     let manager_guard = RECORDING_MANAGER.lock().unwrap();
 
     if let Some(manager) = manager_guard.as_ref() {
@@ -1893,6 +1899,13 @@ mod tests {
         assert_eq!(take_recording_target().as_deref(), Some("m-1"));
         assert_eq!(take_recording_target(), None);
         assert_eq!(recording_target_id(), None);
+    }
+
+    #[test]
+    fn continue_target_wins_over_the_routed_one() {
+        assert_eq!(displayed_target(Some("c".into()), Some("r".into())).as_deref(), Some("c"));
+        assert_eq!(displayed_target(None, Some("r".into())).as_deref(), Some("r"));
+        assert_eq!(displayed_target(None, None), None);
     }
 
     #[test]

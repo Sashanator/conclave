@@ -7,7 +7,7 @@ import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateCon
 import { recordingService } from '@/services/recordingService';
 import { showRecordingNotification } from '@/lib/recordingNotification';
 import { continueFailed, takeAutoStartContinueId } from '@/lib/resume';
-import { routeOrFallback, takeAutoStartMeetingId } from '@/lib/recording-target';
+import { releaseFailedStart, routeOrFallback, takeAutoStartMeetingId, type RoutedStart } from '@/lib/recording-target';
 import {
   getProviderCommands,
   hasDownloadingModel,
@@ -21,8 +21,8 @@ const TRANSCRIPTION_RUNTIME_USER_MESSAGE = 'Speech recognition could not initial
 const isTranscriptionRuntimeStartError = (error: unknown) =>
   String(error) === TRANSCRIPTION_RUNTIME_START_ERROR_CODE;
 
-interface UseRecordingStartReturn {
-  handleRecordingStart: (meetingId?: string) => Promise<void>;
+export interface UseRecordingStartReturn {
+  handleRecordingStart: (meetingId?: unknown) => Promise<void>;
   isAutoStarting: boolean;
 }
 
@@ -104,12 +104,14 @@ export function useRecordingStart(
   const checkModelReady = checkTranscriptionModelReady;
 
   // Handle manual recording start (from button click)
-  const handleRecordingStart = useCallback(async (meetingId?: string) => {
+  // `meetingId` is `unknown` because UI callers pass this straight to onClick, which hands over the click event.
+  const handleRecordingStart = useCallback(async (meetingId?: unknown) => {
     if (isStartingRef.current) {
       console.log('handleRecordingStart ignored - start already in progress');
       return;
     }
     isStartingRef.current = true;
+    let routed: RoutedStart | null = null;
     try {
       console.log('handleRecordingStart called - checking selected transcription model status');
 
@@ -135,14 +137,14 @@ export function useRecordingStart(
 
       console.log('Selected transcription model ready - setting up meeting title and state');
 
-      const routed = await routeOrFallback(meetingId ? { page: meetingId } : 'sidebar');
-      setStartTitle({ title: routed.title, source: 'default' });
+      routed = await routeOrFallback(typeof meetingId === 'string' && meetingId ? { page: meetingId } : 'sidebar');
+      setStartTitle({ title: routed.title ?? '', source: 'default' });
 
       // Set STARTING status before initiating backend recording
       setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
       // Start the actual backend recording
-      console.log('Starting backend recording, title chars:', routed.title.length);
+      console.log('Starting backend recording, title chars:', routed.title?.length ?? 0);
       await recordingService.startRecordingWithDevices(
         selectedDevices?.micDevice || null,
         selectedDevices?.systemDevice || null,
@@ -174,6 +176,7 @@ export function useRecordingStart(
         return;
       }
 
+      await releaseFailedStart(routed, error);
       const isRuntimeError = isTranscriptionRuntimeStartError(error);
       if (errorMsg.includes('Recording start timed out')) {
         toast.error('Recording start timed out — please try again');
@@ -229,16 +232,18 @@ export function useRecordingStart(
           }
 
           // Start the actual backend recording
+          let routed: RoutedStart | null = null;
           try {
             // A continue start joins the earlier meeting at save time, so it skips routing.
-            const routed = continueId
-              ? { meetingId: null, title: 'Untitled' }
+            if (continueId) sessionStorage.removeItem('last_recording_meeting_id');
+            routed = continueId
+              ? { meetingId: null, title: null }
               : await routeOrFallback(autoMeetingId ? { page: autoMeetingId } : 'sidebar');
 
             // Set STARTING status before initiating backend recording
             setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
-            console.log('Auto-starting backend recording, title chars:', routed.title.length);
+            console.log('Auto-starting backend recording, title chars:', routed.title?.length ?? 0);
             const result = await recordingService.startRecordingWithDevices(
               selectedDevices?.micDevice || null,
               selectedDevices?.systemDevice || null,
@@ -250,7 +255,7 @@ export function useRecordingStart(
 
             // Update UI state after successful backend start
             // Note: RECORDING status will be set by RecordingStateContext event listener
-            setStartTitle({ title: routed.title, source: 'default' });
+            setStartTitle({ title: routed.title ?? '', source: 'default' });
             setIsRecording(true);
             clearTranscripts();
             setIsMeetingActive(true);
@@ -264,6 +269,7 @@ export function useRecordingStart(
               // Benign race — another start won and is live; skip ERROR/alert.
               setStatus(RecordingStatus.RECORDING);
             } else {
+              await releaseFailedStart(routed, error);
               const isRuntimeError = isTranscriptionRuntimeStartError(error);
               setStatus(RecordingStatus.ERROR, isRuntimeError
                 ? TRANSCRIPTION_RUNTIME_USER_MESSAGE
@@ -326,13 +332,14 @@ export function useRecordingStart(
         return;
       }
 
+      let routed: RoutedStart | null = null;
       try {
-        const routed = await routeOrFallback('sidebar');
+        routed = await routeOrFallback('sidebar');
 
         // Set STARTING status before initiating backend recording
         setStatus(RecordingStatus.STARTING, 'Initializing recording...');
 
-        console.log('Starting backend recording, title chars:', routed.title.length);
+        console.log('Starting backend recording, title chars:', routed.title?.length ?? 0);
         const result = await recordingService.startRecordingWithDevices(
           selectedDevices?.micDevice || null,
           selectedDevices?.systemDevice || null,
@@ -343,7 +350,7 @@ export function useRecordingStart(
 
         // Update UI state after successful backend start
         // Note: RECORDING status will be set by RecordingStateContext event listener
-        setStartTitle({ title: routed.title, source: 'default' });
+        setStartTitle({ title: routed.title ?? '', source: 'default' });
         setIsRecording(true);
         clearTranscripts();
         setIsMeetingActive(true);
@@ -357,6 +364,7 @@ export function useRecordingStart(
           // Benign race — another start won and is live; skip ERROR/alert.
           setStatus(RecordingStatus.RECORDING);
         } else {
+          await releaseFailedStart(routed, error);
           const isRuntimeError = isTranscriptionRuntimeStartError(error);
           setStatus(RecordingStatus.ERROR, isRuntimeError
             ? TRANSCRIPTION_RUNTIME_USER_MESSAGE

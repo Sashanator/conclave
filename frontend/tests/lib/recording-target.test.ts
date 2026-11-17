@@ -11,12 +11,12 @@ afterAll(() => {
 
 let routeResult: () => Promise<unknown> = async () => ({ meetingId: 'm', title: 'T' });
 const invoke = mock(async (_c: string, _a?: unknown) => routeResult());
-const toast = { warning: mock((_w: string, _o?: unknown) => {}), error: mock(() => {}), info: mock(() => {}), success: mock(() => {}) };
+const toast = { warning: mock((_w: string, _o?: unknown) => {}), error: mock((_w: string, _o?: unknown) => {}), info: mock(() => {}), success: mock(() => {}) };
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
-const { routeRecordingStart, takeAutoStartMeetingId, routeOrFallback } = await import('../../src/lib/recording-target');
+const { routeRecordingStart, takeAutoStartMeetingId, routeOrFallback, releaseFailedStart } = await import('../../src/lib/recording-target');
 
-beforeEach(() => { invoke.mockClear(); toast.warning.mockClear(); routeResult = async () => ({ meetingId: 'm', title: 'T' }); });
+beforeEach(() => { invoke.mockClear(); toast.warning.mockClear(); toast.error.mockClear(); routeResult = async () => ({ meetingId: 'm', title: 'T' }); });
 
 describe('routeRecordingStart', () => {
   test('sidebar and page sources go to api_route_recording_start', async () => {
@@ -36,6 +36,7 @@ describe('routeOrFallback', () => {
     routeResult = async () => { throw 'This meeting no longer exists'; };
     const r = await routeOrFallback({ page: 'gone' });
     expect(r.meetingId).toBeNull();
+    expect(r.title).toBeNull(); // Rust then names it "Untitled · day time"
     expect(toast.warning).toHaveBeenCalledWith('Recording as a new meeting', { description: 'This meeting no longer exists' });
   });
 });
@@ -46,5 +47,37 @@ describe('takeAutoStartMeetingId', () => {
     expect(takeAutoStartMeetingId(sessionStorage)).toBe('m9');
     expect(sessionStorage.getItem('autoStartMeetingId')).toBeNull();
     expect(takeAutoStartMeetingId(sessionStorage)).toBeNull();
+  });
+});
+
+describe('routeOrFallback id hygiene', () => {
+  test('a new start clears a stale last_recording_meeting_id', async () => {
+    sessionStorage.setItem('last_recording_meeting_id', 'stale');
+    await routeOrFallback('sidebar');
+    expect(sessionStorage.getItem('last_recording_meeting_id')).toBeNull();
+  });
+});
+
+describe('releaseFailedStart', () => {
+  test('releases the routed row', async () => {
+    routeResult = async () => true;
+    await releaseFailedStart({ meetingId: 'm9', title: 'T' }, new Error('no device'));
+    expect(invoke).toHaveBeenCalledWith('api_release_routed_start', { meetingId: 'm9' });
+  });
+  test('skips when nothing was routed', async () => {
+    await releaseFailedStart({ meetingId: null, title: null }, new Error('x'));
+    await releaseFailedStart(null, new Error('x'));
+    expect(invoke).not.toHaveBeenCalled();
+  });
+  test('skips when another start is already in progress', async () => {
+    await releaseFailedStart({ meetingId: 'm9', title: 'T' }, 'Recording already in progress');
+    expect(invoke).not.toHaveBeenCalled();
+  });
+  test('toasts when the release fails', async () => {
+    routeResult = async () => { throw 'db locked'; };
+    const logged = console.error; console.error = () => {};
+    await releaseFailedStart({ meetingId: 'm9', title: 'T' }, new Error('x'));
+    console.error = logged;
+    expect(toast.error).toHaveBeenCalledTimes(1);
   });
 });

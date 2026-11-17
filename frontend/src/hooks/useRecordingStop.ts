@@ -17,7 +17,7 @@ import { saveOutcome } from '@/lib/resume';
 
 type SummaryStatus = 'idle' | 'processing' | 'summarizing' | 'regenerating' | 'completed' | 'error';
 
-interface UseRecordingStopReturn {
+export interface UseRecordingStopReturn {
   handleRecordingStop: (callApi: boolean) => Promise<void>;
   isStopping: boolean;
   isProcessingTranscript: boolean;
@@ -288,7 +288,7 @@ export function useRecordingStop(
           }
           if (outcome.fallback && !outcome.continueError) {
             toast.warning('Saved as a new meeting', {
-              description: 'The meeting this recording belonged to was deleted.',
+              description: 'Its meeting was deleted, or it already holds a recording.',
             });
           }
           if (responseData.release_error) {

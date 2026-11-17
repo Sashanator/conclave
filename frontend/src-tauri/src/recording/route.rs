@@ -83,10 +83,48 @@ pub async fn api_route_recording_start(state: tauri::State<'_, AppState>, source
     resolve_target(state.db_manager.pool(), Utc::now(), source).await.map_err(|e| e.to_string())
 }
 
+/// A start failed after routing: gives the row back (deleted when we created it and it is still untouched). True = deleted.
+pub(crate) async fn release_failed_start(pool: &SqlitePool, meeting_id: &str) -> Result<bool, sqlx::Error> {
+    MeetingsRepository::release_routed_row(pool, meeting_id, take_fresh(meeting_id)).await
+}
+
+#[tauri::command]
+pub async fn api_release_routed_start(state: tauri::State<'_, AppState>, meeting_id: String) -> Result<bool, String> {
+    release_failed_start(state.db_manager.pool(), &meeting_id).await.map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::database::repositories::test_pool;
+
+    // FRESH_ROUTED is one process-wide slot: tests that use it take turns.
+    static FRESH_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+    async fn row_exists(pool: &SqlitePool, id: &str) -> bool {
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM meetings WHERE id = ?").bind(id).fetch_one(pool).await.unwrap() == 1
+    }
+
+    #[tokio::test]
+    async fn failed_start_deletes_the_fresh_row_it_created() {
+        let _g = FRESH_LOCK.lock().await;
+        let pool = test_pool().await;
+        let r = resolve_target(&pool, Utc::now(), StartSource::Sidebar).await.unwrap();
+        assert!(release_failed_start(&pool, &r.meeting_id).await.unwrap());
+        assert!(!row_exists(&pool, &r.meeting_id).await);
+    }
+
+    #[tokio::test]
+    async fn failed_start_keeps_an_existing_row_and_clears_started_at() {
+        let _g = FRESH_LOCK.lock().await;
+        let pool = test_pool().await;
+        let id = MeetingsRepository::create_meeting(&pool, None, Local::now().naive_local()).await.unwrap();
+        assert!(mark_started(&pool, &id, Utc::now()).await.unwrap());
+        assert!(!release_failed_start(&pool, &id).await.unwrap());
+        assert!(row_exists(&pool, &id).await);
+        let s: Option<String> = sqlx::query_scalar("SELECT started_at FROM meetings WHERE id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert!(s.is_none());
+    }
 
     #[tokio::test]
     async fn pick_target_page_is_existing() {
@@ -105,6 +143,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_new_creates_default_row() {
+        let _g = FRESH_LOCK.lock().await;
         let pool = test_pool().await;
         let r = resolve_target(&pool, Utc::now(), StartSource::Sidebar).await.unwrap();
         assert!(r.title.starts_with("Untitled · "));

@@ -60,4 +60,14 @@ describe('liveMeetingId', () => {
     await act(async () => { handlers.get('recording-stopped')!({ payload: { message: 'x' } }); await new Promise((r) => setTimeout(r, 0)); });
     expect(live).toBeNull();
   });
+
+  test('a poll that began before recording-stopped cannot bring the id back', async () => {
+    await mount();
+    let release!: (v: unknown) => void;
+    invoke.mockImplementationOnce(() => new Promise((r) => { release = r; }));
+    await act(async () => { handlers.get('recording-target')!({ payload: {} }); });
+    await act(async () => { handlers.get('recording-stopped')!({ payload: { message: 'x' } }); });
+    await act(async () => { release({ is_recording: true, is_paused: false, is_active: true, meeting_id: 'stale' }); await new Promise((r) => setTimeout(r, 0)); });
+    expect(live).toBeNull();
+  });
 });

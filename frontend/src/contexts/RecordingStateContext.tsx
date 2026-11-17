@@ -79,6 +79,8 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
 
   const [liveMeetingId, setLiveMeetingId] = useState<string | null>(null);
   const pollingIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Bumped on every recording-stopped, so a poll that started before it can be dropped.
+  const stopCountRef = useRef(0);
   const [micFollowing, dispatchMicFollowing] = useReducer(reduceMicFollowing, initialMicFollowing);
 
   // NEW: Status setter with logging
@@ -97,8 +99,11 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
    * Called on mount (fixes refresh desync) and periodically while recording
    */
   const syncWithBackend = async () => {
+    const stopsBefore = stopCountRef.current;
     try {
       const backendState = await recordingService.getRecordingState();
+      // A stop landed while this read was in flight: its reply still says "recording".
+      if (stopCountRef.current !== stopsBefore) return;
 
       setState(prev => ({
         ...prev,
@@ -199,6 +204,7 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
               activeDuration: null,
             };
           });
+          stopCountRef.current += 1;
           setLiveMeetingId(null);
           stopPolling();
         });

@@ -32,16 +32,39 @@ export function NewMeetingView({ row, live, disabled, onStart }: {
     return () => { active = false; };
   }, [row.id]);
 
-  const saveMaterial = async (): Promise<MeetingPrep | null> => {
+  // Saves run one after another against the latest saved text, so the typing pause, the blur and the unmount never double-save.
+  const prepRef = useRef<MeetingPrep | null>(null);
+  prepRef.current = prep;
+  const chain = useRef<Promise<unknown>>(Promise.resolve());
+  const doSave = async (text: string): Promise<MeetingPrep | null> => {
+    const cur = prepRef.current;
     if (!loaded) return null;
-    if (material === saved.current && prep?.id) return prep;
+    if (text === saved.current && cur?.id) return cur;
     try {
-      const next = await savePrep({ meetingId: row.id, eventUid: prep?.eventUid ?? null, eventStart: prep?.eventStart ?? null, eventTitle: row.title, material, templateId: row.templateId, items: prep?.items ?? [] });
-      saved.current = material;
+      const next = await savePrep({ meetingId: row.id, eventUid: cur?.eventUid ?? null, eventStart: cur?.eventStart ?? null, eventTitle: row.title, material: text, templateId: row.templateId, items: cur?.items ?? [] });
+      saved.current = text;
+      prepRef.current = next;
       setPrep(next);
       return next;
     } catch (e) { toast.error(`Failed to save Prep: ${String(e)}`); return null; }
   };
+  const saveMaterial = (): Promise<MeetingPrep | null> => {
+    const run = chain.current.then(() => doSave(material));
+    chain.current = run;
+    return run;
+  };
+  const saveRef = useRef(saveMaterial);
+  saveRef.current = saveMaterial;
+  // A tray or detector start leaves this page with no blur: save while typing, and once more on unmount.
+  useEffect(() => {
+    if (!loaded || material === saved.current) return;
+    const t = setTimeout(() => { void saveRef.current(); }, 800);
+    return () => clearTimeout(t);
+  }, [material, loaded]);
+  const materialRef = useRef(material);
+  materialRef.current = material;
+  // Nothing typed (or already saved): leaving must not insert an empty prep row.
+  useEffect(() => () => { if (materialRef.current !== saved.current) void saveRef.current(); }, []);
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 p-6">

@@ -32,7 +32,7 @@ export function AskChat({ scope, allowAll }: { scope: AskScope; allowAll: boolea
   const busy = turns.some((t) => t.status === 'pending');
 
   const cancelInFlight = () => {
-    if (inFlight.current !== null) void invoke('ask_cancel', { requestId: inFlight.current });
+    if (inFlight.current !== null) invoke('ask_cancel', { requestId: inFlight.current }).catch((e) => console.error('Could not cancel the question:', e));
     inFlight.current = null;
   };
 

@@ -117,6 +117,25 @@ describe('recording-stopped listener and the save', () => {
   });
 });
 
+describe('the held meeting', () => {
+  test('a continue stop holds the continue target but sends no routed id to the save', async () => {
+    await mount();
+    await emitStopped({ message: 'x', meeting_id: null, held_meeting_id: 'cont-1' });
+    expect(sessionStorage.getItem('last_recording_held_id')).toBe('cont-1');
+    expect(sessionStorage.getItem('last_recording_meeting_id')).toBeNull();
+    await stopAndSave();
+    expect(saveMeeting.mock.calls[0][7]).toBeNull();
+    expect(sessionStorage.getItem('last_recording_held_id')).toBeNull();
+  });
+
+  test('a stop without a held id clears a stale one', async () => {
+    sessionStorage.setItem('last_recording_held_id', 'stale');
+    await mount();
+    await emitStopped({ message: 'x', meeting_id: null });
+    expect(sessionStorage.getItem('last_recording_held_id')).toBeNull();
+  });
+});
+
 describe('save outcome toasts', () => {
   test('a fallback shows "Saved as a new meeting"', async () => {
     saveResult = { meeting_id: 'n1', fallback: true };

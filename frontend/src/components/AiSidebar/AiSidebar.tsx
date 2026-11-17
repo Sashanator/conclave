@@ -20,7 +20,7 @@ export function AiSidebar({ children }: { children?: ReactNode }) {
   if (!kind || !open) return null;
   return (
     <aside aria-label="AI sidebar" className="flex h-screen w-[360px] shrink-0 flex-col border-l border-border bg-background">
-      {kind === 'live' ? <LiveBody /> : scope ? <AskChat scope={scope} allowAll={kind === 'table'} /> : children}
+      {kind === 'live' ? <LiveBody /> : scope ? <AskChat key={kind === 'meeting' ? scope.meetingIds?.[0] : kind} scope={scope} allowAll={kind === 'table'} /> : children}
     </aside>
   );
 }
@@ -29,15 +29,16 @@ export function AiSidebar({ children }: { children?: ReactNode }) {
 export function CopilotOpenListener() {
   const router = useRouter();
   const { kind, open, toggle } = useAiSidebar();
-  const { liveMeetingId } = useRecordingState();
-  const ref = useRef({ kind, open, toggle, liveMeetingId });
-  ref.current = { kind, open, toggle, liveMeetingId };
+  const { liveMeetingId, isRecording } = useRecordingState();
+  const ref = useRef({ kind, open, toggle, liveMeetingId, isRecording });
+  ref.current = { kind, open, toggle, liveMeetingId, isRecording };
   useEffect(() => {
     const un = listen('copilot-open', () => {
       const r = ref.current;
       if (r.kind === 'live') { if (!r.open) r.toggle(); return; }
       writeSidebarOpen('live', true);
       if (r.liveMeetingId) router.push(`/meeting-details?id=${r.liveMeetingId}`);
+      else if (r.isRecording) router.push('/meeting-details'); // a recording with no meeting row
     });
     return () => { un.then((fn) => fn()); };
   }, [router]);

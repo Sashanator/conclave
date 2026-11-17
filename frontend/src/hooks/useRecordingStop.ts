@@ -85,11 +85,12 @@ export function useRecordingStop(
           folder_path?: string;
           meeting_name?: string;
           meeting_id?: string | null;
+          held_meeting_id?: string | null;
         }>('recording-stopped', async (event) => {
           stopsRef.current += 1;
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name, meeting_id } = event.payload;
+            const { folder_path, meeting_name, meeting_id, held_meeting_id } = event.payload;
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -103,6 +104,12 @@ export function useRecordingStop(
               sessionStorage.setItem('last_recording_meeting_id', meeting_id);
             } else {
               sessionStorage.removeItem('last_recording_meeting_id');
+            }
+            // The meeting page holds this one until the save ends: a continue target has no routed id.
+            if (held_meeting_id) {
+              sessionStorage.setItem('last_recording_held_id', held_meeting_id);
+            } else {
+              sessionStorage.removeItem('last_recording_held_id');
             }
           })();
 
@@ -355,6 +362,7 @@ export function useRecordingStop(
             sessionStorage.removeItem('last_recording_folder_path');
             sessionStorage.removeItem('last_recording_meeting_name');
             sessionStorage.removeItem('last_recording_meeting_id');
+            sessionStorage.removeItem('last_recording_held_id');
           }
           if (isCurrent()) {
             // Redundant with markMeetingAsSaved cleanup, but ensures cleanup

@@ -63,7 +63,13 @@ function MeetingDetailsContent() {
   // The backend clears liveMeetingId when the stop lands; the save that follows stays on this view, and so does a failed one.
   const stopFlow = isStopping || isProcessing || isSaving || status === RecordingStatus.ERROR;
   const recordingHere = showRecordingView({ meetingId, liveMeetingId, heldId: heldMeetingId(stopFlow), stopFlow });
-  useAiSidebarScreen(meetingId ? (meetingId === liveMeetingId ? 'live' : 'meeting') : null, { label: 'This meeting', meetingIds: meetingId ? [meetingId] : [] });
+  // A start whose routing failed records with no meeting row (the save makes the meeting): its page is the id-less one,
+  // or the page that started it. `wasUnrouted` keeps it through the stop and save, when startingLocally has cleared.
+  const wasUnrouted = useRef<string | null | undefined>(undefined); // the meeting id (null: id-less page) it started on
+  const unrouted = !liveMeetingId && !heldMeetingId(stopFlow) && (isRecording || stopFlow)
+    && (!meetingId || startingLocally || wasUnrouted.current === meetingId);
+  useEffect(() => { wasUnrouted.current = unrouted ? meetingId : undefined; }, [unrouted, meetingId]);
+  useAiSidebarScreen(unrouted ? 'live' : meetingId ? (meetingId === liveMeetingId ? 'live' : 'meeting') : null, { label: 'This meeting', meetingIds: meetingId ? [meetingId] : [] });
   // When the hold ends the page's data is from before the recording: load it again (and auto-summarize).
   const [savedEpoch, setSavedEpoch] = useState(0);
   const wasHeld = useRef(false);
@@ -324,7 +330,9 @@ function MeetingDetailsContent() {
     ? { id: liveMeetingId, title: liveTitle?.id === liveMeetingId ? liveTitle.title : 'another meeting' }
     : null;
   let shell: React.ReactNode = null;
-  if (meetingId && row === undefined) {
+  if (unrouted) {
+    shell = <RecordingView row={null} showModal={showModal} />;
+  } else if (meetingId && row === undefined) {
     shell = <div className="flex items-center justify-center h-screen"><LoaderIcon className="animate-spin size-6" /></div>;
   } else if (row && recordingHere) {
     shell = <RecordingView row={row} onChange={setRow} showModal={showModal} />;

@@ -226,6 +226,18 @@ describe('AskChat', () => {
     expect(logs[0].props['aria-live']).toBe('polite');
   });
 
+  test('a failed ask_cancel is logged, not swallowed', async () => {
+    const logged = console.error; const errs: unknown[][] = []; console.error = (...a: unknown[]) => { errs.push(a); };
+    const real = invoke.getMockImplementation()!;
+    invoke.mockImplementation((c: string, a?: Record<string, unknown>) => (c === 'ask_cancel' ? Promise.reject(new Error('gone')) : real(c, a)));
+    await send('Q');
+    await act(async () => { renderer!.unmount(); });
+    renderer = null;
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+    invoke.mockImplementation(real); console.error = logged;
+    expect(errs.length).toBeGreaterThan(0);
+  });
+
   test('leaving the page cancels the pending question', async () => {
     await send('Q');
     const requestId = askCalls()[0].requestId;

@@ -48,7 +48,7 @@ const Sidebar: React.FC = () => {
     }
   };
 
-  const onRecord = () => (isRecording ? go(`/meeting-details?id=${liveMeetingId}`) : startRecording());
+  const onRecord = () => (isRecording ? go(liveMeetingId ? `/meeting-details?id=${liveMeetingId}` : '/meeting-details') : startRecording());
   const unseen = whatsNewUnseen(seen, version);
   const whatsNewLabel = `What's new in v${version ?? ''}`;
 
@@ -106,7 +106,7 @@ const Sidebar: React.FC = () => {
             recordLabel(isRecording, activeDuration),
             isRecording ? <Circle className="w-5 h-5 shrink-0 fill-current" /> : <Mic className="w-5 h-5 shrink-0" />,
             onRecord,
-            { accent: true, disabled: isRecording && !liveMeetingId },
+            { accent: true },
           )}
           <div className="h-2" />
           {NAV_MAIN.map((item) =>

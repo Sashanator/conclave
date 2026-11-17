@@ -17,12 +17,15 @@ const task = (over: Partial<TaskRow>): TaskRow => ({
 });
 let rows: TaskRow[] = [];
 let failing = false;
+let failCommand: string | null = null; // fails only this command
+let failGate: Promise<void> | null = null; // and only after the gate opens
 const calls: [string, Record<string, unknown> | undefined][] = [];
 const errors: string[] = [];
 mock.module('@tauri-apps/api/core', () => ({
   invoke: async (command: string, args?: Record<string, unknown>) => {
     calls.push([command, args]);
     if (command === 'tasks_list') return rows.filter((r) => r.status === args?.status);
+    if (failCommand === command && (args?.id === 't2' || args?.id === 'u1')) { await failGate; throw new Error('boom'); }
     if (failing) throw new Error('boom');
     return null;
   },
@@ -33,7 +36,7 @@ const { MeetingTasksPanel } = await import('../../src/components/MeetingPage/Mee
 const { openingTab } = await import('../../src/components/MeetingPage/FinishedTabs');
 const { lineAtTime, parseMeetingTarget } = await import('../../src/lib/meeting-target');
 
-beforeEach(() => { calls.length = 0; errors.length = 0; failing = false; });
+beforeEach(() => { calls.length = 0; errors.length = 0; failing = false; failCommand = null; failGate = null; });
 
 async function mount() {
   let r!: ReactTestRenderer;
@@ -80,6 +83,33 @@ test('x dismisses a kept task; a failure toasts and rolls back', async () => {
   await press(row(r2, 'Other'), 'x');
   expect(errors.length).toBe(1);
   expect(text(r2)).not.toContain('Removed (');
+});
+
+test('a failed edit rolls back only its own task', async () => {
+  rows = [task({}), task({ id: 't2', text: 'Other' })];
+  const r = await mount();
+  let open!: () => void;
+  failGate = new Promise<void>((res) => { open = res; });
+  failCommand = 'tasks_set_status';
+  row(r, 'Other').props.onKeyDown({ key: 'x', preventDefault() {} }); // t2 is still saving when t1 is removed (no act: acts must not overlap)
+  failCommand = null;
+  await press(row(r, 'Send the deck'), 'x');
+  failCommand = 'tasks_set_status'; open();
+  await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
+  expect(errors.length).toBe(1);
+  expect(text(r)).toContain('Removed (1)'); // t1 stays removed
+  expect(text(r)).toContain('Other');
+  expect(row(r, 'Other').findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Remove task').length).toBe(1);
+});
+
+test('a restore whose status step fails keeps the saved claim', async () => {
+  rows = [{ ...task({ id: 'u1', text: 'Run QA', owner: 'unassigned' }), status: 'dismissed' }];
+  failCommand = 'tasks_set_status';
+  const r = await mount();
+  await press(row(r, 'Run QA'), 'k');
+  expect(errors.length).toBe(1);
+  expect(text(r)).toContain('removed');
+  expect(text(r)).not.toContain('removed by AI');
 });
 
 test('Done reviewing marks the meeting reviewed, then reads Reviewed', async () => {

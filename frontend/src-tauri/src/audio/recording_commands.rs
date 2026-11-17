@@ -1161,6 +1161,11 @@ async fn stop_recording_inner<R: Runtime>(
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
+    // Read before the take: the meeting the UI showed as live, which the frontend holds until the save ends.
+    let held_meeting_id = displayed_target(
+        super::continuation::current_target(recordings_started()).map(|m| m.meeting_id),
+        recording_target_id(),
+    );
     let routed_meeting_id = take_recording_target();
     // Kept until the frontend's save ends (api_finish_saving_target), so the meeting can't be deleted mid-save.
     if let Some(id) = routed_meeting_id.as_deref() {
@@ -1205,7 +1210,8 @@ async fn stop_recording_inner<R: Runtime>(
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
             "meeting_name": meeting_name_str,
-            "meeting_id": routed_meeting_id
+            "meeting_id": routed_meeting_id,
+            "held_meeting_id": held_meeting_id
         }),
     )
     .map_err(|e| e.to_string())?;

@@ -79,8 +79,8 @@ export function showRecordingView(a: { meetingId: string | null; liveMeetingId: 
   return a.liveMeetingId === a.meetingId || (a.heldId === a.meetingId && a.stopFlow);
 }
 
-/** The meeting whose save is running or failed: the stop listener writes its id and only a successful save clears it, so it survives a remount. */
+/** The meeting whose save is running or failed: the stop listener writes its id (`last_recording_held_id`: the routed row or a Continue target) and only a successful save clears it, so it survives a remount. */
 export function heldMeetingId(stopFlow: boolean): string | null {
   if (!stopFlow || typeof sessionStorage === 'undefined') return null;
-  try { return sessionStorage.getItem('last_recording_meeting_id'); } catch { return null; }
+  try { return sessionStorage.getItem('last_recording_held_id'); } catch { return null; }
 }

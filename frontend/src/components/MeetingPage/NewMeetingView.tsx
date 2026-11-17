@@ -61,7 +61,10 @@ export function NewMeetingView({ row, live, disabled, onStart }: {
     const t = setTimeout(() => { void saveRef.current(); }, 800);
     return () => clearTimeout(t);
   }, [material, loaded]);
-  useEffect(() => () => { void saveRef.current(); }, []);
+  const materialRef = useRef(material);
+  materialRef.current = material;
+  // Nothing typed (or already saved): leaving must not insert an empty prep row.
+  useEffect(() => () => { if (materialRef.current !== saved.current) void saveRef.current(); }, []);
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-6 p-6">

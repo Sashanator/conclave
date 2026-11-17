@@ -38,7 +38,10 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
       for (const [command, args, patch] of steps) { await invoke(command, args); saved = { ...saved, ...patch }; }
     } catch (e) {
       console.error('Task change failed:', e);
-      patchTask({ ...task, ...saved });
+      // Only the fields this edit changed and did not save: a later edit to the same task stays.
+      const undo: Record<string, unknown> = {};
+      for (const [, , patch] of steps) for (const k of Object.keys(patch)) if (!(k in saved)) undo[k] = task[k as keyof TaskRow];
+      patchTask(undo as Partial<TaskRow>);
       toast.error('Could not save the task change.');
     }
   }, []);

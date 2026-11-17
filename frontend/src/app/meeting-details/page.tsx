@@ -66,10 +66,10 @@ function MeetingDetailsContent() {
   const recordingHere = showRecordingView({ meetingId, liveMeetingId, heldId: heldMeetingId(stopFlow), stopFlow });
   // A start whose routing failed records with no meeting row (the save makes the meeting): its page is the id-less one,
   // or the page that started it. `wasUnrouted` keeps it through the stop and save, when startingLocally has cleared.
-  const wasUnrouted = useRef(false);
+  const wasUnrouted = useRef<string | null | undefined>(undefined); // the meeting id (null: id-less page) it started on
   const unrouted = !liveMeetingId && !heldMeetingId(stopFlow) && (isRecording || stopFlow)
-    && (!meetingId || startingLocally || wasUnrouted.current);
-  useEffect(() => { wasUnrouted.current = unrouted; }, [unrouted]);
+    && (!meetingId || startingLocally || wasUnrouted.current === meetingId);
+  useEffect(() => { wasUnrouted.current = unrouted ? meetingId : undefined; }, [unrouted, meetingId]);
   useAiSidebarScreen(unrouted ? 'live' : meetingId ? (meetingId === liveMeetingId ? 'live' : 'meeting') : null, { label: 'This meeting', meetingIds: meetingId ? [meetingId] : [] });
   // When the hold ends the page's data is from before the recording: load it again (and auto-summarize).
   const [savedEpoch, setSavedEpoch] = useState(0);

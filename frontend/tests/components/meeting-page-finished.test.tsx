@@ -91,10 +91,11 @@ test('a failed edit rolls back only its own task', async () => {
   let open!: () => void;
   failGate = new Promise<void>((res) => { open = res; });
   failCommand = 'tasks_set_status';
-  const slow = press(row(r, 'Other'), 'x'); // t2 is still saving when t1 is removed
+  row(r, 'Other').props.onKeyDown({ key: 'x', preventDefault() {} }); // t2 is still saving when t1 is removed (no act: acts must not overlap)
   failCommand = null;
   await press(row(r, 'Send the deck'), 'x');
-  failCommand = 'tasks_set_status'; open(); await slow;
+  failCommand = 'tasks_set_status'; open();
+  await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
   expect(errors.length).toBe(1);
   expect(text(r)).toContain('Removed (1)'); // t1 stays removed
   expect(text(r)).toContain('Other');

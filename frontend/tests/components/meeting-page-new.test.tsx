@@ -135,6 +135,13 @@ test('leaving the page saves notes typed a moment ago', async () => {
   expect((saves()[0][1] as { material: string }).material).toBe('Last words');
 });
 
+test('leaving with nothing typed saves no empty prep', async () => {
+  const r = await mountNew();
+  await act(async () => { r.unmount(); });
+  await sleep(10);
+  expect(saves().length).toBe(0);
+});
+
 test('the emoji precedes the title input', async () => {
   let r!: ReactTestRenderer;
   await act(async () => { r = create(<MeetingHeader row={row} onChange={() => {}} />); });

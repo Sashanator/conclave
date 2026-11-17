@@ -255,3 +255,14 @@ test('another meeting page does not show an unrouted recording', async () => {
   await mount();
   expect(unroutedShows()).toBe(false);
 });
+
+test('a failed unrouted save does not follow the user to another meeting', async () => {
+  await mount();
+  await act(async () => { (startArgs[1] as (v: boolean) => void)(true); });
+  setState({ isRecording: true, status: 'recording' }); await rerender();
+  setState({ isRecording: false, isSaving: false, status: 'error' }); await rerender();
+  expect(unroutedShows()).toBe(true);
+  params = new URLSearchParams('id=m2'); await rerender();
+  expect(unroutedShows()).toBe(false);
+  expect(screenKind).not.toBe('live');
+});

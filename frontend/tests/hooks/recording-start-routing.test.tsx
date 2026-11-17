@@ -256,3 +256,31 @@ describe('a released row', () => {
     expect(toast.error).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('tray-style queued starts', () => {
+  const rerender = async (k: string) => {
+    await act(async () => { renderer!.update(<View k={k} />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+  };
+  test('a stale key followed by a tray-style queued start still starts', async () => {
+    sessionStorage.setItem('autoStartKey', `m0:${Date.now() - 60_000}`);
+    renderer = undefined;
+    await act(async () => { renderer = create(<View k="m1:" />); });
+    // What the tray script writes: a fresh key for its landing page, over the old one.
+    const key = `m1:${Date.now()}`;
+    sessionStorage.setItem('autoStartKey', key);
+    sessionStorage.setItem('autoStartMeetingId', 'm1');
+    sessionStorage.setItem('autoStartRecording', 'true');
+    await rerender(key);
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+  });
+  test('a tray start to the record screen (key removed) starts with no page key', async () => {
+    sessionStorage.setItem('autoStartKey', `m0:${Date.now() - 60_000}`);
+    sessionStorage.removeItem('autoStartKey'); // the tray script clears it
+    sessionStorage.setItem('autoStartRecording', 'true');
+    renderer = undefined;
+    await act(async () => { renderer = create(<View />); });
+    await act(async () => { await new Promise((r) => setTimeout(r, 20)); });
+    expect(startRecordingWithDevices).toHaveBeenCalledTimes(1);
+  });
+});

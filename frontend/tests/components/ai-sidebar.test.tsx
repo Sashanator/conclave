@@ -58,6 +58,12 @@ describe('AiSidebar', () => {
     expect(readSidebarOpen('table')).toBe(false);
   });
 
+  test('Ctrl J on a Russian layout matches by code', async () => {
+    const r = await mount('table');
+    press({ key: 'о', code: 'KeyJ', ctrlKey: true });
+    expect(hasAside(r)).toBe(true);
+  });
+
   test('no screen kind renders nothing', async () => {
     const r = await mount(null);
     press({ key: 'j', ctrlKey: true });

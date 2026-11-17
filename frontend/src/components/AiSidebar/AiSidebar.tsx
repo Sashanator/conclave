@@ -6,6 +6,7 @@ import { listen } from '@tauri-apps/api/event';
 import { writeSidebarOpen } from '@/lib/ai-sidebar';
 import { CopilotPane } from '@/components/Copilot/CopilotPane';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
+import { AskChat } from '@/components/Ask/AskChat';
 import { annotationsLocked } from '@/lib/meeting-notes';
 import { useAiSidebar } from './AiSidebarProvider';
 
@@ -15,11 +16,11 @@ function LiveBody() {
 
 /** Right-hand AI panel shell; Ask and Copilot render into `children`. */
 export function AiSidebar({ children }: { children?: ReactNode }) {
-  const { kind, open } = useAiSidebar();
+  const { kind, open, scope } = useAiSidebar();
   if (!kind || !open) return null;
   return (
     <aside aria-label="AI sidebar" className="flex h-screen w-[360px] shrink-0 flex-col border-l border-border bg-background">
-      {kind === 'live' ? <LiveBody /> : children}
+      {kind === 'live' ? <LiveBody /> : scope ? <AskChat scope={scope} allowAll={kind === 'table'} /> : children}
     </aside>
   );
 }

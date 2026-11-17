@@ -159,6 +159,26 @@ fn set_recording_target(id: Option<String>) {
     *RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner) = id;
 }
 
+/// Meetings whose recording stopped but whose save has not finished: they must not be deleted meanwhile.
+static SAVING_TARGETS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+
+fn add_saving_target(id: &str) {
+    SAVING_TARGETS.lock().unwrap_or_else(PoisonError::into_inner).push(id.to_string());
+}
+
+fn remove_saving_target(id: &str) {
+    let mut g = SAVING_TARGETS.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Some(i) = g.iter().position(|s| s == id) {
+        g.remove(i);
+    }
+}
+
+/// The frontend's save finished (or gave up): the meeting is deletable again.
+#[tauri::command]
+pub fn api_finish_saving_target(meeting_id: String) {
+    remove_saving_target(&meeting_id);
+}
+
 fn take_recording_target() -> Option<String> {
     RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner).take()
 }
@@ -173,6 +193,8 @@ pub(crate) fn ensure_not_live(live: Option<&str>, id: &str) -> Result<(), String
 
 /// `ensure_not_live` against both live meetings: the routed target and the one a Continue appends to.
 pub(crate) fn ensure_not_live_now(id: &str) -> Result<(), String> {
+    let saving = SAVING_TARGETS.lock().unwrap_or_else(PoisonError::into_inner).iter().any(|s| s == id);
+    ensure_not_live(saving.then_some(id), id)?;
     let cont = super::continuation::current_target(recordings_started()).map(|m| m.meeting_id);
     let busy = is_recording_now() || crate::meeting_detector::post_processing();
     ensure_not_live_in(recording_target_id().as_deref(), cont.as_deref(), busy, id)
@@ -185,18 +207,33 @@ fn ensure_not_live_in(routed: Option<&str>, cont: Option<&str>, busy: bool, id: 
     Ok(())
 }
 
-/// Marks the routed row started and tells the UI. A failure only warns: the save falls back to a new meeting.
+/// Marks the routed row started. Err = why this recording can't use it (finished, has lines, or gone).
+async fn claim_row(pool: &sqlx::SqlitePool, id: &str) -> Result<(), String> {
+    match crate::recording::route::mark_started(pool, id, chrono::Utc::now()).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err("Its meeting was deleted or already holds a recording.".to_string()),
+        Err(e) => Err(format!("The meeting could not be prepared: {e}")),
+    }
+}
+
+/// Claims the routed row and tells the UI. On a refusal the target is dropped, so the save makes a new meeting
+/// instead of the stop returning an id this recording must not write to.
 async fn claim_target<R: Runtime>(app: &AppHandle<R>, meeting_id: Option<&str>) {
     let Some(id) = meeting_id else { return };
-    match app.try_state::<crate::state::AppState>() {
-        Some(state) => match crate::recording::route::mark_started(state.db_manager.pool(), id, chrono::Utc::now()).await {
-            Ok(true) => {}
-            Ok(false) => warn!("recording target {id} no longer exists; the save will fall back"),
-            Err(e) => warn!("could not mark recording target {id} started: {e}"),
-        },
-        None => warn!("no app state; could not mark recording target {id} started"),
+    let claimed = match app.try_state::<crate::state::AppState>() {
+        Some(state) => claim_row(state.db_manager.pool(), id).await,
+        None => Err("The app database is not ready.".to_string()),
+    };
+    match claimed {
+        Ok(()) => {
+            let _ = app.emit("recording-target", serde_json::json!({ "meetingId": id }));
+        }
+        Err(reason) => {
+            warn!("recording target {id} refused ({reason}); the save will make a new meeting");
+            set_recording_target(None);
+            let _ = app.emit("recording-target-failed", serde_json::json!({ "reason": reason }));
+        }
     }
-    let _ = app.emit("recording-target", serde_json::json!({ "meetingId": id }));
 }
 
 /// Shared start-path finalize. Both start commands MUST call this so a new
@@ -1099,6 +1136,10 @@ async fn stop_recording_inner<R: Runtime>(
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
     let routed_meeting_id = take_recording_target();
+    // Kept until the frontend's save ends (api_finish_saving_target), so the meeting can't be deleted mid-save.
+    if let Some(id) = routed_meeting_id.as_deref() {
+        add_saving_target(id);
+    }
     // A Whisper unload that Dictate deferred while recording is completed here, without the lifecycle lock.
     crate::dictate::finish_pending_unload(&app).await;
     // IS_RECORDING_STOPPING is cleared by _stopping_guard on scope exit.
@@ -1930,6 +1971,29 @@ mod tests {
         assert!(ensure_not_live_in(None, Some("c"), false, "c").is_ok(), "a stale continue target is not live");
         assert!(ensure_not_live_in(Some("r"), Some("c"), false, "r").is_err(), "the routed row stays protected");
         assert!(ensure_not_live_in(Some("r"), Some("c"), true, "x").is_ok());
+    }
+
+    #[test]
+    fn a_saving_meeting_is_protected_until_its_save_finishes() {
+        let _turn = TEST_STATE.lock().unwrap_or_else(PoisonError::into_inner);
+        add_saving_target("s-1");
+        add_saving_target("s-2");
+        assert!(ensure_not_live_now("s-1").is_err());
+        remove_saving_target("s-1");
+        assert!(ensure_not_live_now("s-1").is_ok());
+        assert!(ensure_not_live_now("s-2").is_err(), "another save still runs");
+        remove_saving_target("s-2");
+        assert!(ensure_not_live_now("s-2").is_ok());
+    }
+
+    #[tokio::test]
+    async fn claiming_a_missing_or_finished_row_reports_why() {
+        let pool = crate::database::repositories::test_pool().await;
+        let id = crate::database::repositories::meeting::MeetingsRepository::create_meeting(&pool, None, chrono::Local::now().naive_local()).await.unwrap();
+        assert!(claim_row(&pool, &id).await.is_ok());
+        assert!(claim_row(&pool, "missing").await.is_err());
+        sqlx::query("UPDATE meetings SET ended_at = '2026-11-17T11:00:00Z' WHERE id = ?").bind(&id).execute(&pool).await.unwrap();
+        assert!(claim_row(&pool, &id).await.is_err());
     }
 
     #[test]

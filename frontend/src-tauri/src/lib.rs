@@ -925,6 +925,7 @@ pub fn run() {
             api::api_save_transcript,
             recording::route::api_route_recording_start,
             recording::route::api_release_routed_start,
+            audio::recording_commands::api_finish_saving_target,
             api::open_meeting_folder,
             api::test_backend_connection,
             api::debug_backend_connection,

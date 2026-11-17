@@ -30,7 +30,7 @@ pub struct RoutedMeeting {
     pub title: String,
 }
 
-// shortcut: process-local; after a restart a routed row is only returned to New, never deleted
+// shortcut: process-local; after a restart nothing marks a row as ours, so a release only clears its started_at and never deletes it
 static FRESH_ROUTED: Mutex<Option<String>> = Mutex::new(None);
 
 /// True once if `resolve_target` created this row.
@@ -88,9 +88,19 @@ pub(crate) async fn release_failed_start(pool: &SqlitePool, meeting_id: &str) ->
     MeetingsRepository::release_routed_row(pool, meeting_id, take_fresh(meeting_id)).await
 }
 
+/// `release_failed_start`, except for the row a live recording owns (a start that lost a race releases its own
+/// row, which must never be the winner's). False = nothing deleted.
+pub(crate) async fn release_unless_live(pool: &SqlitePool, meeting_id: &str, live: Option<String>) -> Result<bool, sqlx::Error> {
+    if live.as_deref() == Some(meeting_id) {
+        return Ok(false);
+    }
+    release_failed_start(pool, meeting_id).await
+}
+
 #[tauri::command]
 pub async fn api_release_routed_start(state: tauri::State<'_, AppState>, meeting_id: String) -> Result<bool, String> {
-    release_failed_start(state.db_manager.pool(), &meeting_id).await.map_err(|e| e.to_string())
+    let live = crate::audio::recording_commands::recording_target_id();
+    release_unless_live(state.db_manager.pool(), &meeting_id, live).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -111,6 +121,17 @@ mod tests {
         let pool = test_pool().await;
         let r = resolve_target(&pool, Utc::now(), StartSource::Sidebar).await.unwrap();
         assert!(release_failed_start(&pool, &r.meeting_id).await.unwrap());
+        assert!(!row_exists(&pool, &r.meeting_id).await);
+    }
+
+    #[tokio::test]
+    async fn a_lost_race_never_releases_the_winners_row() {
+        let _g = FRESH_LOCK.lock().await;
+        let pool = test_pool().await;
+        let r = resolve_target(&pool, Utc::now(), StartSource::Sidebar).await.unwrap();
+        assert!(!release_unless_live(&pool, &r.meeting_id, Some(r.meeting_id.clone())).await.unwrap());
+        assert!(row_exists(&pool, &r.meeting_id).await, "the live target stays");
+        assert!(release_unless_live(&pool, &r.meeting_id, Some("other".into())).await.unwrap());
         assert!(!row_exists(&pool, &r.meeting_id).await);
     }
 

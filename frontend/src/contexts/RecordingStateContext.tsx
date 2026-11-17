@@ -215,6 +215,11 @@ export function RecordingStateProvider({ children }: { children: React.ReactNode
           unsubscribers.push(await listen(event, () => { syncWithBackend(); }));
         }
 
+        // Rust could not use the routed meeting: the recording saves as a new one
+        unsubscribers.push(await listen<{ reason?: string }>('recording-target-failed', (event) => {
+          toast.warning('Recording as a new meeting', { description: event.payload?.reason });
+        }));
+
         // Recording paused
         const unlistenPaused = await recordingService.onRecordingPaused(() => {
           console.log('[RecordingStateContext] Recording paused event');

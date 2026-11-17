@@ -70,4 +70,10 @@ describe('liveMeetingId', () => {
     await act(async () => { release({ is_recording: true, is_paused: false, is_active: true, meeting_id: 'stale' }); await new Promise((r) => setTimeout(r, 0)); });
     expect(live).toBeNull();
   });
+
+  test('a refused target claim shows the new-meeting warning', async () => {
+    await mount();
+    await act(async () => { handlers.get('recording-target-failed')!({ payload: { reason: 'Its meeting was deleted.' } }); });
+    expect(toast.warning).toHaveBeenCalledWith('Recording as a new meeting', { description: 'Its meeting was deleted.' });
+  });
 });

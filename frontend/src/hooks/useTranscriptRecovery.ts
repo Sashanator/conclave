@@ -11,6 +11,7 @@ import { indexedDBService, MeetingMetadata, StoredTranscript } from '@/services/
 import { storageService } from '@/services/storageService';
 import { applyPinnedSummaryLanguageToMeeting } from '@/lib/summary-language-preferences';
 import { toast } from 'sonner';
+import { releaseFailedStart } from '@/lib/recording-target';
 
 interface AudioRecoveryStatus {
   status: string; // "success" | "partial" | "failed" | "none"
@@ -243,6 +244,11 @@ export function useTranscriptRecovery(): UseTranscriptRecoveryReturn {
    */
   const deleteRecoverableMeeting = useCallback(async (meetingId: string): Promise<void> => {
     try {
+      // The meeting row this recording was started in: give it back (Rust deletes it only if still untouched).
+      const metadata = await indexedDBService.getMeetingMetadata(meetingId);
+      if (metadata?.targetMeetingId) {
+        await releaseFailedStart({ meetingId: metadata.targetMeetingId, title: null }, 'recovery discarded');
+      }
       await indexedDBService.deleteMeeting(meetingId);
       setRecoverableMeetings(prev => prev.filter(m => m.meetingId !== meetingId));
     } catch (error) {

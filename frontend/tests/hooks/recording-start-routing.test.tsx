@@ -24,12 +24,13 @@ afterAll(() => {
 });
 
 let routeResult: () => Promise<unknown> = async () => ({ meetingId: 'routed-1', title: 'Untitled · Mon 14:02' });
+let modelReady = true;
 let startResult: () => Promise<void> = async () => {};
 const calls: Array<[string, unknown]> = [];
 const invoke = mock(async (command: string, args?: unknown) => {
   calls.push([command, args]);
   if (command === 'api_get_transcript_config') return { provider: 'parakeet' };
-  if (command === 'parakeet_has_available_models') return true;
+  if (command === 'parakeet_has_available_models') return modelReady;
   if (command === 'api_route_recording_start') return routeResult();
   return undefined;
 });
@@ -108,11 +109,18 @@ describe('manual start', () => {
     expect(releaseCalls()).toEqual([['api_release_routed_start', { meetingId: 'routed-1' }]]);
   });
 
-  test('an "already in progress" failure leaves the row alone', async () => {
+  test('a lost race still calls the release (Rust keeps the winner\'s row)', async () => {
     startResult = async () => { throw new Error('Recording already in progress'); };
     await mount();
     await act(async () => { await hook.handleRecordingStart().catch(() => {}); });
-    expect(releaseCalls()).toEqual([]);
+    expect(releaseCalls()).toEqual([['api_release_routed_start', { meetingId: 'routed-1' }]]);
+  });
+
+  test('a start leaves last_recording_meeting_id for the save still running', async () => {
+    sessionStorage.setItem('last_recording_meeting_id', 'prev');
+    await mount();
+    await act(async () => { await hook.handleRecordingStart(); });
+    expect(sessionStorage.getItem('last_recording_meeting_id')).toBe('prev');
   });
 });
 
@@ -141,6 +149,16 @@ describe('auto-start', () => {
     await mount();
     expect(routeCalls()[0][1]).toEqual({ source: { page: 'm-cal' } });
     expect(startRecordingWithDevices).toHaveBeenCalledWith('mic', 'sys', 'Untitled · Mon 14:02', 'routed-1');
+  });
+
+  test('an auto-start whose model is not ready releases the routed row', async () => {
+    sessionStorage.setItem('autoStartRecording', 'true');
+    sessionStorage.setItem('autoStartMeetingId', 'm-tray');
+    modelReady = false;
+    await mount();
+    modelReady = true;
+    expect(startRecordingWithDevices).not.toHaveBeenCalled();
+    expect(releaseCalls()).toEqual([['api_release_routed_start', { meetingId: 'm-tray' }]]);
   });
 
   test('a failed auto-start releases the routed row', async () => {

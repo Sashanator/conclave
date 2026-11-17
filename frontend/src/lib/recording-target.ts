@@ -19,8 +19,6 @@ export function takeAutoStartMeetingId(storage: Storage): string | null {
 
 /** A failed route never blocks the recording: it starts with no target and the save makes a new meeting (§4). */
 export async function routeOrFallback(source: StartSourceArg): Promise<RoutedStart> {
-  // A new recording starts: an id left by an earlier one must never reach its save.
-  try { sessionStorage.removeItem('last_recording_meeting_id'); } catch { /* storage unavailable */ }
   try {
     return await routeRecordingStart(source);
   } catch (error) {
@@ -29,10 +27,9 @@ export async function routeOrFallback(source: StartSourceArg): Promise<RoutedSta
   }
 }
 
-/** A start failed after routing: gives the row back. An "already in progress" error means another start owns it. */
-export async function releaseFailedStart(routed: RoutedStart | null, error: unknown): Promise<void> {
+/** A start failed after routing: gives the row back. A start that lost a race calls it too: Rust keeps the winner's row. */
+export async function releaseFailedStart(routed: RoutedStart | null, _error: unknown): Promise<void> {
   if (!routed?.meetingId) return;
-  if ((error instanceof Error ? error.message : String(error)).includes('already in progress')) return;
   try {
     await invoke('api_release_routed_start', { meetingId: routed.meetingId });
   } catch (e) {

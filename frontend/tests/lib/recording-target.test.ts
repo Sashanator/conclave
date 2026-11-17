@@ -91,3 +91,15 @@ describe('queueAutoStart', () => {
     expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
   });
 });
+
+describe('showRecordingView', () => {
+  const { showRecordingView } = require('../../src/lib/recording-target');
+  const base = { meetingId: 'm1', liveMeetingId: null, heldId: null, stopFlow: false };
+  test('live here, held through the save, and no hold once the save is over', () => {
+    expect(showRecordingView({ ...base, liveMeetingId: 'm1' })).toBe(true);
+    expect(showRecordingView({ ...base, heldId: 'm1', stopFlow: true })).toBe(true);
+    expect(showRecordingView({ ...base, heldId: 'm1', stopFlow: false })).toBe(false);
+    expect(showRecordingView({ ...base, heldId: 'm2', stopFlow: true })).toBe(false);
+    expect(showRecordingView({ ...base, meetingId: null, liveMeetingId: null })).toBe(false);
+  });
+});

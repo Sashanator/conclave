@@ -10,13 +10,15 @@ import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
 import { lineAtTime, parseMeetingTarget } from "@/lib/meeting-target";
+import { showRecordingView } from "@/lib/recording-target";
 import { useRecordingStart } from "@/hooks/useRecordingStart";
 import { useModalState } from "@/hooks/useModalState";
 import { SettingsModals } from "@/app/_components/SettingsModal";
-import { useRecordingState } from "@/contexts/RecordingStateContext";
+import { useRecordingState, RecordingStatus } from "@/contexts/RecordingStateContext";
 import { useAiSidebarScreen } from "@/components/AiSidebar/AiSidebarProvider";
 import { listMeetingRows, type MeetingRow } from "@/lib/meetings";
 import { MeetingHeader } from "@/components/MeetingPage/MeetingHeader";
+import { RecordingView } from "@/components/MeetingPage/RecordingView";
 import { NewMeetingView } from "@/components/MeetingPage/NewMeetingView";
 
 interface MeetingDetailsResponse {
@@ -36,7 +38,7 @@ function MeetingDetailsContent() {
   const target = parseMeetingTarget(searchParams); // Search hits: a line to scroll to, or a tab to open
   const { setCurrentMeeting, refetchMeetings } = useSidebar();
   const { isAutoSummary, transcriptModelConfig } = useConfig(); // Get auto-summary toggle state
-  const { liveMeetingId, isStopping, isProcessing, isSaving } = useRecordingState();
+  const { liveMeetingId, isStopping, isProcessing, isSaving, status } = useRecordingState();
   const { meetings } = useSidebar();
   // undefined: loading; null: no row (an old link), shown as the finished page
   const [row, setRow] = useState<MeetingRow | null | undefined>(undefined);
@@ -44,7 +46,14 @@ function MeetingDetailsContent() {
   const [startingLocally, setStartingLocally] = useState(false);
   const { modals, messages, showModal, hideModal } = useModalState(transcriptModelConfig);
   const { handleRecordingStart } = useRecordingStart(startingLocally, setStartingLocally, showModal, meetingId ?? undefined);
-  const recordingHere = !!meetingId && liveMeetingId === meetingId;
+  // The backend clears liveMeetingId when the stop lands; the save that follows stays on this view, and so does a failed one.
+  const [heldId, setHeldId] = useState<string | null>(null);
+  const stopFlow = isStopping || isProcessing || isSaving || status === RecordingStatus.ERROR;
+  const recordingHere = showRecordingView({ meetingId, liveMeetingId, heldId, stopFlow });
+  useEffect(() => {
+    if (meetingId && liveMeetingId === meetingId) setHeldId(meetingId);
+    else if (!stopFlow) setHeldId(null);
+  }, [meetingId, liveMeetingId, stopFlow]);
   useAiSidebarScreen(meetingId ? (recordingHere ? 'live' : 'meeting') : null, { label: 'This meeting', meetingIds: meetingId ? [meetingId] : [] });
   const router = useRouter();
   const [meetingDetails, setMeetingDetails] = useState<MeetingDetailsResponse | null>(null);
@@ -297,13 +306,7 @@ function MeetingDetailsContent() {
   if (meetingId && row === undefined) {
     shell = <div className="flex items-center justify-center h-screen"><LoaderIcon className="animate-spin size-6" /></div>;
   } else if (row && recordingHere) {
-    // Task 34 replaces this with the live transcript and notes.
-    shell = (
-      <div className="mx-auto w-full max-w-3xl space-y-4 p-6">
-        <MeetingHeader row={row} live onChange={setRow} />
-        <p className="text-sm text-muted-foreground">Recording in progress.</p>
-      </div>
-    );
+    shell = <RecordingView row={row} onChange={setRow} showModal={showModal} />;
   } else if (row && !row.startedAt && !row.hasTranscript) {
     shell = (
       <div className="h-screen overflow-y-auto bg-muted/50">

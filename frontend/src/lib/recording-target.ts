@@ -46,3 +46,12 @@ export async function releaseFailedStart(routed: RoutedStart | null, _error: unk
     });
   }
 }
+
+/**
+ * The meeting page shows the Recording view while this meeting records, and while its stop is saved
+ * or has failed: the backend clears the live id when the stop lands, but the lines are not safe until the save returns.
+ */
+export function showRecordingView(a: { meetingId: string | null; liveMeetingId: string | null; heldId: string | null; stopFlow: boolean }): boolean {
+  if (!a.meetingId) return false;
+  return a.liveMeetingId === a.meetingId || (a.heldId === a.meetingId && a.stopFlow);
+}

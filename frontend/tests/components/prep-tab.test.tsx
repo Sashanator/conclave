@@ -84,28 +84,24 @@ beforeEach(() => {
 });
 afterEach(() => { act(() => { renderers.splice(0).forEach((r) => r.unmount()); }); });
 
-test('no prep, no tab; stored prep falls back to notes without changing storage', async () => {
+test('no prep: no points and no tab; the stored side tab is not touched', async () => {
   result = null;
   localStorage.setItem(LIVE_SIDE_TAB_KEY, 'prep');
   const r = await render();
   expect(invoke).toHaveBeenCalledWith('prep_get', { eventUid: fixture().eventUid!, eventStart: fixture().eventStart! });
   expect(prepTab(r)).toBeUndefined();
-  expect(tabs(r)[0].props['aria-selected']).toBe(true);
+  expect(boxes(r)).toHaveLength(0);
   expect(localStorage.getItem(LIVE_SIDE_TAB_KEY)).toBe('prep');
 });
 
-test('tab shows the counter, kind tags, draft label and encoded Open in Prep link', async () => {
+test('prep points sit under My notes with kind tags, draft label and encoded Open in Prep link', async () => {
   const r = await render();
-  expect(textOf(prepTab(r)!)).toBe('Prep 1/2');
-  await act(async () => { prepTab(r)!.props.onClick(); });
+  expect(prepTab(r)).toBeUndefined();
   expect(json(r)).toContain('draft');
   expect(json(r)).toContain('clarification');
   const link = r.root.findAll((n) => n.type === 'a' && textOf(n) === 'Open in Prep')[0];
   expect(link.props.href).toBe(`/prep?${new URLSearchParams({ event: fixture().eventUid!, start: fixture().eventStart! })}`);
-  // Switching tabs keeps the existing note input and checklist mounted.
-  const noteInput = r.root.findByProps({ 'aria-label': 'New note' });
-  await act(async () => { tabs(r)[0].props.onClick(); });
-  expect(r.root.findByProps({ 'aria-label': 'New note' })).toBe(noteInput);
+  expect(r.root.findByProps({ 'aria-label': 'New note' })).toBeDefined();
   expect(boxes(r)).toHaveLength(2);
 });
 
@@ -122,7 +118,6 @@ test('tick persists immediately without optimistic state', async () => {
   expect(invoke).toHaveBeenCalledWith('prep_tick', { prepId: 7, itemId: 'b', ticked: true });
   expect(boxes(r)[1].props.checked).toBe(false);
   await act(async () => { resolve({ ...fixture(), items: fixture().items.map((i) => ({ ...i, ticked: true })) }); });
-  expect(textOf(prepTab(r)!)).toBe('Prep 2/2');
   expect(boxes(r)[1].props.checked).toBe(true);
 });
 
@@ -131,7 +126,6 @@ test('tick failure reverts and shows a toast', async () => {
   const r = await render();
   await act(async () => { boxes(r)[1].props.onChange(); });
   expect(boxes(r)[1].props.checked).toBe(false);
-  expect(textOf(prepTab(r)!)).toBe('Prep 1/2');
   expect(errorToast).toHaveBeenCalledTimes(1);
 });
 
@@ -149,7 +143,6 @@ test('post-call prep can be ticked and both bodies stay mounted', async () => {
   await act(async () => { prepTab(r)!.props.onClick(); });
   expect(json(r)).toContain('Original notes');
   await act(async () => { boxes(r)[1].props.onChange(); });
-  expect(textOf(prepTab(r)!)).toBe('Prep 2/2');
 });
 
 test('readLiveSideTab accepts prep', () => {

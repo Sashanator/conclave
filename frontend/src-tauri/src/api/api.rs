@@ -787,6 +787,10 @@ pub async fn api_delete_meeting<R: Runtime>(
         auth_token.is_some()
     );
 
+    crate::audio::recording_commands::ensure_not_live(
+        crate::audio::recording_commands::recording_target_id().as_deref(),
+        &meeting_id,
+    )?;
     let pool = state.db_manager.pool();
 
     let base = crate::audio::recording_preferences::get_default_recordings_folder();

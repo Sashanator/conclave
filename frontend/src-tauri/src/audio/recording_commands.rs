@@ -8,7 +8,7 @@ use log::{debug, error, info, warn};
 use serde::{Deserialize, Serialize};
 use std::sync::{
     atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
-    Arc, Mutex,
+    Arc, Mutex, PoisonError,
 };
 use tauri::{AppHandle, Emitter, Manager, Runtime};
 use tokio::task::JoinHandle;
@@ -147,11 +147,46 @@ async fn wait_until_clear(flag: &AtomicBool) {
     }
 }
 
+/// The meeting row this recording is routed into (set with `IS_RECORDING`, taken once at stop).
+static RECORDING_TARGET: Mutex<Option<String>> = Mutex::new(None);
+
+/// The live recording's target meeting id, if it was routed into one.
+pub fn recording_target_id() -> Option<String> {
+    RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner).clone()
+}
+
+fn take_recording_target() -> Option<String> {
+    RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner).take()
+}
+
+/// Deleting a meeting while it is being recorded would orphan the save.
+pub(crate) fn ensure_not_live(live: Option<&str>, id: &str) -> Result<(), String> {
+    if live == Some(id) {
+        return Err("This meeting is being recorded. Stop the recording first.".to_string());
+    }
+    Ok(())
+}
+
+/// Marks the routed row started and tells the UI. A failure only warns: the save falls back to a new meeting.
+async fn claim_target<R: Runtime>(app: &AppHandle<R>, meeting_id: Option<&str>) {
+    let Some(id) = meeting_id else { return };
+    match app.try_state::<crate::state::AppState>() {
+        Some(state) => match crate::recording::route::mark_started(state.db_manager.pool(), id, chrono::Utc::now()).await {
+            Ok(true) => {}
+            Ok(false) => warn!("recording target {id} no longer exists; the save will fall back"),
+            Err(e) => warn!("could not mark recording target {id} started: {e}"),
+        },
+        None => warn!("no app state; could not mark recording target {id} started"),
+    }
+    let _ = app.emit("recording-target", serde_json::json!({ "meetingId": id }));
+}
+
 /// Shared start-path finalize. Both start commands MUST call this so a new
 /// start path can't silently ship with a per-session flag left unreset (e.g.
 /// the mic-recovery budget already exhausted).
-fn finalize_recording_start() {
+fn finalize_recording_start(meeting_id: Option<String>) {
     info!("🔍 Setting IS_RECORDING to true and resetting SPEECH_DETECTED_EMITTED");
+    *RECORDING_TARGET.lock().unwrap_or_else(PoisonError::into_inner) = meeting_id;
     IS_RECORDING.store(true, Ordering::SeqCst);
     RECORDINGS_STARTED.fetch_add(1, Ordering::SeqCst);
     MIC_FALLBACK_FAILED_ATTEMPTS.store(0, Ordering::SeqCst); // fresh mic-recovery budget per session
@@ -360,13 +395,14 @@ async fn prepare_audio_for_recording(
 /// Start recording with default devices
 pub async fn start_recording<R: Runtime>(app: AppHandle<R>) -> Result<(), String> {
     let _start_guard = StartInFlightGuard::claim();
-    start_recording_with_meeting_name(app, None).await
+    start_recording_with_meeting_name(app, None, None).await
 }
 
 /// Start recording with default devices and optional meeting name
 pub async fn start_recording_with_meeting_name<R: Runtime>(
     app: AppHandle<R>,
     meeting_name: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     let _start_guard = StartInFlightGuard::claim();
     info!(
@@ -446,12 +482,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Always ensure a meeting name is set so incremental saver initializes
     let effective_meeting_name = meeting_name.clone().unwrap_or_else(|| {
-        // Example: Meeting 2025-10-03_08-25-23
-        let now = chrono::Local::now();
-        format!(
-            "Meeting {}",
-            now.format("%Y-%m-%d_%H-%M-%S")
-        )
+        crate::database::repositories::meeting::default_meeting_title(chrono::Local::now().naive_local())
     });
     manager.set_meeting_name(Some(effective_meeting_name));
 
@@ -485,8 +516,9 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
 
     // Flip recording live + reset per-session flags (speech-detected latch,
     // mic-recovery budget). Shared with the other start path — see helper.
-    finalize_recording_start();
+    finalize_recording_start(meeting_id.clone());
     drop(engine_lifecycle_guard);
+    claim_target(&app, meeting_id.as_deref()).await;
 
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
@@ -537,7 +569,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     app.emit("recording-started", serde_json::json!({
         "message": "Recording started successfully with parallel processing",
         "devices": ["Default Microphone", "Default System Audio"],
-        "workers": 3
+        "workers": 3,
+        "meetingId": meeting_id
     })).map_err(|e| e.to_string())?;
 
     // Update tray menu to reflect recording state
@@ -555,7 +588,7 @@ pub async fn start_recording_with_devices<R: Runtime>(
     system_device_name: Option<String>,
 ) -> Result<(), String> {
     let _start_guard = StartInFlightGuard::claim();
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, None).await
 }
 
 /// Start recording with specific devices and optional meeting name
@@ -564,6 +597,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     let _start_guard = StartInFlightGuard::claim();
     info!(
@@ -641,11 +675,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Always ensure a meeting name is set so incremental saver initializes
     let effective_meeting_name = meeting_name.clone().unwrap_or_else(|| {
-        let now = chrono::Local::now();
-        format!(
-            "Meeting {}",
-            now.format("%Y-%m-%d_%H-%M-%S")
-        )
+        crate::database::repositories::meeting::default_meeting_title(chrono::Local::now().naive_local())
     });
     manager.set_meeting_name(Some(effective_meeting_name));
 
@@ -679,8 +709,9 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
 
     // Flip recording live + reset per-session flags (speech-detected latch,
     // mic-recovery budget). Shared with the other start path — see helper.
-    finalize_recording_start();
+    finalize_recording_start(meeting_id.clone());
     drop(engine_lifecycle_guard);
+    claim_target(&app, meeting_id.as_deref()).await;
 
     // Start optimized parallel transcription task and store handle
     let task_handle = transcription::start_transcription_task(app.clone(), transcription_receiver);
@@ -734,7 +765,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
             mic_device_name.unwrap_or_else(|| "Default Microphone".to_string()),
             system_device_name.unwrap_or_else(|| "Default System Audio".to_string())
         ],
-        "workers": 3
+        "workers": 3,
+        "meetingId": meeting_id
     })).map_err(|e| e.to_string())?;
 
     // Update tray menu to reflect recording state
@@ -1048,6 +1080,7 @@ async fn stop_recording_inner<R: Runtime>(
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
     IS_RECORDING.store(false, Ordering::SeqCst);
+    let routed_meeting_id = take_recording_target();
     // A Whisper unload that Dictate deferred while recording is completed here, without the lifecycle lock.
     crate::dictate::finish_pending_unload(&app).await;
     // IS_RECORDING_STOPPING is cleared by _stopping_guard on scope exit.
@@ -1086,7 +1119,8 @@ async fn stop_recording_inner<R: Runtime>(
         serde_json::json!({
             "message": "Recording stopped - frontend will save after all transcripts received",
             "folder_path": folder_path_str,
-            "meeting_name": meeting_name_str
+            "meeting_name": meeting_name_str,
+            "meeting_id": routed_meeting_id
         }),
     )
     .map_err(|e| e.to_string())?;
@@ -1207,6 +1241,10 @@ pub async fn is_recording_paused() -> bool {
 #[tauri::command]
 pub async fn get_recording_state() -> serde_json::Value {
     let is_recording = IS_RECORDING.load(Ordering::SeqCst);
+    // Routed target, else the continue target (display only).
+    let meeting_id = recording_target_id().or_else(|| {
+        super::continuation::current_target(recordings_started()).map(|m| m.meeting_id)
+    });
     let manager_guard = RECORDING_MANAGER.lock().unwrap();
 
     if let Some(manager) = manager_guard.as_ref() {
@@ -1217,7 +1255,8 @@ pub async fn get_recording_state() -> serde_json::Value {
             "recording_duration": manager.get_recording_duration(),
             "active_duration": manager.get_active_recording_duration(),
             "total_pause_duration": manager.get_total_pause_duration(),
-            "current_pause_duration": manager.get_current_pause_duration()
+            "current_pause_duration": manager.get_current_pause_duration(),
+            "meeting_id": meeting_id
         })
     } else {
         serde_json::json!({
@@ -1227,7 +1266,8 @@ pub async fn get_recording_state() -> serde_json::Value {
             "recording_duration": null,
             "active_duration": null,
             "total_pause_duration": 0.0,
-            "current_pause_duration": null
+            "current_pause_duration": null,
+            "meeting_id": meeting_id
         })
     }
 }
@@ -1833,6 +1873,23 @@ mod tests {
         assert!(start_in_flight(), "an overlapping start is still loading");
         drop(overlapping);
         assert!(!start_in_flight());
+    }
+
+    #[test]
+    fn recording_target_is_set_by_finalize_and_taken_once() {
+        finalize_recording_start(Some("m-1".to_string()));
+        assert_eq!(recording_target_id().as_deref(), Some("m-1"));
+        assert_eq!(take_recording_target().as_deref(), Some("m-1"));
+        assert_eq!(take_recording_target(), None);
+        assert_eq!(recording_target_id(), None);
+        IS_RECORDING.store(false, Ordering::SeqCst);
+    }
+
+    #[test]
+    fn delete_refuses_live_target() {
+        assert!(ensure_not_live(Some("m1"), "m1").is_err());
+        assert!(ensure_not_live(Some("m1"), "m2").is_ok());
+        assert!(ensure_not_live(None, "m1").is_ok());
     }
 
     static TEST_STOP: AtomicBool = AtomicBool::new(false);

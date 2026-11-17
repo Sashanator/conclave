@@ -71,7 +71,7 @@ pub(crate) async fn tick<R: Runtime>(
 ) -> Result<(), String> {
     if refresh_due(clock.refreshed_at, now) && settings::current().calendar_url.is_some() {
         clock.refreshed_at = Some(now);
-        if let Err(e) = calendar::refresh(app).await {
+        if let Err(e) = calendar::refresh(app, now).await {
             warn!("knowledge: calendar refresh failed: {e}");
         }
     }

@@ -53,6 +53,12 @@ pub struct Occurrence {
     pub recurring: bool,
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpandResult {
+    pub occurrences: Vec<Occurrence>,
+    pub complete: bool,
+}
+
 /// What the settings page shows. The host only; the path and query are secrets.
 #[derive(Serialize)]
 pub struct CalendarStatus {
@@ -109,7 +115,7 @@ pub fn expand(
     ics: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-) -> Result<Vec<Occurrence>, String> {
+) -> Result<ExpandResult, String> {
     // The parser recurses once per nested component. It runs on a thread with a large stack, so a
     // structure the guard misses cannot overflow the stack of the caller.
     std::thread::scope(|scope| {
@@ -126,7 +132,7 @@ fn expand_here(
     ics: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-) -> Result<Vec<Occurrence>, String> {
+) -> Result<ExpandResult, String> {
     // The parser's error quotes the input, so only fixed messages leave the function.
     let unfolded = normalize(ics);
     if nesting_refused(&unfolded) {
@@ -227,7 +233,11 @@ fn expand_here(
         warn!("calendar: occurrence limit reached, the feed is cut short");
     }
     out.sort_by_key(|o| o.start);
-    Ok(out)
+    let complete = !timed_out && skipped == 0 && out.len() < MAX_FEED_OCCURRENCES;
+    Ok(ExpandResult {
+        occurrences: out,
+        complete,
+    })
 }
 
 /// Unfolds, then turns every line ending into CRLF: the guard splits lines by str::lines and the parser by CRLF.
@@ -669,12 +679,19 @@ pub fn upcoming() -> Vec<Occurrence> {
 }
 
 /// Fetch, expand, cache and persist. A failure keeps the last good cache and sets the error.
-pub(crate) async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
+pub(crate) async fn refresh<R: Runtime>(
+    app: &AppHandle<R>,
+    now: DateTime<Utc>,
+) -> Result<ExpandResult, String> {
     let Some(url) = settings::current().calendar_url else {
         return Err(NOT_CONNECTED.to_string());
     };
-    match fetch_and_expand(&url).await {
-        Ok(occurrences) => store(app, &url, occurrences).ok_or_else(|| CHANGED.to_string()),
+    match fetch_and_expand(&url, now).await {
+        Ok(result) => {
+            store(app, &url, result.occurrences.clone())
+                .ok_or_else(|| CHANGED.to_string())?;
+            Ok(result)
+        }
         Err(problem) => {
             record_error(&url, problem.clone());
             Err(problem)
@@ -682,20 +699,19 @@ pub(crate) async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<usize, Str
     }
 }
 
-async fn fetch_and_expand(url: &str) -> Result<Vec<Occurrence>, String> {
+async fn fetch_and_expand(url: &str, now: DateTime<Utc>) -> Result<ExpandResult, String> {
     let ics = fetch(url).await?;
-    let now = Utc::now();
     let from = now - Duration::days(CALENDAR_BEHIND_DAYS);
     let to = now + Duration::days(CALENDAR_AHEAD_DAYS);
     // Expansion is CPU work; it runs off the async runtime.
-    let occurrences = tokio::task::spawn_blocking(move || expand(&ics, from, to))
+    let result = tokio::task::spawn_blocking(move || expand(&ics, from, to))
         .await
         .map_err(|_| UNREADABLE.to_string())??;
     info!(
         "calendar: fetched, {} occurrences in the window",
-        occurrences.len()
+        result.occurrences.len()
     );
-    Ok(occurrences)
+    Ok(result)
 }
 
 /// Whether `url` is still the connected calendar.
@@ -813,9 +829,9 @@ pub async fn calendar_connect<R: Runtime>(
 ) -> Result<CalendarStatus, String> {
     let url = url.trim().to_string();
     validate_url(&url)?;
-    let occurrences = fetch_and_expand(&url).await?;
+    let result = fetch_and_expand(&url, Utc::now()).await?;
     settings::set_calendar_url(&app, Some(url.clone()))?;
-    let count = store(&app, &url, occurrences).ok_or_else(|| CHANGED.to_string())?;
+    let count = store(&app, &url, result.occurrences).ok_or_else(|| CHANGED.to_string())?;
     info!("calendar: connected, {count} occurrences in the window");
     Ok(status())
 }
@@ -911,7 +927,7 @@ mod tests {
         ]);
         let got = expand(&body, utc(2026, 10, 20, 0, 0), utc(2026, 10, 21, 0, 0)).unwrap();
         assert_eq!(
-            got,
+            got.occurrences,
             vec![Occurrence {
                 uid: "single-1".into(),
                 title: "Design review".into(),
@@ -968,8 +984,8 @@ mod tests {
                 utc(2026, 11, 15, 9, 30),
             ),
         ];
-        assert!(got.iter().all(|o| o.recurring));
-        let got: Vec<_> = got.into_iter().map(|o| (o.title, o.start, o.end)).collect();
+        assert!(got.occurrences.iter().all(|o| o.recurring));
+        let got: Vec<_> = got.occurrences.into_iter().map(|o| (o.title, o.start, o.end)).collect();
         let want: Vec<_> = want
             .into_iter()
             .map(|(t, s, e)| (t.to_string(), s, e))
@@ -1010,13 +1026,13 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 20, 0, 0), utc(2026, 11, 5, 0, 0)).unwrap();
-        let plain_series = got.iter().find(|o| o.uid == "weekly-1" && o.start == utc(2026, 10, 22, 10, 0)).unwrap();
+        let plain_series = got.occurrences.iter().find(|o| o.uid == "weekly-1" && o.start == utc(2026, 10, 22, 10, 0)).unwrap();
         assert_eq!(plain_series.original_start, plain_series.start);
 
-        let moved = got.iter().find(|o| o.uid == "weekly-1" && o.start == utc(2026, 10, 29, 11, 0)).unwrap();
+        let moved = got.occurrences.iter().find(|o| o.uid == "weekly-1" && o.start == utc(2026, 10, 29, 11, 0)).unwrap();
         assert_eq!(moved.original_start, utc(2026, 10, 29, 10, 0));
 
-        let plain_single = got.iter().find(|o| o.uid == "single-1").unwrap();
+        let plain_single = got.occurrences.iter().find(|o| o.uid == "single-1").unwrap();
         assert_eq!(plain_single.original_start, plain_single.start);
     }
 
@@ -1040,8 +1056,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 18, 0, 0), utc(2026, 11, 30, 0, 0)).unwrap();
-        assert_eq!(got.len(), 2);
-        assert!(got.iter().all(|o| o.recurring));
+        assert_eq!(got.occurrences.len(), 2);
+        assert!(got.occurrences.iter().all(|o| o.recurring));
     }
 
     #[test]
@@ -1072,12 +1088,12 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 18, 0, 0), utc(2026, 11, 30, 0, 0)).unwrap();
-        let starts: Vec<_> = got.iter().map(|o| o.start).collect();
+        let starts: Vec<_> = got.occurrences.iter().map(|o| o.start).collect();
         assert_eq!(
             starts,
             vec![utc(2026, 10, 19, 9, 0), utc(2026, 11, 2, 9, 0)]
         );
-        assert!(got.iter().all(|o| o.title != "Dropped"));
+        assert!(got.occurrences.iter().all(|o| o.title != "Dropped"));
     }
 
     #[test]
@@ -1093,7 +1109,40 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert!(got.is_empty());
+        assert!(got.occurrences.is_empty());
+    }
+
+    #[test]
+    fn budget_skip_is_incomplete() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:ping-7",
+            "DTSTART:20200101T090000Z",
+            "DTEND:20200101T090100Z",
+            "RRULE:FREQ=MINUTELY",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert!(!got.complete);
+    }
+
+    #[test]
+    fn plain_feed_is_complete() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:single-1",
+            "DTSTART:20261020T130000Z",
+            "DTEND:20261020T140000Z",
+            "SUMMARY:Design review",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 20, 0, 0), utc(2026, 10, 21, 0, 0)).unwrap();
+        assert!(got.complete);
+        assert_eq!(got.occurrences.len(), 1);
     }
 
     #[test]
@@ -1109,7 +1158,7 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert!(got.is_empty(), "{got:?}");
+        assert!(got.occurrences.is_empty(), "{got:?}");
     }
 
     #[test]
@@ -1138,8 +1187,8 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 20, 10, 0, 0)
             .unwrap()
             .with_timezone(&Utc);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].start, local_start);
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].start, local_start);
     }
 
     #[test]
@@ -1163,8 +1212,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].start, utc(2026, 10, 20, 7, 0));
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].start, utc(2026, 10, 20, 7, 0));
     }
     #[test]
     fn title_sanitised_and_capped() {
@@ -1184,8 +1233,8 @@ mod tests {
             .chars()
             .take(MAX_EVENT_TITLE_CHARS)
             .collect();
-        assert_eq!(got[0].title, expected);
-        assert_eq!(got[0].title.chars().count(), MAX_EVENT_TITLE_CHARS);
+        assert_eq!(got.occurrences[0].title, expected);
+        assert_eq!(got.occurrences[0].title.chars().count(), MAX_EVENT_TITLE_CHARS);
     }
 
     #[test]
@@ -1271,7 +1320,7 @@ mod tests {
         ]);
         let started = std::time::Instant::now();
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert!(got.is_empty());
+        assert!(got.occurrences.is_empty());
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
@@ -1285,7 +1334,7 @@ mod tests {
         }
         body.push_str("END:VCALENDAR\r\n");
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), MAX_FEED_OCCURRENCES);
+        assert_eq!(got.occurrences.len(), MAX_FEED_OCCURRENCES);
     }
 
     #[test]
@@ -1307,8 +1356,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].uid, ok);
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].uid, ok);
     }
 
     #[test]
@@ -1325,9 +1374,9 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 3, 28, 0, 0), utc(2026, 3, 30, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].start, utc(2026, 3, 29, 1, 30));
-        assert_eq!(got[0].end, utc(2026, 3, 29, 2, 0));
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].start, utc(2026, 3, 29, 1, 30));
+        assert_eq!(got.occurrences[0].end, utc(2026, 3, 29, 2, 0));
     }
 
     #[test]
@@ -1514,8 +1563,8 @@ mod tests {
             "",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].title, "Standup");
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].title, "Standup");
     }
 
     #[test]
@@ -1528,8 +1577,8 @@ mod tests {
         }
         body.push_str("BEGIN:VEVENT\r\nUID:next\r\nDTSTART:20261020T120000Z\r\nDTEND:20261020T130000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].uid, "next");
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].uid, "next");
     }
 
     #[test]
@@ -1542,7 +1591,7 @@ mod tests {
         }
         body.push_str("BEGIN:VEVENT\r\nUID:standup\r\nDTSTART:20261001T090000Z\r\nDTEND:20261001T093000Z\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 11, 2, 0, 0)).unwrap();
-        assert!(got.iter().any(|o| o.uid == "standup"), "{got:?}");
+        assert!(got.occurrences.iter().any(|o| o.uid == "standup"), "{got:?}");
     }
 
     #[test]
@@ -1557,7 +1606,7 @@ mod tests {
         body.push_str("END:VCALENDAR\r\n");
         let started = std::time::Instant::now();
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 11, 2, 0, 0)).unwrap();
-        assert!(got.is_empty());
+        assert!(got.occurrences.is_empty());
         assert!(
             started.elapsed() < std::time::Duration::from_secs(3),
             "{:?}",
@@ -1598,7 +1647,7 @@ mod tests {
         body.push_str("END:VCALENDAR\n");
         let started = std::time::Instant::now();
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert!(!got.is_empty());
+        assert!(!got.occurrences.is_empty());
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "{:?}",
@@ -1640,7 +1689,7 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        let uids: Vec<&str> = got.iter().map(|o| o.uid.as_str()).collect();
+        let uids: Vec<&str> = got.occurrences.iter().map(|o| o.uid.as_str()).collect();
         assert_eq!(uids, vec!["standup"]);
     }
 
@@ -1674,8 +1723,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 22, 0, 0), utc(2026, 10, 23, 0, 0)).unwrap();
-        assert_eq!(got[0].end, utc(2026, 10, 22, 10, 0));
-        assert_eq!(event_for_start(&got, utc(2026, 10, 22, 9, 30)).map(|o| o.uid.as_str()), Some("dur-1"));
+        assert_eq!(got.occurrences[0].end, utc(2026, 10, 22, 10, 0));
+        assert_eq!(event_for_start(&got.occurrences, utc(2026, 10, 22, 9, 30)).map(|o| o.uid.as_str()), Some("dur-1"));
     }
 
     #[test]
@@ -1698,8 +1747,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2020, 1, 1, 0, 0), utc(2020, 2, 1, 0, 0)).unwrap();
-        assert!(got.iter().any(|o| o.uid == "fine-1"));
-        assert!(got.iter().filter(|o| o.uid == "hostile").all(|o| o.end == o.start));
+        assert!(got.occurrences.iter().any(|o| o.uid == "fine-1"));
+        assert!(got.occurrences.iter().filter(|o| o.uid == "hostile").all(|o| o.end == o.start));
     }
 
     #[test]

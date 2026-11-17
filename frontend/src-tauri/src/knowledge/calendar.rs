@@ -47,6 +47,7 @@ pub struct Occurrence {
     pub title: String,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+    pub original_start: DateTime<Utc>,
     /// True when the source event has an RRULE or is a RECURRENCE-ID override.
     #[serde(default)]
     pub recurring: bool,
@@ -62,11 +63,25 @@ pub struct CalendarStatus {
     pub upcoming: usize,
 }
 
+const CACHE_VERSION: u32 = 2;
+
 /// The persisted part: the last good expansion and when it was made.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 struct Cache {
+    #[serde(default)]
+    version: u32,
     last_ok_at: Option<String>,
     occurrences: Vec<Occurrence>,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self {
+            version: CACHE_VERSION,
+            last_ok_at: None,
+            occurrences: Vec::new(),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -183,6 +198,7 @@ fn expand_here(
                             title: master.title.clone(),
                             start: utc,
                             end: end.with_timezone(&Utc),
+                            original_start: utc,
                             recurring: master.rrule.is_some(),
                         });
                     }
@@ -298,6 +314,7 @@ fn occurrence(e: &Event) -> Option<Occurrence> {
         title: e.title.clone(),
         start: e.start.with_timezone(&Utc),
         end: e.start.checked_add_signed(duration(e))?.with_timezone(&Utc),
+        original_start: e.recurrence_id.unwrap_or(e.start.with_timezone(&Utc)),
         recurring: e.rrule.is_some() || e.recurrence_id.is_some(),
     })
 }
@@ -695,6 +712,7 @@ fn store<R: Runtime>(app: &AppHandle<R>, url: &str, occurrences: Vec<Occurrence>
         return None;
     }
     let cache = Cache {
+        version: CACHE_VERSION,
         last_ok_at: Some(Utc::now().to_rfc3339()),
         occurrences,
     };
@@ -746,7 +764,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Reads the persisted cache. A broken file gives None; its content is never logged.
 fn parse_cache(bytes: &[u8]) -> Option<Cache> {
-    serde_json::from_slice(bytes).ok()
+    serde_json::from_slice::<Cache>(bytes)
+        .ok()
+        .filter(|c| c.version == CACHE_VERSION)
 }
 
 /// A missing file is an empty cache. A broken one is logged without its content and also starts empty.
@@ -759,7 +779,7 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     let cache = match bytes {
         Ok(None) => Cache::default(),
         Ok(Some(bytes)) => parse_cache(&bytes).unwrap_or_else(|| {
-            warn!("calendar: cache file unreadable, starting empty");
+            info!("calendar: old cache format, refetching");
             Cache::default()
         }),
         Err(problem) => {
@@ -897,6 +917,7 @@ mod tests {
                 title: "Design review".into(),
                 start: utc(2026, 10, 20, 13, 0),
                 end: utc(2026, 10, 20, 14, 0),
+                original_start: utc(2026, 10, 20, 13, 0),
                 recurring: false,
             }]
         );
@@ -957,12 +978,46 @@ mod tests {
     }
 
     #[test]
-    fn old_occurrence_json_defaults_to_nonrecurring() {
-        let occurrence: Occurrence = serde_json::from_str(r#"{
-            "uid": "u", "title": "Meeting",
-            "start": "2026-10-29T12:00:00+00:00", "end": "2026-10-29T12:30:00+00:00"
-        }"#).unwrap();
-        assert!(!occurrence.recurring);
+    fn version_1_cache_is_dropped() {
+        assert!(parse_cache(br#"{"occurrences": []}"#).is_none());
+        assert!(parse_cache(br#"{"version": 2, "occurrences": []}"#).is_some());
+    }
+
+    #[test]
+    fn moved_instance_keeps_its_recurrence_id() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:weekly-1",
+            "DTSTART:20261022T100000Z",
+            "DTEND:20261022T103000Z",
+            "RRULE:FREQ=WEEKLY;COUNT=2",
+            "SUMMARY:Weekly sync",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "UID:weekly-1",
+            "RECURRENCE-ID:20261029T100000Z",
+            "DTSTART:20261029T110000Z",
+            "DTEND:20261029T113000Z",
+            "SUMMARY:Weekly sync (moved)",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "UID:single-1",
+            "DTSTART:20261025T140000Z",
+            "DTEND:20261025T150000Z",
+            "SUMMARY:One-off meeting",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 20, 0, 0), utc(2026, 11, 5, 0, 0)).unwrap();
+        let plain_series = got.iter().find(|o| o.uid == "weekly-1" && o.start == utc(2026, 10, 22, 10, 0)).unwrap();
+        assert_eq!(plain_series.original_start, plain_series.start);
+
+        let moved = got.iter().find(|o| o.uid == "weekly-1" && o.start == utc(2026, 10, 29, 11, 0)).unwrap();
+        assert_eq!(moved.original_start, utc(2026, 10, 29, 10, 0));
+
+        let plain_single = got.iter().find(|o| o.uid == "single-1").unwrap();
+        assert_eq!(plain_single.original_start, plain_single.start);
     }
 
     #[test]
@@ -1601,6 +1656,7 @@ mod tests {
             title: format!("Title {uid}"),
             start,
             end: start + Duration::minutes(mins),
+            original_start: start,
             recurring: false,
         }
     }

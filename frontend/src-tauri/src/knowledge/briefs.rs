@@ -295,7 +295,7 @@ mod tests {
     }
 
     fn occurrence(uid: &str, title: &str, start: DateTime<Utc>) -> Occurrence {
-        Occurrence { uid: uid.into(), title: title.into(), start, end: start + Duration::minutes(30), recurring: false }
+        Occurrence { uid: uid.into(), title: title.into(), start, end: start + Duration::minutes(30), original_start: start, recurring: false }
     }
 
     fn at(h: u32, m: u32) -> DateTime<Utc> {

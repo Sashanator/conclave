@@ -289,7 +289,7 @@ pub async fn delete_meeting_and_folder(
     if !MeetingsRepository::delete_meeting(pool, meeting_id).await? {
         return Ok(None);
     }
-    Ok(Some(remove_folder_after_delete(pool, meeting_id, folder_path, recordings_base, remove).await))
+    Ok(Some(remove_folder_after_delete(pool, meeting_id, "deleted", folder_path, recordings_base, remove).await))
 }
 
 /// "Delete recording": the DB reset first (the meeting, prep and notes stay), then the folder, with the same contract.
@@ -304,12 +304,13 @@ pub async fn delete_recording_and_audio(
     if !MeetingsRepository::delete_recording(pool, meeting_id).await? {
         return Ok(None);
     }
-    Ok(Some(remove_folder_after_delete(pool, meeting_id, folder_path, recordings_base, remove).await))
+    Ok(Some(remove_folder_after_delete(pool, meeting_id, "recording deleted", folder_path, recordings_base, remove).await))
 }
 
 async fn remove_folder_after_delete(
     pool: &sqlx::SqlitePool,
     meeting_id: &str,
+    action: &str,
     folder_path: Option<String>,
     recordings_base: &Path,
     remove: Remover<'_>,
@@ -325,7 +326,7 @@ async fn remove_folder_after_delete(
     };
     // The reason names the folder, so the log records only the fact; the caller gets the reason.
     if warning.is_some() {
-        warn!("Meeting {meeting_id} deleted, recording folder kept");
+        warn!("Meeting {meeting_id} {action}, recording folder kept");
     }
     warning
 }

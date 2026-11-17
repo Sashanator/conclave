@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
-import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import type { CategoryInfo } from '@/lib/meeting-views';
 import { deleteMeeting, listMeetingRows, setReviewed, setTemplate, type MeetingRow } from '@/lib/meetings';
 
@@ -15,7 +14,6 @@ export function useMeetingRows(templates: CategoryInfo[] = []) {
   const seq = useRef(0); // a slower, older reload must not overwrite a newer one
   const errorToasted = useRef(false);
   const liveId = useRecordingState().liveMeetingId;
-  const { refetchMeetings } = useSidebar();
   const alive = useRef(true);
   const pending = useRef(new Map<string, Partial<MeetingRow>>()); // edits still saving; laid over every reload
 
@@ -99,12 +97,11 @@ export function useMeetingRows(templates: CategoryInfo[] = []) {
       const { folderWarning } = await deleteMeeting(id);
       seq.current++;
       setRows((rs) => rs.filter((r) => r.id !== id));
-      await refetchMeetings();
       if (folderWarning) toast.warning('The meeting was deleted, but its folder was kept', { description: folderWarning });
     } catch (e) {
       toast.error('Could not delete the meeting', { description: errText(e) });
     }
-  }, [refetchMeetings]);
+  }, []);
 
   return { rows, loaded, error, liveId, reload, toggleReviewed, changeTemplate, removeMeeting };
 }

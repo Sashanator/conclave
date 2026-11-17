@@ -1,27 +1,12 @@
 'use client';
 
 import React, { createContext, useContext, useState, useEffect } from 'react';
-import { usePathname, useRouter } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { continueFailed } from '@/lib/resume';
-import { useRecordingState } from '@/contexts/RecordingStateContext';
 import type { SummaryProcessResponse } from '@/types';
-import type { SearchHit } from '@/lib/meeting-target';
 
 
-
-interface SidebarItem {
-  id: string;
-  title: string;
-  type: 'folder' | 'file';
-  children?: SidebarItem[];
-}
-
-export interface CurrentMeeting {
-  id: string;
-  title: string;
-}
 
 interface SummaryPoll {
   processId: string;
@@ -30,20 +15,8 @@ interface SummaryPoll {
 }
 
 interface SidebarContextType {
-  currentMeeting: CurrentMeeting | null;
-  setCurrentMeeting: (meeting: CurrentMeeting | null) => void;
-  sidebarItems: SidebarItem[];
   isCollapsed: boolean;
   toggleCollapse: () => void;
-  meetings: CurrentMeeting[];
-  setMeetings: (meetings: CurrentMeeting[]) => void;
-  isMeetingActive: boolean;
-  setIsMeetingActive: (active: boolean) => void;
-  handleRecordingToggle: () => void;
-  searchTranscripts: (query: string) => Promise<void>;
-  searchResults: SearchHit[];
-  isSearching: boolean;
-  setServerAddress: (address: string) => void;
   serverAddress: string;
   // Summary polling management
   startSummaryPolling: (
@@ -52,9 +25,6 @@ interface SidebarContextType {
     onUpdate: (result: SummaryProcessResponse) => void | Promise<void>
   ) => void;
   stopSummaryPolling: (meetingId: string, processId?: string) => void;
-  // Refetch meetings from backend
-  refetchMeetings: () => Promise<void>;
-
 }
 
 const SidebarContext = createContext<SidebarContextType | null>(null);
@@ -68,47 +38,14 @@ export const useSidebar = () => {
 };
 
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
-  const [currentMeeting, setCurrentMeeting] = useState<CurrentMeeting | null>({ id: 'intro-call', title: '+ New Call' });
   const [isCollapsed, setIsCollapsed] = useState(true);
-  const [meetings, setMeetings] = useState<CurrentMeeting[]>([]);
-  const [sidebarItems, setSidebarItems] = useState<SidebarItem[]>([]);
-  const [isMeetingActive, setIsMeetingActive] = useState(false);
-  const [searchResults, setSearchResults] = useState<SearchHit[]>([]);
-  const [isSearching, setIsSearching] = useState(false);
   const [serverAddress, setServerAddress] = useState('');
   const summaryPollsRef = React.useRef(new Map<string, SummaryPoll>());
-
-  // Use recording state from RecordingStateContext (single source of truth)
-  const { isRecording } = useRecordingState();
 
   useEffect(() => {
     const failed = listen<{ error: string }>('continue-target-failed', (e) => continueFailed(e.payload.error));
     return () => { failed.then((unlisten) => unlisten()); };
   }, []);
-
-  const pathname = usePathname();
-  const router = useRouter();
-
-  // Extract fetchMeetings as a reusable function
-  const fetchMeetings = React.useCallback(async () => {
-    if (serverAddress) {
-      try {
-        const meetings = await invoke('api_get_meetings') as Array<{ id: string, title: string }>;
-        const transformedMeetings = meetings.map((meeting: any) => ({
-          id: meeting.id,
-          title: meeting.title
-        }));
-        setMeetings(transformedMeetings);
-      } catch (error) {
-        console.error('Error fetching meetings:', error);
-        setMeetings([]);
-      }
-    }
-  }, [serverAddress]);
-
-  useEffect(() => {
-    fetchMeetings();
-  }, [serverAddress, fetchMeetings]);
 
   useEffect(() => {
     const fetchSettings = async () => {
@@ -117,76 +54,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     fetchSettings();
   }, []);
 
-  const baseItems: SidebarItem[] = [
-    {
-      id: 'meetings',
-      title: 'Meeting Notes',
-      type: 'folder' as const,
-      children: [
-        ...meetings.map(meeting => ({ id: meeting.id, title: meeting.title, type: 'file' as const }))
-      ]
-    },
-  ];
-
-
   const toggleCollapse = () => {
     setIsCollapsed(!isCollapsed);
-  };
-
-  // Update current meeting when on home page
-  useEffect(() => {
-    if (pathname === '/record') {
-      setCurrentMeeting({ id: 'intro-call', title: '+ New Call' });
-    }
-    setSidebarItems(baseItems);
-  }, [pathname]);
-
-  // Update sidebar items when meetings change
-  useEffect(() => {
-    setSidebarItems(baseItems);
-  }, [meetings]);
-
-  // Function to handle recording toggle from sidebar
-  const handleRecordingToggle = () => {
-    if (!isRecording) {
-      // Check if already on home page
-      if (pathname === '/record') {
-        // Already on home - trigger recording directly via custom event
-        console.log('Triggering recording from sidebar (already on home page)');
-        window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
-      } else {
-        // Not on home - navigate and use auto-start mechanism
-        console.log('Navigating to home page with auto-start flag');
-        sessionStorage.removeItem('autoStartKey');
-        sessionStorage.setItem('autoStartRecording', 'true');
-        router.push('/record');
-      }
-    }
-    // The actual recording start/stop is handled in the Home component
-  };
-
-  // Function to search through meeting transcripts
-  // Search runs per keystroke; only the newest request may write results (a slow earlier one must not win).
-  const searchSeqRef = React.useRef(0);
-  const searchTranscripts = async (query: string) => {
-    const seq = ++searchSeqRef.current;
-    const isLatest = () => seq === searchSeqRef.current;
-    if (!query.trim()) {
-      setSearchResults([]);
-      setIsSearching(false);
-      return;
-    }
-
-    try {
-      setIsSearching(true);
-      const results = await invoke('api_search_transcripts', { query }) as SearchHit[];
-      if (isLatest()) setSearchResults(results);
-    } catch (error) {
-      console.error('Error searching transcripts:', error);
-      if (isLatest()) setSearchResults([]);
-    } finally {
-      if (isLatest()) setIsSearching(false);
-    }
   };
 
   // Summary polling management
@@ -290,25 +159,11 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <SidebarContext.Provider value={{
-      currentMeeting,
-      setCurrentMeeting,
-      sidebarItems,
       isCollapsed,
       toggleCollapse,
-      meetings,
-      setMeetings,
-      isMeetingActive,
-      setIsMeetingActive,
-      handleRecordingToggle,
-      searchTranscripts,
-      searchResults,
-      isSearching,
-      setServerAddress,
       serverAddress,
       startSummaryPolling,
       stopSummaryPolling,
-      refetchMeetings: fetchMeetings,
-
     }}>
       {children}
     </SidebarContext.Provider>

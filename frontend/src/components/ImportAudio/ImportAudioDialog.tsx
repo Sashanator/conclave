@@ -34,7 +34,6 @@ import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
 import { useImportAudio, ImportResult } from '@/hooks/useImportAudio';
 import { useRouter } from 'next/navigation';
-import { useSidebar } from '../Sidebar/SidebarProvider';
 import { LANGUAGES } from '@/constants/languages';
 import { useTranscriptionModels, ModelOption } from '@/hooks/useTranscriptionModels';
 
@@ -71,7 +70,6 @@ export function ImportAudioDialog({
   onComplete,
 }: ImportAudioDialogProps) {
   const router = useRouter();
-  const { refetchMeetings } = useSidebar();
   const { selectedLanguage, transcriptModelConfig } = useConfig();
 
   const [title, setTitle] = useState('');
@@ -97,12 +95,11 @@ export function ImportAudioDialog({
   const handleImportComplete = useCallback((result: ImportResult) => {
     toast.success(`Import complete! ${result.segments_count} segments created.`);
 
-    // Refresh meetings list then navigate to the imported meeting
-    refetchMeetings();
+    // Navigate to the imported meeting
     onComplete?.();
     onOpenChange(false);
     router.push(`/meeting-details?id=${result.meeting_id}`);
-  }, [router, refetchMeetings, onComplete, onOpenChange]);
+  }, [router, onComplete, onOpenChange]);
 
   const handleImportError = useCallback((error: string) => {
     toast.error('Import failed', { description: error });

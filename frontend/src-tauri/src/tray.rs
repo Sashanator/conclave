@@ -108,7 +108,7 @@ fn autostart_script(meeting_id: Option<&str>, continue_id: Option<&str>, routing
                 format!("'/meeting-details?id=' + encodeURIComponent({id}) + '&start=' + t"),
             )
         }
-        None => ("sessionStorage.removeItem('autoStartKey'); ".to_string(), "'/record'".to_string()),
+        None => ("sessionStorage.removeItem('autoStartKey'); ".to_string(), "'/meeting-details'".to_string()),
     };
     format!(
         "{}{}{failed}{key}sessionStorage.setItem('autoStartRecording', 'true'); window.location.assign({landing})",
@@ -800,10 +800,10 @@ mod tests {
         let script = autostart_script(None, None, true);
         assert!(script.contains("sessionStorage.setItem('autoStartRoutingFailed', 'true')"));
         assert!(script.contains("autoStartRecording"));
-        // No meeting to land on: the record screen still mounts the start hook.
+        // No meeting to land on: the meeting page still mounts the start hook.
         // ...and a key left by an older start is cleared, so it cannot drop this one.
         assert!(script.contains("sessionStorage.removeItem('autoStartKey')"));
-        assert!(script.ends_with("window.location.assign('/record')"));
+        assert!(script.ends_with("window.location.assign('/meeting-details')"));
     }
 
     #[tokio::test]

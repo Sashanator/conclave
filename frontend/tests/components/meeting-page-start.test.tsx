@@ -41,14 +41,12 @@ let rows: () => Promise<unknown[]> = async () => [newRow];
 const invoke = mock(async (command: string) => (command === 'api_list_meeting_rows' ? rows() : command === 'api_get_summary' ? { status: 'idle', data: null } : null));
 const toast = { error: mock((..._a: unknown[]) => {}), warning() {}, success() {}, info() {} };
 const push = mock((_u: string) => {});
-const refetchMeetings = mock(async () => {});
 const recording: Record<string, unknown> = {};
 let startArgs: unknown[] = [];
 const refetchTranscripts = mock(() => {});
 let screenKind: unknown;
-let pageMetadata: unknown = null;
-const setCurrentMeeting = () => {};
 const noRows: never[] = []; // stable: the page's metadata effect depends on it
+let pageMetadata: unknown = null;
 let autoStarting = false;
 let startResult: () => Promise<void> = async () => {};
 const handleRecordingStart = mock(async (_id?: unknown) => startResult());
@@ -58,7 +56,7 @@ let params = new URLSearchParams('id=m1');
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
 mock.module('next/navigation', () => ({ useSearchParams: () => params, useRouter: () => ({ push }) }));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => ({ setCurrentMeeting, refetchMeetings, meetings: noRows }) }));
+mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ useSidebar: () => ({ serverAddress: '' }) }));
 mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ isAutoSummary: false, transcriptModelConfig: { provider: 'parakeet' } }) }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recording, useRecordingState: () => recording }));
 mock.module('../../src/hooks/usePaginatedTranscripts', () => ({
@@ -93,7 +91,7 @@ beforeEach(async () => {
   autoStarting = false; startResult = async () => {}; newProps = undefined; headerProps = undefined; contentProps = undefined; pageMetadata = null;
   params = new URLSearchParams('id=m1');
   Object.assign(recording, { liveMeetingId: null, isStopping: false, isProcessing: false, isSaving: false, isRecording: false, status: 'idle' });
-  push.mockClear(); refetchMeetings.mockClear(); toast.error.mockClear(); handleRecordingStart.mockClear(); refetchTranscripts.mockClear();
+  push.mockClear(); toast.error.mockClear(); handleRecordingStart.mockClear(); refetchTranscripts.mockClear();
   sessionStorage.clear(); screenKind = undefined;
 });
 
@@ -201,10 +199,9 @@ test('a stop flow of another meeting does not take this page', async () => {
   expect(shows()).toBe(false);
 });
 
-test('Delete meeting on a new meeting refetches the list then leaves for it', async () => {
+test('Delete meeting on a new meeting leaves for the list', async () => {
   await mount();
   await act(async () => { headerProps!.onMeetingDeleted!(); await new Promise((r) => setTimeout(r, 0)); });
-  expect(refetchMeetings).toHaveBeenCalled();
   expect(push).toHaveBeenCalledWith('/');
 });
 

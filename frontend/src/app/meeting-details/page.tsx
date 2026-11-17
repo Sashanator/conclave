@@ -1,5 +1,4 @@
 "use client"
-import { useSidebar } from "@/components/Sidebar/SidebarProvider";
 import { useState, useEffect, useCallback, useRef, Suspense } from "react";
 import { MeetingSummary, SummaryProcessResponse, Transcript, TranscriptMark } from "@/types";
 import PageContent from "./page-content";
@@ -37,10 +36,10 @@ function MeetingDetailsContent() {
   const source = searchParams.get('source'); // Check if navigated from recording
   const continued = searchParams.get('continued') === '1'; // A recording was added to this meeting: replace its summary
   const target = parseMeetingTarget(searchParams); // Search hits: a line to scroll to, or a tab to open
-  const { setCurrentMeeting, refetchMeetings } = useSidebar();
   const { isAutoSummary, transcriptModelConfig } = useConfig(); // Get auto-summary toggle state
   const { liveMeetingId, isStopping, isProcessing, isSaving, isRecording, status } = useRecordingState();
-  const { meetings } = useSidebar();
+  // Title of the meeting that is recording elsewhere, for the new-meeting banner
+  const [liveTitle, setLiveTitle] = useState<{ id: string; title: string } | null>(null);
   // undefined: loading; null: no row (an old link), shown as the finished page
   const [row, setRow] = useState<MeetingRow | null | undefined>(undefined);
   // The page mounts the start hook for every non-page start (tray, detector, Resume): they land here.
@@ -205,11 +204,8 @@ function MeetingDetailsContent() {
         transcripts: transcripts, // Paginated transcripts from hook
         folder_path: metadata.folder_path, // For retranscription feature
       });
-
-      // Sync with sidebar context
-      setCurrentMeeting({ id: metadata.id, title: metadata.title });
     }
-  }, [metadata, transcripts, meetingId, isLoadingTranscripts, setCurrentMeeting]);
+  }, [metadata, transcripts, meetingId, isLoadingTranscripts]);
 
   useEffect(() => { if (savedEpoch) void refetch(); }, [savedEpoch, refetch]);
 
@@ -316,19 +312,26 @@ function MeetingDetailsContent() {
     checkAutoGen();
   }, [meetingDetails, meetingSummary, summaryResponse, isLoading, hasCheckedAutoGen, setupAutoGeneration]);
 
+  useEffect(() => {
+    if (!liveMeetingId || liveMeetingId === meetingId) return;
+    let cancelled = false;
+    listMeetingRows().then((rows) => { const r = rows.find((x) => x.id === liveMeetingId); if (!cancelled && r) setLiveTitle({ id: r.id, title: r.title }); }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [liveMeetingId, meetingId]);
+
   const busy = startingLocally || isAutoStarting || isStopping || isProcessing || isSaving;
   const liveElsewhere = liveMeetingId && liveMeetingId !== meetingId
-    ? { id: liveMeetingId, title: meetings.find((m) => m.id === liveMeetingId)?.title ?? 'another meeting' }
+    ? { id: liveMeetingId, title: liveTitle?.id === liveMeetingId ? liveTitle.title : 'another meeting' }
     : null;
   let shell: React.ReactNode = null;
   if (meetingId && row === undefined) {
     shell = <div className="flex items-center justify-center h-screen"><LoaderIcon className="animate-spin size-6" /></div>;
   } else if (row && recordingHere) {
-    shell = <RecordingView row={row} onChange={setRow} onTitleSaved={refetchMeetings} showModal={showModal} />;
+    shell = <RecordingView row={row} onChange={setRow} showModal={showModal} />;
   } else if (row && !row.startedAt && !row.hasTranscript) {
     shell = (
       <div className="h-screen overflow-y-auto bg-muted/50">
-        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} live={busy} onChange={setRow} onTitleSaved={refetchMeetings} onMeetingDeleted={() => { void refetchMeetings().finally(() => router.push('/')); }} /></div>
+        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} live={busy} onChange={setRow} onMeetingDeleted={() => router.push('/')} /></div>
         <NewMeetingView row={row} live={liveElsewhere} disabled={busy} onStart={() => { handleRecordingStart(row.id).catch((e) => toast.error('Could not start recording', { description: e instanceof Error ? e.message : String(e) })); }} />
       </div>
     );
@@ -371,8 +374,6 @@ function MeetingDetailsContent() {
     onMeetingUpdated={async () => {
       // Refetch meeting details to get updated title from backend
       await fetchMeetingDetails();
-      // Refetch meetings list to update sidebar
-      await refetchMeetings();
       // The header shows the row's title, which a summary rename changed
       await listMeetingRows().then((rows) => { const r = rows.find((x) => x.id === meetingId); if (r) setRow(r); }).catch(() => {});
     }}

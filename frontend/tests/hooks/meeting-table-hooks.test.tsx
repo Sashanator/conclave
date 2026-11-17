@@ -6,7 +6,6 @@ const originalCore = { ...await import('@tauri-apps/api/core') };
 const originalEvent = { ...await import('@tauri-apps/api/event') };
 const originalSonner = { ...await import('sonner') };
 const originalRec = { ...await import('../../src/contexts/RecordingStateContext') };
-const originalSidebar = { ...await import('../../src/components/Sidebar/SidebarProvider') };
 
 type Request = { command: string; args: Record<string, unknown>; resolve: (v: unknown) => void; reject: (r: unknown) => void };
 const requests: Request[] = [];
@@ -16,12 +15,10 @@ const invoke = mock((command: string, args: Record<string, unknown>) => new Prom
 let listenImpl: (...a: unknown[]) => Promise<() => void> = async () => () => {};
 const toastError = mock((_m: string, _o?: unknown) => {});
 const toastWarning = mock((_m: string, _o?: unknown) => {});
-const refetchMeetings = mock(async () => {});
 mock.module('@tauri-apps/api/core', () => ({ ...originalCore, invoke }));
 mock.module('@tauri-apps/api/event', () => ({ ...originalEvent, listen: (...a: unknown[]) => listenImpl(...a) }));
 mock.module('sonner', () => ({ toast: { error: toastError, warning: toastWarning } }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originalRec, useRecordingState: () => ({ liveMeetingId: 'live1' }) }));
-mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ ...originalSidebar, useSidebar: () => ({ refetchMeetings }) }));
 const { useMeetingRows } = await import('../../src/hooks/useMeetingRows');
 const { useMeetingViews } = await import('../../src/hooks/useMeetingViews');
 afterAll(() => {
@@ -29,7 +26,6 @@ afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originalCore);
   mock.module('@tauri-apps/api/event', () => originalEvent);
   mock.module('../../src/contexts/RecordingStateContext', () => originalRec);
-  mock.module('../../src/components/Sidebar/SidebarProvider', () => originalSidebar);
 });
 
 const row = (id: string): MeetingRow => ({
@@ -48,7 +44,7 @@ function Views() { viewsApi = useMeetingViews(); return null; }
 const pending = (c: string) => requests.filter(r => r.command === c);
 const settle = async (r: Request, ok: boolean, v: unknown = null) => { await act(async () => { ok ? r.resolve(v) : r.reject(new Error('boom')); }); };
 
-beforeEach(() => { tpls = []; listenImpl = async () => () => {}; requests.length = 0; invoke.mockClear(); toastError.mockClear(); toastWarning.mockClear(); refetchMeetings.mockClear(); try { localStorage.clear(); } catch {} });
+beforeEach(() => { tpls = []; listenImpl = async () => () => {}; requests.length = 0; invoke.mockClear(); toastError.mockClear(); toastWarning.mockClear(); try { localStorage.clear(); } catch {} });
 afterEach(async () => { if (renderer) await act(async () => renderer!.unmount()); renderer = undefined; });
 
 async function mountRows() {
@@ -141,7 +137,7 @@ describe('useMeetingRows', () => {
     expect(rowsApi.rows[0].reviewed).toBe(false);
     expect(toastError.mock.calls[0][0]).toBe('Could not save Reviewed');
   });
-  test('removeMeeting drops the row, refetches the sidebar and warns about a kept folder', async () => {
+  test('removeMeeting drops the row and warns about a kept folder', async () => {
     await mountRows();
     let p: Promise<void>;
     await act(async () => { p = rowsApi.removeMeeting('a'); });
@@ -149,7 +145,6 @@ describe('useMeetingRows', () => {
     await settle(pending('api_delete_meeting')[0], true, { folder_warning: 'kept' });
     await p!;
     expect(rowsApi.rows.map(r => r.id)).toEqual(['b']);
-    expect(refetchMeetings).toHaveBeenCalledTimes(1);
     expect(toastWarning.mock.calls[0][0]).toBe('The meeting was deleted, but its folder was kept');
   });
   test('a rejected delete toasts and keeps the row', async () => {
@@ -160,7 +155,6 @@ describe('useMeetingRows', () => {
     await p!;
     expect(rowsApi.rows.map(r => r.id)).toEqual(['a', 'b']);
     expect(toastError).toHaveBeenCalledTimes(1);
-    expect(refetchMeetings).not.toHaveBeenCalled();
   });
 });
 

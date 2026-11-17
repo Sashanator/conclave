@@ -30,6 +30,7 @@ pub struct MeetingRow {
     pub has_transcript: bool,
     pub has_summary: bool,
     pub prep_points: i64,
+    pub has_prep: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
@@ -50,7 +51,9 @@ pub(crate) async fn list_rows_inner(pool: &SqlitePool) -> Result<Vec<MeetingRow>
                 EXISTS(SELECT 1 FROM summary_processes s WHERE s.meeting_id = m.id AND LOWER(s.status) = 'completed') AS has_summary,
                 COALESCE((SELECT CASE WHEN json_valid(p.items_json) AND json_type(p.items_json) = 'array'
                                       THEN json_array_length(p.items_json) END
-                          FROM meeting_preps p WHERE p.meeting_id = m.id), 0) AS prep_points
+                          FROM meeting_preps p WHERE p.meeting_id = m.id), 0) AS prep_points,
+                EXISTS(SELECT 1 FROM meeting_preps p WHERE p.meeting_id = m.id
+                       AND (TRIM(p.material) <> '' OR p.chat_json NOT IN ('','[]') OR p.items_json NOT IN ('','[]'))) AS has_prep
          FROM meetings m ORDER BY julianday({}) DESC, m.id",
         meeting_date_sql("m")
     );
@@ -214,6 +217,21 @@ mod tests {
         let got: Vec<_> = rows.iter().map(|r| (r.id.as_str(), r.has_transcript, r.has_summary, r.prep_points)).collect();
         assert_eq!(got, [("new", false, false, 3), ("rec", true, true, 0), ("bad", false, false, 0), ("pend", false, false, 0)]);
         assert!(rows[0].created_at.0.to_rfc3339().starts_with("2026-11-01T10:00:00"));
+    }
+
+    #[tokio::test]
+    async fn has_prep_covers_material_and_chat_not_just_points() {
+        let pool = test_pool().await;
+        for id in ["mat", "chat", "empty", "none"] {
+            exec(&pool, &format!("INSERT INTO meetings (id,title,created_at,updated_at) VALUES ('{id}','T','2026-11-01T10:00:00Z','x')")).await;
+        }
+        exec(&pool, "INSERT INTO meeting_preps (meeting_id,created_at,updated_at,material) VALUES ('mat','x','x','some text')").await;
+        exec(&pool, "INSERT INTO meeting_preps (meeting_id,created_at,updated_at,chat_json) VALUES ('chat','x','x','[{\"role\":\"user\"}]')").await;
+        exec(&pool, "INSERT INTO meeting_preps (meeting_id,created_at,updated_at,material) VALUES ('empty','x','x','  ')").await;
+        let rows = list_rows_inner(&pool).await.unwrap();
+        let mut got: Vec<_> = rows.iter().map(|r| (r.id.as_str(), r.has_prep, r.prep_points)).collect();
+        got.sort();
+        assert_eq!(got, [("chat", true, 0), ("empty", false, 0), ("mat", true, 0), ("none", false, 0)]);
     }
 
     #[tokio::test]

@@ -20,6 +20,7 @@ export type MeetingRow = {
   hasTranscript: boolean;
   hasSummary: boolean;
   prepPoints: number;
+  hasPrep: boolean;
 };
 
 export type MeetingState = 'recording' | 'finished' | 'cancelled' | 'not-recorded' | 'new';
@@ -67,6 +68,7 @@ export function deleteMeetingParts(row: MeetingRow): string[] {
   const parts: string[] = [];
   if (row.startedAt || row.hasTranscript || row.hasSummary) parts.push('recording, transcript and summary');
   if (row.prepPoints > 0) parts.push(`prep (${row.prepPoints} point${row.prepPoints === 1 ? '' : 's'})`);
+  else if (row.hasPrep) parts.push('prep');
   parts.push('notes');
   if (row.calendarUid) parts.push('brief');
   return parts;

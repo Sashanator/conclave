@@ -55,7 +55,7 @@ const meetingRows = (): MeetingRow[] => {
   const base: MeetingRow = {
     id: '', title: '', titleSource: 'default', templateId: null, emoji: null, reviewed: false, gist: null,
     startedAt: null, endedAt: null, createdAt: monday(8), calendarUid: null, calendarStart: null, calendarEnd: null,
-    calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0,
+    calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0, hasPrep: false,
   };
   return [
     { ...base, id: 'preview-4', title: 'Release planning', reviewed: true, gist: 'Release is on track; the audio switch is the open risk.', startedAt: monday(10), endedAt: monday(10, 45), hasTranscript: true, hasSummary: true, createdAt: monday(9, 55) },
@@ -133,7 +133,6 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   prep_save: (a) => mkPrep({ eventTitle: a.eventTitle, material: a.material, templateId: a.templateId, items: a.items }),
   prep_tick: ({ itemId, ticked }) => mkPrep({ items: prepItems.map((i) => (i.id === itemId ? { ...i, ticked } : i)) }),
   prep_approve: () => mkPrep({ approvedAt: '2026-11-17T08:00:00Z' }),
-  prep_delete: () => null,
   prep_material_limit: () => 20000,
   prep_send: ({ message }) => {
     const at = '2026-11-17T08:01:00Z';

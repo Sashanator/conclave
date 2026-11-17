@@ -31,16 +31,17 @@ pub struct RoutedMeeting {
 }
 
 // shortcut: process-local; after a restart nothing marks a row as ours, so a release only clears its started_at and never deletes it
-static FRESH_ROUTED: Mutex<Option<String>> = Mutex::new(None);
+static FRESH_ROUTED: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// True once if `resolve_target` created this row.
 pub(crate) fn take_fresh(meeting_id: &str) -> bool {
     let mut g = FRESH_ROUTED.lock().unwrap_or_else(|e| e.into_inner());
-    if g.as_deref() == Some(meeting_id) {
-        *g = None;
-        true
-    } else {
-        false
+    match g.iter().position(|x| x == meeting_id) {
+        Some(i) => {
+            g.swap_remove(i);
+            true
+        }
+        None => false,
     }
 }
 
@@ -108,7 +109,7 @@ pub async fn resolve_target(pool: &SqlitePool, now: DateTime<Utc>, source: Start
         }
         RouteTarget::New { title } => {
             let id = MeetingsRepository::create_meeting(pool, title.as_deref(), Local::now().naive_local()).await?;
-            *FRESH_ROUTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
+            FRESH_ROUTED.lock().unwrap_or_else(|e| e.into_inner()).push(id.clone());
             id
         }
     };
@@ -175,6 +176,17 @@ mod tests {
         let r = resolve_target(&pool, Utc::now(), StartSource::Sidebar).await.unwrap();
         assert!(release_failed_start(&pool, &r.meeting_id).await.unwrap());
         assert!(!row_exists(&pool, &r.meeting_id).await);
+    }
+
+    #[tokio::test]
+    async fn overlapping_starts_each_keep_their_own_fresh_mark() {
+        let _g = FRESH_LOCK.lock().await;
+        let pool = test_pool().await;
+        let a = resolve_target(&pool, Utc::now(), StartSource::Sidebar).await.unwrap();
+        let b = resolve_target(&pool, Utc::now(), StartSource::Tray).await.unwrap();
+        assert!(release_failed_start(&pool, &a.meeting_id).await.unwrap());
+        assert!(release_failed_start(&pool, &b.meeting_id).await.unwrap(), "b is still ours after a was released");
+        assert!(!row_exists(&pool, &b.meeting_id).await);
     }
 
     #[tokio::test]

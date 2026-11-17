@@ -1,11 +1,8 @@
 import { describe, expect, test } from 'bun:test';
-import type { MeetingState } from '../../src/lib/meetings';
 import type { TaskRow } from '../../src/lib/tasks';
 import {
-  pageView,
   splitTasks,
   taskKeyAction,
-  type PageView,
   type TaskKeyAction,
   type TaskKeyEvent,
 } from '../../src/lib/meeting-page';
@@ -23,28 +20,6 @@ const task = (over: Partial<TaskRow>): TaskRow => ({
   source: 'auto',
   createdAt: '2026-11-17T10:00:00Z',
   ...over,
-});
-
-describe('pageView', () => {
-  test('maps recording state to recording', () => {
-    expect(pageView('recording')).toBe('recording');
-  });
-
-  test('maps finished state to finished', () => {
-    expect(pageView('finished')).toBe('finished');
-  });
-
-  test('maps new state to new', () => {
-    expect(pageView('new')).toBe('new');
-  });
-
-  test('maps cancelled state to new', () => {
-    expect(pageView('cancelled')).toBe('new');
-  });
-
-  test('maps not-recorded state to new', () => {
-    expect(pageView('not-recorded')).toBe('new');
-  });
 });
 
 describe('splitTasks', () => {

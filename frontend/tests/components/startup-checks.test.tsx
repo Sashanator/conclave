@@ -24,7 +24,8 @@ afterAll(() => {
 });
 
 const toast = { success: mock(() => {}), warning: mock(() => {}), error: mock(() => {}) };
-const invoke = mock(async () => ({ cuda_runtime_missing: false }));
+let backfillError: string | null = null;
+const invoke = mock(async (cmd: string): Promise<unknown> => (cmd === 'take_backfill_error' ? backfillError : { cuda_runtime_missing: false }));
 const meeting = { meetingId: 'm1', title: 'Standup' };
 // The hook's list fills only when the check runs, as the real hook does.
 let setRecoverable: ((list: unknown[]) => void) | null = null;
@@ -110,4 +111,14 @@ test('a rejected recovery shows the error toast', async () => {
   await act(async () => { await dialogProps.onRecover('m1').catch((e) => { caught = e; }); });
   expect(caught).toBeInstanceOf(Error);
   expect(toast.error).toHaveBeenCalledWith('Failed to recover meeting', { description: 'disk full' });
+});
+
+test('a failed startup upgrade is shown once as an error toast', async () => {
+  backfillError = 'disk full';
+  await mountTracked();
+  backfillError = null;
+  expect(toast.error).toHaveBeenCalledWith(
+    "Some old meetings couldn't be upgraded; Conclave will retry at next start.",
+    { description: 'disk full' },
+  );
 });

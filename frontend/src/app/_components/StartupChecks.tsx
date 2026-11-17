@@ -48,6 +48,15 @@ export function StartupChecks() {
       .catch(() => {});
   }, []);
 
+  // The old-meeting upgrade at startup failed: Rust hands the error out once, so a remount shows nothing.
+  useEffect(() => {
+    invoke<string | null>('take_backfill_error')
+      .then((err) => {
+        if (err) toast.error("Some old meetings couldn't be upgraded; Conclave will retry at next start.", { description: err });
+      })
+      .catch((e) => console.error('Could not read the startup upgrade status:', e));
+  }, []);
+
   // Startup recovery check
   useEffect(() => {
     const performStartupChecks = async () => {

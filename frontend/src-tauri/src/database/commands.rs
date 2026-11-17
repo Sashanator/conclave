@@ -12,6 +12,12 @@ pub struct DatabaseCheckResult {
     pub size: u64,
 }
 
+/// The startup backfill's failure, once; the UI shows it as a toast.
+#[tauri::command]
+pub fn take_backfill_error() -> Option<String> {
+    super::redesign_backfill::take_failure()
+}
+
 /// Check if this is the first launch (no database exists yet)
 #[tauri::command]
 pub async fn check_first_launch(app: AppHandle) -> Result<bool, String> {

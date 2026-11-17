@@ -31,7 +31,7 @@ const BASE: MeetingRow = {
   calendarCancelledAt: null,
   hasTranscript: false,
   hasSummary: false,
-  prepPoints: 0,
+  prepPoints: 0, hasPrep: false,
 };
 
 const local = (y: number, m: number, d: number, h: number, min: number) => new Date(y, m, d, h, min).toISOString();
@@ -110,6 +110,10 @@ describe('deleteMeetingParts', () => {
 
   test('one prep point is singular', () => {
     expect(meetings.deleteMeetingParts({ ...BASE, prepPoints: 1 })).toEqual(['prep (1 point)', 'notes']);
+  });
+
+  test('text-only prep (material or chat) is still named', () => {
+    expect(meetings.deleteMeetingParts({ ...BASE, hasPrep: true })).toEqual(['prep', 'notes']);
   });
 
   test('a bare new meeting deletes only notes', () => {

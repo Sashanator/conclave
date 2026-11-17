@@ -148,6 +148,7 @@ pub(crate) async fn after_refresh(
             let window = Window { from: now - Duration::days(CALENDAR_BEHIND_DAYS), to: now + Duration::days(RECONCILE_AHEAD_DAYS) };
             reconcile::run(pool, &feed, live, marker, &window, now).await.map(|changed| {
                 info!("knowledge: calendar reconciled, {changed} changes");
+                calendar::clear_sync_error();
             })
         }
         Err(e) => Err(e),
@@ -405,6 +406,7 @@ mod tests {
 
         tick(app.handle(), &good, &mut clock, at(10, 2), &[]).await.unwrap();
         assert!(clock.pending.is_none());
+        assert!(calendar::status().last_error.is_none() && calendar::status().last_error_at.is_none());
         assert_eq!(calendar_rows(&good).await, 1);
         assert_eq!(clock.refreshed_at, Some(at(10, 0)));
         connect(None);

@@ -4,14 +4,13 @@ import React, { useEffect, useState } from 'react';
 import { ChevronLeftCircle, ChevronRightCircle, Circle, Mic, Settings, Sparkles, Upload } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { getVersion } from '@tauri-apps/api/app';
-import { toast } from 'sonner';
 import { useSidebar } from './SidebarProvider';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
 import { confirmLeave } from '@/lib/unsaved-guard';
 import { NAV_MAIN, WHATS_NEW_SEEN_KEY, isNavActive, recordLabel, whatsNewUnseen } from '@/lib/nav';
-import { queueAutoStart, routeRecordingStart } from '@/lib/recording-target';
+import { queueAutoStart, routeOrFallback } from '@/lib/recording-target';
 import { FeedBell } from '@/components/Feed/FeedBell';
 
 const readSeen = () => {
@@ -40,12 +39,10 @@ const Sidebar: React.FC = () => {
   }, []);
 
   const startRecording = async () => {
-    try {
-      const routed = await routeRecordingStart('sidebar');
-      go(queueAutoStart(sessionStorage, routed.meetingId));
-    } catch (error) {
-      toast.error('Could not start recording', { description: String(error) });
-    }
+    // Ask before routing: a declined leave must not leave an empty row and a queued start behind.
+    if (!confirmLeave()) return;
+    const routed = await routeOrFallback('sidebar');
+    router.push(queueAutoStart(sessionStorage, routed.meetingId));
   };
 
   const onRecord = () => (isRecording ? go(liveMeetingId ? `/meeting-details?id=${liveMeetingId}` : '/meeting-details') : startRecording());

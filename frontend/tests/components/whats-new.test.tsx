@@ -19,7 +19,8 @@ const invoke = mock(async (command: string): Promise<unknown> => {
 });
 const toast = { error: mock((_m: string) => {}), success: mock(() => {}) };
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
-mock.module('@tauri-apps/api/app', () => ({ getVersion: async () => '1.1.0' }));
+let versionFails = false;
+mock.module('@tauri-apps/api/app', () => ({ getVersion: async () => { if (versionFails) throw new Error('no version'); return '1.1.0'; } }));
 mock.module('sonner', () => ({ toast }));
 
 const { WhatsNew } = await import('../../src/components/WhatsNew/WhatsNew');
@@ -46,6 +47,22 @@ beforeEach(async () => {
 });
 
 describe('WhatsNew', () => {
+  test('an unreadable version says so and writes no seen key', async () => {
+    globalThis.localStorage.removeItem('whats-new-seen');
+    versionFails = true;
+    const err = console.error;
+    console.error = () => {};
+    try {
+      r.unmount();
+      await act(async () => { r = create(<WhatsNew changelog={MD} />); });
+      await flush();
+    } finally {
+      versionFails = false;
+      console.error = err;
+    }
+    expect(text()).toContain('Version unknown');
+    expect(globalThis.localStorage.getItem('whats-new-seen')).toBeNull();
+  });
   test('only the installed release is marked and the seen key is stored', () => {
     const articles = r.root.findAllByType('article');
     expect(articles).toHaveLength(2);

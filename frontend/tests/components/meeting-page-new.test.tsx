@@ -54,7 +54,7 @@ const { MeetingHeader } = await import('../../src/components/MeetingPage/Meeting
 const row: MeetingRow = {
   id: 'm1', title: 'Interview', titleSource: 'user', templateId: 'interview', emoji: '🤝', reviewed: false, gist: null,
   startedAt: null, endedAt: null, createdAt: '2026-11-16 10:00:00+00:00', calendarUid: null,
-  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0,
+  calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0, hasPrep: false,
 };
 const text = (r: ReactTestRenderer) => JSON.stringify(r.toJSON());
 beforeEach(() => { calls.length = 0; });

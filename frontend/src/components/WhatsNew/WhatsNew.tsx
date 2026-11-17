@@ -15,6 +15,7 @@ function inline(s: string) {
 export function WhatsNew({ changelog }: { changelog: string }) {
   const releases = useMemo(() => parseChangelog(changelog), [changelog]);
   const [version, setVersion] = useState<string | null>(null);
+  const [versionUnknown, setVersionUnknown] = useState(false);
 
   useEffect(() => {
     let live = true;
@@ -27,7 +28,11 @@ export function WhatsNew({ changelog }: { changelog: string }) {
         } catch {}
         window.dispatchEvent(new Event('whats-new-seen'));
       })
-      .catch(() => {});
+      .catch((e) => {
+        if (!live) return;
+        console.error('Could not read the app version:', e);
+        setVersionUnknown(true);
+      });
     return () => {
       live = false;
     };
@@ -39,6 +44,7 @@ export function WhatsNew({ changelog }: { changelog: string }) {
   return (
     <main className="mx-auto max-w-2xl p-6">
       <h1 className="text-xl font-semibold mb-4">What&apos;s new</h1>
+      {versionUnknown && <p className="mb-4 text-sm text-muted-foreground">Version unknown</p>}
       {releases.map((r) => (
         <article key={r.version} className="mb-6" aria-current={r.version === version ? 'true' : undefined}>
           <h2 className="font-medium">

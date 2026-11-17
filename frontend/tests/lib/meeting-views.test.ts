@@ -7,7 +7,7 @@ import type { MeetingRow } from '@/lib/meetings';
 const row = (id: string, startedAt: string, o: Partial<MeetingRow> = {}): MeetingRow => ({
   id, title: id, titleSource: 'user', templateId: null, emoji: null, reviewed: false, gist: null,
   startedAt, endedAt: null, createdAt: startedAt, calendarUid: null, calendarStart: null, calendarEnd: null,
-  calendarCancelledAt: null, hasTranscript: true, hasSummary: true, prepPoints: 0, ...o,
+  calendarCancelledAt: null, hasTranscript: true, hasSummary: true, prepPoints: 0, hasPrep: false, ...o,
 });
 const d = (day: number, h: number, m = 0) => new Date(2026, 10, day, h, m).toISOString();
 const now = new Date(2026, 10, 18, 12);

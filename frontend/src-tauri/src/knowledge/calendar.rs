@@ -67,6 +67,7 @@ pub struct CalendarStatus {
     pub host: Option<String>,
     pub last_ok_at: Option<String>,
     pub last_error: Option<String>,
+    pub last_error_at: Option<String>,
     pub upcoming: usize,
 }
 
@@ -95,6 +96,7 @@ impl Default for Cache {
 struct State {
     cache: Cache,
     last_error: Option<String>,
+    last_error_at: Option<String>,
 }
 
 static STATE: LazyLock<RwLock<State>> = LazyLock::new(|| RwLock::new(State::default()));
@@ -739,6 +741,7 @@ fn store<R: Runtime>(app: &AppHandle<R>, url: &str, occurrences: Vec<Occurrence>
     }
     state.cache = cache;
     state.last_error = None;
+    state.last_error_at = None;
     HAS_REFRESHED.store(true, Ordering::Release);
     Some(count)
 }
@@ -748,6 +751,14 @@ fn record_error(url: &str, problem: String) {
     let mut state = STATE.write().unwrap_or_else(PoisonError::into_inner);
     if still_connected(url) {
         state.last_error = Some(problem);
+        state.last_error_at = Some(Utc::now().to_rfc3339());
+    }
+}
+
+/// Records a failed fetch or reconcile for the connected calendar, so Settings shows it. Nothing while disconnected.
+pub(crate) fn record_sync_error(problem: String) {
+    if let Some(url) = settings::current().calendar_url {
+        record_error(&url, problem);
     }
 }
 
@@ -811,7 +822,7 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     STATE.write().unwrap_or_else(PoisonError::into_inner).cache = cache;
 }
 
-fn status() -> CalendarStatus {
+pub(crate) fn status() -> CalendarStatus {
     let url = settings::current().calendar_url;
     let state = STATE.read().unwrap_or_else(PoisonError::into_inner);
     CalendarStatus {
@@ -819,6 +830,7 @@ fn status() -> CalendarStatus {
         host: url.as_deref().and_then(settings::host_of),
         last_ok_at: state.cache.last_ok_at.clone(),
         last_error: state.last_error.clone(),
+        last_error_at: state.last_error_at.clone(),
         upcoming: in_window(&state.cache.occurrences, Utc::now()).len(),
     }
 }
@@ -939,6 +951,27 @@ mod tests {
             }
         });
         addr
+    }
+
+    #[test]
+    fn sync_error_sets_its_time_and_store_clears_both() {
+        let _guard = crate::knowledge::SETTINGS_TEST_LOCK.blocking_lock();
+        let url = "https://example.invalid/cal.ics".to_string();
+        settings::set_cache(settings::KnowledgeSettings { calendar_url: Some(url.clone()), ..settings::current() });
+        let app = tauri::test::mock_app();
+
+        record_sync_error("boom".into());
+        let s = status();
+        assert_eq!(s.last_error.as_deref(), Some("boom"));
+        assert!(s.last_error_at.is_some());
+
+        store(app.handle(), &url, Vec::new()).unwrap();
+        let s = status();
+        assert!(s.last_error.is_none() && s.last_error_at.is_none());
+
+        settings::set_cache(settings::KnowledgeSettings { calendar_url: None, ..settings::current() });
+        record_sync_error("ignored".into());
+        assert!(status().last_error.is_none());
     }
 
     #[test]

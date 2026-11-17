@@ -53,7 +53,10 @@ pub async fn pick_target(_pool: &SqlitePool, _now: DateTime<Utc>, source: StartS
 
 pub async fn resolve_target(pool: &SqlitePool, now: DateTime<Utc>, source: StartSource) -> anyhow::Result<RoutedMeeting> {
     let id = match pick_target(pool, now, source).await? {
-        RouteTarget::Existing(id) => id,
+        RouteTarget::Existing(id) => {
+            crate::audio::recording_commands::ensure_not_live_now(&id).map_err(anyhow::Error::msg)?;
+            id
+        }
         RouteTarget::New { title } => {
             let id = MeetingsRepository::create_meeting(pool, title.as_deref(), Local::now().naive_local()).await?;
             *FRESH_ROUTED.lock().unwrap_or_else(|e| e.into_inner()) = Some(id.clone());
@@ -90,8 +93,8 @@ pub(crate) async fn release_failed_start(pool: &SqlitePool, meeting_id: &str) ->
 
 /// `release_failed_start`, except for the row a live recording owns (a start that lost a race releases its own
 /// row, which must never be the winner's). False = nothing deleted.
-pub(crate) async fn release_unless_live(pool: &SqlitePool, meeting_id: &str, live: Option<String>) -> Result<bool, sqlx::Error> {
-    if live.as_deref() == Some(meeting_id) {
+pub(crate) async fn release_unless_live(pool: &SqlitePool, meeting_id: &str, refuse: bool) -> Result<bool, sqlx::Error> {
+    if refuse {
         return Ok(false);
     }
     release_failed_start(pool, meeting_id).await
@@ -99,8 +102,9 @@ pub(crate) async fn release_unless_live(pool: &SqlitePool, meeting_id: &str, liv
 
 #[tauri::command]
 pub async fn api_release_routed_start(state: tauri::State<'_, AppState>, meeting_id: String) -> Result<bool, String> {
-    let live = crate::audio::recording_commands::recording_target_id();
-    release_unless_live(state.db_manager.pool(), &meeting_id, live).await.map_err(|e| e.to_string())
+    // Refuses the live recording's row, one whose save is running, and a continue target while busy.
+    let refuse = crate::audio::recording_commands::ensure_not_live_now(&meeting_id).is_err();
+    release_unless_live(state.db_manager.pool(), &meeting_id, refuse).await.map_err(|e| e.to_string())
 }
 
 #[cfg(test)]
@@ -129,10 +133,21 @@ mod tests {
         let _g = FRESH_LOCK.lock().await;
         let pool = test_pool().await;
         let r = resolve_target(&pool, Utc::now(), StartSource::Sidebar).await.unwrap();
-        assert!(!release_unless_live(&pool, &r.meeting_id, Some(r.meeting_id.clone())).await.unwrap());
+        assert!(!release_unless_live(&pool, &r.meeting_id, true).await.unwrap());
         assert!(row_exists(&pool, &r.meeting_id).await, "the live target stays");
-        assert!(release_unless_live(&pool, &r.meeting_id, Some("other".into())).await.unwrap());
+        assert!(release_unless_live(&pool, &r.meeting_id, false).await.unwrap());
         assert!(!row_exists(&pool, &r.meeting_id).await);
+    }
+
+    #[tokio::test]
+    async fn routing_to_a_meeting_that_is_still_saving_is_refused() {
+        let pool = test_pool().await;
+        let id = MeetingsRepository::create_meeting(&pool, None, Local::now().naive_local()).await.unwrap();
+        crate::audio::recording_commands::add_saving_target(&id);
+        let e = resolve_target(&pool, Utc::now(), StartSource::Page(id.clone())).await.unwrap_err();
+        assert!(e.to_string().contains("being recorded"), "{e}");
+        crate::audio::recording_commands::remove_saving_target(&id);
+        assert!(resolve_target(&pool, Utc::now(), StartSource::Page(id)).await.is_ok());
     }
 
     #[tokio::test]

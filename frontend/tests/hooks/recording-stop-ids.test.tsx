@@ -29,6 +29,11 @@ afterAll(() => {
 
 const transcriptsRef: { current: Array<{ text: string }> } = { current: [{ text: 'hi' }] };
 const notesRef: { current: unknown[] } = { current: [] };
+const clearTranscripts = mock(() => {});
+const markMeetingAsSaved = mock(async (_id?: string) => {});
+const setStatus = mock((..._a: unknown[]) => {});
+const setIsMeetingActive = mock((_v: boolean) => {});
+let flushBufferImpl: () => void = () => {};
 let onStatusPoll: () => void = () => {};
 type Handler = (event: { payload: unknown }) => void;
 const handlers = new Map<string, Handler>();
@@ -37,7 +42,8 @@ mock.module('@tauri-apps/api/event', () => ({
 }));
 const invoke = mock(async (_c: string, _a?: unknown) => undefined);
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
-mock.module('next/navigation', () => ({ useRouter: () => ({ push: () => {} }) }));
+const push = mock((_u: string) => {});
+mock.module('next/navigation', () => ({ useRouter: () => ({ push }) }));
 const toast = {
   success: mock((..._a: unknown[]) => {}), error: mock((..._a: unknown[]) => {}),
   warning: mock((..._a: unknown[]) => {}), info: mock((..._a: unknown[]) => {}),
@@ -45,16 +51,16 @@ const toast = {
 mock.module('sonner', () => ({ toast }));
 mock.module('../../src/contexts/TranscriptContext', () => ({
   useTranscripts: () => ({
-    transcriptsRef, notesRef, flushBuffer() {}, clearTranscripts() {},
-    meetingTitle: 'Standup', titleSource: 'default', calendarLink: null, markMeetingAsSaved: async () => {}, currentMeetingId: null,
+    transcriptsRef, notesRef, flushBuffer: () => flushBufferImpl(), clearTranscripts,
+    meetingTitle: 'Standup', titleSource: 'default', calendarLink: null, markMeetingAsSaved, currentMeetingId: null,
   }),
 }));
 mock.module('../../src/components/Sidebar/SidebarProvider', () => ({
-  useSidebar: () => ({ refetchMeetings: async () => {}, setCurrentMeeting() {}, setMeetings() {}, meetings: [], setIsMeetingActive() {} }),
+  useSidebar: () => ({ refetchMeetings: async () => {}, setCurrentMeeting() {}, setMeetings() {}, meetings: [], setIsMeetingActive }),
 }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({
   ...originals.state,
-  useRecordingState: () => ({ status: 'idle', setStatus() {}, isStopping: false, isProcessing: false, isSaving: false }),
+  useRecordingState: () => ({ status: 'idle', setStatus, isStopping: false, isProcessing: false, isSaving: false }),
 }));
 let saveResult: Record<string, unknown> = { meeting_id: 'saved-1' };
 const saveMeeting = mock(async (..._a: unknown[]) => saveResult);
@@ -81,11 +87,12 @@ async function stopAndSave() {
   // The hook waits seconds for late lines; the test does not.
   globalThis.setTimeout = ((fn: () => void, ms?: number) => realSetTimeout(fn, ms && ms >= 500 ? 0 : ms)) as typeof setTimeout;
   try { await act(async () => { await stop.handleRecordingStop(true); }); } finally { globalThis.setTimeout = realSetTimeout; }
+  await new Promise((r) => realSetTimeout(r, 10)); // the shimmed navigation timer must not leak into the next test
 }
 const emitStopped = (payload: Record<string, unknown>) => act(async () => { handlers.get('recording-stopped')!({ payload }); await new Promise((r) => setTimeout(r, 0)); });
 
 beforeEach(() => {
-  saveMeeting.mockClear(); invoke.mockClear();
+  saveMeeting.mockClear(); invoke.mockClear(); push.mockClear(); clearTranscripts.mockClear(); markMeetingAsSaved.mockClear(); setStatus.mockClear(); setIsMeetingActive.mockClear(); flushBufferImpl = () => {};
   transcriptsRef.current = [{ text: 'hi' }]; onStatusPoll = () => {};
   for (const t of Object.values(toast)) t.mockClear();
   saveResult = { meeting_id: 'saved-1' };
@@ -179,5 +186,104 @@ describe('a failed continue', () => {
     await stopAndSave();
     expect(toast.error).toHaveBeenCalledWith('Could not add this recording to the earlier meeting',
       { description: 'gone It was saved as a new meeting instead.' });
+  });
+});
+
+describe('a save never touches the recording that started during it', () => {
+  async function saveAWhileBStarts() {
+    sessionStorage.setItem('indexeddb_current_meeting_id', 'idb-A');
+    await mount();
+    await emitStopped({ message: 'x', meeting_id: 'meeting-A' });
+    onStatusPoll = () => {
+      onStatusPoll = () => {};
+      transcriptsRef.current = [{ text: 'B line' }];
+      sessionStorage.setItem('indexeddb_current_meeting_id', 'idb-B');
+      handlers.get('recording-started')?.({ payload: { meetingId: 'meeting-B' } });
+      setStatus.mockClear(); // B is RECORDING from here on
+    };
+    await stopAndSave();
+  }
+
+  test('B\'s lines, id, status and page survive A\'s save finishing', async () => {
+    await saveAWhileBStarts();
+    expect(saveMeeting).toHaveBeenCalledTimes(1);
+    expect(clearTranscripts).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+    expect(transcriptsRef.current).toEqual([{ text: 'B line' }]);
+    expect(sessionStorage.getItem('indexeddb_current_meeting_id')).toBe('idb-B');
+    expect(setStatus).not.toHaveBeenCalled();
+    expect(setIsMeetingActive).not.toHaveBeenCalled();
+  });
+
+  test('A\'s IndexedDB record is marked saved by the id taken at its stop', async () => {
+    await saveAWhileBStarts();
+    expect(markMeetingAsSaved).toHaveBeenCalledWith('idb-A');
+  });
+
+  test('without a new recording the save cleans up and navigates as before', async () => {
+    sessionStorage.setItem('indexeddb_current_meeting_id', 'idb-A');
+    await mount(); await stopAndSave();
+    await new Promise((r) => realSetTimeout(r, 20)); // the navigation timer
+    expect(clearTranscripts).toHaveBeenCalled();
+    expect(push).toHaveBeenCalled();
+    expect(markMeetingAsSaved).toHaveBeenCalledWith('idb-A');
+  });
+});
+
+describe('a second stop while a save runs', () => {
+  const shim = () => { globalThis.setTimeout = ((fn: () => void, ms?: number) => realSetTimeout(fn, ms && ms >= 500 ? 0 : ms)) as typeof setTimeout; };
+
+  test('a stop for a recording started meanwhile waits its turn and is saved', async () => {
+    await mount();
+    await emitStopped({ message: 'x', meeting_id: 'meeting-A' });
+    let second: Promise<void> | undefined;
+    onStatusPoll = () => {
+      onStatusPoll = () => {};
+      handlers.get('recording-started')?.({ payload: { meetingId: 'meeting-B' } });
+      transcriptsRef.current = [{ text: 'B line' }];
+      handlers.get('recording-stopped')?.({ payload: { message: 'x', meeting_id: 'meeting-B' } });
+      second = stop.handleRecordingStop(true);
+    };
+    shim();
+    try {
+      await act(async () => { await stop.handleRecordingStop(true); await second; });
+    } finally { globalThis.setTimeout = realSetTimeout; }
+    expect(saveMeeting).toHaveBeenCalledTimes(2);
+    expect(saveMeeting.mock.calls[0][7]).toBe('meeting-A');
+    expect(saveMeeting.mock.calls[1][7]).toBe('meeting-B');
+    expect(invoke).toHaveBeenCalledWith('api_finish_saving_target', { meetingId: 'meeting-B' });
+  });
+
+  test('a duplicate of the same stop is dropped', async () => {
+    await mount();
+    await emitStopped({ message: 'x', meeting_id: 'meeting-A' });
+    let second: Promise<void> | undefined;
+    onStatusPoll = () => { onStatusPoll = () => {}; second = stop.handleRecordingStop(true); };
+    shim();
+    try {
+      await act(async () => { await stop.handleRecordingStop(true); await second; });
+    } finally { globalThis.setTimeout = realSetTimeout; }
+    expect(saveMeeting).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('the snapshot and the save outcome', () => {
+  test('buffered lines are flushed into the snapshot before a new recording can clear them', async () => {
+    await mount();
+    await emitStopped({ message: 'x', meeting_id: 'meeting-A' });
+    flushBufferImpl = () => { setTimeout(() => { transcriptsRef.current = [...transcriptsRef.current, { text: 'buffered' }]; }, 0); };
+    onStatusPoll = () => { onStatusPoll = () => {}; transcriptsRef.current = []; handlers.get('recording-started')?.({ payload: {} }); };
+    await stopAndSave();
+    expect((saveMeeting.mock.calls[0][1] as Array<{ text: string }>).map((t) => t.text)).toEqual(['hi', 'buffered']);
+  });
+
+  test('the saving target is released when the save fails too', async () => {
+    saveMeeting.mockImplementationOnce(async () => { throw new Error('db locked'); });
+    const logged = console.error; console.error = () => {};
+    await mount();
+    await emitStopped({ message: 'x', meeting_id: 'meeting-A' });
+    await stopAndSave();
+    console.error = logged;
+    expect(invoke).toHaveBeenCalledWith('api_finish_saving_target', { meetingId: 'meeting-A' });
   });
 });

@@ -272,6 +272,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn due_call_with_transcript_but_no_started_at_is_recorded() {
+        let pool = test_pool().await;
+        insert_call(&pool, "c", "📞", at(10, 5), false).await;
+        sqlx::query("INSERT INTO transcripts (id, meeting_id, transcript, timestamp) VALUES ('t', 'c', 'hi', 'x')").execute(&pool).await.unwrap();
+        assert_eq!(pick_target(&pool, at(10, 0), StartSource::Popup).await.unwrap(), RouteTarget::New { title: Some("Sync · part 2".into()) });
+    }
+
+    #[tokio::test]
+    async fn due_call_without_calendar_end_is_skipped() {
+        let pool = test_pool().await;
+        insert_call(&pool, "c", "📞", at(10, 5), false).await;
+        sqlx::query("UPDATE meetings SET calendar_end = NULL WHERE id = 'c'").execute(&pool).await.unwrap();
+        assert_eq!(pick_target(&pool, at(10, 0), StartSource::Popup).await.unwrap(), RouteTarget::New { title: None });
+    }
+
+    #[tokio::test]
     async fn resolve_new_creates_default_row() {
         let _g = FRESH_LOCK.lock().await;
         let pool = test_pool().await;

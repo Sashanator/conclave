@@ -2,7 +2,7 @@
 
 ## v2.0.0 — 2026-11-17
 - **Meetings table.** All meetings in one table with saved views, search across transcripts, and grouping by day or category.
-- **Create a meeting first.** Name it, write prep notes, then press Record; calendar meetings appear on their own.
+- **Create a meeting first.** Name it, write prep notes, then press Record. Calendar events with 📞 in the title become meetings on their own.
 - **One AI sidebar.** Ask and Copilot open beside the table or meeting (Ctrl J); Digests replace Briefs in the menu.
 - **What's new** in the menu shows these notes; version, data folder and log file moved there from About.
 

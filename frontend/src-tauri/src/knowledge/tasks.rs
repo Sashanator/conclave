@@ -52,6 +52,14 @@ pub(crate) async fn apply_extraction(
     let requests =
         serde_json::to_string(&ex.requests).map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     let mut tx = pool.begin().await?;
+    // A "Delete recording" mid-run empties the meeting: a stale result must not refill it.
+    let has_summary: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM summary_processes WHERE meeting_id = ? LIMIT 1")
+        .bind(meeting_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if has_summary.is_none() {
+        return Ok(false);
+    }
     sqlx::query("DELETE FROM tasks WHERE meeting_id = ? AND source = 'auto' AND status = 'open' AND edited = 0")
         .bind(meeting_id)
         .execute(&mut *tx)
@@ -135,6 +143,7 @@ pub(crate) async fn set_extract<'c>(
     let sql = format!(
         "INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, error, extracted_at) \
          SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?) \
+           AND EXISTS (SELECT 1 FROM summary_processes WHERE meeting_id = ?) \
          ON CONFLICT(meeting_id) DO UPDATE SET \
            decisions_json = CASE WHEN ? THEN meeting_extracts.decisions_json ELSE excluded.decisions_json END, \
            requests_json = CASE WHEN ? THEN meeting_extracts.requests_json ELSE excluded.requests_json END, \
@@ -147,6 +156,7 @@ pub(crate) async fn set_extract<'c>(
         .bind(status)
         .bind(error)
         .bind(stamp())
+        .bind(meeting_id)
         .bind(meeting_id)
         .bind(keep)
         .bind(keep);
@@ -344,6 +354,38 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at) VALUES (?, 'completed', 't', 't')")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_mark_after_delete_recording_writes_nothing() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        assert!(crate::database::repositories::meeting::MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+        assert_eq!(set_extract(&pool, "M", "failed", Some("x"), None, None).await.unwrap(), 0);
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_extracts").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn apply_extraction_after_delete_recording_refills_nothing() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        assert!(crate::database::repositories::meeting::MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+        let mut ex = extraction(vec![task("A")]);
+        ex.gist = Some("g".into());
+        assert!(!apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        let (tasks, extracts, gist): (i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM meeting_extracts), (SELECT gist FROM meetings WHERE id = 'M')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((tasks, extracts, gist), (0, 0, None));
     }
 
     async fn insert_task(

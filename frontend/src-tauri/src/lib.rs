@@ -907,6 +907,7 @@ pub fn run() {
             api::meetings::api_list_meeting_views,
             api::meetings::api_save_meeting_view,
             api::meetings::api_delete_meeting_view,
+            api::meetings::api_delete_recording,
             audio::retention::old_audio_list,
             audio::retention::delete_old_audio,
             api::api_get_meeting,

@@ -2,7 +2,7 @@
 // content it cannot see: the caller's `untouched` flag is the only delete gate (spec 6.6, 4).
 
 use super::{strip_marker, ExpandResult, Occurrence};
-use crate::database::repositories::meeting::{delete_event_brief, UNTOUCHED_SQL};
+use crate::database::repositories::meeting::UNTOUCHED_SQL;
 use chrono::{DateTime, Duration, Utc};
 use sqlx::{Row, SqlitePool};
 use std::collections::HashSet;
@@ -241,18 +241,13 @@ pub async fn apply(pool: &SqlitePool, actions: &[Action], marker: &str, now: Dat
                 .execute(pool).await.map_err(ctx)?.rows_affected(),
             Action::Delete { id, reason } => {
                 let mut tx = pool.begin().await.map_err(ctx)?;
-                let key: Option<(Option<String>, Option<String>)> = sqlx::query_as("SELECT calendar_uid, calendar_start FROM meetings WHERE id = ?")
-                    .bind(id).fetch_optional(&mut *tx).await.map_err(ctx)?;
                 let sql = format!("DELETE FROM meetings AS m WHERE m.id = ? AND m.calendar_marker = ? AND {UNTOUCHED_SQL}");
                 let mut n = sqlx::query(&sql).bind(id).bind(marker).execute(&mut *tx).await.map_err(ctx)?.rows_affected();
                 if n > 0 {
                     // Empty by the guard above, same transaction.
                     sqlx::query("DELETE FROM meeting_preps WHERE meeting_id = ?").bind(id).execute(&mut *tx).await.map_err(ctx)?;
                     sqlx::query("DELETE FROM meeting_notes WHERE meeting_id = ?").bind(id).execute(&mut *tx).await.map_err(ctx)?;
-                    // Same cleanup as "Delete meeting": the event's brief goes unless another meeting shares the occurrence.
-                    if let Some((Some(uid), Some(start))) = &key {
-                        delete_event_brief(&mut tx, id, uid, start).await.map_err(ctx)?;
-                    }
+                    // Sync never deletes a brief (spec 4): it stays and reattaches by uid and start if the event returns.
                 } else if *reason == DeleteReason::Gone {
                     n = sqlx::query(&cancel_sql()).bind(&now).bind(id).bind(marker).execute(&mut *tx).await.map_err(ctx)?.rows_affected();
                 }
@@ -547,19 +542,17 @@ mod tests {
         }
 
         #[tokio::test]
-        async fn delete_removes_the_event_brief_unless_another_meeting_shares_it() {
+        async fn sync_delete_never_removes_the_event_brief() {
             let pool = test_pool().await;
             put(&pool, "a", 10).await;
-            put(&pool, "b", 10).await; // same occurrence
             sqlx::query("INSERT INTO briefs (id,event_uid,event_start,title,template_id,previous_meeting_id,content_json,created_at) VALUES ('br','u',?,'T','t','p','{}','c')")
                 .bind(zs(10)).execute(&pool).await.unwrap();
             sqlx::query("INSERT INTO feed_items (id,kind,title,target_id,created_at) VALUES ('f','brief','T','br','c')").execute(&pool).await.unwrap();
 
             assert_eq!(apply(&pool, &[gone("a")], M, now()).await.unwrap(), 1);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM meetings").await, 0);
             assert_eq!(count(&pool, "SELECT COUNT(*) FROM briefs").await, 1);
-            assert_eq!(apply(&pool, &[gone("b")], M, now()).await.unwrap(), 1);
-            assert_eq!(count(&pool, "SELECT COUNT(*) FROM briefs").await, 0);
-            assert_eq!(count(&pool, "SELECT COUNT(*) FROM feed_items").await, 0);
+            assert_eq!(count(&pool, "SELECT COUNT(*) FROM feed_items").await, 1);
         }
 
         #[tokio::test]

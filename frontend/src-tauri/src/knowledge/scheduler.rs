@@ -37,9 +37,10 @@ impl Clock {
         self.pending_from = Some((fetched, url.to_string()));
     }
 
-    /// The kept feed covers CALENDAR_BEHIND_DAYS before its fetch, so the reconcile window stays inside it
-    /// only while the feed is under a day old (the 7 days ahead are covered for longer). A feed of another
-    /// calendar, or of a disconnected one, would cancel the wrong meetings: drop it too.
+    /// The reconcile window starts CALENDAR_BEHIND_DAYS before now, so the kept feed covers it while it is
+    /// under a day old; its 7 reconcile days ahead stay inside the 14 fetched for 7 days. The one-day limit is
+    /// a conservative choice. A feed of another calendar, or of a disconnected one, would cancel the wrong
+    /// meetings: drop it too.
     fn drop_unusable_pending(&mut self, now: DateTime<Utc>) {
         let url = settings::current().calendar_url;
         let usable = matches!(&self.pending_from, Some((at, from))
@@ -100,17 +101,17 @@ pub(crate) async fn tick<R: Runtime>(
     now: DateTime<Utc>,
     templates: &[TemplateEntry],
 ) -> Result<(), String> {
-    if refresh_due(clock.refreshed_at, now) && settings::current().calendar_url.is_some() {
+    // Read before the fetch: if the URL changes meanwhile, the fetched feed is dropped as another calendar's.
+    let url = settings::current().calendar_url;
+    if refresh_due(clock.refreshed_at, now) && url.is_some() {
         clock.refreshed_at = Some(now);
         match calendar::refresh(app, now).await {
             Ok(feed) => {
                 clock.pending = Some(feed);
-                clock.pending_from = settings::current().calendar_url.map(|url| (now, url));
+                clock.pending_from = url.map(|url| (now, url));
             }
-            Err(e) => {
-                warn!("knowledge: calendar refresh failed: {e}");
-                let _ = after_refresh(pool, Err(e), None, "", now).await;
-            }
+            // `refresh` has recorded the error against the URL it fetched.
+            Err(e) => warn!("knowledge: calendar refresh failed: {e}"),
         }
     }
     clock.drop_unusable_pending(now);

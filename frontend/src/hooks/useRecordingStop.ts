@@ -88,10 +88,11 @@ export function useRecordingStop(
           message: string;
           folder_path?: string;
           meeting_name?: string;
+          meeting_id?: string | null;
         }>('recording-stopped', async (event) => {
           // Create promise that resolves when sessionStorage is set (prevents race condition)
           recordingStoppedDataRef.current = (async () => {
-            const { folder_path, meeting_name } = event.payload;
+            const { folder_path, meeting_name, meeting_id } = event.payload;
 
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
@@ -99,6 +100,12 @@ export function useRecordingStop(
             }
             if (meeting_name) {
               sessionStorage.setItem('last_recording_meeting_name', meeting_name);
+            }
+            // Always written (or cleared): a stale id from an earlier recording must never reach this save.
+            if (meeting_id) {
+              sessionStorage.setItem('last_recording_meeting_id', meeting_id);
+            } else {
+              sessionStorage.removeItem('last_recording_meeting_id');
             }
           })();
 
@@ -248,6 +255,7 @@ export function useRecordingStop(
         // Get folder_path and meeting_name from recording-stopped event
         const folderPath = sessionStorage.getItem('last_recording_folder_path');
         const savedMeetingName = sessionStorage.getItem('last_recording_meeting_name');
+        const routedMeetingId = sessionStorage.getItem('last_recording_meeting_id');
 
         console.log('💾 Saving COMPLETE transcripts to database...', {
           transcript_count: freshTranscripts.length,
@@ -263,7 +271,8 @@ export function useRecordingStop(
             [...notesRef.current],
             currentMeetingId || sessionStorage.getItem('indexeddb_current_meeting_id'),
             { source: titleSource, uid: calendarLink?.uid, start: calendarLink?.start },
-            true
+            true,
+            routedMeetingId
           );
 
           const meetingId = responseData.meeting_id;
@@ -275,6 +284,16 @@ export function useRecordingStop(
           if (outcome.continueError) {
             toast.error('Could not add this recording to the earlier meeting', {
               description: `${outcome.continueError} It was saved as a new meeting instead.`,
+            });
+          }
+          if (outcome.fallback && !outcome.continueError) {
+            toast.warning('Saved as a new meeting', {
+              description: 'The meeting this recording belonged to was deleted.',
+            });
+          }
+          if (responseData.release_error) {
+            toast.error('An empty meeting was left behind', {
+              description: `${responseData.release_error} Delete the empty started meeting by hand.`,
             });
           }
           if (!transcriptionComplete) {
@@ -320,6 +339,7 @@ export function useRecordingStop(
           // Clean up session storage
           sessionStorage.removeItem('last_recording_folder_path');
           sessionStorage.removeItem('last_recording_meeting_name');
+          sessionStorage.removeItem('last_recording_meeting_id');
           // Clean up IndexedDB meeting ID (redundant with markMeetingAsSaved cleanup, but ensures cleanup)
           sessionStorage.removeItem('indexeddb_current_meeting_id');
           sessionStorage.removeItem('recording_title_origin');

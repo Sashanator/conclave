@@ -53,9 +53,8 @@ pub(crate) struct CallRow {
     pub recorded: bool,
 }
 
-/// Dependency on branch rd-e: its `KnowledgeSettings.calendar_marker` replaces this (then read `settings::current().calendar_marker`).
 fn call_marker() -> String {
-    "📞".to_string()
+    crate::knowledge::settings::current().calendar_marker
 }
 
 /// §6.7: the 📞 meeting in progress or starting within 15 minutes. Fresh ones first, then closest to now; if every

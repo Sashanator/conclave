@@ -94,13 +94,12 @@ test('no prep: no points and no tab; the stored side tab is not touched', async 
   expect(localStorage.getItem(LIVE_SIDE_TAB_KEY)).toBe('prep');
 });
 
-test('prep points sit under My notes with kind tags, draft label and encoded Open in Prep link', async () => {
+test('prep points sit under My notes with kind tags, and draft label', async () => {
   const r = await render();
   expect(prepTab(r)).toBeUndefined();
   expect(json(r)).toContain('draft');
   expect(json(r)).toContain('clarification');
-  const link = r.root.findAll((n) => n.type === 'a' && textOf(n) === 'Open in Prep')[0];
-  expect(link.props.href).toBe(`/prep?${new URLSearchParams({ event: fixture().eventUid!, start: fixture().eventStart! })}`);
+  expect(r.root.findAll((n) => n.type === 'a')).toHaveLength(0);
   expect(r.root.findByProps({ 'aria-label': 'New note' })).toBeDefined();
   expect(boxes(r)).toHaveLength(2);
 });

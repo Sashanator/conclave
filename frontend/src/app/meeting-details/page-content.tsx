@@ -11,6 +11,7 @@ import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { FinishedTabs, type MeetingDetailsTab } from '@/components/MeetingPage/FinishedTabs';
 import { MeetingTasksPanel } from '@/components/MeetingPage/MeetingTasksPanel';
+import { MeetingBrief } from '@/components/Briefs/MeetingBrief';
 import { PrepTab } from '@/components/MeetingPage/PrepTab';
 import { AudioPlayerBar } from '@/components/MeetingDetails/AudioPlayerBar';
 import { NotesPane } from '@/components/MeetingNotes/NotesPane';
@@ -287,7 +288,7 @@ export default function PageContent({
           }}
           notesCount={notes.notes.length}
           tasks={<MeetingTasksPanel meetingId={meeting.id} reviewed={reviewed} />}
-          prep={<PrepTab meetingId={meeting.id} briefSlot={null} />}
+          prep={<PrepTab meetingId={meeting.id} briefSlot={<MeetingBrief meetingId={meeting.id} />} />}
           notes={
             <NotesPane
               disabled={!notes.loaded}

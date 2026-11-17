@@ -292,3 +292,9 @@
     overflow: visible !important;
   }
 }
+/* Editor follows the app theme (BlockNote's shadcn skin paints its own dark palette). Outside @layer: Tailwind purges unused layered classes. */
+.bn-container.bn-shadcn .bn-editor {
+  background-color: transparent;
+  color: inherit;
+  font-family: inherit;
+}

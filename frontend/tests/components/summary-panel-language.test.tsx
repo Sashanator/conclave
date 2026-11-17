@@ -108,7 +108,7 @@ async function renderPanel(aiSummary: MeetingSummary | null, isSummaryDirty = fa
 }
 
 function languageButton(): ReactTestInstance {
-  return renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Set summary language')[0];
+  return renderer!.root.findAll((n) => n.type === 'button' && String(n.props['aria-label']).startsWith('Set summary language'))[0];
 }
 
 async function chooseLanguage(code: string | null) {

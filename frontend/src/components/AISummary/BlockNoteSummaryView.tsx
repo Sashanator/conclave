@@ -15,6 +15,26 @@ import "@blocknote/shadcn/style.css";
 // Dynamically import BlockNote Editor to avoid SSR issues
 const Editor = dynamic(() => import('../BlockNoteEditor/Editor'), { ssr: false });
 
+// The editor root carries aria-autocomplete/haspopup, which need a role that allows them. ProseMirror
+// rewrites its root attributes, so an observer keeps the role in place.
+const editorObservers = new WeakMap<HTMLElement, MutationObserver>();
+function labelEditorRoot(wrap: HTMLDivElement | null) {
+  if (!wrap) return;
+  const apply = () => {
+    const el = wrap.querySelector('.ProseMirror');
+    if (el && el.getAttribute('role') !== 'textbox') {
+      el.setAttribute('role', 'textbox');
+      el.setAttribute('aria-multiline', 'true');
+      el.setAttribute('aria-label', 'Summary');
+    }
+  };
+  apply();
+  editorObservers.get(wrap)?.disconnect();
+  const mo = new MutationObserver(apply);
+  mo.observe(wrap, { childList: true, subtree: true, attributes: true, attributeFilter: ['role', 'aria-label'] });
+  editorObservers.set(wrap, mo);
+}
+
 interface BlockNoteSummaryViewProps {
   summaryData: SummaryDataResponse | Summary | null;
   onSave?: (data: { markdown?: string; summary_json?: BlockNoteBlock[] }) => Promise<void>;
@@ -241,7 +261,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
     console.log('🎨 Rendering BLOCKNOTE format (direct)');
     return (
       <div className="flex flex-col w-full">
-        <div className="w-full">
+        <div className="w-full" ref={labelEditorRoot}>
           <Editor
             initialContent={data.summary_json}
             onChange={(blocks) => {
@@ -260,7 +280,7 @@ export const BlockNoteSummaryView = forwardRef<BlockNoteSummaryViewRef, BlockNot
     console.log('🎨 Rendering MARKDOWN format (parsed to BlockNote)');
     return (
       <div className="flex flex-col w-full">
-        <div className="w-full">
+        <div className="w-full" ref={labelEditorRoot}>
           <BlockNoteView
             editor={editor}
             editable={true}

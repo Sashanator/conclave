@@ -257,6 +257,7 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           <button
             onClick={handleRefresh}
             disabled={refreshing || disabled}
+            aria-label="Refresh devices"
             className="h-8 w-8 p-0 inline-flex items-center justify-center rounded-md text-sm font-medium transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-50"
           >
             <RefreshCw className={`h-4 w-4 ${refreshing ? 'animate-spin' : ''}`} />

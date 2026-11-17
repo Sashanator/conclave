@@ -182,6 +182,7 @@ export function LanguageSelection({
       <div className="space-y-2">
         <select
           value={selectedLanguage}
+          aria-label="Transcription language"
           onChange={(e) => handleLanguageChange(e.target.value)}
           disabled={disabled || saving}
           className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-blue-500 focus:border-blue-500 disabled:bg-muted/50 disabled:text-muted-foreground"

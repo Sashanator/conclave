@@ -296,7 +296,7 @@ export function SummaryPanel({
             size="sm"
             disabled={!languageLoaded}
             title={`Summary language: ${effectiveLangLabel}${isLocalFallbackLanguage ? ' (saved on this device)' : ''}`}
-            aria-label="Set summary language"
+            aria-label={`Set summary language: ${effectiveLangLabel}`}
           >
             <Languages size={18} />
             <span className="hidden @[40rem]:inline">{effectiveLangLabel}</span>

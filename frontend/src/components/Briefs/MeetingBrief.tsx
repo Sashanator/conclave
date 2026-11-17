@@ -41,7 +41,7 @@ export function MeetingBrief({ meetingId }: { meetingId: string }) {
 
   if (!state?.isCall) return null;
   return (
-    <section aria-label="Brief" className="space-y-3">
+    <section aria-label="Brief" className="space-y-3 p-3">
       <div className="flex items-center justify-between gap-2">
         <h3 className="text-base font-semibold">Brief</h3>
         <Button variant="outline" size="sm" disabled={busy} onClick={regenerate}>

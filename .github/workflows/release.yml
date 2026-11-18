@@ -188,16 +188,18 @@ jobs:
           [Win32.ErrorMode]::SetErrorMode(0x8001) | Out-Null  # SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX
           $env:PATH = ($env:PATH -split ';' | Where-Object { $_ -notmatch 'CUDA' }) -join ';'
           $env:CUDA_PATH = $null
-          # The app logs to stderr (main.rs), so capture it to find the ONNX Runtime init line.
+          # tauri-plugin-log writes to stdout and the app log file; stderr keeps panic text. Search all three.
           $errLog = Join-Path $env:RUNNER_TEMP "conclave-smoke-stderr.log"
-          $p = Start-Process -FilePath $exe -PassThru -RedirectStandardError $errLog
+          $outLog = Join-Path $env:RUNNER_TEMP "conclave-smoke-stdout.log"
+          $appLogs = Join-Path $env:LOCALAPPDATA "com.conclave.app/logs/*.log"
+          $p = Start-Process -FilePath $exe -PassThru -RedirectStandardError $errLog -RedirectStandardOutput $outLog
           $null = $p.Handle  # keeps the handle open so $p.ExitCode is reliable if the exe dies at once
           Start-Sleep -Seconds 20
           $exited = $p.HasExited
           if (-not $exited) { Stop-Process -Id $p.Id -Force; $p.WaitForExit() }
           # Print the app log so a failed check below shows why.
-          Write-Host "::group::App stderr log"
-          Get-Content -LiteralPath $errLog -ErrorAction SilentlyContinue
+          Write-Host "::group::App log (stdout, stderr, log file)"
+          Get-Content -Path $outLog, $errLog, $appLogs -ErrorAction SilentlyContinue
           Write-Host "::endgroup::"
           if ($exited) {
             # Any exit within 20 s fails: a CUDA DLL problem is one cause, but so is any other startup crash.
@@ -208,7 +210,7 @@ jobs:
           }
           # A failed DirectML preload only logs a warning, so its success line is required too.
           foreach ($line in 'Initialized bundled ONNX Runtime', 'Preloaded bundled DirectML') {
-            if (-not (Select-String -Path $errLog -Pattern $line -Quiet)) {
+            if (-not (Select-String -Path $outLog, $errLog, $appLogs -Pattern $line -Quiet -ErrorAction SilentlyContinue)) {
               Write-Error "app log has no '$line' line; the bundled runtime did not load"
               exit 1
             }

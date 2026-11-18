@@ -58,7 +58,16 @@ export function FeedBell({ side = 'top' }: { side?: 'top' | 'right' }) {
     } catch (error) {
       console.error('Failed to mark notification read:', error);
     }
-    router.push(`/briefs?id=${encodeURIComponent(item.targetId)}&kind=${encodeURIComponent(item.kind)}`);
+    let href = `/digests?id=${encodeURIComponent(item.targetId)}`;
+    if (item.kind === 'brief') {
+      try {
+        const meetingId = await invoke<string | null>('brief_meeting', { briefId: item.targetId });
+        if (meetingId) href = `/meeting-details?id=${encodeURIComponent(meetingId)}&tab=prep`;
+      } catch (error) {
+        console.error('Failed to find the brief meeting:', error);
+      }
+    }
+    router.push(href);
     refresh();
   };
 

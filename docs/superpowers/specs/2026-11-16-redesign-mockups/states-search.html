@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="en" class="dark theme-conclave">
+<head>
+<meta charset="utf-8">
+<title>Conclave: Search, states, empty, Ask</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{--background:0 0% 100%;--foreground:0 0% 3.9%;--card:0 0% 100%;--primary:0 0% 9%;--primary-foreground:0 0% 98%;--muted:0 0% 96.1%;--muted-foreground:0 0% 40%;--accent:0 0% 96.1%;--border:0 0% 89.8%;--ring:0 0% 3.9%;--violet:262 83% 52%;--rec:0 74% 42%;--hl:43 95% 55%;--hl-a:.38;
+  --cat-1:217 91% 60%;--cat-2:160 60% 40%;--cat-3:27 87% 55%;--cat-5:0 0% 55%}
+.dark{--violet:258 90% 72%;--background:0 0% 3.9%;--foreground:0 0% 98%;--card:0 0% 6%;--primary:0 0% 98%;--primary-foreground:0 0% 9%;--muted:0 0% 14.9%;--muted-foreground:0 0% 68%;--accent:0 0% 14.9%;--border:0 0% 20%;--ring:0 0% 83.1%;--hl-a:.3}
+.theme-conclave{--background:235 45% 9%;--foreground:40 30% 94%;--card:235 40% 12%;--primary:43 90% 58%;--primary-foreground:235 45% 9%;--muted:235 30% 18%;--muted-foreground:230 20% 74%;--accent:235 30% 18%;--border:235 30% 22%;--ring:43 90% 58%;--violet:258 90% 74%;--hl-a:.34}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Source Sans 3",system-ui,sans-serif;font-size:14px;color:hsl(var(--foreground));background:hsl(var(--background))}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+[hidden]{display:none!important}
+svg.i{width:14px;height:14px;flex:none;fill:none;stroke:currentColor;stroke-width:2;stroke-linecap:round;stroke-linejoin:round}
+.picker{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 16px;background:#f4f4f5;color:#18181b;border-bottom:1px solid #ddd;font-size:13px}
+.picker .seg{display:inline-flex;flex-wrap:wrap;border:1px solid #ccc;border-radius:6px;overflow:hidden}
+.picker .seg button{border:0;background:#fff;color:#18181b;padding:4px 10px}.picker .seg button[aria-pressed=true]{background:#18181b;color:#fff}
+.picker button:focus-visible{outline-color:#18181b;outline-offset:-2px}
+.app{display:grid;grid-template-columns:208px minmax(0,1fr) auto;height:calc(100vh - 45px);min-height:640px}
+nav{border-right:1px solid hsl(var(--border));display:flex;flex-direction:column;padding:12px 8px;gap:2px}
+.brand{display:flex;align-items:center;gap:8px;padding:4px 8px 12px;font-weight:700;font-size:15px}
+.brand i{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#1e1b4b,#7c3aed);display:inline-block}
+.nav-item{display:flex;align-items:center;gap:10px;padding:0 8px;height:32px;border-radius:6px;border:0;background:none;text-align:left;width:100%;color:hsl(var(--muted-foreground))}
+.nav-item:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.nav-item[aria-current=page]{background:hsl(var(--accent));color:hsl(var(--foreground));font-weight:600}
+.nav-item svg.i{width:16px;height:16px}
+.nav-sep{flex:1}
+.recnav{background:none;color:hsl(var(--foreground));border:1px solid hsl(var(--border));font-weight:600;justify-content:center;height:36px;margin-bottom:6px}
+.recnav svg.i{fill:hsl(var(--rec));stroke:hsl(var(--rec))}
+.ver{font-size:12px}
+.newdot{display:inline-block;width:7px;height:7px;border-radius:50%;background:hsl(var(--primary));margin-right:2px}
+.pill{margin-left:auto;font-size:12px;border:1px solid hsl(var(--border));border-radius:999px;padding:0 7px}
+main{overflow:auto;padding:20px 28px 40px;min-width:0}
+.h1{font-size:22px;font-weight:700;margin:0 0 12px;letter-spacing:-.01em}
+.views{display:flex;gap:2px;border-bottom:1px solid hsl(var(--border));margin-bottom:10px;flex-wrap:wrap}
+.view{border:0;background:none;padding:6px 10px;color:hsl(var(--muted-foreground));border-bottom:2px solid transparent;margin-bottom:-1px}
+.view[aria-selected=true]{color:hsl(var(--foreground));border-color:hsl(var(--primary));font-weight:600}
+.view .n{font-size:12px;margin-left:4px}
+.dim .view{opacity:.55}
+.toolbar{display:flex;gap:6px;align-items:center;margin-bottom:10px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 10px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--card))}
+.btn:hover{background:hsl(var(--accent))}
+.btn.ghost{border-color:transparent;background:none;color:hsl(var(--muted-foreground))}
+.btn.ghost:hover{color:hsl(var(--foreground));background:hsl(var(--accent))}
+.btn.on{color:hsl(var(--foreground));background:hsl(var(--accent))}
+.btn.gold{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent;font-weight:600}
+.btn.sm{height:24px;font-size:12px;padding:0 8px}
+.search{flex:1;min-width:240px;max-width:360px;position:relative}
+.search input{width:100%;height:30px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--card));padding:0 28px 0 30px}
+.search input::placeholder{color:hsl(var(--muted-foreground))}
+.search>svg{position:absolute;left:9px;top:8px;color:hsl(var(--muted-foreground))}
+.search .clr{position:absolute;right:3px;top:3px;width:24px;height:24px;border:0;background:none;display:grid;place-items:center;color:hsl(var(--muted-foreground));border-radius:4px}
+.kbd{font-size:11px;border:1px solid hsl(var(--border));border-radius:4px;padding:0 4px;color:hsl(var(--muted-foreground))}
+.chip-s{display:inline-flex;align-items:center;gap:8px;font-size:13px;border:1px solid hsl(var(--primary)/.6);background:hsl(var(--primary)/.12);border-radius:999px;padding:2px 12px;margin-bottom:10px}
+.tbl{width:100%;border-collapse:collapse;table-layout:fixed}
+.tbl th{font-weight:500;font-size:12px;color:hsl(var(--muted-foreground));text-align:left;height:32px;border-bottom:1px solid hsl(var(--border));padding:0 10px}
+.tbl td{height:40px;border-bottom:1px solid hsl(var(--border));padding:0 10px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tbl.wrap td{white-space:normal;padding-block:8px;vertical-align:top;overflow:visible}
+.tbl .grp td{font-weight:600;height:36px}
+.tbl tbody tr.row:hover td{background:hsl(var(--accent))}
+.nm{font-weight:600}.dt{color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums}
+.mut{color:hsl(var(--muted-foreground))}.sm{font-size:12px}
+.lnk{color:hsl(var(--primary))}
+.namebtn{border:0;background:none;padding:0;font-weight:600;text-align:left}
+.namebtn:hover{text-decoration:underline}
+.muted-row .namebtn{color:hsl(var(--muted-foreground));font-weight:500}
+.tag{display:inline-flex;align-items:center;gap:6px;font-size:12px;padding:1px 8px;border-radius:999px;background:hsl(var(--c)/.16)}
+.tag::before{content:"";width:6px;height:6px;border-radius:50%;background:hsl(var(--c))}
+.warn{color:hsl(38 95% 64%)}
+:root:not(.dark) .warn{color:hsl(30 90% 30%)}
+.pending{font-size:12px;border:1px solid hsl(var(--border));border-radius:999px;padding:1px 8px;color:hsl(var(--muted-foreground))}
+.calbadge{display:inline-flex;align-items:center;gap:4px;font-size:12px;border:1px solid hsl(var(--primary)/.6);color:hsl(var(--primary));border-radius:4px;padding:0 5px;margin-left:6px;font-weight:500;vertical-align:1px}
+.calbadge svg.i{width:11px;height:11px}
+.live{display:inline-flex;align-items:center;gap:6px;font-weight:600}
+.live i{width:9px;height:9px;border-radius:50%;background:hsl(0 80% 55%)}
+@media (prefers-reduced-motion:no-preference){.live i{animation:p 1.6s ease-in-out infinite}@keyframes p{50%{opacity:.35}}}
+.pinned td{background:hsl(var(--rec)/.08)}
+.ck{padding:0;background:none;width:16px;height:16px;border:1.5px solid hsl(var(--muted-foreground));border-radius:4px;display:inline-grid;place-items:center;vertical-align:middle}
+.ck.on{background:hsl(var(--foreground));border-color:hsl(var(--foreground))}
+.ck.on::after{content:"";width:8px;height:4px;border:2px solid hsl(var(--background));border-top:0;border-right:0;transform:rotate(-45deg) translate(1px,-1px)}
+mark{background:hsl(var(--hl)/var(--hl-a));color:inherit;border-radius:2px;padding:0 1px;box-shadow:0 0 0 1px hsl(var(--hl)/.5)}
+.snips{display:flex;flex-direction:column;gap:2px;margin-top:4px}
+.snip{display:flex;gap:8px;align-items:baseline;border:0;background:none;text-align:left;padding:2px 6px;margin-left:-6px;border-radius:4px;font-size:13px;color:hsl(var(--muted-foreground));line-height:1.4}
+.snip:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.snip .w{flex:none;font-size:11px;font-weight:600;color:hsl(var(--foreground));border:1px solid hsl(var(--border));border-radius:4px;padding:0 5px;min-width:96px;text-align:center;font-variant-numeric:tabular-nums}
+.more{font-size:12px;margin-left:0}
+.cap{margin-top:14px;font-size:13px;color:hsl(var(--muted-foreground));border-left:3px solid hsl(var(--primary));padding:6px 12px;max-width:780px;line-height:1.5}
+.cap ul{margin:6px 0 0;padding-left:18px}.cap li{margin:2px 0}
+.hint{font-size:12px;color:hsl(var(--muted-foreground));margin-top:10px}
+.sub{font-weight:400;font-size:12px;display:block;margin-top:2px;color:hsl(var(--muted-foreground))}
+.empty{display:grid;justify-items:center;text-align:center;padding:72px 16px;gap:8px;border-bottom:1px solid hsl(var(--border))}
+.empty .ic{width:44px;height:44px;border-radius:12px;background:hsl(var(--accent));display:grid;place-items:center;color:hsl(var(--muted-foreground))}
+.empty .ic svg.i{width:22px;height:22px}
+.empty h2{margin:6px 0 0;font-size:18px}
+.empty p{margin:0;max-width:460px;line-height:1.5;color:hsl(var(--muted-foreground))}
+.empty .acts{display:flex;gap:8px;margin-top:12px;flex-wrap:wrap;justify-content:center}
+/* ask */
+aside{width:360px;border-left:1px solid hsl(var(--border));display:flex;flex-direction:column;background:hsl(var(--card));min-height:0}
+.ask-h{display:flex;align-items:center;justify-content:space-between;padding:10px 12px 10px 16px;font-weight:600}
+.ask-sc{padding:0 16px 10px;border-bottom:1px solid hsl(var(--border));position:relative}
+.chipbtn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;border:1px solid hsl(var(--border));background:hsl(var(--background));font-size:13px}
+.chipbtn:hover{border-color:hsl(var(--primary))}
+.menu{position:absolute;left:16px;top:30px;z-index:2;min-width:220px;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--card));box-shadow:0 8px 24px hsl(0 0% 0%/.35);padding:4px}
+.menu button{display:flex;justify-content:space-between;width:100%;border:0;background:none;text-align:left;padding:6px 8px;border-radius:4px}
+.menu button:hover{background:hsl(var(--accent))}
+.ask-b{flex:1;overflow:auto;padding:16px;display:flex;flex-direction:column;gap:12px}
+.q{align-self:flex-end;background:hsl(var(--accent));padding:8px 12px;border-radius:10px;max-width:88%}
+.a{line-height:1.55}
+.a ul{margin:6px 0;padding-left:18px}
+.cc{display:inline-block;font-size:12px;border:1px solid hsl(var(--primary)/.6);color:hsl(var(--primary));border-radius:6px;padding:0 6px;text-decoration:none;white-space:nowrap}
+.cc:hover{background:hsl(var(--primary)/.15)}
+.prog{display:flex;align-items:center;gap:8px;font-size:13px;color:hsl(var(--muted-foreground))}
+.prog .sp{width:12px;height:12px;border-radius:50%;border:2px solid hsl(var(--border));border-top-color:hsl(var(--primary))}
+@media (prefers-reduced-motion:no-preference){.prog .sp{animation:r 1s linear infinite}@keyframes r{to{transform:rotate(360deg)}}}
+.caret{display:inline-block;width:7px;height:14px;background:hsl(var(--foreground));vertical-align:-2px;margin-left:2px;opacity:.7}
+.ask-in{padding:10px 16px 12px;border-top:1px solid hsl(var(--border))}
+.ask-in textarea{width:100%;resize:none;height:60px;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--background));padding:8px 10px}
+.ask-in textarea::placeholder{color:hsl(var(--muted-foreground))}
+.ask-f{display:flex;justify-content:space-between;align-items:center;margin-top:6px;font-size:12px;color:hsl(var(--muted-foreground))}
+</style>
+</head>
+<body>
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/></symbol>
+<symbol id="i-x" viewBox="0 0 24 24"><path d="M18 6 6 18M6 6l12 12"/></symbol>
+<symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+<symbol id="i-rec" viewBox="0 0 24 24"><circle cx="12" cy="12" r="6"/></symbol>
+<symbol id="i-table" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="16" rx="2"/><path d="M3 10h18M9 10v10"/></symbol>
+<symbol id="i-tasks" viewBox="0 0 24 24"><path d="m3 7 2 2 4-4M3 17l2 2 4-4M13 6h8M13 12h8M13 18h8"/></symbol>
+<symbol id="i-book" viewBox="0 0 24 24"><path d="M4 4h12a4 4 0 0 1 4 4v12H8a4 4 0 0 1-4-4z"/><path d="M8 9h8M8 13h6"/></symbol>
+<symbol id="i-wave" viewBox="0 0 24 24"><path d="M2 12h2M6 8v8M10 5v14M14 8v8M18 10v4"/></symbol>
+<symbol id="i-cap" viewBox="0 0 24 24"><path d="M22 10 12 5 2 10l10 5z"/><path d="M6 12v5c3 2 9 2 12 0v-5"/></symbol>
+<symbol id="i-chart" viewBox="0 0 24 24"><path d="M3 3v18h18M8 17V9M13 17V5M18 17v-6"/></symbol>
+<symbol id="i-up" viewBox="0 0 24 24"><path d="M12 15V3M7 8l5-5 5 5M5 21h14"/></symbol>
+<symbol id="i-gear" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M4.9 19.1 7 17M17 7l2.1-2.1"/></symbol>
+<symbol id="i-filter" viewBox="0 0 24 24"><path d="M3 5h18l-7 8v6l-4-2v-4z"/></symbol>
+<symbol id="i-sort" viewBox="0 0 24 24"><path d="M7 4v16M3 16l4 4 4-4M17 20V4M13 8l4-4 4 4"/></symbol>
+<symbol id="i-group" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/></symbol>
+<symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-11.6 7.1L4 20l1-4.6A8 8 0 1 1 21 12z"/></symbol>
+<symbol id="i-cal" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="17" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></symbol>
+<symbol id="i-down" viewBox="0 0 24 24"><path d="m6 9 6 6 6-6"/></symbol>
+<symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/></symbol>
+<symbol id="i-trash" viewBox="0 0 24 24"><path d="M3 6h18M8 6V4h8v2M6 6l1 14h10l1-14M10 11v5M14 11v5"/></symbol>
+<symbol id="i-stop" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="1"/></symbol>
+</svg>
+
+<div class="picker" role="group" aria-label="Mockup controls">
+  <b>Mockup controls:</b>
+  <span>Screen <span class="seg" id="screen">
+    <button data-choice="s-search" aria-pressed="true" data-v="search">1 · Search results</button><button data-choice="s-states" aria-pressed="false" data-v="states">2 · Row states</button><button data-choice="s-empty" aria-pressed="false" data-v="empty">3 · Empty (first run)</button><button data-choice="s-ask" aria-pressed="false" data-v="ask">4 · Ask mid-answer</button></span></span>
+  <span>Theme <span class="seg" id="theme">
+    <button data-choice="theme-conclave" aria-pressed="true" data-v="dark theme-conclave">Conclave</button><button data-choice="theme-dark" aria-pressed="false" data-v="dark">Dark</button><button data-choice="theme-light" aria-pressed="false" data-v="">Light</button></span></span>
+</div>
+
+<div class="app" id="app">
+  <nav aria-label="Main">
+    <div class="brand"><i aria-hidden="true"></i>Conclave</div>
+    <button class="nav-item recnav"><svg class="i"><use href="#i-rec"/></svg>Record new meeting</button>
+    <button class="nav-item" aria-current="page"><svg class="i"><use href="#i-table"/></svg>Meetings</button>
+    <button class="nav-item"><svg class="i"><use href="#i-tasks"/></svg>Tasks <span class="pill">7</span></button>
+    <button class="nav-item"><svg class="i"><use href="#i-book"/></svg>Digests</button>
+    <button class="nav-item"><svg class="i"><use href="#i-wave"/></svg>Dictate</button>
+    <button class="nav-item"><svg class="i"><use href="#i-cap"/></svg>Practice</button>
+    <button class="nav-item"><svg class="i"><use href="#i-chart"/></svg>Stats</button>
+    <div class="nav-sep"></div>
+    <button class="nav-item"><svg class="i"><use href="#i-up"/></svg>Import audio</button>
+    <button class="nav-item"><svg class="i"><use href="#i-gear"/></svg>Settings</button>
+    <button class="nav-item ver"><span class="newdot" aria-hidden="true"></span>What's new in v1.6.0</button>
+  </nav>
+
+  <main>
+  <h1 class="h1">Meetings</h1>
+
+  <!-- 1 SEARCH -->
+  <section data-s="search">
+    <div class="views dim" role="tablist" aria-label="Saved views"><button class="view" role="tab" aria-selected="false">All meetings</button><button class="view" role="tab" aria-selected="false">This week<span class="n">6</span></button><button class="view" role="tab" aria-selected="false">Not reviewed<span class="n">3</span></button><button class="view" aria-label="Add a view">+ View</button></div>
+    <div class="toolbar">
+      <button class="btn"><svg class="i"><use href="#i-plus"/></svg>New meeting <span class="kbd">Ctrl N</span></button>
+      <label class="search"><svg class="i"><use href="#i-search"/></svg><input value="growth plan" aria-label="Search meetings, summaries and transcripts"><button class="clr" aria-label="Clear search"><svg class="i"><use href="#i-x"/></svg></button></label>
+      <button class="btn ghost"><svg class="i"><use href="#i-filter"/></svg>Filter</button>
+      <button class="btn ghost"><svg class="i"><use href="#i-sort"/></svg>Sort: Newest first</button>
+      <button class="btn ghost" aria-label="Group: off while searching" disabled style="opacity:.6"><svg class="i"><use href="#i-group"/></svg>Group: Off</button>
+      <span style="flex:1"></span>
+      <button class="btn ghost"><svg class="i"><use href="#i-chat"/></svg>Ask <span class="kbd">Ctrl J</span></button>
+    </div>
+    <span class="chip-s" role="status">Searching all meetings · 4 matches · <span class="mut">Esc clears</span></span>
+    <table class="tbl wrap">
+      <thead><tr><th scope="col" style="width:58%">Name and where it matched</th><th scope="col" style="width:150px">Date</th><th scope="col" style="width:130px">Category</th><th scope="col" style="width:80px">Reviewed</th></tr></thead>
+      <tbody>
+        <tr class="row"><td><button class="namebtn">🤝 Weekly 1:1 with team lead</button>
+          <div class="snips">
+            <button class="snip" aria-label="Open meeting at transcript 12:04"><span class="w">Transcript 12:04</span><span>…we agreed to draft the <mark>growth plan</mark> before the end of the month and…</span></button>
+            <button class="snip" aria-label="Open meeting at transcript 31:40"><span class="w">Transcript 31:40</span><span>…so the <mark>growth plan</mark> goes to Dmitri first, then to the whole team…</span></button>
+            <button class="snip" aria-label="Open meeting summary"><span class="w">Summary</span><span>…you will send the <mark>growth plan</mark> draft by Friday; lead reviews next week…</span></button>
+            <button class="linkbtn more lnk" style="border:0;background:none;padding:0 0 0 2px;text-align:left" aria-label="Show 2 more matches in Weekly 1:1">2 more in this meeting</button>
+          </div></td><td class="dt">Mon 16 Nov · 10:00</td><td><span class="tag" style="--c:var(--cat-1)">1:1</span></td><td><button class="ck on" role="checkbox" aria-checked="true" aria-label="Tasks reviewed: Weekly 1:1 with team lead"></button></td></tr>
+        <tr class="row"><td><button class="namebtn">🤝 Mentoring session</button>
+          <div class="snips">
+            <button class="snip" aria-label="Open meeting at transcript 08:15"><span class="w">Transcript 08:15</span><span>…Anna suggested a 6-month <mark>growth plan</mark> with one stretch goal per quarter…</span></button>
+            <button class="snip" aria-label="Open meeting summary"><span class="w">Summary</span><span>…agreed to draft a <mark>growth plan</mark> and read “Staff Engineer”, chapter 3…</span></button>
+          </div></td><td class="dt">Thu 5 Nov · 17:00</td><td><span class="tag" style="--c:var(--cat-1)">1:1</span></td><td><button class="ck" role="checkbox" aria-checked="false" aria-label="Tasks reviewed: Mentoring session"></button></td></tr>
+        <tr class="row"><td><button class="namebtn">🤝 Quartalsgespräch mit Anna</button>
+          <div class="snips"><button class="snip" aria-label="Open meeting at transcript 22:51"><span class="w">Transcript 22:51</span><span>…lass uns den <mark>growth plan</mark> im Dezember zusammen durchgehen, да, договорились…</span></button></div></td><td class="dt">Tue 3 Nov · 14:00</td><td><span class="tag" style="--c:var(--cat-1)">1:1</span></td><td><button class="ck on" role="checkbox" aria-checked="true" aria-label="Tasks reviewed: Quartalsgespräch mit Anna"></button></td></tr>
+        <tr class="row"><td><button class="namebtn"><mark>Growth plan</mark> review: Q4</button>
+          <div class="snips"><button class="snip" aria-label="Open meeting"><span class="w">Name</span><span><mark>Growth plan</mark> review: Q4 · Планирование: обсудили рост команды</span></button></div></td><td class="dt">Wed 28 Oct · 11:00</td><td><span class="tag" style="--c:var(--cat-5)">No template</span></td><td><button class="ck" role="checkbox" aria-checked="false" aria-label="Tasks reviewed: Growth plan review: Q4"></button></td></tr>
+      </tbody>
+    </table>
+    <div class="cap"><b>Clicking a transcript snippet</b> opens the meeting at that moment (Transcript tab, scrolled to 12:04, line highlighted). Clicking the name or a Summary snippet opens the meeting at the start of that tab. One box searches names, summaries and transcripts; at most 3 snippets show per meeting. No matches: “Nothing mentions “growth plan”. Try fewer words or another spelling.” with a Clear search button.</div>
+  </section>
+
+  <!-- 2 STATES -->
+  <section data-s="states" hidden>
+    <div class="views" role="tablist" aria-label="Saved views"><button class="view" role="tab" aria-selected="false">All meetings</button><button class="view" role="tab" aria-selected="true">This week<span class="n">7</span></button><button class="view" role="tab" aria-selected="false">Not reviewed<span class="n">3</span></button><button class="view" aria-label="Add a view">+ View</button></div>
+    <div class="toolbar">
+      <button class="btn"><svg class="i"><use href="#i-plus"/></svg>New meeting <span class="kbd">Ctrl N</span></button>
+      <label class="search"><svg class="i"><use href="#i-search"/></svg><input placeholder="Search everything  ( / )" aria-label="Search meetings, summaries and transcripts"></label>
+      <button class="btn ghost"><svg class="i"><use href="#i-filter"/></svg>Filter</button>
+      <button class="btn ghost"><svg class="i"><use href="#i-sort"/></svg>Sort</button>
+      <button class="btn ghost on"><svg class="i"><use href="#i-group"/></svg>Group: Day</button>
+      <span style="flex:1"></span>
+      <button class="btn ghost"><svg class="i"><use href="#i-chat"/></svg>Ask <span class="kbd">Ctrl J</span></button>
+    </div>
+    <table class="tbl wrap">
+      <thead><tr><th scope="col" style="width:27%">Name</th><th scope="col" style="width:150px">Date</th><th scope="col" style="width:120px">Category</th><th scope="col">Summary</th><th scope="col" style="width:80px">Reviewed</th></tr></thead>
+      <tbody>
+        <tr class="grp"><td colspan="5">Now</td></tr>
+        <tr class="row pinned"><td><button class="namebtn">🧑‍💻 System design interview</button></td><td class="dt">Today · 10:49</td><td><span class="tag" style="--c:var(--cat-3)">Interview</span></td><td><span class="live" role="status"><i aria-hidden="true"></i>Recording · 24:13</span></td><td></td></tr>
+        <tr class="grp"><td colspan="5">Monday 16 Nov</td></tr>
+        <tr class="row"><td><button class="namebtn">🤝 Weekly 1:1 with team lead</button></td><td class="dt">Mon 16 Nov · 10:00</td><td><span class="tag" style="--c:var(--cat-1)">1:1</span></td><td class="mut">Release slips one week; installer QA moves to Sam, who reports back on Thursday.</td><td><button class="ck" role="checkbox" aria-checked="false" aria-label="Tasks reviewed: Weekly 1:1 with team lead"></button></td></tr>
+        <tr class="row"><td><button class="namebtn">Untitled · Mon 14:02</button></td><td class="dt">Mon 16 Nov · 14:02</td><td><span class="tag" style="--c:var(--cat-5)">No template</span></td><td class="mut">Quick call about the conference travel budget.</td><td><button class="ck" role="checkbox" aria-checked="false" aria-label="Tasks reviewed: Untitled · Mon 14:02"></button></td></tr>
+        <tr class="grp"><td colspan="5">Tuesday 17 Nov</td></tr>
+        <tr class="row"><td><button class="namebtn">Besuch beim Vermieter</button></td><td class="dt">Tue 17 Nov · 18:00</td><td><span class="tag" style="--c:var(--cat-5)">No template</span></td><td><span class="pending">Not recorded</span> <span class="mut">had prep · 2 points</span> <button class="btn sm" style="margin-left:6px">Open prep</button></td><td></td></tr>
+        <tr class="grp"><td colspan="5">Wednesday 18 Nov</td></tr>
+        <tr class="row muted-row"><td><button class="namebtn">Vendor demo: Acme Analytics</button></td><td class="dt">Wed 18 Nov · 15:00</td><td><span class="tag" style="--c:var(--cat-5)">No template</span></td><td><span class="warn">Cancelled in calendar</span> <span class="mut">· has prep notes, so it stays</span> <button class="btn ghost sm" aria-label="Delete Vendor demo: Acme Analytics" style="color:hsl(var(--foreground))"><svg class="i"><use href="#i-trash"/></svg>Delete</button></td><td></td></tr>
+        <tr class="grp"><td colspan="5">Thursday 19 Nov</td></tr>
+        <tr class="row"><td><button class="namebtn">🤝 Mentoring session</button><span class="calbadge" title="From your calendar"><svg class="i"><use href="#i-cal"/></svg>Calendar</span></td><td class="dt">Thu 19 Nov · 17:00</td><td><span class="tag" style="--c:var(--cat-1)">1:1</span></td><td><span class="pending">Not recorded yet</span> <span class="mut">· Prep: 3 points</span></td><td></td></tr>
+      </tbody>
+    </table>
+    <div class="cap"><b>How calendar rows behave</b>
+      <ul>
+        <li>Cancelled events you never touched disappear by themselves.</li>
+        <li>Cancelled events with prep or notes stay as “Cancelled in calendar” until you delete them.</li>
+        <li>Moved events update their time; the row and its prep stay.</li>
+        <li>Past events you never touched vanish after the day; with prep they become “Not recorded”.</li>
+      </ul>
+      Conclave never deletes your content on its own.</div>
+  </section>
+
+  <!-- 3 EMPTY -->
+  <section data-s="empty" hidden>
+    <div class="views" role="tablist" aria-label="Saved views"><button class="view" role="tab" aria-selected="true">All meetings<span class="n">0</span></button><button class="view" role="tab" aria-selected="false">This week<span class="n">0</span></button><button class="view" aria-label="Add a view">+ View</button></div>
+    <div class="toolbar">
+      <button class="btn"><svg class="i"><use href="#i-plus"/></svg>New meeting <span class="kbd">Ctrl N</span></button>
+      <label class="search"><svg class="i"><use href="#i-search"/></svg><input placeholder="Search everything  ( / )" aria-label="Search meetings, summaries and transcripts"></label>
+      <button class="btn ghost"><svg class="i"><use href="#i-filter"/></svg>Filter</button>
+      <button class="btn ghost"><svg class="i"><use href="#i-sort"/></svg>Sort</button>
+      <button class="btn ghost"><svg class="i"><use href="#i-group"/></svg>Group: Off</button>
+    </div>
+    <table class="tbl">
+      <thead><tr><th scope="col" style="width:27%">Name</th><th scope="col" style="width:150px">Date</th><th scope="col" style="width:120px">Category</th><th scope="col">Summary</th><th scope="col" style="width:80px">Reviewed</th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="empty">
+      <div class="ic" aria-hidden="true"><svg class="i"><use href="#i-table"/></svg></div>
+      <h2>No meetings yet</h2>
+      <p>Press Record new meeting, or create one now and write prep notes before the call. Calls marked 📞 in your calendar appear here by themselves.</p>
+      <div class="acts"><button class="btn gold"><svg class="i"><use href="#i-plus"/></svg>New meeting (Ctrl N)</button><button class="btn ghost" aria-label="Connect calendar, opens Settings, Calendar"><svg class="i"><use href="#i-cal"/></svg>Connect calendar</button></div>
+    </div>
+  </section>
+
+  <!-- 4 ASK -->
+  <section data-s="ask" hidden>
+    <div class="views" role="tablist" aria-label="Saved views"><button class="view" role="tab" aria-selected="false">All meetings</button><button class="view" role="tab" aria-selected="true">This week<span class="n">6</span></button><button class="view" role="tab" aria-selected="false">Not reviewed<span class="n">3</span></button><button class="view" aria-label="Add a view">+ View</button></div>
+    <div class="toolbar">
+      <button class="btn"><svg class="i"><use href="#i-plus"/></svg>New meeting</button>
+      <label class="search" style="min-width:160px"><svg class="i"><use href="#i-search"/></svg><input placeholder="Search everything  ( / )" aria-label="Search meetings, summaries and transcripts"></label>
+      <button class="btn ghost"><svg class="i"><use href="#i-filter"/></svg>Filter</button>
+      <button class="btn ghost on"><svg class="i"><use href="#i-group"/></svg>Group: Day</button>
+      <span style="flex:1"></span>
+      <button class="btn ghost on" id="askBtn" aria-pressed="true" aria-controls="ask"><svg class="i"><use href="#i-chat"/></svg>Ask <span class="kbd">Ctrl J</span></button>
+    </div>
+    <table class="tbl wrap">
+      <thead><tr><th scope="col" style="width:32%">Name</th><th scope="col" style="width:110px">Date</th><th scope="col">Summary</th><th scope="col" style="width:76px">Reviewed</th></tr></thead>
+      <tbody>
+        <tr class="grp"><td colspan="4">Now</td></tr>
+        <tr class="row pinned"><td><button class="namebtn">🧑‍💻 System design interview</button></td><td class="dt">Today · 10:49</td><td><span class="live" role="status"><i aria-hidden="true"></i>Recording · 24:13</span></td><td></td></tr>
+        <tr class="grp"><td colspan="4">Monday 16 Nov</td></tr>
+        <tr class="row"><td><button class="namebtn">🤝 Weekly 1:1 with team lead</button></td><td class="dt">Mon · 10:00</td><td class="mut">Release slips one week; installer QA moves to Sam.</td><td><button class="ck on" role="checkbox" aria-checked="true" aria-label="Tasks reviewed: Weekly 1:1 with team lead"></button></td></tr>
+        <tr class="row"><td><button class="namebtn">Untitled · Mon 14:02</button></td><td class="dt">Mon · 14:02</td><td class="mut">Quick call about the conference travel budget.</td><td><button class="ck" role="checkbox" aria-checked="false" aria-label="Tasks reviewed: Untitled · Mon 14:02"></button></td></tr>
+        <tr class="grp"><td colspan="4">Tuesday 17 Nov</td></tr>
+        <tr class="row"><td><button class="namebtn">🧑‍💻 C# interview: backend candidate</button></td><td class="dt">Tue · 15:30</td><td class="mut">Strong on async and EF Core; weak on distributed tracing.</td><td><button class="ck on" role="checkbox" aria-checked="true" aria-label="Tasks reviewed: C# interview"></button></td></tr>
+        <tr class="row"><td><button class="namebtn">🇩🇪 Deutsch B2: Konjunktiv II</button></td><td class="dt">Tue · 19:00</td><td class="mut">Konjunktiv II in polite requests; homework p. 42.</td><td><button class="ck" role="checkbox" aria-checked="false" aria-label="Tasks reviewed: Deutsch B2"></button></td></tr>
+      </tbody>
+    </table>
+  </section>
+  </main>
+
+  <aside id="ask" aria-label="Ask your meetings" hidden>
+    <div class="ask-h">Ask your meetings <button class="btn ghost" id="askClose" aria-label="Close Ask" style="padding:0 7px"><svg class="i"><use href="#i-x"/></svg></button></div>
+    <div class="ask-sc">
+      <button class="chipbtn" id="scopeBtn" aria-haspopup="menu" aria-expanded="false" aria-label="Ask scope: This week, 6 meetings. Change scope">This week · 6 meetings <svg class="i"><use href="#i-down"/></svg></button>
+      <div class="menu" id="scopeMenu" role="menu" hidden><button role="menuitemradio" aria-checked="true">This week · 6 meetings <span aria-hidden="true">✓</span></button><button role="menuitemradio" aria-checked="false">All meetings · 148</button></div>
+      <div class="mut sm" style="margin-top:6px">Scope follows the view you are looking at.</div>
+    </div>
+    <div class="ask-b" aria-live="polite">
+      <div class="q">When did we talk about the installer QA owner?</div>
+      <div class="a">On <b>Mon 16 Nov</b>, in the weekly 1:1: the installer QA moves to Sam and the release slips a week. <a class="cc" href="#">Weekly 1:1 · Mon 16 Nov</a></div>
+      <div class="q">What did I promise my team lead this week?</div>
+      <div class="prog" role="status"><span class="sp" aria-hidden="true"></span>Read 6 meetings · writing answer…</div>
+      <div class="a">You made two commitments to your lead:
+        <ul>
+          <li>Send the <b>growth plan</b> draft by Friday <a class="cc" href="#">Weekly 1:1 · Mon 16 Nov</a></li>
+          <li>Write up the installer QA hand-over notes for Sam, and check that the<span class="caret" aria-hidden="true"></span></li>
+        </ul>
+      </div>
+      <div><button class="btn"><svg class="i"><use href="#i-stop"/></svg>Stop</button></div>
+    </div>
+    <div class="ask-in"><textarea aria-label="Question" placeholder="Ask about this week's meetings…"></textarea>
+      <div class="ask-f"><span><span class="kbd">Enter</span> to send · <span class="kbd">Shift Enter</span> new line</span><button class="btn ghost sm" aria-label="Send question" disabled style="opacity:.6"><svg class="i"><use href="#i-send"/></svg></button></div></div>
+  </aside>
+</div>
+<script>
+const root=document.documentElement,ask=document.getElementById('ask');
+function seg(id,apply){document.querySelectorAll('#'+id+' button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#'+id+' button').forEach(x=>x.setAttribute('aria-pressed',x===b));apply(b.dataset.v)}))}
+seg('theme',v=>{root.className=v});
+function setAsk(o){ask.hidden=!o;const b=document.getElementById('askBtn');b.setAttribute('aria-pressed',o);b.classList.toggle('on',o)}
+seg('screen',v=>{document.querySelectorAll('[data-s]').forEach(s=>s.hidden=s.dataset.s!==v);setAsk(v==='ask')});
+setAsk(false);
+document.getElementById('askBtn').onclick=()=>setAsk(ask.hidden);
+document.getElementById('askClose').onclick=()=>setAsk(false);
+const sb=document.getElementById('scopeBtn'),sm=document.getElementById('scopeMenu');
+sb.onclick=()=>{sm.hidden=!sm.hidden;sb.setAttribute('aria-expanded',!sm.hidden)};
+sm.querySelectorAll('button').forEach(b=>b.onclick=()=>{sm.hidden=true;sb.setAttribute('aria-expanded',false)});
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!sm.hidden){sm.hidden=true;sb.focus()}});
+document.addEventListener('click',e=>{const c=e.target.closest('button.ck');if(c){const on=c.getAttribute('aria-checked')!=='true';c.setAttribute('aria-checked',on);c.classList.toggle('on',on)}});
+</script>
+</body>
+</html>

@@ -1,11 +1,12 @@
 import { toast } from 'sonner';
 import type { SaveMeetingResponse } from '@/services/storageService';
+import { queuedPageUrl } from '@/lib/recording-target';
 
 /** Where a save landed: the meeting page, and whether the recording joined an earlier meeting. */
-export function saveOutcome(r: SaveMeetingResponse): { url: string; continued: boolean; continueError: string | null } {
+export function saveOutcome(r: SaveMeetingResponse): { url: string; continued: boolean; continueError: string | null; fallback: boolean } {
   const continued = r.continued === true;
   const url = `/meeting-details?id=${r.meeting_id}&source=recording${continued ? '&continued=1' : ''}`;
-  return { url, continued, continueError: r.continue_error ?? null };
+  return { url, continued, continueError: r.continue_error ?? null, fallback: r.fallback === true };
 }
 
 /** An earlier meeting the current call can continue into (Rust `ContinueMeeting`). */
@@ -20,11 +21,11 @@ export interface ContinueStatus {
   target: ContinueMeeting | null;
 }
 
-/** Meeting page's "Resume recording": the next start continues this meeting, then goes home to start it. */
+/** Meeting page's "Resume recording": the next start continues this meeting, then opens its page, which starts it. */
 export function requestResume(meetingId: string, push: (url: string) => void): void {
   sessionStorage.setItem('autoStartContinueId', meetingId);
   sessionStorage.setItem('autoStartRecording', 'true');
-  push('/');
+  push(queuedPageUrl(sessionStorage, meetingId));
 }
 
 /** Reads and clears the continue id, so a later auto-start does not reuse it. */

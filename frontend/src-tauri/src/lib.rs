@@ -65,6 +65,7 @@ mod usage;
 mod prep;
 mod secrets;
 mod backup;
+mod recording;
 mod updates;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
@@ -202,6 +203,7 @@ async fn start_recording<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     log_info!("🔥 CALLED start_recording with meeting chars: {:?}", meeting_name.as_ref().map(|n| n.chars().count()));
     log_info!(
@@ -221,6 +223,7 @@ async fn start_recording<R: Runtime>(
         mic_device_name,
         system_device_name,
         meeting_name.clone(),
+        meeting_id,
     )
     .await
     {
@@ -406,7 +409,7 @@ async fn start_recording_with_devices<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
 ) -> Result<(), String> {
-    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None).await
+    start_recording_with_devices_and_meeting(app, mic_device_name, system_device_name, None, None).await
 }
 
 #[tauri::command]
@@ -415,6 +418,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
     mic_device_name: Option<String>,
     system_device_name: Option<String>,
     meeting_name: Option<String>,
+    meeting_id: Option<String>,
 ) -> Result<(), String> {
     log_info!("🚀 CALLED start_recording_with_devices_and_meeting - Mic: {:?}, System: {:?}, Meeting chars: {:?}",
              mic_device_name, system_device_name, meeting_name.as_ref().map(|n| n.chars().count()));
@@ -429,7 +433,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
                 "No devices specified, starting with defaults and meeting chars: {:?}",
                 meeting_name.as_ref().map(|n| n.chars().count())
             );
-            audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name)
+            audio::recording_commands::start_recording_with_meeting_name(app.clone(), meeting_name, meeting_id)
                 .await
         }
         _ => {
@@ -444,6 +448,7 @@ async fn start_recording_with_devices_and_meeting<R: Runtime>(
                 mic_device_name,
                 system_device_name,
                 meeting_name,
+                meeting_id,
             )
             .await
         }
@@ -899,6 +904,14 @@ pub fn run() {
             api::api_save_transcript_config,
             api::api_get_transcript_api_key,
             api::api_delete_meeting,
+            api::meetings::api_list_meeting_rows,
+            api::meetings::api_create_meeting,
+            api::meetings::api_set_meeting_reviewed,
+            api::meetings::api_set_meeting_template,
+            api::meetings::api_list_meeting_views,
+            api::meetings::api_save_meeting_view,
+            api::meetings::api_delete_meeting_view,
+            api::meetings::api_delete_recording,
             audio::retention::old_audio_list,
             audio::retention::delete_old_audio,
             api::api_get_meeting,
@@ -910,6 +923,9 @@ pub fn run() {
             api::api_get_meeting_transcripts,
             api::api_save_meeting_title,
             api::api_save_transcript,
+            recording::route::api_route_recording_start,
+            recording::route::api_release_routed_start,
+            audio::recording_commands::api_finish_saving_target,
             api::open_meeting_folder,
             api::test_backend_connection,
             api::debug_backend_connection,
@@ -989,6 +1005,7 @@ pub fn run() {
             audio::permissions::trigger_system_audio_permission_command,
             // Database import commands
             database::commands::check_first_launch,
+            database::commands::take_backfill_error,
             database::commands::select_legacy_database_path,
             database::commands::detect_legacy_database,
             database::commands::check_default_legacy_database,
@@ -998,6 +1015,7 @@ pub fn run() {
             // Database and Models path commands
             database::commands::get_database_directory,
             database::commands::open_database_folder,
+            database::commands::open_log_file,
             backup::commands::backup_now,
             backup::commands::backup_list,
             backup::commands::backup_open_folder,
@@ -1041,6 +1059,9 @@ pub fn run() {
             knowledge::ask::ask_cancel,
             knowledge::briefs::briefs_list,
             knowledge::briefs::brief_get,
+            knowledge::briefs::brief_for_meeting,
+            knowledge::briefs::brief_regenerate,
+            knowledge::briefs::brief_meeting,
             knowledge::digest::digest_get,
             knowledge::feed::feed_list,
             knowledge::feed::feed_unread_count,
@@ -1064,13 +1085,11 @@ pub fn run() {
             updates::updates_set_check_on_start,
             updates::updates_check,
             updates::updates_install,
-            prep::upcoming::prep_overview,
             prep::store::prep_get,
             prep::store::prep_for_meeting,
             prep::store::prep_save,
             prep::store::prep_tick,
             prep::store::prep_approve,
-            prep::store::prep_delete,
             prep::chat::prep_send, prep::chat::prep_material_limit,
             usage::stats::stats_cost,
             usage::stats::meeting_cost,

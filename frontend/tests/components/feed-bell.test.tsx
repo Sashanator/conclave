@@ -40,6 +40,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
     return new Promise((resolve) => releases.push(() => resolve(count)));
   }
   if (command === 'feed_list') return structuredClone(items);
+  if (command === 'brief_meeting') return args?.briefId === 'brief-1' ? 'm-7' : null;
   if (command === 'feed_mark_read' || command === 'feed_mark_all_read') return undefined;
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args ?? {})}`);
 });
@@ -182,7 +183,19 @@ describe('FeedBell list', () => {
     });
     await flush();
     expect(invoke).toHaveBeenCalledWith('feed_mark_read', { id: 'feed-1' });
-    expect(push).toHaveBeenCalledWith('/briefs?id=brief-1&kind=brief');
+    expect(invoke).toHaveBeenCalledWith('brief_meeting', { briefId: 'brief-1' });
+    expect(push).toHaveBeenCalledWith('/meeting-details?id=m-7&tab=prep');
+  });
+
+  test('a digest opens the Digests page', async () => {
+    unread = 1;
+    items = [{ ...brief, kind: 'digest', title: 'Weekly digest', targetId: 'd-1' }];
+    await mount();
+    await act(async () => {
+      item('Weekly digest').props.onClick();
+    });
+    await flush();
+    expect(push).toHaveBeenCalledWith('/digests?id=d-1');
   });
 
   test('mark all as read calls the backend', async () => {

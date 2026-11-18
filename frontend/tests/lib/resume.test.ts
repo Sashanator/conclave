@@ -13,6 +13,11 @@ describe('saveOutcome', () => {
     expect(outcome.continueError).toBeNull();
   });
 
+  test('fallback is reported, missing means false', () => {
+    expect(saveOutcome({ meeting_id: 'm', fallback: true }).fallback).toBe(true);
+    expect(saveOutcome({ meeting_id: 'm' }).fallback).toBe(false);
+  });
+
   test('surfaces continue_error', () => {
     const outcome = saveOutcome({ meeting_id: 'm2', continue_error: 'Merging the audio failed: x' });
     expect(outcome.continueError).toBe('Merging the audio failed: x');
@@ -21,14 +26,16 @@ describe('saveOutcome', () => {
 });
 
 describe('requestResume and takeAutoStartContinueId', () => {
-  test('requestResume sets both keys and opens home', () => {
+  test('requestResume sets both keys and opens the meeting page', () => {
     sessionStorage.clear();
     const push = (url: string) => pushed.push(url);
     const pushed: string[] = [];
     requestResume('m1', push);
     expect(sessionStorage.getItem('autoStartContinueId')).toBe('m1');
     expect(sessionStorage.getItem('autoStartRecording')).toBe('true');
-    expect(pushed).toEqual(['/']);
+    expect(pushed).toHaveLength(1);
+    const start = pushed[0].match(/^\/meeting-details\?id=m1&start=(\d+)$/)![1];
+    expect(sessionStorage.getItem('autoStartKey')).toBe(`m1:${start}`);
   });
 
   test('takeAutoStartContinueId reads once', () => {

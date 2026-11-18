@@ -19,6 +19,8 @@ export interface SaveMeetingResponse {
   meeting_id: string;
   continued?: boolean;
   continue_error?: string | null;
+  release_error?: string | null;
+  fallback?: boolean;
 }
 
 export interface Meeting {
@@ -41,6 +43,8 @@ export class StorageService {
    * @param recordingId - The recording's recovery id, so its LLM usage attaches to the meeting
    * @param titleOrigin - Where the title came from; the summary only renames a default title
    * @param live - True when the save follows a live recording stop (the backend may continue an earlier meeting)
+   * @param meetingId - The started meeting row this recording belongs to (null: the save makes a new meeting)
+   * @param recordingGeneration - The recording this save belongs to (from its stop event), so a late save never takes a newer recording's continue target
    * @returns Promise with { meeting_id: string }
    */
   async saveMeeting(
@@ -50,7 +54,9 @@ export class StorageService {
     notes: MeetingNote[] = [],
     recordingId: string | null = null,
     titleOrigin: TitleOrigin = { source: 'default' },
-    live = false
+    live = false,
+    meetingId: string | null = null,
+    recordingGeneration: number | null = null
   ): Promise<SaveMeetingResponse> {
     return invoke<SaveMeetingResponse>('api_save_transcript', {
       meetingTitle,
@@ -62,6 +68,8 @@ export class StorageService {
       calendarUid: titleOrigin.uid ?? null,
       calendarStart: titleOrigin.start ?? null,
       live,
+      meetingId,
+      recordingGeneration,
     });
   }
 

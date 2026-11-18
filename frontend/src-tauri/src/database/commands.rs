@@ -12,6 +12,12 @@ pub struct DatabaseCheckResult {
     pub size: u64,
 }
 
+/// The startup backfill's failure, once; the UI shows it as a toast.
+#[tauri::command]
+pub fn take_backfill_error() -> Option<String> {
+    super::redesign_backfill::take_failure()
+}
+
 /// Check if this is the first launch (no database exists yet)
 #[tauri::command]
 pub async fn check_first_launch(app: AppHandle) -> Result<bool, String> {
@@ -233,6 +239,30 @@ pub async fn open_database_folder(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Path of the app log file, `<dir>/<name>.log`, as tauri-plugin-log names it.
+pub(crate) fn log_file_path(log_dir: &std::path::Path, app_name: &str) -> PathBuf {
+    log_dir.join(format!("{}.log", app_name))
+}
+
+/// Open the log file in the system default app, or its folder until the file exists.
+#[tauri::command]
+pub async fn open_log_file(app: AppHandle) -> Result<(), String> {
+    let log_dir = app
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("Failed to get app log dir: {}", e))?;
+    let path = log_file_path(&log_dir, &app.package_info().name);
+    if path.exists() {
+        open_folder(&path)?;
+    } else {
+        std::fs::create_dir_all(&log_dir)
+            .map_err(|e| format!("Failed to create directory: {}", e))?;
+        open_folder(&log_dir)?;
+    }
+    info!("Opened log file: {}", path.display());
+    Ok(())
+}
+
 /// Opens `path` in the system file explorer.
 pub(crate) fn open_folder(path: &std::path::Path) -> Result<(), String> {
     let folder_path = path.to_string_lossy().to_string();
@@ -261,4 +291,18 @@ pub(crate) fn open_folder(path: &std::path::Path) -> Result<(), String> {
             .map_err(|e| format!("Failed to open folder: {}", e))?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::log_file_path;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn log_file_path_joins_dir_and_name() {
+        assert_eq!(
+            log_file_path(Path::new("L"), "Conclave"),
+            PathBuf::from("L/Conclave.log")
+        );
+    }
 }

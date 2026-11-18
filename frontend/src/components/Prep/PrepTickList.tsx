@@ -1,12 +1,10 @@
 'use client';
 
-import Link from 'next/link';
 import { useRef } from 'react';
 import { toast } from 'sonner';
 import { prepCounter, tickItem, type MeetingPrep } from '@/lib/prep';
 
 export function PrepTickList({ prep, onChange }: { prep: MeetingPrep; onChange(p: MeetingPrep): void }) {
-  const href = `/prep?${new URLSearchParams({ event: prep.eventUid, start: prep.eventStart })}`;
   const latest = useRef(prep);
   latest.current = prep;
   const queue = useRef<Promise<void>>(Promise.resolve());
@@ -46,7 +44,6 @@ export function PrepTickList({ prep, onChange }: { prep: MeetingPrep; onChange(p
           </li>
         ))}
       </ul>
-      <Link href={href} className="text-sm text-primary hover:underline">Open in Prep</Link>
     </div>
   );
 }

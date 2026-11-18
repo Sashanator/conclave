@@ -226,7 +226,7 @@ pub async fn prep_send<R: Runtime>(
                 .await?
                 .ok_or("Prep not found")?;
             let template_id = prep.template_id.clone();
-            let event_title = prep.event_title.clone();
+            let event_title = prep.event_title.clone().unwrap_or_default();
             let template = tauri::async_runtime::spawn_blocking(move || {
                 if let Some(template) = template_id
                     .as_deref()
@@ -247,8 +247,8 @@ pub async fn prep_send<R: Runtime>(
             let (system, user) = build_prompts(
                 &PromptInput {
                     instruction: prep_instruction(template.as_ref()),
-                    event_title: &prep.event_title,
-                    event_start: &prep.event_start,
+                    event_title: prep.event_title.as_deref().unwrap_or(""),
+                    event_start: prep.event_start.as_deref().unwrap_or(""),
                     material: &prep.material,
                     items: &prep.items,
                     history: &prep.chat,

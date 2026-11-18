@@ -114,6 +114,13 @@
     --blue-800: 30 64 175;
     --blue-900: 30 58 138;
     --blue-950: 23 37 84;
+    --rec: 0 72% 51%;
+    --row: 40px;
+    --cat-1: 217 91% 60%;
+    --cat-2: 160 60% 40%;
+    --cat-3: 27 87% 55%;
+    --cat-4: 262 70% 60%;
+    --cat-5: 0 0% 55%;
   }
 
   .dark {
@@ -141,6 +148,12 @@
     --chart-3: 30 80% 55%;
     --chart-4: 280 65% 60%;
     --chart-5: 340 75% 55%;
+    --rec: 0 74% 42%;
+    --cat-1: 217 91% 60%;
+    --cat-2: 160 60% 40%;
+    --cat-3: 27 87% 55%;
+    --cat-4: 262 70% 60%;
+    --cat-5: 0 0% 55%;
   }
 
   .theme-conclave {
@@ -179,6 +192,12 @@
     --blue-800: 91 33 182;
     --blue-900: 76 29 149;
     --blue-950: 46 16 101;
+    --rec: 0 74% 42%;
+    --cat-1: 217 91% 60%;
+    --cat-2: 160 60% 40%;
+    --cat-3: 27 87% 55%;
+    --cat-4: 262 70% 60%;
+    --cat-5: 0 0% 55%;
   }
 
   .theme-conclave .record-button {
@@ -191,6 +210,10 @@
 }
 
 @layer base {
+  .compact {
+    --row: 32px;
+  }
+
   * {
     @apply border-border;
   }
@@ -268,4 +291,10 @@
   [data-node-type] {
     overflow: visible !important;
   }
+}
+/* Editor follows the app theme (BlockNote's shadcn skin paints its own dark palette). Outside @layer: Tailwind purges unused layered classes. */
+.bn-container.bn-shadcn .bn-editor {
+  background-color: transparent;
+  color: inherit;
+  font-family: inherit;
 }

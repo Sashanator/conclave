@@ -19,7 +19,7 @@ type PendingOrigin = import('../../src/lib/templateAssist').PendingOrigin;
 type TemplateDraft = import('../../src/lib/template-draft').TemplateDraft;
 
 const draft: TemplateDraft = {
-  name: 'Standup', use_when: '', title_keywords: '', language: 'auto', context: '', prep: '',
+  name: 'Standup', emoji: null, use_when: '', title_keywords: '', language: 'auto', context: '', prep: '',
   sections: [{ title: 'Done', instruction: 'List done items' }], style: '',
 };
 

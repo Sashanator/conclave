@@ -176,6 +176,7 @@ export function TaskList() {
         >
           <Input
             aria-label="New task text"
+            placeholder="Add a task…"
             value={newText}
             onChange={(e) => setNewText(e.target.value)}
             onKeyDown={(e) => {

@@ -11,4 +11,4 @@ mod types;
 
 pub use history::*;
 pub use store::*;
-pub use types::{Template, TemplateSection};
+pub use types::{builtin_emoji, valid_emoji, Template, TemplateSection};

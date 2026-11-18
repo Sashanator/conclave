@@ -88,6 +88,21 @@ fn strip_title_if_present(markdown: &str) -> String {
     }
 }
 
+/// The category picked before recording (meetings.template_id), used as the manual template pick.
+async fn meeting_category(pool: &SqlitePool, meeting_id: &str) -> Option<String> {
+    match sqlx::query_scalar::<_, Option<String>>("SELECT template_id FROM meetings WHERE id=?")
+        .bind(meeting_id)
+        .fetch_optional(pool)
+        .await
+    {
+        Ok(row) => row.flatten(),
+        Err(e) => {
+            warn!("Could not read the category of meeting {}: {}", meeting_id, e);
+            None
+        }
+    }
+}
+
 /// One row per summary call that got a response. Called after the summary, with no lock held.
 async fn record_summary_usage(
     pool: &SqlitePool,
@@ -365,8 +380,12 @@ impl SummaryService {
         if user_title_cutoff.is_none() {
             warn!("Could not read the title migration time for meeting {}", meeting_id);
         }
+        let meeting_date = MeetingsRepository::meeting_date(&pool, &meeting_id).await.unwrap_or_else(|e| {
+            warn!("Could not read the date of meeting {}: {}", meeting_id, e);
+            None
+        });
         let meeting_info = meeting.as_ref().map(|m| {
-            meeting_info_for_prompt(&m.title, title_source.as_deref(), m.created_at.0, user_title_cutoff)
+            meeting_info_for_prompt(&m.title, title_source.as_deref(), m.created_at.0, meeting_date.unwrap_or(m.created_at.0), user_title_cutoff)
         });
         let title = meeting.as_ref().map(|m| m.title.clone()).unwrap_or_default();
         let folder = meeting.and_then(|m| m.folder_path).filter(|p| !p.trim().is_empty()).map(PathBuf::from);
@@ -376,7 +395,7 @@ impl SummaryService {
             None
         });
         let listing = templates::list_templates();
-        let (template_id, source) = match choose_without_model(manual_template_id.as_deref(), stored, prep.as_ref().and_then(|p| p.template_id.as_deref()), &title, &listing.templates) {
+        let (template_id, source) = match choose_without_model(manual_template_id.clone().or(meeting_category(&pool, &meeting_id).await).as_deref(), stored, prep.as_ref().and_then(|p| p.template_id.as_deref()), &title, &listing.templates) {
             Choice::Decided(id, source) => (id, source),
             Choice::AskModel => {
                 let (system, user) = auto_pick_prompts(&text, &listing.templates);
@@ -597,6 +616,7 @@ pub(crate) fn meeting_info_for_prompt(
     title: &str,
     title_source: Option<&str>,
     created_at: DateTime<Utc>,
+    meeting_date: DateTime<Utc>,
     user_title_cutoff: Option<DateTime<Utc>>,
 ) -> MeetingInfo {
     let title = title.trim();
@@ -608,7 +628,7 @@ pub(crate) fn meeting_info_for_prompt(
                 && user_title_cutoff.map_or(true, |cutoff| created_at >= cutoff) => Some(title.to_string()),
             _ => None,
         },
-        date: created_at.with_timezone(&Local).format("%Y-%m-%d").to_string(),
+        date: meeting_date.with_timezone(&Local).format("%Y-%m-%d").to_string(),
     }
 }
 
@@ -629,10 +649,17 @@ mod tests {
             (" X ", None, None),
             ("  ", Some("user"), None),
         ] {
-            let info = meeting_info_for_prompt(title, source, at, None);
+            let info = meeting_info_for_prompt(title, source, at, at, None);
             assert_eq!(info.title.as_deref(), expected);
             assert_eq!(info.date, "2026-10-29");
         }
+    }
+
+    #[test]
+    fn summary_prompt_date_is_the_meeting_date_not_row_creation() {
+        let created = Local.with_ymd_and_hms(2026, 11, 1, 12, 0, 0).unwrap().with_timezone(&Utc);
+        let started = Local.with_ymd_and_hms(2026, 11, 9, 12, 0, 0).unwrap().with_timezone(&Utc);
+        assert_eq!(meeting_info_for_prompt("X", Some("user"), created, started, None).date, "2026-11-09");
     }
 
     #[tokio::test]
@@ -642,21 +669,30 @@ mod tests {
         let old = cutoff - chrono::Duration::days(1);
         let new = cutoff + chrono::Duration::days(1);
 
-        let info = meeting_info_for_prompt(" X ", Some("user"), old, Some(cutoff));
+        let info = meeting_info_for_prompt(" X ", Some("user"), old, old, Some(cutoff));
         assert_eq!(info.title, None);
         assert_eq!(info.date, old.with_timezone(&Local).format("%Y-%m-%d").to_string());
         assert_eq!(
-            meeting_info_for_prompt(" X ", Some("user"), new, Some(cutoff)).title.as_deref(),
+            meeting_info_for_prompt(" X ", Some("user"), new, new, Some(cutoff)).title.as_deref(),
             Some("X")
         );
         assert_eq!(
-            meeting_info_for_prompt(" X ", Some("calendar"), old, Some(cutoff)).title.as_deref(),
+            meeting_info_for_prompt(" X ", Some("calendar"), old, old, Some(cutoff)).title.as_deref(),
             Some("X")
         );
         assert_eq!(
-            meeting_info_for_prompt(" X ", Some("user"), old, None).title.as_deref(),
+            meeting_info_for_prompt(" X ", Some("user"), old, old, None).title.as_deref(),
             Some("X")
         );
+    }
+
+    #[tokio::test]
+    async fn meeting_category_reads_template_id() {
+        let pool = test_pool().await;
+        let id = MeetingsRepository::create_meeting(&pool, Some("X"), Local::now().naive_local()).await.unwrap();
+        sqlx::query("UPDATE meetings SET template_id = 'one_on_one' WHERE id = ?").bind(&id).execute(&pool).await.unwrap();
+        assert_eq!(meeting_category(&pool, &id).await.as_deref(), Some("one_on_one"));
+        assert_eq!(meeting_category(&pool, "missing").await, None);
     }
 
     #[test]

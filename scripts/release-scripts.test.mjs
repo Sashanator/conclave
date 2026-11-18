@@ -59,7 +59,7 @@ test('latest_json_rejects_foreign_repo_and_empty_sig', () => {
 });
 
 test('real_changelog_has_current_release', () => {
-  const r = run('changelog-section.mjs', '1.1.0', join(here, '..', 'CHANGELOG.md'));
+  const r = run('changelog-section.mjs', '2.0.0', join(here, '..', 'CHANGELOG.md'));
   assert.equal(r.status, 0);
   assert.ok(r.stdout.trim().startsWith('- '));
 });

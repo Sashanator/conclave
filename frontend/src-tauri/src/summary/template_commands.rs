@@ -7,6 +7,8 @@ use serde::Serialize;
 pub struct TemplateInfo {
     pub id: String,
     pub name: String,
+    /// Effective emoji; None when empty.
+    pub emoji: Option<String>,
     pub use_when: Option<String>,
     pub language: Option<String>,
     /// True when any title keyword is non-blank (with an empty use_when, "auto-pick off" is then hidden).
@@ -24,6 +26,7 @@ fn template_info(entry: TemplateEntry) -> TemplateInfo {
         language: entry.template.fixed_language().map(str::to_string),
         has_keywords: entry.template.title_keywords.iter().any(|k| !k.trim().is_empty()),
         id: entry.id,
+        emoji: entry.template.emoji.filter(|e| !e.trim().is_empty()),
         name: entry.template.name,
         use_when: entry.template.use_when,
     }
@@ -54,13 +57,18 @@ fn checked_origin(origin: Option<SaveOrigin>) -> Result<SaveOrigin, String> {
 }
 
 #[tauri::command]
-pub async fn api_save_template(
+pub async fn api_save_template<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     template_id: Option<String>,
     template: Template,
     origin: Option<SaveOrigin>,
 ) -> Result<String, String> {
     let origin = checked_origin(origin)?;
-    templates::save_template(template_id.as_deref(), &template, &origin)
+    let (id, emoji) = templates::save_template_keeping_emoji(template_id.as_deref(), &template, &origin)?;
+    if emoji.is_none() && templates::builtin_emoji(&id).is_none() {
+        tauri::async_runtime::spawn(crate::summary::template_emoji::suggest(app, id.clone()));
+    }
+    Ok(id)
 }
 
 #[tauri::command]
@@ -87,11 +95,22 @@ pub async fn api_deleted_templates() -> Result<Vec<DeletedTemplate>, String> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn empty_emoji_lists_as_none() {
+        let mut e = entry(None, &[], None);
+        e.template.emoji = Some("".into());
+        assert_eq!(template_info(e).emoji, None);
+        let mut e = entry(None, &[], None);
+        e.template.emoji = Some("🎓".into());
+        assert_eq!(template_info(e).emoji.as_deref(), Some("🎓"));
+    }
+
     fn entry(use_when: Option<&str>, keywords: &[&str], language: Option<&str>) -> TemplateEntry {
         TemplateEntry {
             id: "t1".into(),
             template: Template {
                 name: "Deutsch".into(),
+                emoji: None,
                 description: String::new(),
                 use_when: use_when.map(String::from),
                 title_keywords: keywords.iter().map(|k| k.to_string()).collect(),

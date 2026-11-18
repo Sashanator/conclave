@@ -10,8 +10,12 @@ const originalEvent = { ...await import('@tauri-apps/api/event') };
 const originalNavigation = { ...await import('next/navigation') };
 const originalConfig = { ...await import('../../src/contexts/ConfigContext') };
 const originalRecording = { ...await import('../../src/contexts/RecordingStateContext') };
+const originalStart = { ...await import('../../src/hooks/useRecordingStart') };
+const originalSettingsModal = { ...await import('../../src/app/_components/SettingsModal') };
 const originalPageContent = { ...await import('../../src/app/meeting-details/page-content') };
 afterAll(() => {
+  mock.module('../../src/hooks/useRecordingStart', () => originalStart);
+  mock.module('../../src/app/_components/SettingsModal', () => originalSettingsModal);
   mock.module('../../src/app/meeting-details/page-content', () => originalPageContent);
   mock.module('../../src/contexts/RecordingStateContext', () => originalRecording);
   mock.module('@tauri-apps/api/event', () => originalEvent);
@@ -30,8 +34,13 @@ mock.module('next/navigation', () => ({
   usePathname: () => '/meeting-details', useRouter: () => ({}),
   useSearchParams: () => new URLSearchParams({ id: selectedMeeting }),
 }));
-mock.module('../../src/contexts/RecordingStateContext', () => ({ useRecordingState: () => ({ isRecording: false }) }));
-mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ isAutoSummary: false }) }));
+mock.module('../../src/contexts/RecordingStateContext', () => ({
+  useRecordingState: () => ({ isRecording: false, liveMeetingId: null, isStopping: false, isProcessing: false, isSaving: false }),
+}));
+mock.module('../../src/contexts/ConfigContext', () => ({ useConfig: () => ({ isAutoSummary: false, transcriptModelConfig: { provider: 'parakeet' } }) }));
+// The route mounts the start hook and its model dialogs; these tests cover the transcript refresh only.
+mock.module('../../src/hooks/useRecordingStart', () => ({ useRecordingStart: () => ({ handleRecordingStart: async () => {}, isAutoStarting: false }) }));
+mock.module('../../src/app/_components/SettingsModal', () => ({ SettingsModals: () => null }));
 const notify = mock(() => {});
 mock.module('sonner', () => ({ toast: { info: notify, error: notify, success: notify, warning: notify } }));
 mock.module('../../src/lib/summary-language-preferences', () => ({
@@ -48,6 +57,7 @@ const transcriptPage = {
 let savedSummary: SummaryProcessResponse;
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
   if (command === 'api_get_meetings') return [];
+  if (command === 'api_list_meeting_rows') return []; // no row: the finished page
   if (command === 'api_get_summary') return { ...savedSummary, meeting_id: args!.meetingId };
   if (command === 'api_get_meeting_metadata') return readMetadata(args!.meetingId as string);
   if (command === 'api_get_meeting_transcripts') return readTranscripts(args!.meetingId as string);

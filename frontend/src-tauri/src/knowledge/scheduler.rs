@@ -6,7 +6,8 @@ use crate::knowledge::digest;
 use crate::knowledge::extract;
 use crate::knowledge::feed;
 use crate::knowledge::settings;
-use crate::knowledge::CALENDAR_REFRESH_MINS;
+use crate::knowledge::calendar::reconcile::{self, Window};
+use crate::knowledge::{CALENDAR_BEHIND_DAYS, CALENDAR_REFRESH_MINS, RECONCILE_AHEAD_DAYS};
 use crate::state::AppState;
 use crate::summary::templates::{self, TemplateEntry};
 use chrono::{DateTime, Duration, Utc};
@@ -23,6 +24,37 @@ pub(crate) struct Clock {
     refreshed_at: Option<DateTime<Utc>>,
     pruned_at: Option<DateTime<Utc>>,
     digest: digest::Tries,
+    /// The last good feed, kept until a reconcile on it succeeds, so a failed one retries without a fetch.
+    pending: Option<calendar::ExpandResult>,
+    /// When and for which calendar `pending` was fetched.
+    pending_from: Option<(DateTime<Utc>, String)>,
+}
+
+impl Clock {
+    #[cfg(test)]
+    fn keep(&mut self, feed: calendar::ExpandResult, fetched: DateTime<Utc>, url: &str) {
+        self.pending = Some(feed);
+        self.pending_from = Some((fetched, url.to_string()));
+    }
+
+    /// The reconcile window starts CALENDAR_BEHIND_DAYS before now, so the kept feed covers it while it is
+    /// under a day old; its 7 reconcile days ahead stay inside the 14 fetched for 7 days. The one-day limit is
+    /// a conservative choice. A feed of another calendar, or of a disconnected one, would cancel the wrong
+    /// meetings: drop it too.
+    fn drop_unusable_pending(&mut self, now: DateTime<Utc>) {
+        let url = settings::current().calendar_url;
+        let usable = matches!(&self.pending_from, Some((at, from))
+            if url.as_deref() == Some(from.as_str())
+                && now >= *at
+                && now - *at <= Duration::days(CALENDAR_BEHIND_DAYS));
+        if self.pending.is_some() && !usable {
+            warn!("knowledge: kept calendar feed dropped, it is stale or not the connected calendar");
+        }
+        if !usable {
+            self.pending = None;
+            self.pending_from = None;
+        }
+    }
 }
 
 /// Starts the loop once the database is ready, as the extraction worker does.
@@ -69,10 +101,26 @@ pub(crate) async fn tick<R: Runtime>(
     now: DateTime<Utc>,
     templates: &[TemplateEntry],
 ) -> Result<(), String> {
-    if refresh_due(clock.refreshed_at, now) && settings::current().calendar_url.is_some() {
+    // Read before the fetch: if the URL changes meanwhile, the fetched feed is dropped as another calendar's.
+    let url = settings::current().calendar_url;
+    if refresh_due(clock.refreshed_at, now) && url.is_some() {
         clock.refreshed_at = Some(now);
-        if let Err(e) = calendar::refresh(app).await {
-            warn!("knowledge: calendar refresh failed: {e}");
+        match calendar::refresh(app, now).await {
+            Ok(feed) => {
+                clock.pending = Some(feed);
+                clock.pending_from = url.map(|url| (now, url));
+            }
+            // `refresh` has recorded the error against the URL it fetched.
+            Err(e) => warn!("knowledge: calendar refresh failed: {e}"),
+        }
+    }
+    clock.drop_unusable_pending(now);
+    if let Some(feed) = clock.pending.clone() {
+        let marker = settings::current().calendar_marker;
+        let live = crate::audio::recording_commands::recording_target_id();
+        if after_refresh(pool, Ok(feed), live.as_deref(), &marker, now).await.is_ok() {
+            clock.pending = None;
+            clock.pending_from = None;
         }
     }
     if prune_due(clock.pruned_at, now) {
@@ -86,6 +134,31 @@ pub(crate) async fn tick<R: Runtime>(
     make_due_briefs(app, pool, now, &calendar::upcoming(), templates).await
 }
 
+/// Reconciles the meetings with a fetched feed. A failed fetch or reconcile reaches Settings as the last sync error
+/// and changes nothing; the caller keeps the feed to retry.
+pub(crate) async fn after_refresh(
+    pool: &SqlitePool,
+    result: Result<calendar::ExpandResult, String>,
+    live: Option<&str>,
+    marker: &str,
+    now: DateTime<Utc>,
+) -> Result<(), String> {
+    let outcome = match result {
+        Ok(feed) => {
+            let window = Window { from: now - Duration::days(CALENDAR_BEHIND_DAYS), to: now + Duration::days(RECONCILE_AHEAD_DAYS) };
+            reconcile::run(pool, &feed, live, marker, &window, now).await.map(|changed| {
+                info!("knowledge: calendar reconciled, {changed} changes");
+                calendar::clear_sync_error();
+            })
+        }
+        Err(e) => Err(e),
+    };
+    if let Err(e) = &outcome {
+        calendar::record_sync_error(e.clone());
+    }
+    outcome
+}
+
 /// Makes a brief for each occurrence that is due, has a type and has no brief yet. A brief that fails is logged and the rest go on.
 pub(crate) async fn make_due_briefs<R: Runtime>(
     app: &AppHandle<R>,
@@ -97,7 +170,13 @@ pub(crate) async fn make_due_briefs<R: Runtime>(
     // The clock the brief re-reads before it saves: the tick's time plus what has passed since (so a test clock works).
     let begun = std::time::Instant::now();
     let later = || now + Duration::from_std(begun.elapsed()).unwrap_or_else(|_| Duration::zero());
+    let marker = settings::current().calendar_marker;
     for occ in occurrences.iter().filter(|o| due(o, now)) {
+        // Briefs are for 📞 calls only; the brief carries the title without the marker.
+        let Some(title) = calendar::strip_marker(&occ.title, &marker) else {
+            continue;
+        };
+        let occ = &Occurrence { title, ..occ.clone() };
         let Some(template) = event_type(&occ.title, templates) else {
             continue;
         };
@@ -141,7 +220,7 @@ mod tests {
     }
 
     fn event(title: &str, start: DateTime<Utc>) -> Occurrence {
-        Occurrence { uid: format!("{title}-uid"), title: title.into(), start, end: start + Duration::minutes(30), recurring: false }
+        Occurrence { uid: format!("{title}-uid"), title: title.into(), start, end: start + Duration::minutes(30), original_start: start, recurring: false }
     }
 
     /// `id` is unique per test: the extraction slots are process-wide, so tests must not share a meeting.
@@ -178,7 +257,7 @@ mod tests {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
         previous_meeting(&pool, "brief_once_per_occurrence").await;
-        let occurrences = vec![event("1:1 Ivan", at(11, 0))];
+        let occurrences = vec![event("📞 1:1 Ivan", at(11, 0))];
         let templates = vec![one_on_one()];
 
         make_due_briefs(app.handle(), &pool, at(10, 10), &occurrences, &templates).await.unwrap();
@@ -194,7 +273,7 @@ mod tests {
         let app = tauri::test::mock_app();
         previous_meeting(&pool, "late_start_still_briefs").await;
         // The app starts 20 minutes before the meeting: the brief is still made.
-        let occurrences = vec![event("1:1 Ivan", at(11, 0))];
+        let occurrences = vec![event("📞 1:1 Ivan", at(11, 0))];
 
         make_due_briefs(app.handle(), &pool, at(10, 40), &occurrences, &[one_on_one()]).await.unwrap();
 
@@ -206,7 +285,7 @@ mod tests {
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
         previous_meeting(&pool, "untyped_or_not_due_events_get_no_brief").await;
-        let occurrences = vec![event("Standup", at(11, 0)), event("1:1 Ivan", at(14, 0))];
+        let occurrences = vec![event("📞 Standup", at(11, 0)), event("📞 1:1 Ivan", at(14, 0))];
 
         make_due_briefs(app.handle(), &pool, at(10, 40), &occurrences, &[one_on_one()]).await.unwrap();
 
@@ -214,7 +293,22 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn only_marker_events_get_briefs() {
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        previous_meeting(&pool, "only_marker_events_get_briefs").await;
+        let occurrences = vec![event("📞 1:1 Ivan", at(11, 0)), event("1:1 Ivan", at(11, 0))];
+
+        make_due_briefs(app.handle(), &pool, at(10, 40), &occurrences, &[one_on_one()]).await.unwrap();
+
+        assert_eq!(brief_count(&pool).await, 1);
+        let title: String = sqlx::query_scalar("SELECT title FROM briefs").fetch_one(&pool).await.unwrap();
+        assert_eq!(title, "1:1 Ivan");
+    }
+
+    #[tokio::test]
     async fn feed_is_pruned_once_a_day() {
+        let _guard = crate::knowledge::SETTINGS_TEST_LOCK.lock().await;
         let pool = test_pool().await;
         let app = tauri::test::mock_app();
         // The digest feature has started. Otherwise the tick would store the start, and mock apps have no store.
@@ -245,5 +339,97 @@ mod tests {
 
         tick(app.handle(), &pool, &mut clock, at(10, 0) + Duration::hours(25), &templates).await.unwrap();
         assert_eq!(feed_count(&pool).await, 0);
+    }
+
+    const MARKER: &str = "📞";
+    const URL: &str = "https://localhost:1/cal.ics";
+
+    fn call_feed(start: DateTime<Utc>) -> calendar::ExpandResult {
+        calendar::ExpandResult { occurrences: vec![event("📞 Sync", start)], complete: true }
+    }
+
+    async fn calendar_rows(pool: &SqlitePool) -> i64 {
+        sqlx::query_scalar("SELECT COUNT(*) FROM meetings WHERE calendar_uid = '📞 Sync-uid'").fetch_one(pool).await.unwrap()
+    }
+
+    /// Settings with the calendar connected (or not) and the digest started, so a tick on a mock app does not touch the store.
+    fn connect(url: Option<&str>) {
+        settings::set_cache(settings::KnowledgeSettings {
+            calendar_url: url.map(String::from),
+            digest_since: Some(at(0, 0).to_rfc3339()),
+            ..settings::current()
+        });
+    }
+
+    #[tokio::test]
+    async fn reconcile_runs_only_on_success() {
+        let pool = test_pool().await;
+        assert!(after_refresh(&pool, Err("down".into()), None, MARKER, at(10, 0)).await.is_err());
+        assert_eq!(calendar_rows(&pool).await, 0);
+
+        after_refresh(&pool, Ok(call_feed(at(14, 0))), None, MARKER, at(10, 0)).await.unwrap();
+        assert_eq!(calendar_rows(&pool).await, 1);
+    }
+
+    #[tokio::test]
+    async fn failed_fetch_waits_for_next_refresh() {
+        let _guard = crate::knowledge::SETTINGS_TEST_LOCK.lock().await;
+        connect(Some(URL));
+        let pool = test_pool().await;
+        let app = tauri::test::mock_app();
+        let mut clock = Clock::default();
+
+        tick(app.handle(), &pool, &mut clock, at(10, 0), &[]).await.unwrap();
+
+        assert_eq!(clock.refreshed_at, Some(at(10, 0)));
+        assert!(clock.pending.is_none());
+        assert!(calendar::status().last_error_at.is_some());
+        connect(None);
+    }
+
+    #[tokio::test]
+    async fn failed_reconcile_retries_from_pending_without_refetch() {
+        let _guard = crate::knowledge::SETTINGS_TEST_LOCK.lock().await;
+        connect(Some(URL));
+        let app = tauri::test::mock_app();
+        let bad = test_pool().await;
+        bad.close().await;
+        let good = test_pool().await;
+        // Refreshed a minute ago: the tick must not fetch again. A fetch would fail and leave `pending` None.
+        let mut clock = Clock::default();
+        clock.refreshed_at = Some(at(10, 0));
+        clock.keep(call_feed(at(14, 0)), at(10, 0), URL);
+
+        tick(app.handle(), &bad, &mut clock, at(10, 1), &[]).await.unwrap();
+        assert!(clock.pending.is_some());
+        assert!(calendar::status().last_error.is_some());
+
+        tick(app.handle(), &good, &mut clock, at(10, 2), &[]).await.unwrap();
+        assert!(clock.pending.is_none());
+        assert!(calendar::status().last_error.is_none() && calendar::status().last_error_at.is_none());
+        assert_eq!(calendar_rows(&good).await, 1);
+        assert_eq!(clock.refreshed_at, Some(at(10, 0)));
+        connect(None);
+    }
+
+    #[tokio::test]
+    async fn kept_feed_is_dropped_when_stale_or_for_another_calendar() {
+        let _guard = crate::knowledge::SETTINGS_TEST_LOCK.lock().await;
+        let app = tauri::test::mock_app();
+        let pool = test_pool().await;
+        for (url_now, fetched, now) in [
+            (Some(URL), at(10, 0), at(10, 0) + Duration::hours(25)),
+            (Some("https://localhost:2/other.ics"), at(10, 0), at(10, 1)),
+            (None, at(10, 0), at(10, 1)),
+        ] {
+            connect(url_now);
+            let mut clock = Clock::default();
+            clock.refreshed_at = Some(now);
+            clock.keep(call_feed(now + Duration::hours(4)), fetched, URL);
+            tick(app.handle(), &pool, &mut clock, now, &[]).await.unwrap();
+            assert!(clock.pending.is_none());
+            assert_eq!(calendar_rows(&pool).await, 0);
+        }
+        connect(None);
     }
 }

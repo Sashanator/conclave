@@ -52,6 +52,14 @@ pub(crate) async fn apply_extraction(
     let requests =
         serde_json::to_string(&ex.requests).map_err(|e| sqlx::Error::Protocol(e.to_string()))?;
     let mut tx = pool.begin().await?;
+    // A "Delete recording" mid-run empties the meeting: a stale result must not refill it.
+    let has_summary: Option<(i64,)> = sqlx::query_as("SELECT 1 FROM summary_processes WHERE meeting_id = ? LIMIT 1")
+        .bind(meeting_id)
+        .fetch_optional(&mut *tx)
+        .await?;
+    if has_summary.is_none() {
+        return Ok(false);
+    }
     sqlx::query("DELETE FROM tasks WHERE meeting_id = ? AND source = 'auto' AND status = 'open' AND edited = 0")
         .bind(meeting_id)
         .execute(&mut *tx)
@@ -89,6 +97,13 @@ pub(crate) async fn apply_extraction(
         .bind(meeting_id)
         .execute(&mut *tx)
         .await?;
+    }
+    if let Some(gist) = &ex.gist {
+        sqlx::query("UPDATE meetings SET gist = ? WHERE id = ?")
+            .bind(gist)
+            .bind(meeting_id)
+            .execute(&mut *tx)
+            .await?;
     }
     let written = set_extract(
         &mut *tx,
@@ -128,6 +143,7 @@ pub(crate) async fn set_extract<'c>(
     let sql = format!(
         "INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, error, extracted_at) \
          SELECT ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?) \
+           AND EXISTS (SELECT 1 FROM summary_processes WHERE meeting_id = ?) \
          ON CONFLICT(meeting_id) DO UPDATE SET \
            decisions_json = CASE WHEN ? THEN meeting_extracts.decisions_json ELSE excluded.decisions_json END, \
            requests_json = CASE WHEN ? THEN meeting_extracts.requests_json ELSE excluded.requests_json END, \
@@ -140,6 +156,7 @@ pub(crate) async fn set_extract<'c>(
         .bind(status)
         .bind(error)
         .bind(stamp())
+        .bind(meeting_id)
         .bind(meeting_id)
         .bind(keep)
         .bind(keep);
@@ -168,13 +185,15 @@ fn found(rows: u64) -> anyhow::Result<()> {
 
 /// Open tasks (meeting date desc, then extraction order, manual last) or done tasks (latest done first).
 pub(crate) async fn list(pool: &SqlitePool, status: &str) -> anyhow::Result<Vec<TaskRow>> {
+    let d = crate::database::repositories::meeting::meeting_date_sql("m");
+    let open = format!("t.meeting_id IS NULL, julianday({d}) DESC, t.created_at, t.rowid");
     let order = match status {
-        "open" => "t.meeting_id IS NULL, m.created_at DESC, t.created_at, t.rowid",
+        "open" => open.as_str(),
         "done" => "t.done_at DESC, t.rowid DESC",
         _ => anyhow::bail!("unknown task list"),
     };
     let sql = format!(
-        "SELECT t.id, t.meeting_id, m.title AS meeting_title, m.created_at AS meeting_date, t.text, t.owner, \
+        "SELECT t.id, t.meeting_id, m.title AS meeting_title, {d} AS meeting_date, t.text, t.owner, \
          t.due, t.at, t.status, t.source, t.created_at \
          FROM tasks t LEFT JOIN meetings m ON m.id = t.meeting_id \
          WHERE t.status = ? ORDER BY {order}"
@@ -335,6 +354,38 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at) VALUES (?, 'completed', 't', 't')")
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn failed_mark_after_delete_recording_writes_nothing() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        assert!(crate::database::repositories::meeting::MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+        assert_eq!(set_extract(&pool, "M", "failed", Some("x"), None, None).await.unwrap(), 0);
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM meeting_extracts").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 0);
+    }
+
+    #[tokio::test]
+    async fn apply_extraction_after_delete_recording_refills_nothing() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        assert!(crate::database::repositories::meeting::MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+        let mut ex = extraction(vec![task("A")]);
+        ex.gist = Some("g".into());
+        assert!(!apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        let (tasks, extracts, gist): (i64, i64, Option<String>) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM tasks), (SELECT COUNT(*) FROM meeting_extracts), (SELECT gist FROM meetings WHERE id = 'M')",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!((tasks, extracts, gist), (0, 0, None));
     }
 
     async fn insert_task(
@@ -375,6 +426,7 @@ mod tests {
             tasks,
             decisions: vec!["Ship it".to_string()],
             requests: vec![],
+            gist: None,
         }
     }
 
@@ -429,6 +481,20 @@ mod tests {
                 ("E", "open", 0),
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn apply_extraction_writes_gist() {
+        let pool = crate::database::repositories::test_pool().await;
+        insert_meeting(&pool, "M").await;
+        sqlx::query("UPDATE meetings SET gist = 'fallback' WHERE id = 'M'").execute(&pool).await.unwrap();
+        let mut ex = extraction(vec![]);
+        assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        let gist = || sqlx::query_scalar::<_, Option<String>>("SELECT gist FROM meetings WHERE id = 'M'").fetch_one(&pool);
+        assert_eq!(gist().await.unwrap().as_deref(), Some("fallback"));
+        ex.gist = Some("New gist".to_string());
+        assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        assert_eq!(gist().await.unwrap().as_deref(), Some("New gist"));
     }
 
     #[tokio::test]
@@ -695,5 +761,32 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(rows, vec![(x, "open".to_string())]);
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn open_tasks_order_by_meeting_date() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "mid", "2026-11-05 10:00:00.000+00:00", None, None).await;
+        for (id, m) in [("t1", "mid"), ("t2", "moved")] {
+            exec(&pool, &format!("INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES ('{id}', '{m}', 'x', 'me', 'open', 'ai', 0, 'c')")).await;
+        }
+        let rows = list(&pool, "open").await.unwrap();
+        assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["t2", "t1"]);
+        assert_eq!(rows[0].meeting_date.as_deref(), Some("2026-11-09T10:00:00.000+00:00"));
     }
 }

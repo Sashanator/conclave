@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en" class="dark theme-conclave">
+<head>
+<meta charset="utf-8">
+<title>Conclave: Meeting page</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Tokens from frontend/src/app/globals.css */
+:root{--background:0 0% 100%;--foreground:0 0% 3.9%;--card:0 0% 100%;--primary:0 0% 9%;--primary-foreground:0 0% 98%;--muted:0 0% 96.1%;--muted-foreground:0 0% 40%;--accent:0 0% 96.1%;--border:0 0% 89.8%;--ring:0 0% 3.9%;--violet:262 83% 58%;--rec:0 74% 42%;
+  --cat-1:217 91% 60%;--cat-2:160 60% 40%;--cat-3:27 87% 55%;--cat-5:0 0% 55%}
+.dark{--violet:258 90% 72%;--background:0 0% 3.9%;--foreground:0 0% 98%;--card:0 0% 6%;--primary:0 0% 98%;--primary-foreground:0 0% 9%;--muted:0 0% 14.9%;--muted-foreground:0 0% 68%;--accent:0 0% 14.9%;--border:0 0% 14.9%;--ring:0 0% 83.1%}
+.theme-conclave{--background:235 45% 9%;--foreground:40 30% 94%;--card:235 40% 12%;--primary:43 90% 58%;--primary-foreground:235 45% 9%;--muted:235 30% 18%;--muted-foreground:230 20% 74%;--accent:235 30% 18%;--border:235 30% 22%;--ring:43 90% 58%;--violet:258 90% 72%}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Source Sans 3",system-ui,sans-serif;font-size:14px;color:hsl(var(--foreground));background:hsl(var(--background))}
+button,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+.picker{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 16px;background:#f4f4f5;color:#18181b;border-bottom:1px solid #ddd;font-size:13px}
+.picker .seg{display:inline-flex;border:1px solid #ccc;border-radius:6px;overflow:hidden}
+.picker .seg button{border:0;background:#fff;color:#18181b;padding:4px 10px}.picker .seg button[aria-pressed=true]{background:#18181b;color:#fff}
+.app{display:grid;grid-template-columns:208px 1fr;height:calc(100vh - 45px);min-height:640px}
+nav{border-right:1px solid hsl(var(--border));display:flex;flex-direction:column;padding:12px 8px;gap:2px}
+.brand{display:flex;align-items:center;gap:8px;padding:4px 8px 12px;font-weight:700;font-size:15px}
+.brand i{width:22px;height:22px;border-radius:6px;background:linear-gradient(135deg,#1e1b4b,#7c3aed);display:inline-block}
+.nav-item{display:flex;align-items:center;gap:10px;padding:0 8px;height:32px;border-radius:6px;border:0;background:none;text-align:left;width:100%;color:hsl(var(--muted-foreground))}
+.nav-item:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.nav-item[aria-current=page]{background:hsl(var(--accent));color:hsl(var(--foreground));font-weight:600}
+.nav-sep{flex:1}
+.recnav.live{background:hsl(var(--rec));font-variant-numeric:tabular-nums}
+.recnav.quiet{background:none;color:hsl(var(--foreground));border:1px solid hsl(var(--border))}
+.recnav{background:linear-gradient(135deg,#0e7490,#6d28d9);color:#fff;font-weight:600;justify-content:center;height:36px;margin-bottom:6px}
+.ver{font-size:12px}
+main{overflow:auto;padding:16px 32px 40px}
+.crumb{font-size:12px;color:hsl(var(--muted-foreground));margin-bottom:8px}
+.crumb a{color:inherit;text-decoration:none}.crumb a:hover{color:hsl(var(--foreground))}
+.title{font-size:28px;font-weight:700;letter-spacing:-.01em;border:0;background:none;width:100%;padding:2px 0;outline:none;border-radius:4px}
+.title::placeholder{color:hsl(var(--muted-foreground))}
+.title:focus-visible{box-shadow:0 0 0 2px hsl(var(--ring)/.6)}
+.meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0 16px;color:hsl(var(--muted-foreground))}
+.meta .dot{opacity:.5}
+.chipbtn{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;border-radius:999px;border:1px solid hsl(var(--border));background:hsl(var(--card));font-size:13px;color:hsl(var(--foreground))}
+.chipbtn:hover{border-color:hsl(var(--violet))}
+.tag::before{content:"";width:7px;height:7px;border-radius:50%;background:hsl(var(--c))}
+.head{display:flex;gap:16px;align-items:flex-start}
+.head .grow{flex:1;min-width:0}
+.actions{display:flex;gap:6px;padding-top:26px;flex-wrap:wrap}
+.btn{display:inline-flex;align-items:center;gap:6px;height:32px;padding:0 12px;border-radius:6px;border:1px solid hsl(var(--border));background:hsl(var(--card))}
+.btn:hover{background:hsl(var(--accent))}
+.btn.violet{border-color:hsl(var(--violet)/.6);background:hsl(var(--violet)/.14)}
+.btn.gold{background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-color:transparent;font-weight:600}
+.btn svg{width:15px;height:15px}
+.tabs{display:flex;gap:2px;border-bottom:1px solid hsl(var(--border));margin-bottom:18px}
+.tab{border:0;background:none;padding:8px 12px;color:hsl(var(--muted-foreground));border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab[aria-selected=true]{color:hsl(var(--foreground));border-color:hsl(var(--primary));font-weight:600}
+.tab .n{font-size:12px;margin-left:4px;opacity:.85}
+.cols{display:grid;grid-template-columns:minmax(0,1fr) 360px;gap:28px;align-items:start}
+.doc{max-width:720px;line-height:1.6;font-size:15px}
+.doc h2{font-size:17px;margin:20px 0 6px;font-weight:700}
+.doc h2:first-child{margin-top:0}
+.doc p,.doc ul{margin:0 0 8px}
+.doc ul{padding-left:20px}
+.doc .src{font-size:12px;color:hsl(var(--violet));text-decoration:none;margin-left:4px}
+.panel{border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--card))}
+.panel-h{display:flex;align-items:center;justify-content:space-between;padding:12px 14px;border-bottom:1px solid hsl(var(--border));font-weight:600}
+.panel-h small{font-weight:400;color:hsl(var(--muted-foreground))}
+.task{display:grid;grid-template-columns:1fr auto;gap:8px;padding:10px 14px;border-bottom:1px solid hsl(var(--border))}
+.task:last-of-type{border-bottom:0}
+.task .t{line-height:1.4}
+.task .who{font-size:12px;color:hsl(var(--muted-foreground));margin-top:2px}
+.task.kept .t::before{content:"✓ ";color:hsl(160 60% 55%);font-weight:700}
+.task.dropped .t{text-decoration:line-through;color:hsl(var(--muted-foreground))}
+.tb{display:flex;gap:4px}
+.ib{width:30px;height:30px;border-radius:6px;border:1px solid hsl(var(--border));background:none;display:grid;place-items:center}
+.ib:hover{background:hsl(var(--accent))}
+.ib svg{width:15px;height:15px}
+.ib[aria-pressed=true].keep{background:hsl(160 60% 40%/.25);border-color:hsl(160 60% 45%)}
+.ib[aria-pressed=true].drop{background:hsl(0 70% 50%/.2);border-color:hsl(0 70% 55%)}
+.panel-f{padding:12px 14px;border-top:1px solid hsl(var(--border));display:flex;gap:8px;align-items:center;justify-content:space-between}
+.panel-f small{color:hsl(var(--muted-foreground));font-size:13px}
+.removed-row{display:flex;justify-content:space-between;align-items:center;padding:8px 14px;border-top:1px dashed hsl(var(--border));color:hsl(var(--muted-foreground));font-size:13px}
+.linkbtn{border:0;background:none;color:hsl(var(--violet));padding:0;font-size:13px}
+.task.dropped{display:none}
+.showdropped .task.dropped{display:grid}
+.panel.done .task,.panel.done .removed-row,.panel.done .panel-f{display:none!important}
+.bulk{display:flex;gap:8px;padding:10px 14px;border-bottom:1px solid hsl(var(--border));align-items:center;font-size:13px;color:hsl(var(--muted-foreground))}
+.kbd{font-size:12px;border:1px solid hsl(var(--border));border-radius:4px;padding:0 4px}
+.datebtn{border:0;background:none;padding:0;color:inherit;border-bottom:1px dashed hsl(var(--muted-foreground))}
+/* before */
+.prep-hero{display:flex;gap:16px;align-items:center;border:1px solid hsl(var(--border));border-radius:12px;padding:16px 18px;background:hsl(var(--card));margin-bottom:20px}
+.bigrec{display:inline-flex;align-items:center;gap:10px;height:44px;padding:0 20px;border-radius:999px;border:0;color:#fff;font-weight:700;font-size:15px;background:linear-gradient(135deg,#0e7490,#6d28d9)}
+.bigrec:hover{filter:brightness(1.1)}
+.bigrec i{width:12px;height:12px;border-radius:50%;background:#fff}
+.prep-hero p{margin:0;color:hsl(var(--muted-foreground));line-height:1.45}
+.editor{min-height:260px;border:1px solid hsl(var(--border));border-radius:10px;padding:14px 16px;background:hsl(var(--background));line-height:1.6;font-size:15px}
+.editor .ph{color:hsl(var(--muted-foreground))}
+.field-l{font-size:12px;font-weight:600;color:hsl(var(--muted-foreground));margin:0 0 6px;text-transform:none}
+/* live */
+.livebar{display:flex;align-items:center;gap:14px;border:1px solid hsl(var(--rec)/.6);background:hsl(var(--rec)/.12);border-radius:12px;padding:12px 16px;margin-bottom:18px}
+.livebar .pulse{width:10px;height:10px;border-radius:50%;background:hsl(0 80% 60%)}
+@media (prefers-reduced-motion:no-preference){.livebar .pulse{animation:p 1.6s ease-in-out infinite}@keyframes p{50%{opacity:.35}}}
+.livebar b{font-variant-numeric:tabular-nums}
+.stop{margin-left:auto;background:hsl(var(--rec));color:#fff;border:0;height:34px;padding:0 16px;border-radius:999px;font-weight:700}
+.tline{display:grid;grid-template-columns:64px 1fr;gap:8px;padding:6px 0;line-height:1.5}
+.tline .ts{font-size:12px;color:hsl(var(--muted-foreground));font-variant-numeric:tabular-nums;padding-top:2px}
+.tline .sp{font-weight:600;margin-right:6px}
+.notein::placeholder,.title::placeholder{color:hsl(var(--muted-foreground))}
+.notein{width:100%;height:80px;resize:none;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--background));padding:8px 10px}
+.note{padding:8px 0;border-bottom:1px solid hsl(var(--border));line-height:1.45}
+.note .ts{font-size:12px;color:hsl(var(--muted-foreground));margin-right:6px}
+[hidden]{display:none!important}
+</style>
+</head>
+<body>
+<div class="picker" role="group" aria-label="Mockup controls">
+  <b>Mockup controls:</b>
+  <span>State <span class="seg" id="state">
+    <button data-choice="state-before" aria-pressed="false" data-v="before">1 · New (before the call)</button><button data-choice="state-live" aria-pressed="false" data-v="live">2 · Recording</button><button data-choice="state-after" aria-pressed="true" data-v="after">3 · Finished</button></span></span>
+  <span>Theme <span class="seg" id="theme">
+    <button data-choice="theme-conclave" aria-pressed="true" data-v="dark theme-conclave">Conclave</button><button data-choice="theme-dark" aria-pressed="false" data-v="dark">Dark</button><button data-choice="theme-light" aria-pressed="false" data-v="">Light</button></span></span>
+</div>
+
+<div class="app">
+  <nav aria-label="Main">
+    <div class="brand"><i aria-hidden="true"></i>Conclave</div>
+    <button class="nav-item recnav quiet" id="navrec" title="Starts a new meeting">● Record new meeting</button>
+    <button class="nav-item" aria-current="page">Meetings</button>
+    <button class="nav-item">Tasks</button>
+    <button class="nav-item">Briefs &amp; digests</button>
+    <button class="nav-item">Dictate</button>
+    <button class="nav-item">Practice</button>
+    <button class="nav-item">Stats</button>
+    <div class="nav-sep"></div>
+    <button class="nav-item">Import audio</button>
+    <button class="nav-item">Settings</button>
+    <button class="nav-item ver">What's new in v1.6.0</button>
+  </nav>
+
+  <main>
+    <div class="crumb"><a href="#">Meetings</a> / <a href="#">This week</a></div>
+    <div class="head">
+      <div class="grow">
+        <input class="title" id="title" aria-label="Meeting name" placeholder="Untitled meeting" value="Weekly 1:1 with team lead">
+        <div class="meta">
+          <span id="when">Mon 16 Nov · 10:00 – 10:42</span><span class="dot">·</span>
+          <button class="chipbtn tag" style="--c:var(--cat-1)" aria-haspopup="listbox" title="Category sets the summary template">1:1 ▾</button>
+          <span class="dot" data-after>·</span>
+          <span data-after>Zoom</span>
+        </div>
+      </div>
+      <div class="actions" data-after>
+        <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M12 3v3M12 18v3M3 12h3M18 12h3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1"/></svg>Regenerate</button>
+        <button class="btn"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="9" y="9" width="12" height="12" rx="2"/><path d="M5 15V5a2 2 0 0 1 2-2h10"/></svg>Copy</button>
+        <button class="btn" aria-label="More: audio, export, language, delete">⋯</button>
+      </div>
+    </div>
+
+    <!-- BEFORE -->
+    <section id="s-before" hidden>
+      <div class="prep-hero">
+        <button class="bigrec" data-choice="record-from-page"><i aria-hidden="true"></i>Start recording</button>
+        <p>Recording goes into <b>this</b> meeting. The Zoom pop-up still starts a new one.<br>Category <b>1:1</b> picks the summary template.</p>
+      </div>
+      <p class="field-l">Prep notes</p>
+      <div class="editor" contenteditable="true" aria-label="Prep notes"><span class="ph">Agenda, questions to ask, links… These stay with the meeting and the AI uses them for the summary.</span></div>
+    </section>
+
+    <!-- LIVE -->
+    <section id="s-live" hidden>
+      <div class="livebar" role="status"><span class="pulse" aria-hidden="true"></span>Recording <b>24:13</b> · Microphone + system audio <button class="stop">■ Stop</button></div>
+      <div class="cols">
+        <div>
+          <p class="field-l">Live transcript</p>
+          <div class="tline"><span class="ts">22:51</span><span><span class="sp">Them</span>So the installer build is green, the remaining risk is the audio device switch.</span></div>
+          <div class="tline"><span class="ts">23:20</span><span><span class="sp">You</span>I'll test it on the Windows machine tomorrow and report back.</span></div>
+          <div class="tline"><span class="ts">23:58</span><span><span class="sp">Them</span>Good. Then the redesign review moves to Thursday.</span></div>
+        </div>
+        <div class="panel">
+          <div class="panel-h">My notes <small>Prep: 3 points</small></div>
+          <div style="padding:6px 14px 12px">
+            <div class="note"><span class="ts">Prep</span>Ask about the QA owner for the installer</div>
+            <div class="note"><span class="ts">Prep</span>Confirm the release date</div>
+            <div class="note"><span class="ts">Prep</span>Mention conference travel</div>
+            <div class="note"><span class="ts">23:21</span>I test device switch tomorrow</div>
+            <textarea class="notein" style="margin-top:10px" aria-label="New note" placeholder="Type a note, press Enter"></textarea>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- AFTER -->
+    <section id="s-after">
+      <div class="tabs" role="tablist" aria-label="Meeting content">
+        <button class="tab" role="tab" aria-selected="true">Summary</button>
+        <button class="tab" role="tab" aria-selected="false">Transcript</button>
+        <button class="tab" role="tab" aria-selected="false">My notes<span class="n">2</span></button>
+        <button class="tab" role="tab" aria-selected="false">Prep<span class="n">3</span></button>
+      </div>
+      <div class="cols">
+        <article class="doc">
+          <h2>In short</h2>
+          <p>The release slips one week. Installer QA moves to Sam, who reports back on Thursday.</p>
+          <h2>Decisions</h2>
+          <ul><li>Release date moves to 30 Nov. <a class="src" href="#">12:40</a></li><li>Redesign review is now on Thursday. <a class="src" href="#">23:58</a></li></ul>
+          <h2>Discussion</h2>
+          <p>The installer build is green. The remaining risk is the audio device switch on Windows; you offered to test it on your machine before Thursday. <a class="src" href="#">22:51</a></p>
+          <h2>Open questions</h2>
+          <ul><li>Who signs off the release notes?</li></ul>
+        </article>
+        <aside class="panel" id="tp" aria-label="Tasks from this meeting">
+          <div class="panel-h">Tasks from this meeting <small id="cnt" aria-live="polite"></small></div>
+          <div class="bulk"><button class="btn" id="keepmine" style="height:28px">Keep all mine</button><span><span class="kbd">K</span> keep · <span class="kbd">X</span> remove · <span class="kbd">↑↓</span> move</span></div>
+          <div class="task" tabindex="0"><div><div class="t">Test the audio device switch on Windows</div><div class="who">You · by Thu 19 Nov</div></div><div class="tb"><button class="ib keep" aria-pressed="false" aria-label="Keep task">✓</button><button class="ib drop" aria-pressed="false" aria-label="Remove task">✕</button></div></div>
+          <div class="task" tabindex="0"><div><div class="t">Report device-switch results to the lead</div><div class="who">You · by Thu 19 Nov</div></div><div class="tb"><button class="ib keep" aria-pressed="false" aria-label="Keep task">✓</button><button class="ib drop" aria-pressed="false" aria-label="Remove task">✕</button></div></div>
+          <div class="task dropped auto" tabindex="0"><div><div class="t">Run installer QA</div><div class="who">Sam, not you · removed by AI</div></div><div class="tb"><button class="ib keep" aria-pressed="false" aria-label="Keep task">✓</button><button class="ib drop" aria-pressed="true" aria-label="Remove task">✕</button></div></div>
+          <div class="task dropped auto" tabindex="0"><div><div class="t">Move the redesign review to Thursday</div><div class="who">Unassigned · removed by AI</div></div><div class="tb"><button class="ib keep" aria-pressed="false" aria-label="Keep task">✓</button><button class="ib drop" aria-pressed="true" aria-label="Remove task">✕</button></div></div>
+          <div class="removed-row"><span id="remtxt"></span><button class="linkbtn" id="showrem">Show</button></div>
+          <div class="panel-f"><small>Removed tasks can be restored.</small><button class="btn gold" id="done" data-choice="mark-reviewed">Done reviewing</button></div>
+        </aside>
+      </div>
+    </section>
+  </main>
+</div>
+<script>
+const root=document.documentElement;
+function seg(id,apply){document.querySelectorAll('#'+id+' button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#'+id+' button').forEach(x=>x.setAttribute('aria-pressed',x===b));apply(b.dataset.v)}))}
+seg('theme',v=>{root.className=v});
+function show(st){['before','live','after'].forEach(s=>document.getElementById('s-'+s).hidden=s!==st);
+ document.querySelectorAll('[data-after]').forEach(e=>e.hidden=st!=='after');
+ const t=document.getElementById('title');
+ const nr=document.getElementById('navrec');nr.classList.toggle('live',st==='live');nr.textContent=st==='live'?'● Recording 24:13':'● Record new meeting';
+ if(st==='before'){t.value='';document.getElementById('when').innerHTML='<button class="datebtn" aria-label="Change planned date and time">Thu 19 Nov · 17:00</button> · not recorded yet';t.focus()}
+ else{t.value='Weekly 1:1 with team lead';document.getElementById('when').textContent=st==='live'?'Mon 16 Nov · started 10:00':'Mon 16 Nov · 10:00 – 10:42'}}
+seg('state',show);show('after');
+function setTask(task,mode){task.classList.toggle('kept',mode==='keep');task.classList.toggle('dropped',mode==='drop');task.classList.remove('auto');
+ task.querySelector('.keep').setAttribute('aria-pressed',mode==='keep');task.querySelector('.drop').setAttribute('aria-pressed',mode==='drop');refresh()}
+function refresh(){const ts=[...document.querySelectorAll('.task')];const rem=ts.filter(t=>t.classList.contains('dropped')).length;const kept=ts.filter(t=>t.classList.contains('kept')).length;const left=ts.length-rem-kept;
+ document.getElementById('cnt').textContent=left?left+' to review':'all reviewed';document.getElementById('remtxt').textContent=rem+' removed (not yours or not useful)';document.querySelector('.removed-row').hidden=!rem}
+document.addEventListener('click',e=>{const b=e.target.closest('.ib');if(b){const task=b.closest('.task');const isOn=b.getAttribute('aria-pressed')==='true';setTask(task,isOn?null:(b.classList.contains('keep')?'keep':'drop'));return}
+ if(e.target.id==='showrem'){const tp=document.getElementById('tp');tp.classList.toggle('showdropped');e.target.textContent=tp.classList.contains('showdropped')?'Hide':'Show'}
+ if(e.target.id==='keepmine'){document.querySelectorAll('.task').forEach(t=>{if(/^You/.test(t.querySelector('.who').textContent))setTask(t,'keep')})}
+ if(e.target.id==='done'){const tp=document.getElementById('tp');tp.classList.add('done');const kept=document.querySelectorAll('.task.kept').length;document.getElementById('cnt').textContent='';tp.querySelector('.panel-h').innerHTML='Tasks · Reviewed, '+kept+' kept <button class="linkbtn" id="reopen">Edit</button>'}
+ if(e.target.id==='reopen'){location.reload()}});
+document.addEventListener('keydown',e=>{const t=document.activeElement.closest&&document.activeElement.closest('.task');if(!t)return;const ts=[...document.querySelectorAll('.task')].filter(x=>x.offsetParent);const i=ts.indexOf(t);
+ if(e.key==='k'||e.key==='K')setTask(t,'keep');if(e.key==='x'||e.key==='X'){setTask(t,'drop');(ts[i+1]||ts[i-1])?.focus()}
+ if(e.key==='ArrowDown'){ts[Math.min(i+1,ts.length-1)].focus();e.preventDefault()}if(e.key==='ArrowUp'){ts[Math.max(i-1,0)].focus();e.preventDefault()}});
+refresh();
+const ed=document.querySelector('.editor');ed.addEventListener('focus',()=>{const p=ed.querySelector('.ph');if(p)p.remove()},{once:true});
+</script>
+</body>
+</html>

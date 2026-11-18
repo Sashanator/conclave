@@ -342,6 +342,9 @@ export function TemplateSettings() {
             <Field id="tpl-name" label="Name">
               <Input id="tpl-name" value={draft.name} onChange={(e) => update({ name: e.target.value })} />
             </Field>
+            <Field id="tpl-emoji" label="Emoji" hint="Shown before meetings of this kind">
+              <Input id="tpl-emoji" maxLength={16} className="w-24" value={draft.emoji ?? ''} onChange={(e) => update({ emoji: e.target.value })} />
+            </Field>
             <Field
               id="tpl-use-when"
               label="Use when"

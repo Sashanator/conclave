@@ -17,6 +17,7 @@ type KnowledgeView = {
   my_names: string[];
   extract_enabled: boolean;
   digest_enabled: boolean;
+  calendar_marker: string;
 };
 
 // The Rust `CalendarStatus` (snake_case, no rename). The feed URL is a secret and never reaches the frontend, only its host.
@@ -25,10 +26,11 @@ type CalendarStatus = {
   host: string | null;
   last_ok_at: string | null;
   last_error: string | null;
+  last_error_at: string | null;
   upcoming: number;
 };
 
-const NO_CALENDAR: CalendarStatus = { connected: false, host: null, last_ok_at: null, last_error: null, upcoming: 0 };
+const NO_CALENDAR: CalendarStatus = { connected: false, host: null, last_ok_at: null, last_error: null, last_error_at: null, upcoming: 0 };
 
 // Same limits as the backend (knowledge/mod.rs)
 const MAX_NAMES = 20;
@@ -41,6 +43,7 @@ function toInput(v: KnowledgeView) {
     my_names: v.my_names,
     extract_enabled: v.extract_enabled,
     digest_enabled: v.digest_enabled,
+    calendar_marker: v.calendar_marker,
   };
 }
 
@@ -59,6 +62,8 @@ export function KnowledgeSettings() {
   const [feedUrl, setFeedUrl] = useState('');
   const [feedBusy, setFeedBusy] = useState(false);
   const [feedMessage, setFeedMessage] = useState<{ text: string; error: boolean } | null>(null);
+  // The marker being typed; null when not editing. Saved on blur or Enter, so a keystroke never saves.
+  const [markerDraft, setMarkerDraft] = useState<string | null>(null);
 
   const show = (v: KnowledgeView) => {
     latest.current = v;
@@ -141,6 +146,13 @@ export function KnowledgeSettings() {
     if (!text || taken || [...text].length > MAX_NAME_CHARS || view.my_names.length >= MAX_NAMES) return; // rejected: keep the text so it can be fixed
     commit((v) => ({ ...v, my_names: [...v.my_names, text] }));
     setName('');
+  };
+
+  const saveMarker = () => {
+    if (markerDraft === null) return;
+    const text = markerDraft;
+    setMarkerDraft(null);
+    if (text !== view.calendar_marker) commit((v) => ({ ...v, calendar_marker: text }));
   };
 
   return (
@@ -226,13 +238,34 @@ export function KnowledgeSettings() {
         <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-4">
           <h3 className="text-lg font-semibold text-foreground">Calendar</h3>
 
+          <div className="space-y-2">
+            <Label htmlFor="calendar-marker">My calls marker</Label>
+            <Input
+              id="calendar-marker"
+              aria-label="My calls marker"
+              value={markerDraft ?? view.calendar_marker}
+              onChange={(e) => setMarkerDraft(e.target.value)}
+              onBlur={saveMarker}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') saveMarker();
+              }}
+            />
+            <p className="text-xs text-muted-foreground">
+              Only events whose title contains it become meetings. Changing it never removes existing meetings.
+            </p>
+          </div>
+
           {calendar.connected ? (
             <div className="space-y-2">
               <p className="text-sm text-muted-foreground">{calendar.host}</p>
               <p className="text-sm text-muted-foreground">
                 Last sync: {calendar.last_ok_at ? new Date(calendar.last_ok_at).toLocaleString() : 'never'}
               </p>
-              {calendar.last_error && <p className="text-sm text-red-600">Last error: {calendar.last_error}</p>}
+              {calendar.last_error && (
+                <p className="text-sm text-red-600">
+                  Last error{calendar.last_error_at && ` (${new Date(calendar.last_error_at).toLocaleString()})`}: {calendar.last_error}
+                </p>
+              )}
               <Button variant="outline" size="sm" onClick={disconnect}>
                 Disconnect
               </Button>

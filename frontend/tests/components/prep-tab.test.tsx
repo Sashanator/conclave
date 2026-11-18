@@ -46,7 +46,7 @@ mock.module('@tauri-apps/api/event', () => ({ ...originals.event, listen: async 
 mock.module('sonner', () => ({ ...originals.sonner, toast: { ...originals.sonner.toast, error: errorToast } }));
 const recording = { isRecording: true, isSaving: false, activeDuration: 12 };
 const tx = {
-  calendarLink: { uid: fixture().eventUid, start: fixture().eventStart } as { uid: string; start: string } | null,
+  calendarLink: { uid: fixture().eventUid!, start: fixture().eventStart! } as { uid: string; start: string } | null,
   notes: [], addNote: mock(() => {}), updateNote: mock(() => {}), deleteNote: mock(() => {}),
 };
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recording, useRecordingState: () => recording }));
@@ -55,11 +55,7 @@ mock.module('../../src/app/_components/TranscriptPanel', () => ({ TranscriptPane
 mock.module('../../src/components/Copilot/CopilotPane', () => ({ CopilotPane: () => <div>Copilot body</div> }));
 
 const { LiveTranscriptAndNotes } = await import('../../src/app/_components/LiveTranscriptAndNotes');
-const { NotesWithPrep } = await import('../../src/components/Prep/NotesWithPrep');
-const { readLiveSideTab, LIVE_SIDE_TAB_KEY } = await import('../../src/contexts/CopilotContext');
 const live = () => <LiveTranscriptAndNotes isProcessingStop={false} isStopping={false} showModal={() => {}} />;
-const notes = <div>Original notes</div>;
-const postCall = (meetingId = 'meeting-1') => <NotesWithPrep meetingId={meetingId} notes={notes} />;
 const renderers: ReactTestRenderer[] = [];
 async function render(node: ReactNode = live()) {
   let r!: ReactTestRenderer;
@@ -78,34 +74,27 @@ beforeEach(() => {
   load = async () => result;
   tick = async () => ({ ...fixture(), items: fixture().items.map((i) => ({ ...i, ticked: true })) });
   recording.isRecording = true;
-  tx.calendarLink = { uid: fixture().eventUid, start: fixture().eventStart };
+  tx.calendarLink = { uid: fixture().eventUid!, start: fixture().eventStart! };
   invoke.mockClear();
   errorToast.mockClear();
 });
 afterEach(() => { act(() => { renderers.splice(0).forEach((r) => r.unmount()); }); });
 
-test('no prep, no tab; stored prep falls back to notes without changing storage', async () => {
+test('no prep: no points and no tab', async () => {
   result = null;
-  localStorage.setItem(LIVE_SIDE_TAB_KEY, 'prep');
   const r = await render();
-  expect(invoke).toHaveBeenCalledWith('prep_get', { eventUid: fixture().eventUid, eventStart: fixture().eventStart });
+  expect(invoke).toHaveBeenCalledWith('prep_get', { eventUid: fixture().eventUid!, eventStart: fixture().eventStart! });
   expect(prepTab(r)).toBeUndefined();
-  expect(tabs(r)[0].props['aria-selected']).toBe(true);
-  expect(localStorage.getItem(LIVE_SIDE_TAB_KEY)).toBe('prep');
+  expect(boxes(r)).toHaveLength(0);
 });
 
-test('tab shows the counter, kind tags, draft label and encoded Open in Prep link', async () => {
+test('prep points sit under My notes with kind tags, and draft label', async () => {
   const r = await render();
-  expect(textOf(prepTab(r)!)).toBe('Prep 1/2');
-  await act(async () => { prepTab(r)!.props.onClick(); });
+  expect(prepTab(r)).toBeUndefined();
   expect(json(r)).toContain('draft');
   expect(json(r)).toContain('clarification');
-  const link = r.root.findAll((n) => n.type === 'a' && textOf(n) === 'Open in Prep')[0];
-  expect(link.props.href).toBe(`/prep?${new URLSearchParams({ event: fixture().eventUid, start: fixture().eventStart })}`);
-  // Switching tabs keeps the existing note input and checklist mounted.
-  const noteInput = r.root.findByProps({ 'aria-label': 'New note' });
-  await act(async () => { tabs(r)[0].props.onClick(); });
-  expect(r.root.findByProps({ 'aria-label': 'New note' })).toBe(noteInput);
+  expect(r.root.findAll((n) => n.type === 'a')).toHaveLength(0);
+  expect(r.root.findByProps({ 'aria-label': 'New note' })).toBeDefined();
   expect(boxes(r)).toHaveLength(2);
 });
 
@@ -122,7 +111,6 @@ test('tick persists immediately without optimistic state', async () => {
   expect(invoke).toHaveBeenCalledWith('prep_tick', { prepId: 7, itemId: 'b', ticked: true });
   expect(boxes(r)[1].props.checked).toBe(false);
   await act(async () => { resolve({ ...fixture(), items: fixture().items.map((i) => ({ ...i, ticked: true })) }); });
-  expect(textOf(prepTab(r)!)).toBe('Prep 2/2');
   expect(boxes(r)[1].props.checked).toBe(true);
 });
 
@@ -131,30 +119,7 @@ test('tick failure reverts and shows a toast', async () => {
   const r = await render();
   await act(async () => { boxes(r)[1].props.onChange(); });
   expect(boxes(r)[1].props.checked).toBe(false);
-  expect(textOf(prepTab(r)!)).toBe('Prep 1/2');
   expect(errorToast).toHaveBeenCalledTimes(1);
-});
-
-test('post-call notes column shows Prep only with a prep', async () => {
-  result = null;
-  const r = await render(postCall());
-  expect(invoke).toHaveBeenCalledWith('prep_for_meeting', { meetingId: 'meeting-1' });
-  expect(tabs(r)).toHaveLength(0);
-  expect(json(r)).toContain('Original notes');
-});
-
-test('post-call prep can be ticked and both bodies stay mounted', async () => {
-  const r = await render(postCall());
-  expect(tabs(r).map(textOf)).toEqual(['My notes', 'Prep 1/2']);
-  await act(async () => { prepTab(r)!.props.onClick(); });
-  expect(json(r)).toContain('Original notes');
-  await act(async () => { boxes(r)[1].props.onChange(); });
-  expect(textOf(prepTab(r)!)).toBe('Prep 2/2');
-});
-
-test('readLiveSideTab accepts prep', () => {
-  localStorage.setItem(LIVE_SIDE_TAB_KEY, 'prep');
-  expect(readLiveSideTab()).toBe('prep');
 });
 
 test('live fetch runs once per link strings and clears when recording stops', async () => {
@@ -170,7 +135,7 @@ test('live fetch runs once per link strings and clears when recording stops', as
 test('no calendar link or no recording does not fetch prep', async () => {
   tx.calendarLink = null;
   await render();
-  tx.calendarLink = { uid: fixture().eventUid, start: fixture().eventStart };
+  tx.calendarLink = { uid: fixture().eventUid!, start: fixture().eventStart! };
   recording.isRecording = false;
   await render();
   expect(invoke.mock.calls.filter(([command]) => command === 'prep_get')).toHaveLength(0);
@@ -190,37 +155,10 @@ test('late live result is ignored after link changes or unmount', async () => {
   await act(async () => { resolves[2](fixture()); });
 });
 
-test('late post-call result is ignored after meeting changes', async () => {
-  const resolves: Array<(p: MeetingPrep | null) => void> = [];
-  load = () => new Promise((resolve) => resolves.push(resolve));
-  const r = await render(postCall());
-  await act(async () => { r.update(postCall('meeting-2')); });
-  await act(async () => { resolves[1](null); resolves[0](fixture()); });
-  expect(prepTab(r)).toBeUndefined();
-});
-
-test('live and post-call load failures show toasts', async () => {
+test('a live load failure shows a toast', async () => {
   load = async () => { throw new Error('read failed'); };
   await render();
-  await render(postCall());
-  expect(errorToast).toHaveBeenCalledTimes(2);
-});
-
-test('the notes child stays mounted when the prep arrives', async () => {
-  let finish!: (p: MeetingPrep | null) => void;
-  load = () => new Promise((resolve) => { finish = resolve; });
-  let mounts = 0;
-  let unmounts = 0;
-  const Probe = () => {
-    useEffect(() => { mounts++; return () => { unmounts++; }; }, []);
-    return <div>Probe notes</div>;
-  };
-  const r = await render(<NotesWithPrep meetingId="meeting-1" notes={<Probe />} />);
-  expect(mounts).toBe(1);
-  await act(async () => { finish(fixture()); });
-  expect(prepTab(r)).toBeDefined();
-  expect(mounts).toBe(1);
-  expect(unmounts).toBe(0);
+  expect(errorToast).toHaveBeenCalledTimes(1);
 });
 
 test('two quick ticks on different boxes serialize and both stay ticked', async () => {

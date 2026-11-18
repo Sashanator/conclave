@@ -28,8 +28,10 @@ import { isAudioExtension, getAudioFormatsDisplayList } from '@/constants/audioF
 import { usePathname, useRouter } from 'next/navigation'
 import { ThemeProvider, useTheme } from '@/contexts/ThemeContext'
 import { THEME_INIT_SCRIPT } from '@/lib/theme'
-import { CopilotProvider, writeLiveSideTab } from '@/contexts/CopilotContext'
-import { writeFlag } from '@/lib/meeting-page-layout'
+import { AiSidebarProvider } from '@/components/AiSidebar/AiSidebarProvider'
+import { AiSidebar, CopilotOpenListener } from '@/components/AiSidebar/AiSidebar'
+import { CopilotProvider } from '@/contexts/CopilotContext'
+import { listenReleaseFailed } from '@/lib/recording-target'
 import { installBrowserPreview } from '@/lib/browser-preview'
 
 
@@ -127,41 +129,6 @@ function AppShell({
       return () => document.removeEventListener('contextmenu', handleContextMenu);
     }
   }, []);
-  useEffect(() => {
-    // Listen for tray recording toggle request
-    const unlisten = listen('request-recording-toggle', () => {
-      console.log('[Layout] Received request-recording-toggle from tray');
-
-      if (showOnboarding) {
-        toast.error("Please complete setup first", {
-          description: "You need to finish onboarding before you can start recording."
-        });
-      } else {
-        // If in main app, forward to useRecordingStart via window event
-        console.log('[Layout] Forwarding to start-recording-from-sidebar');
-        window.dispatchEvent(new CustomEvent('start-recording-from-sidebar'));
-      }
-    });
-
-    return () => {
-      unlisten.then(fn => fn());
-    };
-  }, [showOnboarding]);
-
-  // The name-alert banner's click. On the live page it selects the tab itself; from another page the stored
-  // choice is read when the live page mounts. Never window.location: that would reload over a live recording.
-  useEffect(() => {
-    const unlisten = listen('copilot-open', () => {
-      writeLiveSideTab('copilot');
-      writeFlag('conclave.notesPaneCollapsed', false);
-      if (pathname !== '/') router.push('/');
-    });
-
-    return () => {
-      unlisten.then(fn => fn());
-    };
-  }, [pathname, router]);
-
   // Handle file drop for audio import
   const handleFileDrop = useCallback((paths: string[]) => {
     // Check if beta features are enabled (read from localStorage directly since we're outside ConfigProvider)
@@ -189,6 +156,12 @@ function AppShell({
         description: `Supported formats: ${getAudioFormatsDisplayList()}`
       });
     }
+  }, []);
+
+  // The tray's dropped start could not give its empty row back.
+  useEffect(() => {
+    const un = listenReleaseFailed();
+    return () => { un.then((fn) => fn()).catch(() => {}); };
   }, []);
 
   // Listen for drag-drop events
@@ -270,6 +243,7 @@ function AppShell({
           <RecordingStateProvider>
             <TranscriptProvider>
               <CopilotProvider>
+              <AiSidebarProvider>
               <ConfigProvider>
                 <OllamaDownloadProvider>
                   <OnboardingProvider>
@@ -287,6 +261,8 @@ function AppShell({
                               <div className="flex">
                                 <Sidebar />
                                 <MainContent>{children}</MainContent>
+                                <AiSidebar />
+                                <CopilotOpenListener />
                               </div>
                             )}
                             {/* Import audio overlay and dialog */}
@@ -306,6 +282,7 @@ function AppShell({
 
                 </OllamaDownloadProvider>
               </ConfigProvider>
+              </AiSidebarProvider>
               </CopilotProvider>
             </TranscriptProvider>
           </RecordingStateProvider>
@@ -329,6 +306,7 @@ export default function RootLayout({
   return (
     <html lang="en" suppressHydrationWarning style={transparent}>
       <head>
+        <title>Conclave</title>
         <script dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }} />
       </head>
       <body className={`${sourceSans3.variable} font-sans antialiased`} style={transparent}>

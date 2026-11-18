@@ -1,5 +1,5 @@
 use crate::api::TranscriptSegment;
-use crate::database::repositories::meeting::TitleOrigin;
+use crate::database::repositories::meeting::{meeting_date_sql, TitleOrigin};
 use crate::database::repositories::speakers::SpeakersRepository;
 use crate::speakers::sentences::{is_valid, Sentence};
 use crate::database::repositories::meeting_notes::{
@@ -99,10 +99,11 @@ impl TranscriptsRepository {
 
         // 1. Create the new meeting
         let result = sqlx::query(
-            "INSERT INTO meetings (id, title, created_at, updated_at, folder_path, title_source, calendar_uid, calendar_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO meetings (id, title, created_at, updated_at, ended_at, folder_path, title_source, calendar_uid, calendar_start) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&meeting_id)
         .bind(meeting_title)
+        .bind(now)
         .bind(now)
         .bind(now)
         .bind(&folder_path)
@@ -159,6 +160,38 @@ impl TranscriptsRepository {
         transaction.commit().await?;
 
         Ok(meeting_id)
+    }
+
+    /// Saves a recording into the meeting row it was routed to. Falls back to a new meeting (`true`) when the
+    /// row is gone or already has a transcript. Never touches title, `title_source` or calendar columns.
+    /// An error rolls everything back, so a failed save never leaves a half-written row.
+    pub async fn save_into_or_new(
+        pool: &SqlitePool,
+        target: Option<&str>,
+        meeting_title: &str,
+        transcripts: &[TranscriptSegment],
+        folder_path: Option<String>,
+        notes: &[MeetingNote],
+        enqueue_speakers: bool,
+        title: &TitleOrigin,
+    ) -> Result<(String, bool), SqlxError> {
+        if let Some(id) = target {
+            let mut tx = pool.begin().await?;
+            let now = Utc::now();
+            let claimed = sqlx::query("UPDATE meetings SET folder_path = ?, ended_at = ?, updated_at = ?, audio_deleted_at = NULL WHERE id = ? AND ended_at IS NULL AND NOT EXISTS (SELECT 1 FROM transcripts WHERE meeting_id = ?)")
+                .bind(&folder_path).bind(now).bind(now).bind(id).bind(id)
+                .execute(&mut *tx).await?.rows_affected();
+            if claimed == 1 {
+                Self::append_in_tx(&mut tx, id, transcripts, 0.0, notes, enqueue_speakers).await?;
+                tx.commit().await?;
+                return Ok((id.to_string(), false));
+            }
+            tx.rollback().await?;
+            let new_id = Self::save_transcript(pool, meeting_title, transcripts, folder_path, notes, enqueue_speakers, title).await?;
+            return Ok((new_id, true));
+        }
+        let id = Self::save_transcript(pool, meeting_title, transcripts, folder_path, notes, enqueue_speakers, title).await?;
+        Ok((id, false))
     }
 
     /// Appends a recording part to an existing meeting: lines shifted by `offset`, new notes
@@ -226,6 +259,8 @@ pub struct SearchHit {
     pub snippet: String,
     pub transcript_id: Option<String>,
     pub audio_start: Option<f64>,
+    /// The count of hits in the meeting before the cap.
+    pub total_in_meeting: usize,
 }
 
 const SEARCH_MEETINGS: usize = 50;
@@ -328,9 +363,10 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
 
     let (clause, binds) = like_filter("t.transcript", &query);
     let sql = format!(
-        "SELECT m.id, m.title, m.created_at, t.id, t.transcript, t.audio_start_time FROM transcripts t
+        "SELECT m.id, m.title, {d} AS created_at, t.id, t.transcript, t.audio_start_time FROM transcripts t
          JOIN meetings m ON m.id = t.meeting_id
-         WHERE {clause} ORDER BY t.audio_start_time"
+         WHERE {clause} ORDER BY t.audio_start_time",
+        d = meeting_date_sql("m"),
     );
     let mut q = sqlx::query_as::<_, (String, String, String, String, String, Option<f64>)>(&sql);
     for p in &binds {
@@ -343,7 +379,7 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
     }
 
     let (clause, binds) = like_filter("title", &query);
-    let sql = format!("SELECT id, title, created_at FROM meetings WHERE {clause}");
+    let sql = format!("SELECT id, title, {} AS created_at FROM meetings WHERE {clause}", meeting_date_sql(""));
     let mut q = sqlx::query_as::<_, (String, String, String)>(&sql);
     for p in &binds {
         q = q.bind(p);
@@ -357,9 +393,10 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
     let markdown = "json_extract(s.result, '$.markdown')";
     let (clause, binds) = like_filter(markdown, &query);
     let sql = format!(
-        "SELECT m.id, m.title, m.created_at, {markdown} FROM summary_processes s
+        "SELECT m.id, m.title, {d} AS created_at, {markdown} FROM summary_processes s
          JOIN meetings m ON m.id = s.meeting_id
-         WHERE s.status = 'completed' AND {clause}"
+         WHERE s.status = 'completed' AND {clause}",
+        d = meeting_date_sql("m"),
     );
     let mut q = sqlx::query_as::<_, (String, String, String, Option<String>)>(&sql);
     for p in &binds {
@@ -373,7 +410,7 @@ pub(crate) async fn source_matches(pool: &SqlitePool, query: &str) -> Result<Vec
 
     // Notes are checked in Rust: the JSON text escapes quotes and control characters, so LIKE on it would miss matches
     let rows: Vec<(String, String, String, String)> = sqlx::query_as(
-        "SELECT m.id, m.title, m.created_at, n.notes_json FROM meeting_notes n JOIN meetings m ON m.id = n.meeting_id",
+        &format!("SELECT m.id, m.title, {} AS created_at, n.notes_json FROM meeting_notes n JOIN meetings m ON m.id = n.meeting_id", meeting_date_sql("m")),
     )
     .fetch_all(pool)
     .await?;
@@ -404,21 +441,28 @@ pub async fn search_all(pool: &SqlitePool, query: &str) -> Result<Vec<SearchHit>
 
     // Newest meetings first; ties broken by id so the order is stable
     let mut ordered: Vec<(String, String)> = created.into_iter().collect();
-    ordered.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    // Parsed, so mixed separators and offsets order by instant; an unparseable date sorts oldest.
+    let key = |s: &str| crate::knowledge::briefs::parse_date(s);
+    ordered.sort_by(|a, b| key(&b.1).cmp(&key(&a.1)).then_with(|| a.0.cmp(&b.0)));
     ordered.truncate(SEARCH_MEETINGS);
 
     let mut out = Vec::new();
     for (meeting_id, _) in ordered {
         // Each meeting's matches arrive transcripts first (by time), then title, summary, notes
         let Some(list) = by_meeting.remove(&meeting_id) else { continue };
-        let hits = list.into_iter().filter_map(|m| {
+        let mut hits: Vec<SearchHit> = list.into_iter().filter_map(|m| {
             let snippet = snippet_around(&m.text, &needle, SNIPPET_RADIUS)?;
             Some(SearchHit {
                 meeting_id: m.meeting_id, title: m.title, source: m.source.into(), snippet,
                 transcript_id: m.transcript_id, audio_start: m.audio_start,
+                total_in_meeting: 0,
             })
-        });
-        out.extend(hits.take(SEARCH_HITS_PER_MEETING));
+        }).collect();
+        let total = hits.len();
+        for h in &mut hits {
+            h.total_in_meeting = total;
+        }
+        out.extend(hits.into_iter().take(SEARCH_HITS_PER_MEETING));
     }
     Ok(out)
 }
@@ -585,6 +629,17 @@ mod tests {
         assert_eq!(sources, vec!["transcript", "transcript", "transcript"]);
         let times: Vec<Option<f64>> = hits.iter().map(|h| h.audio_start).collect();
         assert_eq!(times, vec![Some(0.0), Some(1.0), Some(2.0)]);
+    }
+
+    #[tokio::test]
+    async fn search_reports_total_in_meeting() {
+        let pool = crate::database::repositories::test_pool().await;
+        meeting(&pool, "бюджет", &["бюджет один", "бюджет два", "бюджет три", "бюджет четыре"], &["бюджет"], Some("бюджет")).await;
+        let hits = search_all(&pool, "бюджет").await.unwrap();
+        assert_eq!(hits.len(), 3);
+        for h in &hits {
+            assert_eq!(h.total_in_meeting, 7);
+        }
     }
 
     #[tokio::test]
@@ -768,5 +823,130 @@ mod tests {
         }
         let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
         assert_eq!(n, 1);
+    }
+}
+
+#[cfg(test)]
+mod meeting_date_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+    use crate::database::repositories::meeting_notes::{MeetingNote, MeetingNotesRepository};
+
+    /// A row created 2026-11-01 (space format) but started 2026-11-09 (T format).
+    async fn row(pool: &SqlitePool, id: &str, created: &str, started: Option<&str>, cal: Option<&str>) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, started_at, calendar_start) VALUES (?, 'T', ?, ?, ?, ?)")
+            .bind(id).bind(created).bind(created).bind(started).bind(cal)
+            .execute(pool).await.unwrap();
+    }
+    async fn exec(pool: &SqlitePool, sql: &str) { sqlx::query(sql).execute(pool).await.unwrap(); }
+
+    #[tokio::test]
+    async fn search_hits_carry_and_sort_by_the_meeting_date() {
+        let pool = test_pool().await;
+        row(&pool, "moved", "2026-11-01 10:00:00.000+00:00", Some("2026-11-09T10:00:00.000+00:00"), None).await;
+        row(&pool, "mid", "2026-11-05 10:00:00.000+00:00", None, None).await;
+        exec(&pool, "UPDATE meetings SET title = 'Budget a' WHERE id = 'mid'").await;
+        exec(&pool, "UPDATE meetings SET title = 'Budget b' WHERE id = 'moved'").await;
+        let hits = search_all(&pool, "budget").await.unwrap();
+        assert_eq!(hits.iter().map(|h| h.meeting_id.as_str()).collect::<Vec<_>>(), ["moved", "mid"]);
+    }
+
+    fn seg(text: &str, start: f64, _mark: Option<&str>) -> TranscriptSegment {
+        TranscriptSegment {
+            id: "x".into(), text: text.into(), timestamp: "t".into(),
+            audio_start_time: Some(start), audio_end_time: Some(start + 1.0), duration: Some(1.0),
+            mark: None, sentences: None, speaker_idx: None,
+        }
+    }
+
+    async fn target(pool: &SqlitePool) {
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, title_source) VALUES ('m-t', 'Untitled · Mon 14:02', datetime('now'), datetime('now'), 'default')")
+            .execute(pool).await.unwrap();
+    }
+
+    async fn save_to(pool: &SqlitePool, t: Option<&str>, notes: &[MeetingNote], speakers: bool) -> (String, bool) {
+        TranscriptsRepository::save_into_or_new(pool, t, "Fresh", &[seg("hi", 0.0, None)], Some("/f".into()), notes, speakers, &TitleOrigin::default()).await.unwrap()
+    }
+
+    async fn lines(pool: &SqlitePool, id: &str) -> i64 {
+        sqlx::query_as::<_, (i64,)>("SELECT COUNT(*) FROM transcripts WHERE meeting_id = ?").bind(id).fetch_one(pool).await.unwrap().0
+    }
+
+    #[tokio::test]
+    async fn save_into_existing_keeps_title_and_sets_ended_at() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        assert_eq!(save_to(&pool, Some("m-t"), &[], false).await, ("m-t".to_string(), false));
+        let (title, folder, ended): (String, Option<String>, Option<String>) =
+            sqlx::query_as("SELECT title, folder_path, ended_at FROM meetings WHERE id = 'm-t'").fetch_one(&pool).await.unwrap();
+        assert_eq!((title.as_str(), folder.as_deref()), ("Untitled · Mon 14:02", Some("/f")));
+        assert!(ended.is_some());
+        assert_eq!(lines(&pool, "m-t").await, 1);
+    }
+
+    #[tokio::test]
+    async fn save_into_missing_meeting_falls_back_to_new() {
+        let pool = crate::database::repositories::test_pool().await;
+        let (id, fb) = save_to(&pool, Some("nope"), &[], false).await;
+        assert!(fb && id != "nope");
+        assert_eq!(lines(&pool, &id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn save_into_an_already_saved_silent_meeting_falls_back() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let silent = |p: &SqlitePool, f: &str| {
+            let f = f.to_string();
+            let p = p.clone();
+            async move {
+                TranscriptsRepository::save_into_or_new(&p, Some("m-t"), "Fresh", &[], Some(f), &[], false, &TitleOrigin::default()).await.unwrap()
+            }
+        };
+        assert_eq!(silent(&pool, "/a").await, ("m-t".to_string(), false));
+        let (id, fb) = silent(&pool, "/b").await;
+        assert!(fb && id != "m-t");
+        let folder: Option<String> = sqlx::query_scalar("SELECT folder_path FROM meetings WHERE id = 'm-t'").fetch_one(&pool).await.unwrap();
+        assert_eq!(folder.as_deref(), Some("/a"));
+    }
+
+    #[tokio::test]
+    async fn save_into_meeting_with_transcripts_never_merges() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        save_to(&pool, Some("m-t"), &[], false).await;
+        let (id, fb) = save_to(&pool, Some("m-t"), &[], false).await;
+        assert!(fb && id != "m-t");
+        assert_eq!(lines(&pool, "m-t").await, 1);
+    }
+
+    #[tokio::test]
+    async fn save_into_keeps_existing_notes_first() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let n = |id: &str| MeetingNote { id: id.into(), at: None, text: id.into() };
+        let mut c = pool.acquire().await.unwrap();
+        MeetingNotesRepository::save(&mut *c, "m-t", &[n("n1")]).await.unwrap();
+        drop(c);
+        save_to(&pool, Some("m-t"), &[n("n2")], false).await;
+        assert_eq!(MeetingNotesRepository::get(&pool, "m-t").await.unwrap(), vec![n("n1"), n("n2")]);
+    }
+
+    #[tokio::test]
+    async fn save_into_queues_speakers_when_active() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        save_to(&pool, Some("m-t"), &[], true).await;
+        let (n,): (i64,) = sqlx::query_as("SELECT COUNT(*) FROM speaker_jobs WHERE meeting_id = 'm-t'").fetch_one(&pool).await.unwrap();
+        assert_eq!(n, 1);
+    }
+
+    #[tokio::test]
+    async fn save_without_target_sets_ended_at() {
+        let pool = crate::database::repositories::test_pool().await;
+        let (id, fb) = save_to(&pool, None, &[], false).await;
+        assert!(!fb);
+        let (ended,): (Option<String>,) = sqlx::query_as("SELECT ended_at FROM meetings WHERE id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert!(ended.is_some());
     }
 }

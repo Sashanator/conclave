@@ -5,7 +5,7 @@ use crate::banner::{self, BannerKind};
 use log::info;
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
-use tauri::{AppHandle, Manager, Runtime};
+use tauri::{AppHandle, Emitter, Manager, Runtime};
 
 /// One cooldown for the whole recording. `reset_for_recording` gives each recording a fresh one.
 static COOLDOWN: Mutex<Cooldown> = Mutex::new(Cooldown::new());
@@ -22,9 +22,18 @@ pub fn on_transcript<R: Runtime>(app: &AppHandle<R>, update: &TranscriptUpdate) 
     }
     let words = settings::current().alert_words;
     // Cheap checks first: the focus query waits on the main thread.
-    if update.is_partial || update.speaker_idx == Some(0) || !mentions(&words, &update.text) {
+    if update.is_partial || update.speaker_idx == Some(0) {
         return;
     }
+    let Some(word) = matched_word(&words, &update.text) else {
+        return;
+    };
+    // Every mention goes to the AI sidebar, whatever the banner's focus and cooldown say.
+    let _ = app.emit_to(
+        "main",
+        "copilot-alert",
+        serde_json::json!({ "word": word, "line": update.text, "at": update.audio_start_time }),
+    );
     let main_focused = app
         .get_webview_window("main")
         .and_then(|w| w.is_focused().ok())
@@ -55,18 +64,25 @@ pub fn on_transcript<R: Runtime>(app: &AppHandle<R>, update: &TranscriptUpdate) 
 
 /// True when a word of `text` starts with an alert word (case-insensitive, Unicode).
 pub fn mentions(words: &[String], text: &str) -> bool {
-    let words: Vec<String> = words
+    matched_word(words, text).is_some()
+}
+
+/// The first alert word (as configured) that a word of `text` starts with, or None.
+pub fn matched_word(words: &[String], text: &str) -> Option<String> {
+    let words: Vec<(&String, String)> = words
         .iter()
-        .map(|w| w.to_lowercase())
         .filter(|w| !w.is_empty())
+        .map(|w| (w, w.to_lowercase()))
         .collect();
-    if words.is_empty() {
-        return false;
-    }
     text.split(|c: char| !c.is_alphanumeric())
         .filter(|t| !t.is_empty())
         .map(str::to_lowercase)
-        .any(|t| words.iter().any(|w| t.starts_with(w.as_str())))
+        .find_map(|t| {
+            words
+                .iter()
+                .find(|(_, lower)| t.starts_with(lower.as_str()))
+                .map(|(word, _)| (*word).clone())
+        })
 }
 
 pub struct Cooldown {
@@ -211,5 +227,13 @@ mod tests {
         assert_eq!(banner_line("короткая"), "короткая");
         let exact: String = "a".repeat(MENTION_LINE_CHARS);
         assert_eq!(banner_line(&exact), exact);
+    }
+
+    #[test]
+    fn matched_word_returns_the_alert_word() {
+        assert_eq!(matched_word(&words(&["deadline"]), "the DEADLINES are"), Some("deadline".to_string()));
+        assert_eq!(matched_word(&words(&["Саша"]), "Спасибо, Саша"), Some("Саша".to_string()));
+        assert_eq!(matched_word(&words(&["Саш"]), "Спасибо, Саше"), Some("Саш".to_string()));
+        assert_eq!(matched_word(&[], "Саша"), None);
     }
 }

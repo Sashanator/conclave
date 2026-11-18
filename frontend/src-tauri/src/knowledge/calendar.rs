@@ -1,6 +1,7 @@
 // The calendar link: a user-pasted iCal (secret) address, fetched and expanded into the next
 // occurrences. The URL is a credential; it is stored by settings, never logged or returned.
 
+pub mod reconcile;
 use super::settings;
 use super::{
     AUTO_TITLE_LEAD_MINS, CALENDAR_AHEAD_DAYS, CALENDAR_BEHIND_DAYS, CALENDAR_FETCH_TIMEOUT_SECS, CALENDAR_MAX_BYTES,
@@ -15,7 +16,7 @@ use std::collections::{BTreeMap, HashSet};
 use std::fs;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{LazyLock, PoisonError, RwLock};
 use std::time::Instant;
 use tauri::path::BaseDirectory;
@@ -47,9 +48,16 @@ pub struct Occurrence {
     pub title: String,
     pub start: DateTime<Utc>,
     pub end: DateTime<Utc>,
+    pub original_start: DateTime<Utc>,
     /// True when the source event has an RRULE or is a RECURRENCE-ID override.
     #[serde(default)]
     pub recurring: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpandResult {
+    pub occurrences: Vec<Occurrence>,
+    pub complete: bool,
 }
 
 /// What the settings page shows. The host only; the path and query are secrets.
@@ -59,20 +67,36 @@ pub struct CalendarStatus {
     pub host: Option<String>,
     pub last_ok_at: Option<String>,
     pub last_error: Option<String>,
+    pub last_error_at: Option<String>,
     pub upcoming: usize,
 }
 
+const CACHE_VERSION: u32 = 2;
+
 /// The persisted part: the last good expansion and when it was made.
-#[derive(Serialize, Deserialize, Default)]
+#[derive(Serialize, Deserialize)]
 struct Cache {
+    #[serde(default)]
+    version: u32,
     last_ok_at: Option<String>,
     occurrences: Vec<Occurrence>,
+}
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self {
+            version: CACHE_VERSION,
+            last_ok_at: None,
+            occurrences: Vec::new(),
+        }
+    }
 }
 
 #[derive(Default)]
 struct State {
     cache: Cache,
     last_error: Option<String>,
+    last_error_at: Option<String>,
 }
 
 static STATE: LazyLock<RwLock<State>> = LazyLock::new(|| RwLock::new(State::default()));
@@ -94,7 +118,7 @@ pub fn expand(
     ics: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-) -> Result<Vec<Occurrence>, String> {
+) -> Result<ExpandResult, String> {
     // The parser recurses once per nested component. It runs on a thread with a large stack, so a
     // structure the guard misses cannot overflow the stack of the caller.
     std::thread::scope(|scope| {
@@ -111,7 +135,7 @@ fn expand_here(
     ics: &str,
     from: DateTime<Utc>,
     to: DateTime<Utc>,
-) -> Result<Vec<Occurrence>, String> {
+) -> Result<ExpandResult, String> {
     // The parser's error quotes the input, so only fixed messages leave the function.
     let unfolded = normalize(ics);
     if nesting_refused(&unfolded) {
@@ -119,11 +143,13 @@ fn expand_here(
     }
     let calendar = read_calendar(&unfolded).map_err(|_| UNREADABLE.to_string())?;
     let mut unknown_tz_warned = false;
+    // Set when an event or part of one is unreadable (not merely all-day): what it would have shown is unknown.
+    let mut unreadable = false;
     let events: Vec<Event> = calendar
         .components
         .iter()
         .filter(|c| c.name == "VEVENT")
-        .filter_map(|c| event(c, &mut unknown_tz_warned))
+        .filter_map(|c| event(c, &mut unknown_tz_warned, &mut unreadable))
         .collect();
 
     let cancelled_series: HashSet<String> = events
@@ -161,7 +187,11 @@ fn expand_here(
             continue;
         }
         spent += cost;
-        for start in starts(master, from, to) {
+        let Some(instances) = starts(master, from, to) else {
+            skipped += 1;
+            continue;
+        };
+        for start in instances {
             if out.len() >= MAX_FEED_OCCURRENCES {
                 break 'series;
             }
@@ -183,6 +213,7 @@ fn expand_here(
                             title: master.title.clone(),
                             start: utc,
                             end: end.with_timezone(&Utc),
+                            original_start: utc,
                             recurring: master.rrule.is_some(),
                         });
                     }
@@ -205,13 +236,20 @@ fn expand_here(
         warn!("calendar: expansion stopped at the time limit, the rest of the feed is not shown");
     }
     if skipped > 0 {
-        warn!("calendar: {skipped} series skipped to keep the expansion bounded");
+        warn!("calendar: {skipped} series skipped (over budget or unreadable rule)");
+    }
+    if unreadable {
+        warn!("calendar: an event could not be read, the feed is incomplete");
     }
     if out.len() >= MAX_FEED_OCCURRENCES {
         warn!("calendar: occurrence limit reached, the feed is cut short");
     }
     out.sort_by_key(|o| o.start);
-    Ok(out)
+    let complete = !timed_out && !unreadable && skipped == 0 && out.len() < MAX_FEED_OCCURRENCES;
+    Ok(ExpandResult {
+        occurrences: out,
+        complete,
+    })
 }
 
 /// Unfolds, then turns every line ending into CRLF: the guard splits lines by str::lines and the parser by CRLF.
@@ -298,6 +336,7 @@ fn occurrence(e: &Event) -> Option<Occurrence> {
         title: e.title.clone(),
         start: e.start.with_timezone(&Utc),
         end: e.start.checked_add_signed(duration(e))?.with_timezone(&Utc),
+        original_start: e.recurrence_id.unwrap_or(e.start.with_timezone(&Utc)),
         recurring: e.rrule.is_some() || e.recurrence_id.is_some(),
     })
 }
@@ -396,9 +435,10 @@ fn work(e: &Event, to: DateTime<Utc>) -> f64 {
 }
 
 /// The instance starts of one event within [from, to). A non-recurring event is its DTSTART.
-fn starts(e: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Tz>> {
+/// None when the recurrence rule does not validate: the series is unknown, not empty.
+fn starts(e: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> Option<Vec<DateTime<Tz>>> {
     let Some(text) = &e.rrule else {
-        return vec![e.start];
+        return Some(vec![e.start]);
     };
     let Some(rule) = text
         .parse::<RRule<Unvalidated>>()
@@ -406,31 +446,59 @@ fn starts(e: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Tz>
         .and_then(|rule| rule.validate(e.start).ok())
     else {
         warn!("calendar: skipped a recurrence rule that does not validate");
-        return Vec::new();
+        return None;
     };
-    RRuleSet::new(e.start)
+    let dates = RRuleSet::new(e.start)
         .rrule(rule)
         .set_exdates(e.exdates.clone())
         .after(from.with_timezone(&Tz::UTC))
         .before(to.with_timezone(&Tz::UTC))
         .all(u16::MAX)
-        .dates
+        .dates;
+    Some(dates)
 }
 
-fn event<'a>(c: &'a Component<'a>, unknown_tz_warned: &mut bool) -> Option<Event> {
-    let uid = prop(c, "UID")?.val.as_str().trim().to_string();
-    if uid.chars().count() > MAX_UID_CHARS {
+/// An all-day value (`20261020`): skipped on purpose, not unreadable.
+fn is_date(text: &str) -> bool {
+    let t = text.trim();
+    t.len() == 8 && t.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn event<'a>(
+    c: &'a Component<'a>,
+    unknown_tz_warned: &mut bool,
+    unreadable: &mut bool,
+) -> Option<Event> {
+    let uid = prop(c, "UID").map(|p| p.val.as_str().trim().to_string());
+    let Some(uid) = uid.filter(|u| u.chars().count() <= MAX_UID_CHARS) else {
+        *unreadable = true;
         return None;
-    }
-    let start = when(prop(c, "DTSTART")?, unknown_tz_warned)?;
+    };
+    let Some(dtstart) = prop(c, "DTSTART") else {
+        *unreadable = true;
+        return None;
+    };
+    let Some(start) = when(dtstart, unknown_tz_warned) else {
+        *unreadable |= !is_date(dtstart.val.as_str());
+        return None;
+    };
     let mut exdates = Vec::new();
     for p in props(c, "EXDATE") {
         for value in p.val.as_str().split(',') {
-            exdates.extend(at(p, value, unknown_tz_warned));
+            match at(p, value, unknown_tz_warned) {
+                Some(t) => exdates.push(t),
+                None => *unreadable |= !is_date(value),
+            }
         }
     }
     let recurrence_id = match prop(c, "RECURRENCE-ID") {
-        Some(p) => Some(when(p, unknown_tz_warned)?.with_timezone(&Utc)),
+        Some(p) => match when(p, unknown_tz_warned) {
+            Some(t) => Some(t.with_timezone(&Utc)),
+            None => {
+                *unreadable |= !is_date(p.val.as_str());
+                return None;
+            }
+        },
         None => None,
     };
     let end = match prop(c, "DTEND") {
@@ -638,13 +706,6 @@ fn in_window(occurrences: &[Occurrence], now: DateTime<Utc>) -> Vec<Occurrence> 
         .collect()
 }
 
-// A loaded disk cache may predate recurrence metadata. Only fresh expansions allow relocation.
-static HAS_REFRESHED: AtomicBool = AtomicBool::new(false);
-
-pub(crate) fn has_refreshed() -> bool {
-    HAS_REFRESHED.load(Ordering::Acquire)
-}
-
 /// The cached occurrences inside the window around now, sorted by start.
 pub fn upcoming() -> Vec<Occurrence> {
     let state = STATE.read().unwrap_or_else(PoisonError::into_inner);
@@ -652,12 +713,19 @@ pub fn upcoming() -> Vec<Occurrence> {
 }
 
 /// Fetch, expand, cache and persist. A failure keeps the last good cache and sets the error.
-pub(crate) async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<usize, String> {
+pub(crate) async fn refresh<R: Runtime>(
+    app: &AppHandle<R>,
+    now: DateTime<Utc>,
+) -> Result<ExpandResult, String> {
     let Some(url) = settings::current().calendar_url else {
         return Err(NOT_CONNECTED.to_string());
     };
-    match fetch_and_expand(&url).await {
-        Ok(occurrences) => store(app, &url, occurrences).ok_or_else(|| CHANGED.to_string()),
+    match fetch_and_expand(&url, now).await {
+        Ok(result) => {
+            store(app, &url, result.occurrences.clone())
+                .ok_or_else(|| CHANGED.to_string())?;
+            Ok(result)
+        }
         Err(problem) => {
             record_error(&url, problem.clone());
             Err(problem)
@@ -665,20 +733,19 @@ pub(crate) async fn refresh<R: Runtime>(app: &AppHandle<R>) -> Result<usize, Str
     }
 }
 
-async fn fetch_and_expand(url: &str) -> Result<Vec<Occurrence>, String> {
+async fn fetch_and_expand(url: &str, now: DateTime<Utc>) -> Result<ExpandResult, String> {
     let ics = fetch(url).await?;
-    let now = Utc::now();
     let from = now - Duration::days(CALENDAR_BEHIND_DAYS);
     let to = now + Duration::days(CALENDAR_AHEAD_DAYS);
     // Expansion is CPU work; it runs off the async runtime.
-    let occurrences = tokio::task::spawn_blocking(move || expand(&ics, from, to))
+    let result = tokio::task::spawn_blocking(move || expand(&ics, from, to))
         .await
         .map_err(|_| UNREADABLE.to_string())??;
     info!(
         "calendar: fetched, {} occurrences in the window",
-        occurrences.len()
+        result.occurrences.len()
     );
-    Ok(occurrences)
+    Ok(result)
 }
 
 /// Whether `url` is still the connected calendar.
@@ -695,6 +762,7 @@ fn store<R: Runtime>(app: &AppHandle<R>, url: &str, occurrences: Vec<Occurrence>
         return None;
     }
     let cache = Cache {
+        version: CACHE_VERSION,
         last_ok_at: Some(Utc::now().to_rfc3339()),
         occurrences,
     };
@@ -704,7 +772,7 @@ fn store<R: Runtime>(app: &AppHandle<R>, url: &str, occurrences: Vec<Occurrence>
     }
     state.cache = cache;
     state.last_error = None;
-    HAS_REFRESHED.store(true, Ordering::Release);
+    state.last_error_at = None;
     Some(count)
 }
 
@@ -713,6 +781,23 @@ fn record_error(url: &str, problem: String) {
     let mut state = STATE.write().unwrap_or_else(PoisonError::into_inner);
     if still_connected(url) {
         state.last_error = Some(problem);
+        state.last_error_at = Some(Utc::now().to_rfc3339());
+    }
+}
+
+/// Records a failed fetch or reconcile for the connected calendar, so Settings shows it. Nothing while disconnected.
+pub(crate) fn record_sync_error(problem: String) {
+    if let Some(url) = settings::current().calendar_url {
+        record_error(&url, problem);
+    }
+}
+
+/// A reconcile of the kept feed worked: the earlier sync error no longer holds for the connected calendar.
+pub(crate) fn clear_sync_error() {
+    let mut state = STATE.write().unwrap_or_else(PoisonError::into_inner);
+    if settings::current().calendar_url.is_some() {
+        state.last_error = None;
+        state.last_error_at = None;
     }
 }
 
@@ -746,7 +831,9 @@ fn write_atomic(path: &Path, bytes: &[u8]) -> Result<(), String> {
 
 /// Reads the persisted cache. A broken file gives None; its content is never logged.
 fn parse_cache(bytes: &[u8]) -> Option<Cache> {
-    serde_json::from_slice(bytes).ok()
+    serde_json::from_slice::<Cache>(bytes)
+        .ok()
+        .filter(|c| c.version == CACHE_VERSION)
 }
 
 /// A missing file is an empty cache. A broken one is logged without its content and also starts empty.
@@ -759,7 +846,7 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     let cache = match bytes {
         Ok(None) => Cache::default(),
         Ok(Some(bytes)) => parse_cache(&bytes).unwrap_or_else(|| {
-            warn!("calendar: cache file unreadable, starting empty");
+            info!("calendar: old cache format, refetching");
             Cache::default()
         }),
         Err(problem) => {
@@ -774,7 +861,7 @@ pub fn load_at_startup<R: Runtime>(app: &AppHandle<R>) {
     STATE.write().unwrap_or_else(PoisonError::into_inner).cache = cache;
 }
 
-fn status() -> CalendarStatus {
+pub(crate) fn status() -> CalendarStatus {
     let url = settings::current().calendar_url;
     let state = STATE.read().unwrap_or_else(PoisonError::into_inner);
     CalendarStatus {
@@ -782,6 +869,7 @@ fn status() -> CalendarStatus {
         host: url.as_deref().and_then(settings::host_of),
         last_ok_at: state.cache.last_ok_at.clone(),
         last_error: state.last_error.clone(),
+        last_error_at: state.last_error_at.clone(),
         upcoming: in_window(&state.cache.occurrences, Utc::now()).len(),
     }
 }
@@ -793,9 +881,9 @@ pub async fn calendar_connect<R: Runtime>(
 ) -> Result<CalendarStatus, String> {
     let url = url.trim().to_string();
     validate_url(&url)?;
-    let occurrences = fetch_and_expand(&url).await?;
+    let result = fetch_and_expand(&url, Utc::now()).await?;
     settings::set_calendar_url(&app, Some(url.clone()))?;
-    let count = store(&app, &url, occurrences).ok_or_else(|| CHANGED.to_string())?;
+    let count = store(&app, &url, result.occurrences).ok_or_else(|| CHANGED.to_string())?;
     info!("calendar: connected, {count} occurrences in the window");
     Ok(status())
 }
@@ -827,6 +915,24 @@ pub fn event_for_start(occ: &[Occurrence], now: DateTime<Utc>) -> Option<&Occurr
         .min_by_key(|o| (o.start - now).num_milliseconds().abs())
 }
 
+/// Pure: strips the calls marker from an event title.
+/// Returns None if the title does not contain the marker or marker is empty.
+/// Otherwise removes every occurrence of the marker, collapses whitespace, trims,
+/// and returns "Call" if the remaining title is empty.
+pub fn strip_marker(title: &str, marker: &str) -> Option<String> {
+    let marker = marker.trim();
+    if marker.is_empty() || !title.contains(marker) {
+        return None;
+    }
+    let stripped = title.replace(marker, "");
+    let collapsed: Vec<&str> = stripped.split_whitespace().collect();
+    if collapsed.is_empty() {
+        Some("Call".to_string())
+    } else {
+        Some(collapsed.join(" "))
+    }
+}
+
 /// The event a recording starting now is named after.
 #[derive(Serialize)]
 pub struct CalendarTitle {
@@ -838,7 +944,16 @@ pub struct CalendarTitle {
 #[tauri::command]
 pub async fn calendar_title_now() -> Option<CalendarTitle> {
     let occurrences = upcoming();
-    event_for_start(&occurrences, Utc::now()).map(|o| CalendarTitle {
+    let marker = settings::current().calendar_marker;
+    let calls: Vec<_> = occurrences
+        .into_iter()
+        .filter_map(|mut o| {
+            let stripped = strip_marker(&o.title, &marker)?;
+            o.title = stripped;
+            Some(o)
+        })
+        .collect();
+    event_for_start(&calls, Utc::now()).map(|o| CalendarTitle {
         title: o.title.clone(),
         uid: o.uid.clone(),
         start: o.start.to_rfc3339(),
@@ -878,6 +993,27 @@ mod tests {
     }
 
     #[test]
+    fn sync_error_sets_its_time_and_store_clears_both() {
+        let _guard = crate::knowledge::SETTINGS_TEST_LOCK.blocking_lock();
+        let url = "https://example.invalid/cal.ics".to_string();
+        settings::set_cache(settings::KnowledgeSettings { calendar_url: Some(url.clone()), ..settings::current() });
+        let app = tauri::test::mock_app();
+
+        record_sync_error("boom".into());
+        let s = status();
+        assert_eq!(s.last_error.as_deref(), Some("boom"));
+        assert!(s.last_error_at.is_some());
+
+        store(app.handle(), &url, Vec::new()).unwrap();
+        let s = status();
+        assert!(s.last_error.is_none() && s.last_error_at.is_none());
+
+        settings::set_cache(settings::KnowledgeSettings { calendar_url: None, ..settings::current() });
+        record_sync_error("ignored".into());
+        assert!(status().last_error.is_none());
+    }
+
+    #[test]
     fn expand_single_event() {
         let body = ics(&[
             "BEGIN:VCALENDAR",
@@ -891,12 +1027,13 @@ mod tests {
         ]);
         let got = expand(&body, utc(2026, 10, 20, 0, 0), utc(2026, 10, 21, 0, 0)).unwrap();
         assert_eq!(
-            got,
+            got.occurrences,
             vec![Occurrence {
                 uid: "single-1".into(),
                 title: "Design review".into(),
                 start: utc(2026, 10, 20, 13, 0),
                 end: utc(2026, 10, 20, 14, 0),
+                original_start: utc(2026, 10, 20, 13, 0),
                 recurring: false,
             }]
         );
@@ -947,8 +1084,8 @@ mod tests {
                 utc(2026, 11, 15, 9, 30),
             ),
         ];
-        assert!(got.iter().all(|o| o.recurring));
-        let got: Vec<_> = got.into_iter().map(|o| (o.title, o.start, o.end)).collect();
+        assert!(got.occurrences.iter().all(|o| o.recurring));
+        let got: Vec<_> = got.occurrences.into_iter().map(|o| (o.title, o.start, o.end)).collect();
         let want: Vec<_> = want
             .into_iter()
             .map(|(t, s, e)| (t.to_string(), s, e))
@@ -957,12 +1094,46 @@ mod tests {
     }
 
     #[test]
-    fn old_occurrence_json_defaults_to_nonrecurring() {
-        let occurrence: Occurrence = serde_json::from_str(r#"{
-            "uid": "u", "title": "Meeting",
-            "start": "2026-10-29T12:00:00+00:00", "end": "2026-10-29T12:30:00+00:00"
-        }"#).unwrap();
-        assert!(!occurrence.recurring);
+    fn version_1_cache_is_dropped() {
+        assert!(parse_cache(br#"{"occurrences": []}"#).is_none());
+        assert!(parse_cache(br#"{"version": 2, "occurrences": []}"#).is_some());
+    }
+
+    #[test]
+    fn moved_instance_keeps_its_recurrence_id() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:weekly-1",
+            "DTSTART:20261022T100000Z",
+            "DTEND:20261022T103000Z",
+            "RRULE:FREQ=WEEKLY;COUNT=2",
+            "SUMMARY:Weekly sync",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "UID:weekly-1",
+            "RECURRENCE-ID:20261029T100000Z",
+            "DTSTART:20261029T110000Z",
+            "DTEND:20261029T113000Z",
+            "SUMMARY:Weekly sync (moved)",
+            "END:VEVENT",
+            "BEGIN:VEVENT",
+            "UID:single-1",
+            "DTSTART:20261025T140000Z",
+            "DTEND:20261025T150000Z",
+            "SUMMARY:One-off meeting",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 20, 0, 0), utc(2026, 11, 5, 0, 0)).unwrap();
+        let plain_series = got.occurrences.iter().find(|o| o.uid == "weekly-1" && o.start == utc(2026, 10, 22, 10, 0)).unwrap();
+        assert_eq!(plain_series.original_start, plain_series.start);
+
+        let moved = got.occurrences.iter().find(|o| o.uid == "weekly-1" && o.start == utc(2026, 10, 29, 11, 0)).unwrap();
+        assert_eq!(moved.original_start, utc(2026, 10, 29, 10, 0));
+
+        let plain_single = got.occurrences.iter().find(|o| o.uid == "single-1").unwrap();
+        assert_eq!(plain_single.original_start, plain_single.start);
     }
 
     #[test]
@@ -985,8 +1156,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 18, 0, 0), utc(2026, 11, 30, 0, 0)).unwrap();
-        assert_eq!(got.len(), 2);
-        assert!(got.iter().all(|o| o.recurring));
+        assert_eq!(got.occurrences.len(), 2);
+        assert!(got.occurrences.iter().all(|o| o.recurring));
     }
 
     #[test]
@@ -1017,12 +1188,12 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 18, 0, 0), utc(2026, 11, 30, 0, 0)).unwrap();
-        let starts: Vec<_> = got.iter().map(|o| o.start).collect();
+        let starts: Vec<_> = got.occurrences.iter().map(|o| o.start).collect();
         assert_eq!(
             starts,
             vec![utc(2026, 10, 19, 9, 0), utc(2026, 11, 2, 9, 0)]
         );
-        assert!(got.iter().all(|o| o.title != "Dropped"));
+        assert!(got.occurrences.iter().all(|o| o.title != "Dropped"));
     }
 
     #[test]
@@ -1038,7 +1209,69 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert!(got.is_empty());
+        assert!(got.occurrences.is_empty());
+    }
+
+    #[test]
+    fn budget_skip_is_incomplete() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:ping-7",
+            "DTSTART:20200101T090000Z",
+            "DTEND:20200101T090100Z",
+            "RRULE:FREQ=MINUTELY",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
+        assert!(!got.complete);
+    }
+
+    fn one_event_feed(extra: &[&str]) -> String {
+        let mut lines = vec!["BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:s-1", "DTEND:20261020T140000Z"];
+        lines.extend_from_slice(extra);
+        lines.extend(["END:VEVENT", "END:VCALENDAR"]);
+        ics(&lines)
+    }
+
+    #[test]
+    fn unreadable_series_data_is_incomplete() {
+        let (from, to) = (utc(2026, 10, 19, 0, 0), utc(2026, 10, 30, 0, 0));
+        for extra in [
+            &["DTSTART:20261020T130000Z", "RRULE:FREQ=BOGUS"][..],
+            &["DTSTART:20261020T130000Z", "RRULE:FREQ=DAILY;BYHOUR=99"],
+            &["DTSTART:garbage"],
+            &["DTSTART:20261020T130000Z", "RECURRENCE-ID:garbage"],
+            &["DTSTART:20261020T130000Z", "RRULE:FREQ=DAILY", "EXDATE:garbage"],
+        ] {
+            let got = expand(&one_event_feed(extra), from, to).unwrap();
+            assert!(!got.complete, "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn all_day_event_stays_complete() {
+        let body = one_event_feed(&["DTSTART;VALUE=DATE:20261020"]);
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 30, 0, 0)).unwrap();
+        assert!(got.complete);
+    }
+
+    #[test]
+    fn plain_feed_is_complete() {
+        let body = ics(&[
+            "BEGIN:VCALENDAR",
+            "BEGIN:VEVENT",
+            "UID:single-1",
+            "DTSTART:20261020T130000Z",
+            "DTEND:20261020T140000Z",
+            "SUMMARY:Design review",
+            "END:VEVENT",
+            "END:VCALENDAR",
+        ]);
+        let got = expand(&body, utc(2026, 10, 20, 0, 0), utc(2026, 10, 21, 0, 0)).unwrap();
+        assert!(got.complete);
+        assert_eq!(got.occurrences.len(), 1);
     }
 
     #[test]
@@ -1054,7 +1287,7 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert!(got.is_empty(), "{got:?}");
+        assert!(got.occurrences.is_empty(), "{got:?}");
     }
 
     #[test]
@@ -1083,8 +1316,8 @@ mod tests {
             .with_ymd_and_hms(2026, 10, 20, 10, 0, 0)
             .unwrap()
             .with_timezone(&Utc);
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].start, local_start);
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].start, local_start);
     }
 
     #[test]
@@ -1108,8 +1341,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].start, utc(2026, 10, 20, 7, 0));
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].start, utc(2026, 10, 20, 7, 0));
     }
     #[test]
     fn title_sanitised_and_capped() {
@@ -1129,8 +1362,8 @@ mod tests {
             .chars()
             .take(MAX_EVENT_TITLE_CHARS)
             .collect();
-        assert_eq!(got[0].title, expected);
-        assert_eq!(got[0].title.chars().count(), MAX_EVENT_TITLE_CHARS);
+        assert_eq!(got.occurrences[0].title, expected);
+        assert_eq!(got.occurrences[0].title.chars().count(), MAX_EVENT_TITLE_CHARS);
     }
 
     #[test]
@@ -1216,7 +1449,7 @@ mod tests {
         ]);
         let started = std::time::Instant::now();
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert!(got.is_empty());
+        assert!(got.occurrences.is_empty());
         assert!(started.elapsed() < std::time::Duration::from_secs(1));
     }
 
@@ -1230,7 +1463,7 @@ mod tests {
         }
         body.push_str("END:VCALENDAR\r\n");
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), MAX_FEED_OCCURRENCES);
+        assert_eq!(got.occurrences.len(), MAX_FEED_OCCURRENCES);
     }
 
     #[test]
@@ -1252,8 +1485,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].uid, ok);
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].uid, ok);
     }
 
     #[test]
@@ -1270,9 +1503,9 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 3, 28, 0, 0), utc(2026, 3, 30, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].start, utc(2026, 3, 29, 1, 30));
-        assert_eq!(got[0].end, utc(2026, 3, 29, 2, 0));
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].start, utc(2026, 3, 29, 1, 30));
+        assert_eq!(got.occurrences[0].end, utc(2026, 3, 29, 2, 0));
     }
 
     #[test]
@@ -1459,8 +1692,8 @@ mod tests {
             "",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].title, "Standup");
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].title, "Standup");
     }
 
     #[test]
@@ -1473,8 +1706,8 @@ mod tests {
         }
         body.push_str("BEGIN:VEVENT\r\nUID:next\r\nDTSTART:20261020T120000Z\r\nDTEND:20261020T130000Z\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert_eq!(got.len(), 1);
-        assert_eq!(got[0].uid, "next");
+        assert_eq!(got.occurrences.len(), 1);
+        assert_eq!(got.occurrences[0].uid, "next");
     }
 
     #[test]
@@ -1487,7 +1720,7 @@ mod tests {
         }
         body.push_str("BEGIN:VEVENT\r\nUID:standup\r\nDTSTART:20261001T090000Z\r\nDTEND:20261001T093000Z\r\nRRULE:FREQ=WEEKLY;BYDAY=MO\r\nEND:VEVENT\r\nEND:VCALENDAR\r\n");
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 11, 2, 0, 0)).unwrap();
-        assert!(got.iter().any(|o| o.uid == "standup"), "{got:?}");
+        assert!(got.occurrences.iter().any(|o| o.uid == "standup"), "{got:?}");
     }
 
     #[test]
@@ -1502,7 +1735,7 @@ mod tests {
         body.push_str("END:VCALENDAR\r\n");
         let started = std::time::Instant::now();
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 11, 2, 0, 0)).unwrap();
-        assert!(got.is_empty());
+        assert!(got.occurrences.is_empty());
         assert!(
             started.elapsed() < std::time::Duration::from_secs(3),
             "{:?}",
@@ -1543,7 +1776,7 @@ mod tests {
         body.push_str("END:VCALENDAR\n");
         let started = std::time::Instant::now();
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        assert!(!got.is_empty());
+        assert!(!got.occurrences.is_empty());
         assert!(
             started.elapsed() < std::time::Duration::from_secs(5),
             "{:?}",
@@ -1585,7 +1818,7 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
-        let uids: Vec<&str> = got.iter().map(|o| o.uid.as_str()).collect();
+        let uids: Vec<&str> = got.occurrences.iter().map(|o| o.uid.as_str()).collect();
         assert_eq!(uids, vec!["standup"]);
     }
 
@@ -1601,6 +1834,7 @@ mod tests {
             title: format!("Title {uid}"),
             start,
             end: start + Duration::minutes(mins),
+            original_start: start,
             recurring: false,
         }
     }
@@ -1618,8 +1852,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2026, 10, 22, 0, 0), utc(2026, 10, 23, 0, 0)).unwrap();
-        assert_eq!(got[0].end, utc(2026, 10, 22, 10, 0));
-        assert_eq!(event_for_start(&got, utc(2026, 10, 22, 9, 30)).map(|o| o.uid.as_str()), Some("dur-1"));
+        assert_eq!(got.occurrences[0].end, utc(2026, 10, 22, 10, 0));
+        assert_eq!(event_for_start(&got.occurrences, utc(2026, 10, 22, 9, 30)).map(|o| o.uid.as_str()), Some("dur-1"));
     }
 
     #[test]
@@ -1642,8 +1876,8 @@ mod tests {
             "END:VCALENDAR",
         ]);
         let got = expand(&body, utc(2020, 1, 1, 0, 0), utc(2020, 2, 1, 0, 0)).unwrap();
-        assert!(got.iter().any(|o| o.uid == "fine-1"));
-        assert!(got.iter().filter(|o| o.uid == "hostile").all(|o| o.end == o.start));
+        assert!(got.occurrences.iter().any(|o| o.uid == "fine-1"));
+        assert!(got.occurrences.iter().filter(|o| o.uid == "hostile").all(|o| o.end == o.start));
     }
 
     #[test]
@@ -1665,12 +1899,20 @@ mod tests {
     }
 
     #[test]
+    fn strip_marker_cases() {
+        assert_eq!(strip_marker("📞 Sync with Ivan", "📞").as_deref(), Some("Sync with Ivan"));
+        assert_eq!(strip_marker("Sync 📞  Ivan", "📞").as_deref(), Some("Sync Ivan"));
+        assert_eq!(strip_marker("📞", "📞").as_deref(), Some("Call"));
+        assert_eq!(strip_marker("Lunch", "📞"), None);
+    }
+
+    #[test]
     fn event_for_start_window() {
         let now = utc(2026, 10, 22, 9, 0);
-        let ten_before = [occ("a", utc(2026, 10, 22, 9, 10), 30)];
-        assert_eq!(event_for_start(&ten_before, now).map(|o| o.uid.as_str()), Some("a"));
-        let eleven_before = [occ("a", utc(2026, 10, 22, 9, 11), 30)];
-        assert!(event_for_start(&eleven_before, now).is_none());
+        let fifteen_before = [occ("a", utc(2026, 10, 22, 9, 15), 30)];
+        assert_eq!(event_for_start(&fifteen_before, now).map(|o| o.uid.as_str()), Some("a"));
+        let sixteen_before = [occ("a", utc(2026, 10, 22, 9, 16), 30)];
+        assert!(event_for_start(&sixteen_before, now).is_none());
         // Ends exactly at now: already over.
         let at_end = [occ("a", utc(2026, 10, 22, 8, 30), 30)];
         assert!(event_for_start(&at_end, now).is_none());

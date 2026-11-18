@@ -990,6 +990,7 @@ pub async fn api_save_transcript<R: Runtime>(
     recording_id: Option<String>,
     live: Option<bool>,
     meeting_id: Option<String>,
+    recording_generation: Option<u64>,
 ) -> Result<serde_json::Value, String> {
     log_info!(
         "api_save_transcript called, title chars: {}, transcripts: {}, folder_path set: {}, auth_token: {}",
@@ -1027,12 +1028,16 @@ pub async fn api_save_transcript<R: Runtime>(
     let mut continued_id = None;
     if live == Some(true) {
         use crate::audio::continuation::{continue_into, take_target};
-        // Stop keeps the recording flag true through its tail. Check after all awaits,
-        // immediately before taking the target; setters recheck under the target lock.
-        if crate::audio::recording_commands::is_recording_now() {
+        // The recording this save belongs to (from its stop); a save without one is for the latest.
+        let current_generation = crate::audio::recording_commands::recordings_started();
+        let generation = recording_generation.unwrap_or(current_generation);
+        // Stop keeps the recording flag true through its tail. Check after all awaits, immediately before taking
+        // the target; setters recheck under the target lock. A save of an older recording is past its own tail:
+        // a newer recording running now is not its business, and it can only take its own target.
+        if generation == current_generation && crate::audio::recording_commands::is_recording_now() {
             continue_error = Some("The recording was still stopping, so it was saved as a new meeting.".into());
             log_warn!("Continuation skipped: recording_now=true, live=true");
-        } else if let Some(t) = take_target(crate::audio::recording_commands::recordings_started()) {
+        } else if let Some(t) = take_target(generation) {
             match continue_into(pool, &t.meeting_id, folder_path.as_deref(), &transcripts_to_save,
                 &notes, speakers_active, &crate::audio::recording_preferences::get_default_recordings_folder()).await {
                 Ok(saved) => {

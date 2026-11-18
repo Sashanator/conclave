@@ -1160,6 +1160,8 @@ async fn stop_recording_inner<R: Runtime>(
     crate::meeting_detector::set_post_processing(true);
     // Set recording flag to false
     info!("🔍 Setting IS_RECORDING to false");
+    // Read before the flag drops (no start can bump it until then): the save is bound to this recording.
+    let recording_generation = recordings_started();
     IS_RECORDING.store(false, Ordering::SeqCst);
     // Read before the take: the meeting the UI showed as live, which the frontend holds until the save ends.
     let held_meeting_id = displayed_target(
@@ -1211,7 +1213,8 @@ async fn stop_recording_inner<R: Runtime>(
             "folder_path": folder_path_str,
             "meeting_name": meeting_name_str,
             "meeting_id": routed_meeting_id,
-            "held_meeting_id": held_meeting_id
+            "held_meeting_id": held_meeting_id,
+            "recording_generation": recording_generation
         }),
     )
     .map_err(|e| e.to_string())?;

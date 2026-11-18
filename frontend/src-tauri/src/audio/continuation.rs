@@ -517,12 +517,12 @@ pub(crate) fn current_target(recording: u64) -> Option<ContinueMeeting> {
 }
 
 pub(crate) fn take_target(recording: u64) -> Option<ContinueMeeting> {
-    TARGET
-        .lock()
-        .unwrap_or_else(PoisonError::into_inner)
-        .take()
-        .filter(|(number, _)| *number == recording)
-        .map(|(_, m)| m)
+    let mut target = TARGET.lock().unwrap_or_else(PoisonError::into_inner);
+    // Another recording's target stays: a late save must not consume it.
+    if target.as_ref().is_some_and(|(number, _)| *number == recording) {
+        return target.take().map(|(_, m)| m);
+    }
+    None
 }
 
 pub(crate) async fn set_target<R: Runtime>(
@@ -1411,8 +1411,7 @@ mod tests {
         assert_eq!(current_target(5), Some(m.clone()));
         assert_eq!(current_target(6), None);
         assert_eq!(take_target(6), None);
-        assert_eq!(take_target(5), None);
-        set_target_for(5, m.clone());
+        assert_eq!(current_target(5), Some(m.clone()), "a late save of another recording leaves the target");
         assert_eq!(take_target(5), Some(m));
         assert_eq!(current_target(5), None);
     }

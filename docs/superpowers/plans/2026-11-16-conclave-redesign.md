@@ -735,7 +735,7 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 | 53 CHANGELOG v2.0.0 (+ v1.2.0) | done |
 | 54 What's new | done |
 | 55 final UI QA | done (8b1c83e9, 184e4a66, fc1918d5) |
-| 56 checkpoint + Windows checklist | whole-branch review fixed (82a8a573); Codex recheck 4 majors fixed (c148000e, 9069de47), Claude recheck fixes (3e217c67, 8e6a28a1), approved; gates green on 0bf45976. full CI run 44289254617 green (2026-11-18). Next: user PC checklist, then merge to main + v2.0.0 tag |
+| 56 checkpoint + Windows checklist | done: merged to main, v2.0.0 released 2026-11-18 (release run 44300549598; fixes 30b567a7 tauri api 2.12.4, a3600f5e smoke test reads stdout + log file). PC checklist with the user |
 
 2026-11-17: the VM crashed mid-session; uncommitted work in rd-e (Tasks 39+) and rd-r (Task 10) was corrupted (NUL bytes) and discarded (backups in the session scratchpad). Committed lanes merged into `redesign`. "done (pre-crash)" tasks get covered by their phase-end reviews.
 

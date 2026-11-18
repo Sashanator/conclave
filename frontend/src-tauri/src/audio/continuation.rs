@@ -32,7 +32,18 @@ pub(crate) struct Eligible {
 }
 
 static LAST: Mutex<Option<(ContinueMeeting, Instant)>> = Mutex::new(None);
-static TARGET: Mutex<Option<(u64, ContinueMeeting)>> = Mutex::new(None);
+// One entry per recording generation, so a late save still finds its own choice after a newer recording picked one.
+static TARGET: Mutex<Vec<(u64, ContinueMeeting)>> = Mutex::new(Vec::new());
+// Entries leave when taken; if a save never takes its own, the oldest go once more than this many are held.
+const MAX_TARGETS: usize = 8;
+
+fn put_target(targets: &mut Vec<(u64, ContinueMeeting)>, recording: u64, m: ContinueMeeting) {
+    targets.retain(|(number, _)| *number != recording);
+    targets.push((recording, m));
+    if targets.len() > MAX_TARGETS {
+        targets.remove(0);
+    }
+}
 static ACTIVE: Mutex<Vec<PathBuf>> = Mutex::new(Vec::new());
 
 struct Claim(PathBuf);
@@ -504,25 +515,23 @@ pub(crate) fn offer() -> Option<ContinueMeeting> {
 }
 
 pub(crate) fn set_target_for(recording: u64, m: ContinueMeeting) {
-    *TARGET.lock().unwrap_or_else(PoisonError::into_inner) = Some((recording, m));
+    put_target(&mut TARGET.lock().unwrap_or_else(PoisonError::into_inner), recording, m);
 }
 
 pub(crate) fn current_target(recording: u64) -> Option<ContinueMeeting> {
     TARGET
         .lock()
         .unwrap_or_else(PoisonError::into_inner)
-        .as_ref()
-        .filter(|(number, _)| *number == recording)
+        .iter()
+        .find(|(number, _)| *number == recording)
         .map(|(_, m)| m.clone())
 }
 
 pub(crate) fn take_target(recording: u64) -> Option<ContinueMeeting> {
     let mut target = TARGET.lock().unwrap_or_else(PoisonError::into_inner);
     // Another recording's target stays: a late save must not consume it.
-    if target.as_ref().is_some_and(|(number, _)| *number == recording) {
-        return target.take().map(|(_, m)| m);
-    }
-    None
+    let at = target.iter().position(|(number, _)| *number == recording)?;
+    Some(target.remove(at).1)
 }
 
 pub(crate) async fn set_target<R: Runtime>(
@@ -544,7 +553,7 @@ pub(crate) async fn set_target<R: Runtime>(
         meeting_id: meeting_id.to_owned(),
         title: earlier.title,
     };
-    *target = Some((recording, m.clone()));
+    put_target(&mut target, recording, m.clone());
     drop(target);
     app.emit("continue-target-changed", &m)
         .map_err(|e| format!("Could not announce the continuation target: {e}."))?;
@@ -1414,6 +1423,23 @@ mod tests {
         assert_eq!(current_target(5), Some(m.clone()), "a late save of another recording leaves the target");
         assert_eq!(take_target(5), Some(m));
         assert_eq!(current_target(5), None);
+    }
+
+    #[test]
+    fn each_recording_keeps_its_own_target() {
+        let _turn = state_lock();
+        let (a, b) = (meeting(), ContinueMeeting { meeting_id: "other".into(), title: "Other".into() });
+        set_target_for(5, a.clone());
+        set_target_for(6, b.clone());
+        assert_eq!(take_target(5), Some(a));
+        assert_eq!(current_target(6), Some(b.clone()));
+        assert_eq!(take_target(6), Some(b));
+        for n in 100..120 {
+            set_target_for(n, meeting());
+        }
+        assert_eq!(take_target(100), None, "stale entries are dropped");
+        assert!(take_target(119).is_some());
+        TARGET.lock().unwrap_or_else(PoisonError::into_inner).clear();
     }
 
     #[test]

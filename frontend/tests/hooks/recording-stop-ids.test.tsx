@@ -71,7 +71,9 @@ const { useRecordingStop } = await import('../../src/hooks/useRecordingStop');
 
 let stop: UseRecordingStopReturn;
 let renderer: ReactTestRenderer | undefined;
-function View() { stop = useRecordingStop(() => {}, () => {}); return null; }
+const setIsRecording = mock((_v: boolean) => {});
+const setIsRecordingDisabled = mock((_v: boolean) => {});
+function View() { stop = useRecordingStop(setIsRecording, setIsRecordingDisabled); return null; }
 async function mount() {
   await act(async () => { renderer = create(<View />); });
   await act(async () => { await new Promise((r) => setTimeout(r, 0)); });
@@ -86,7 +88,7 @@ async function stopAndSave() {
 const emitStopped = (payload: Record<string, unknown>) => act(async () => { handlers.get('recording-stopped')!({ payload }); await new Promise((r) => setTimeout(r, 0)); });
 
 beforeEach(() => {
-  saveMeeting.mockClear(); invoke.mockClear(); push.mockClear(); clearTranscripts.mockClear(); markMeetingAsSaved.mockClear(); setStatus.mockClear(); flushBufferImpl = () => {};
+  saveMeeting.mockClear(); invoke.mockClear(); push.mockClear(); clearTranscripts.mockClear(); markMeetingAsSaved.mockClear(); setStatus.mockClear(); setIsRecording.mockClear(); setIsRecordingDisabled.mockClear(); flushBufferImpl = () => {};
   transcriptsRef.current = [{ text: 'hi' }]; onStatusPoll = () => {};
   for (const t of Object.values(toast)) t.mockClear();
   saveResult = { meeting_id: 'saved-1' };
@@ -336,6 +338,10 @@ describe('stop and save races', () => {
     expect(args[7]).toBe('B');
     expect(args[8]).toBe(2);
     expect(sessionStorage.getItem('last_recording_meeting_id')).toBe('C'); // C's keys survive B's save
+    // C is recording: B's late start must not push the global status or flags into the stop flow.
+    expect(setStatus.mock.calls.some((c) => c[0] === 'stopping')).toBe(false);
+    expect(setIsRecording).not.toHaveBeenCalled();
+    expect(setIsRecordingDisabled).not.toHaveBeenCalled();
   });
 
   test('after the page unmounts, a recording started during the save keeps its lines and status', async () => {

@@ -172,9 +172,12 @@ export function useRecordingStop(
     invoke('set_recording_post_processing', { active: true }).catch(() => {});
 
     // Set status to STOPPING immediately
-    setStatus(RecordingStatus.STOPPING);
-    setIsRecording(false);
-    setIsRecordingDisabled(true);
+    // A queued stop may get here after a newer recording started: that recording's flags are not ours.
+    setStatusIfCurrent(RecordingStatus.STOPPING);
+    if (isCurrent()) {
+      setIsRecording(false);
+      setIsRecordingDisabled(true);
+    }
     const stopStartTime = Date.now();
 
     try {
@@ -420,12 +423,12 @@ export function useRecordingStop(
       }
 
       // isRecording already set to false at function start
-      setIsRecordingDisabled(false);
+      if (isCurrent()) setIsRecordingDisabled(false);
     } catch (error) {
       console.error('Error in handleRecordingStop:', error);
       setStatusIfCurrent(RecordingStatus.ERROR, error instanceof Error ? error.message : 'Unknown error');
       // isRecording already set to false at function start
-      setIsRecordingDisabled(false);
+      if (isCurrent()) setIsRecordingDisabled(false);
     } finally {
       // Always reset the guard flag when done
       endStop();

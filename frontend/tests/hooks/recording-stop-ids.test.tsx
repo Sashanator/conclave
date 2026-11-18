@@ -355,3 +355,22 @@ describe('stop and save races', () => {
     expect(setStatus.mock.calls.some((c) => c[0] === 'idle')).toBe(false);
   });
 });
+
+describe('a current stop toggles the recording flags', () => {
+  test('a save that succeeds sets recording off, then the disabled flag on and back off', async () => {
+    await mount();
+    await stopAndSave();
+    expect(saveMeeting).toHaveBeenCalledTimes(1);
+    expect(setIsRecording.mock.calls).toEqual([[false]]);
+    expect(setIsRecordingDisabled.mock.calls).toEqual([[true], [false]]);
+  });
+
+  test('a save that rejects still re-enables recording', async () => {
+    saveMeeting.mockImplementationOnce(async () => { throw new Error('db locked'); });
+    const logged = console.error; console.error = () => {};
+    await mount();
+    await stopAndSave();
+    console.error = logged;
+    expect(setIsRecordingDisabled.mock.calls).toEqual([[true], [false]]);
+  });
+});

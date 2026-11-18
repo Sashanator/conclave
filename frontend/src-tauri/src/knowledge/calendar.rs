@@ -143,11 +143,13 @@ fn expand_here(
     }
     let calendar = read_calendar(&unfolded).map_err(|_| UNREADABLE.to_string())?;
     let mut unknown_tz_warned = false;
+    // Set when an event or part of one is unreadable (not merely all-day): what it would have shown is unknown.
+    let mut unreadable = false;
     let events: Vec<Event> = calendar
         .components
         .iter()
         .filter(|c| c.name == "VEVENT")
-        .filter_map(|c| event(c, &mut unknown_tz_warned))
+        .filter_map(|c| event(c, &mut unknown_tz_warned, &mut unreadable))
         .collect();
 
     let cancelled_series: HashSet<String> = events
@@ -185,7 +187,11 @@ fn expand_here(
             continue;
         }
         spent += cost;
-        for start in starts(master, from, to) {
+        let Some(instances) = starts(master, from, to) else {
+            skipped += 1;
+            continue;
+        };
+        for start in instances {
             if out.len() >= MAX_FEED_OCCURRENCES {
                 break 'series;
             }
@@ -230,13 +236,16 @@ fn expand_here(
         warn!("calendar: expansion stopped at the time limit, the rest of the feed is not shown");
     }
     if skipped > 0 {
-        warn!("calendar: {skipped} series skipped to keep the expansion bounded");
+        warn!("calendar: {skipped} series skipped (over budget or unreadable rule)");
+    }
+    if unreadable {
+        warn!("calendar: an event could not be read, the feed is incomplete");
     }
     if out.len() >= MAX_FEED_OCCURRENCES {
         warn!("calendar: occurrence limit reached, the feed is cut short");
     }
     out.sort_by_key(|o| o.start);
-    let complete = !timed_out && skipped == 0 && out.len() < MAX_FEED_OCCURRENCES;
+    let complete = !timed_out && !unreadable && skipped == 0 && out.len() < MAX_FEED_OCCURRENCES;
     Ok(ExpandResult {
         occurrences: out,
         complete,
@@ -426,9 +435,10 @@ fn work(e: &Event, to: DateTime<Utc>) -> f64 {
 }
 
 /// The instance starts of one event within [from, to). A non-recurring event is its DTSTART.
-fn starts(e: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Tz>> {
+/// None when the recurrence rule does not validate: the series is unknown, not empty.
+fn starts(e: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> Option<Vec<DateTime<Tz>>> {
     let Some(text) = &e.rrule else {
-        return vec![e.start];
+        return Some(vec![e.start]);
     };
     let Some(rule) = text
         .parse::<RRule<Unvalidated>>()
@@ -436,31 +446,59 @@ fn starts(e: &Event, from: DateTime<Utc>, to: DateTime<Utc>) -> Vec<DateTime<Tz>
         .and_then(|rule| rule.validate(e.start).ok())
     else {
         warn!("calendar: skipped a recurrence rule that does not validate");
-        return Vec::new();
+        return None;
     };
-    RRuleSet::new(e.start)
+    let dates = RRuleSet::new(e.start)
         .rrule(rule)
         .set_exdates(e.exdates.clone())
         .after(from.with_timezone(&Tz::UTC))
         .before(to.with_timezone(&Tz::UTC))
         .all(u16::MAX)
-        .dates
+        .dates;
+    Some(dates)
 }
 
-fn event<'a>(c: &'a Component<'a>, unknown_tz_warned: &mut bool) -> Option<Event> {
-    let uid = prop(c, "UID")?.val.as_str().trim().to_string();
-    if uid.chars().count() > MAX_UID_CHARS {
+/// An all-day value (`20261020`): skipped on purpose, not unreadable.
+fn is_date(text: &str) -> bool {
+    let t = text.trim();
+    t.len() == 8 && t.bytes().all(|b| b.is_ascii_digit())
+}
+
+fn event<'a>(
+    c: &'a Component<'a>,
+    unknown_tz_warned: &mut bool,
+    unreadable: &mut bool,
+) -> Option<Event> {
+    let uid = prop(c, "UID").map(|p| p.val.as_str().trim().to_string());
+    let Some(uid) = uid.filter(|u| u.chars().count() <= MAX_UID_CHARS) else {
+        *unreadable = true;
         return None;
-    }
-    let start = when(prop(c, "DTSTART")?, unknown_tz_warned)?;
+    };
+    let Some(dtstart) = prop(c, "DTSTART") else {
+        *unreadable = true;
+        return None;
+    };
+    let Some(start) = when(dtstart, unknown_tz_warned) else {
+        *unreadable |= !is_date(dtstart.val.as_str());
+        return None;
+    };
     let mut exdates = Vec::new();
     for p in props(c, "EXDATE") {
         for value in p.val.as_str().split(',') {
-            exdates.extend(at(p, value, unknown_tz_warned));
+            match at(p, value, unknown_tz_warned) {
+                Some(t) => exdates.push(t),
+                None => *unreadable |= !is_date(value),
+            }
         }
     }
     let recurrence_id = match prop(c, "RECURRENCE-ID") {
-        Some(p) => Some(when(p, unknown_tz_warned)?.with_timezone(&Utc)),
+        Some(p) => match when(p, unknown_tz_warned) {
+            Some(t) => Some(t.with_timezone(&Utc)),
+            None => {
+                *unreadable |= !is_date(p.val.as_str());
+                return None;
+            }
+        },
         None => None,
     };
     let end = match prop(c, "DTEND") {
@@ -1188,6 +1226,35 @@ mod tests {
         ]);
         let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 22, 0, 0)).unwrap();
         assert!(!got.complete);
+    }
+
+    fn one_event_feed(extra: &[&str]) -> String {
+        let mut lines = vec!["BEGIN:VCALENDAR", "BEGIN:VEVENT", "UID:s-1", "DTEND:20261020T140000Z"];
+        lines.extend_from_slice(extra);
+        lines.extend(["END:VEVENT", "END:VCALENDAR"]);
+        ics(&lines)
+    }
+
+    #[test]
+    fn unreadable_series_data_is_incomplete() {
+        let (from, to) = (utc(2026, 10, 19, 0, 0), utc(2026, 10, 30, 0, 0));
+        for extra in [
+            &["DTSTART:20261020T130000Z", "RRULE:FREQ=BOGUS"][..],
+            &["DTSTART:20261020T130000Z", "RRULE:FREQ=DAILY;BYHOUR=99"],
+            &["DTSTART:garbage"],
+            &["DTSTART:20261020T130000Z", "RECURRENCE-ID:garbage"],
+            &["DTSTART:20261020T130000Z", "RRULE:FREQ=DAILY", "EXDATE:garbage"],
+        ] {
+            let got = expand(&one_event_feed(extra), from, to).unwrap();
+            assert!(!got.complete, "{extra:?}");
+        }
+    }
+
+    #[test]
+    fn all_day_event_stays_complete() {
+        let body = one_event_feed(&["DTSTART;VALUE=DATE:20261020"]);
+        let got = expand(&body, utc(2026, 10, 19, 0, 0), utc(2026, 10, 30, 0, 0)).unwrap();
+        assert!(got.complete);
     }
 
     #[test]

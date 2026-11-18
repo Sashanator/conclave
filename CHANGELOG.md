@@ -1,6 +1,6 @@
 # Conclave changelog
 
-## v2.0.0 — 2026-11-17
+## v2.0.0 — 2026-11-18
 - **Meetings table.** All meetings in one table with saved views, search across transcripts, and grouping by day or category.
 - **Create a meeting first.** Name it, write prep notes, then press Record. Calendar events with 📞 in the title become meetings on their own.
 - **One AI sidebar.** Ask and Copilot open beside the table or meeting (Ctrl J); Digests replace Briefs in the menu.

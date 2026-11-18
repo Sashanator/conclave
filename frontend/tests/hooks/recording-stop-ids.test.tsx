@@ -299,3 +299,53 @@ describe('the snapshot and the save outcome', () => {
     expect(invoke).toHaveBeenCalledWith('api_finish_saving_target', { meetingId: 'meeting-A' });
   });
 });
+
+describe('stop and save races', () => {
+  const { beginStop, endStop, noteRecordingStarted } = require('../../src/lib/recording-stop-gate');
+
+  test('the save carries the recording generation from its stop', async () => {
+    await mount();
+    await emitStopped({ message: 'x', meeting_id: null, recording_generation: 7 });
+    await stopAndSave();
+    expect(saveMeeting.mock.calls[0][8]).toBe(7);
+    expect(sessionStorage.getItem('last_recording_generation')).toBeNull();
+  });
+
+  test('a queued stop saves its own lines and keys, not those of a recording started while it waited', async () => {
+    await mount();
+    expect(await beginStop()).toBe(true); // stop A is saving
+    await act(async () => { handlers.get('recording-started')!({ payload: null }); });
+    await emitStopped({ message: 'x', meeting_id: 'B', meeting_name: 'B call', recording_generation: 2 });
+    transcriptsRef.current = [{ text: 'from B' }];
+    globalThis.setTimeout = ((fn: () => void, ms?: number) => realSetTimeout(fn, ms && ms >= 500 ? 0 : ms)) as typeof setTimeout;
+    let queued!: Promise<void>;
+    try {
+      await act(async () => { queued = stop.handleRecordingStop(true); await new Promise((r) => realSetTimeout(r, 5)); });
+      // C starts and stops while B still waits for A.
+      transcriptsRef.current = [{ text: 'from C' }];
+      await act(async () => { handlers.get('recording-started')!({ payload: null }); });
+      await emitStopped({ message: 'x', meeting_id: 'C', meeting_name: 'C call', recording_generation: 3 });
+      expect(saveMeeting).not.toHaveBeenCalled();
+      endStop();
+      await act(async () => { await queued; });
+    } finally { globalThis.setTimeout = realSetTimeout; }
+    await new Promise((r) => realSetTimeout(r, 10));
+    const args = saveMeeting.mock.calls[0];
+    expect(args[0]).toBe('B call');
+    expect((args[1] as Array<{ text: string }>)[0].text).toBe('from B');
+    expect(args[7]).toBe('B');
+    expect(args[8]).toBe(2);
+    expect(sessionStorage.getItem('last_recording_meeting_id')).toBe('C'); // C's keys survive B's save
+  });
+
+  test('after the page unmounts, a recording started during the save keeps its lines and status', async () => {
+    await mount();
+    onStatusPoll = () => { renderer!.unmount(); renderer = undefined; noteRecordingStarted(); };
+    transcriptsRef.current = [{ text: 'from A' }];
+    await stopAndSave();
+    expect(saveMeeting).toHaveBeenCalledTimes(1);
+    expect(clearTranscripts).not.toHaveBeenCalled();
+    expect(push).not.toHaveBeenCalled();
+    expect(setStatus.mock.calls.some((c) => c[0] === 'idle')).toBe(false);
+  });
+});

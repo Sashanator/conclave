@@ -9,6 +9,16 @@ export function noteRecordingStarted(): void {
   startCount += 1;
 }
 
+/** Recordings started so far, app-wide: unlike a hook-local counter it keeps counting after the page unmounts. */
+export const startsSeen = (): number => startCount;
+
+let stopCount = 0;
+/** Every instance calls this on `recording-stopped`; a newer stop owns the session keys. */
+export function noteRecordingStopped(): void {
+  stopCount += 1;
+}
+export const stopsSeen = (): number => stopCount;
+
 /** False while another stop's save is running. Every true must be paired with endStop(). */
 export function tryBeginStop(): boolean {
   if (stopInFlight) {

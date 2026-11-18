@@ -734,8 +734,8 @@ Bottom: Import audio → `openImportDialog()`, Settings, `What's new in v{versio
 | 52 open_log_file | done |
 | 53 CHANGELOG v2.0.0 (+ v1.2.0) | done |
 | 54 What's new | done |
-| 55 final UI QA | in progress |
-| 56 checkpoint + Windows checklist | todo |
+| 55 final UI QA | done (8b1c83e9, 184e4a66, fc1918d5) |
+| 56 checkpoint + Windows checklist | whole-branch review fixed (82a8a573); Codex recheck 4 majors fixed (c148000e, 9069de47), Claude recheck fixes (3e217c67, 8e6a28a1), approved; gates green on 0bf45976. Next: push + full CI + PC checklist |
 
 2026-11-17: the VM crashed mid-session; uncommitted work in rd-e (Tasks 39+) and rd-r (Task 10) was corrupted (NUL bytes) and discarded (backups in the session scratchpad). Committed lanes merged into `redesign`. "done (pre-crash)" tasks get covered by their phase-end reviews.
 

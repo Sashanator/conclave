@@ -3,6 +3,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { toast } from 'sonner';
+import { saveProviderKey } from '@/lib/models-keys';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import {
   ONBOARDING_WHISPER_MODEL,
@@ -50,6 +52,7 @@ interface OnboardingContextType {
   setPermissionStatus: (permission: keyof OnboardingPermissions, status: PermissionStatus) => void;
   setPermissionsSkipped: (skipped: boolean) => void;
   completeOnboarding: () => Promise<void>;
+  setPendingAiKey: (key: string | null) => void;
   startBackgroundDownloads: () => Promise<void>;
   retryParakeetDownload: () => Promise<void>;
 }
@@ -305,6 +308,10 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     }
   };
 
+  // A ref, so the key never enters state, the auto-save or the persisted status.
+  const pendingAiKey = useRef<string | null>(null);
+  const setPendingAiKey = useCallback((k: string | null) => { pendingAiKey.current = k; }, []);
+
   const completeOnboarding = async () => {
     try {
       // Set completion flag to prevent race conditions with auto-save
@@ -318,6 +325,18 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
       // Saves the default transcription and summary configuration (no local summary model)
       await invoke('complete_onboarding');
+      // Save after complete_onboarding, so a failed setup stores no key and the Claude default is written first.
+      const key = pendingAiKey.current;
+      if (key) {
+        try {
+          await saveProviderKey('claude', key);
+        } catch (e) {
+          console.error('[OnboardingContext] Failed to save the API key:', e);
+          toast.error('Could not save the API key', { description: 'Add it in Settings → Models & keys.' });
+        } finally {
+          pendingAiKey.current = null;
+        }
+      }
       setCompleted(true);
       console.log('[OnboardingContext] Onboarding completed');
 
@@ -400,6 +419,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         setPermissionStatus,
         setPermissionsSkipped,
         completeOnboarding,
+        setPendingAiKey,
         startBackgroundDownloads,
         retryParakeetDownload,
       }}

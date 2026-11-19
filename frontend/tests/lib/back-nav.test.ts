@@ -1,6 +1,11 @@
 import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
-import { goBack, readOrigin, rememberOrigin } from '../../src/lib/back-nav';
-import { setUnsavedChanges } from '../../src/lib/unsaved-guard';
+// Bun loads every test file before running any, so another file's confirm mock may be active: pin the no-host behaviour (window.confirm) here.
+mock.module('../../src/lib/confirm', () => ({
+  setConfirmHandler() {},
+  confirmAction: async (o: { title: string; body?: string }) => window.confirm(o.body ? `${o.title}\n\n${o.body}` : o.title),
+}));
+const { goBack, readOrigin, rememberOrigin } = await import('../../src/lib/back-nav');
+const { setUnsavedChanges } = await import('../../src/lib/unsaved-guard');
 
 let router: { back: ReturnType<typeof mock>; push: ReturnType<typeof mock> };
 const store = (o: unknown) => sessionStorage.setItem('conclave.origin', typeof o === 'string' ? o : JSON.stringify(o));

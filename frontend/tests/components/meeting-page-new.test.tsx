@@ -29,11 +29,12 @@ const invoke = mock(async (command: string, args?: unknown) => {
   return null;
 });
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
-mock.module('sonner', () => ({ toast: { error() {}, success() {}, warning() {}, info() {} } }));
+let toastErrors = 0;
+mock.module('sonner', () => ({ toast: { error() { toastErrors++; }, success() {}, warning() {}, info() {} } }));
 mock.module('../../src/contexts/ConfigContext', () => ({
   useConfig: () => ({
     selectedDevices: { micDevice: 'mic', systemDevice: 'sys' }, setSelectedDevices() {},
-    selectedLanguage: 'auto', setSelectedLanguage() {}, transcriptModelConfig: { provider: 'parakeet' },
+    selectedLanguage: 'auto', setSelectedLanguage() {}, allowedLanguages: ['ru', 'en'], setAllowedLanguages() {}, transcriptModelConfig: { provider: 'parakeet' },
   }),
 }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({
@@ -43,10 +44,7 @@ mock.module('../../src/contexts/RecordingStateContext', () => ({
 mock.module('../../src/components/DeviceSelection', () => ({
   DeviceSelection: () => <div><span>Microphone</span><span>System audio</span></div>,
 }));
-let languageProvider: unknown;
-mock.module('../../src/components/LanguageSelection', () => ({
-  LanguageSelection: (p: { provider?: string }) => { languageProvider = p.provider; return <span>Language</span>; },
-}));
+mock.module('../../src/components/LanguageSelection', () => ({ LanguageSelection: () => <span>Language</span> }));
 
 const { NewMeetingView } = await import('../../src/components/MeetingPage/NewMeetingView');
 const { MeetingHeader } = await import('../../src/components/MeetingPage/MeetingHeader');
@@ -56,28 +54,59 @@ const row: MeetingRow = {
   startedAt: null, endedAt: null, createdAt: '2026-11-16 10:00:00+00:00', calendarUid: null,
   calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0, hasPrep: false,
 };
+const plain = (n: ReactTestInstance | string): string => (typeof n === 'string' ? n : n.children.map(plain).join(''));
 const text = (r: ReactTestRenderer) => JSON.stringify(r.toJSON());
-beforeEach(() => { calls.length = 0; });
+beforeEach(() => { calls.length = 0; toastErrors = 0; });
 
 async function mountNew(props: Partial<Parameters<typeof NewMeetingView>[0]> = {}) {
   let r!: ReactTestRenderer;
-  await act(async () => { r = create(<NewMeetingView row={row} live={null} disabled={false} onStart={() => {}} {...props} />); });
+  await act(async () => { r = create(<NewMeetingView row={row} live={null} disabled={false} onStart={() => {}} header={<MeetingHeader variant="new" row={row} onChange={() => {}} />} {...props} />); });
   return r;
 }
 
-test('a new meeting shows Prep notes, the Audio line and Start recording', async () => {
+test('a new meeting shows Start, the audio line, languages and prep material', async () => {
   const r = await mountNew();
   const t = text(r);
-  for (const label of ['Prep notes', 'Microphone', 'System audio', 'Language', 'Start recording', 'Recording goes into this meeting.']) {
-    expect(t).toContain(label);
-  }
-  expect(languageProvider).toBe('parakeet');
+  for (const label of ['Prep material and chat', 'Mic:', 'Start recording', 'Recording goes into this meeting.']) expect(t).toContain(label);
+  for (const gone of ['Test Mic', 'Auto Detect may produce']) expect(t).not.toContain(gone);
+});
+
+test('Start recording comes before the audio line, languages and prep', async () => {
+  const t = text(await mountNew());
+  const at = (x: string) => t.indexOf(x);
+  expect(at('Start recording')).toBeLessThan(at('Mic:'));
+  expect(at('Mic:')).toBeLessThan(at('Languages spoken'));
+  expect(at('Languages spoken')).toBeLessThan(at('Prep material'));
+});
+
+const defaultRow: MeetingRow = { ...row, titleSource: 'default', title: 'New meeting 16 Nov' };
+const mountHeader = async (r: MeetingRow) => {
+  let t!: ReactTestRenderer;
+  await act(async () => { t = create(<MeetingHeader variant="new" row={r} onChange={() => {}} />); });
+  return t;
+};
+
+test('a default title shows an empty labelled Meeting name', async () => {
+  const h = await mountHeader(defaultRow);
+  const input = h.root.findByType('input');
+  expect(input.props.value).toBe('');
+  expect(input.props.placeholder).toBe('New meeting 16 Nov');
+  expect(h.root.findByType('label').props.htmlFor).toBe(input.props.id);
+  expect(JSON.stringify(h.toJSON())).toContain('Meeting name');
+  await act(async () => { await input.props.onBlur(); });
+  expect(calls.filter(([c]) => c === 'api_save_meeting_title')).toEqual([]);
+  expect(toastErrors).toBe(0);
+});
+
+test('a calendar title is shown', async () => {
+  const h = await mountHeader({ ...row, titleSource: 'calendar', title: 'Weekly sync' });
+  expect(h.root.findByType('input').props.value).toBe('Weekly sync');
 });
 
 test('Start recording calls onStart', async () => {
   let started = 0;
   const r = await mountNew({ onStart: () => { started++; } });
-  const button = r.root.findAllByType('button').find((b: ReactTestInstance) => JSON.stringify(b.children).includes('Start recording'))!;
+  const button = r.root.findAllByType('button').find((b: ReactTestInstance) => plain(b).includes('Start recording'))!;
   await act(async () => { button.props.onClick(); });
   expect(started).toBe(1);
 });
@@ -92,7 +121,7 @@ test('while another meeting is live, its title and Open replace the button', asy
 
 test('a disabled start (saving) keeps the button inert', async () => {
   const r = await mountNew({ disabled: true });
-  const button = r.root.findAllByType('button').find((b: ReactTestInstance) => JSON.stringify(b.children).includes('Start recording'))!;
+  const button = r.root.findAllByType('button').find((b: ReactTestInstance) => plain(b).includes('Start recording'))!;
   expect(button.props.disabled).toBe(true);
 });
 

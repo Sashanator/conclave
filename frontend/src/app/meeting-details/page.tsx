@@ -18,6 +18,7 @@ import { useRecordingState, RecordingStatus } from "@/contexts/RecordingStateCon
 import { useAiSidebarScreen } from "@/components/AiSidebar/AiSidebarProvider";
 import { listMeetingRows, type MeetingRow } from "@/lib/meetings";
 import { BackCrumb } from '@/components/BackCrumb';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
 import { MeetingHeader } from "@/components/MeetingPage/MeetingHeader";
 import { RecordingView } from "@/components/MeetingPage/RecordingView";
 import { NewMeetingView } from "@/components/MeetingPage/NewMeetingView";
@@ -339,10 +340,15 @@ function MeetingDetailsContent() {
     shell = <RecordingView row={row} onChange={setRow} showModal={showModal} />;
   } else if (row && !row.startedAt && !row.hasTranscript) {
     shell = (
-      <div className="h-screen overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} live={busy} onChange={setRow} onMeetingDeleted={() => router.push('/')} /></div>
-        <NewMeetingView row={row} live={liveElsewhere} disabled={busy} onStart={() => { handleRecordingStart(row.id).catch((e) => toast.error('Could not start recording', { description: e instanceof Error ? e.message : String(e) })); }} />
-      </div>
+      <PageFrame variant="dashboard" title="New meeting" breadcrumb={<BackCrumb fallback="/" fallbackLabel="Meetings" />}>
+        <NewMeetingView
+          row={row}
+          live={liveElsewhere}
+          disabled={busy}
+          header={<MeetingHeader variant="new" row={row} live={busy} onChange={setRow} onMeetingDeleted={() => router.push('/')} />}
+          onStart={() => { handleRecordingStart(row.id).catch((e) => toast.error('Could not start recording', { description: e instanceof Error ? e.message : String(e) })); }}
+        />
+      </PageFrame>
     );
   }
   const modalsEl = <SettingsModals modals={modals} messages={messages} onClose={hideModal} />;

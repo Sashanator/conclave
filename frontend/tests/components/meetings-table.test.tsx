@@ -197,17 +197,26 @@ describe('meetings table', () => {
     expect(all()).not.toContain('Searching all meetings');
   });
 
-  test('group headers show a count and the chevron collapses the group', async () => {
+  test('day grouping opens today only; a click flips one group', async () => {
+    setSystemTime(new Date('2026-11-16T12:00:00Z'));
     allCfg = JSON.stringify({ group: 'day' });
     await mount();
-    const toggles = renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === true);
-    expect(toggles.length).toBeGreaterThan(1);
-    expect(all()).toContain('done1');
-    const first = toggles.find((t) => text(t).includes('Monday 16 Nov'))!;
-    expect(text(first)).toContain('1');
-    await act(async () => { first.props.onClick(); });
-    expect(all()).not.toContain('done1');
-    expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false).length).toBe(1);
+    const toggles = (v: boolean) => renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === v);
+    expect(toggles(true).length).toBe(1);
+    expect(text(toggles(true)[0])).toContain('Today · Monday 16 Nov');
+    const sunday = toggles(false).find((t) => text(t).includes('Sunday 15 Nov'))!;
+    expect(text(sunday)).toContain('1');
+    expect(all()).not.toContain('done2');
+    await act(async () => { sunday.props.onClick(); });
+    expect(all()).toContain('done2');
+    expect(toggles(true).length).toBe(2);
+    setSystemTime();
+  });
+
+  test('category grouping starts with every group open', async () => {
+    allCfg = '{}';
+    await mount();
+    expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false).length).toBe(0);
   });
 
   test('typing a new query never shows the old hits, and shows Searching… instead of the table', async () => {

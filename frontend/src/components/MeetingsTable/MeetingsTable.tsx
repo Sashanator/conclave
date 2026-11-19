@@ -12,7 +12,7 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useMeetingRows } from '@/hooks/useMeetingRows';
 import { useMeetingViews } from '@/hooks/useMeetingViews';
-import { arrangeRows, effectiveHidden, parseViewConfig, type SortId } from '@/lib/meeting-views';
+import { arrangeRows, defaultCollapsed, effectiveHidden, parseViewConfig, type SortId } from '@/lib/meeting-views';
 import { meetingHref } from '@/lib/meeting-target';
 import { moveSelection, tableKeyAction } from '@/lib/meetings-keys';
 import { createMeeting, meetingState, type MeetingRow } from '@/lib/meetings';
@@ -56,17 +56,19 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     [rows, config, liveId, now, availableTemplates],
   );
   const data = useMemo(() => sections.flatMap((s) => s.rows), [sections]);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const toggleGroup = (key: string) => setCollapsed((c) => { const n = new Set(c); if (!n.delete(key)) n.add(key); return n; });
+  // Groups the user flipped away from their default; a day that appears later gets its default.
+  const [flipped, setFlipped] = useState<Set<string>>(() => new Set());
+  const defaults = useMemo(() => defaultCollapsed(sections, config.group, now), [sections, config.group, now]);
+  const toggleGroup = (key: string) => setFlipped((c) => { const n = new Set(c); if (!n.delete(key)) n.add(key); return n; });
   const items = useMemo<Item[]>(() => sections.flatMap((s) => {
-    const closed = !!s.label && s.key !== 'now' && collapsed.has(s.key);
+    const closed = !!s.label && s.key !== 'now' && defaults.has(s.key) !== flipped.has(s.key);
     const i = config.group === 'category' ? availableTemplates.findIndex((t) => t.id === s.key) : -1;
     return [
       ...(s.label ? [{ kind: 'group' as const, key: `g-${s.key}`, label: s.label, count: s.rows.length, collapsed: closed,
         chip: config.group === 'category' ? `var(--cat-${i >= 0 ? (i % 4) + 1 : 5})` : null }] : []),
       ...(closed ? [] : s.rows.map((row) => ({ kind: 'row' as const, key: row.id, row }))),
     ];
-  }), [sections, collapsed, config.group, availableTemplates]);
+  }), [sections, defaults, flipped, config.group, availableTemplates]);
 
   const counts = useMemo(() => Object.fromEntries(views.map((v) => [v.id,
     arrangeRows(rows, parseViewConfig(v.id, v.configJson), { liveId, now, templates: availableTemplates }).reduce((n, s) => n + s.rows.length, 0)])),

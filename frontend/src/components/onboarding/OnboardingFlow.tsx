@@ -4,7 +4,7 @@ import {
   WelcomeStep,
   PermissionsStep,
   DownloadProgressStep,
-  SetupOverviewStep,
+  AiKeyStep,
 } from './steps';
 
 interface OnboardingFlowProps {
@@ -33,14 +33,14 @@ export function OnboardingFlow({ onComplete }: OnboardingFlowProps) {
 
   // 4-Step Onboarding Flow (System-Recommended Models):
   // Step 1: Welcome - Introduce Conclave features
-  // Step 2: Setup Overview - Database initialization + show recommended downloads
-  // Step 3: Download Progress - Download Parakeet + Summary Model (auto-selected based on platform/RAM)
+  // Step 2: AI key - optional Anthropic key for summaries (skippable)
+  // Step 3: Download Progress - Download the transcription model
   // Step 4: Permissions - Request mic + system audio (macOS only)
 
   return (
     <div className="onboarding-flow">
       {currentStep === 1 && <WelcomeStep />}
-      {currentStep === 2 && <SetupOverviewStep />}
+      {currentStep === 2 && <AiKeyStep />}
       {currentStep === 3 && <DownloadProgressStep />}
       {currentStep === 4 && isMac && <PermissionsStep />}
     </div>

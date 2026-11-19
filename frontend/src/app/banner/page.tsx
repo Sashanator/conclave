@@ -60,20 +60,54 @@ export default function MeetingBanner() {
         : view.certain
           ? `${view.app} meeting detected`
           : 'Browser is using the microphone';
-  const continueButton = view.continue_title && (
-    <button
-      onClick={() => act('continue')}
-      className="min-w-0 truncate rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
-    >
-      {`Continue "${view.continue_title}"`}
-    </button>
-  );
+  if (view.continue_title && (view.kind === 'detected' || view.kind === 'continue')) {
+    return (
+      <div className="flex h-screen w-screen select-none flex-col justify-center gap-1.5 overflow-hidden rounded-xl border border-border bg-card px-4 py-2 text-card-foreground">
+        <div className="flex items-center gap-3">
+          <Mic className="h-5 w-5 shrink-0 text-primary" aria-hidden />
+          <span className="min-w-0 flex-1 text-sm font-medium leading-tight">{text}</span>
+          <button
+            onClick={() => act('dismiss')}
+            aria-label="Dismiss"
+            className="rounded-md p-1 text-muted-foreground hover:bg-accent hover:text-accent-foreground"
+          >
+            <X className="h-4 w-4" />
+          </button>
+        </div>
+        <div className="flex items-center justify-end gap-2">
+          {view.kind === 'detected' && (
+            <button
+              onClick={() => act('record')}
+              className="h-7 rounded-md border border-border px-3 py-1 text-sm font-medium hover:bg-accent"
+            >
+              Record new
+            </button>
+          )}
+          <button
+            onClick={() => act('continue')}
+            title={view.continue_title}
+            className="h-7 max-w-[17rem] truncate rounded-md bg-primary px-3 py-1 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+          >
+            {`Continue "${view.continue_title}"`}
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="flex h-screen w-screen select-none items-center gap-3 overflow-hidden rounded-xl border border-border bg-card px-4 text-card-foreground">
       <Mic className="h-5 w-5 shrink-0 text-primary" aria-hidden />
       <span className="flex-1 truncate text-sm font-medium">{text}</span>
-      {view.kind === 'detected' && !view.continue_title && (
+      {view.kind === 'ended' && (
+        <button
+          onClick={() => act('open')}
+          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Open
+        </button>
+      )}
+      {view.kind === 'detected' && (
         <button
           onClick={() => act('record')}
           className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
@@ -81,15 +115,6 @@ export default function MeetingBanner() {
           Record
         </button>
       )}
-      {view.kind === 'detected' && view.continue_title && (
-        <button
-          onClick={() => act('record')}
-          className="rounded-md border border-border px-3 py-1.5 text-sm font-medium hover:bg-accent"
-        >
-          Record new
-        </button>
-      )}
-      {(view.kind === 'detected' || view.kind === 'continue') && continueButton}
       <button
         onClick={() => act('dismiss')}
         aria-label="Dismiss"

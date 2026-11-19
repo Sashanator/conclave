@@ -9,23 +9,23 @@ export function WelcomeStep() {
 
   const features = [
     {
-      icon: Lock,
-      title: 'Your data never leaves your device',
+      icon: Cpu,
+      title: 'Transcription runs on this PC with Whisper',
     },
     {
       icon: Sparkles,
-      title: 'Intelligent summaries & insights',
+      title: 'Summaries use a cloud AI with your own API key',
     },
     {
-      icon: Cpu,
-      title: 'Works offline, no cloud required',
+      icon: Lock,
+      title: 'Audio stays on this PC; the transcript and your notes go to the AI you choose',
     },
   ];
 
   return (
     <OnboardingContainer
       title="Welcome to Conclave"
-      description="Record. Transcribe. Summarize. All on your device."
+      description="Record. Transcribe on this PC. Summarize with your own AI key."
       step={1}
       hideProgress={true}
     >
@@ -58,7 +58,6 @@ export function WelcomeStep() {
           >
             Get Started
           </Button>
-          <p className="text-xs text-center text-muted-foreground">Takes less than 3 minutes</p>
         </div>
       </div>
     </OnboardingContainer>

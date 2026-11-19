@@ -34,6 +34,7 @@ import { CopilotProvider } from '@/contexts/CopilotContext'
 import { listenReleaseFailed } from '@/lib/recording-target'
 import { installBrowserPreview } from '@/lib/browser-preview'
 import { ConfirmHost } from '@/components/ConfirmHost'
+import { AiKeyHint } from '@/components/onboarding/AiKeyHint'
 
 
 installBrowserPreview()
@@ -289,6 +290,7 @@ function AppShell({
           </RecordingStateProvider>
 
         <ThemedToaster />
+        <AiKeyHint />
         <ConfirmHost />
     </>
   )

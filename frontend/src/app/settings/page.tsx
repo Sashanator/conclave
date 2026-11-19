@@ -8,6 +8,8 @@ import { RecordingSettings } from '@/components/RecordingSettings';
 import { UpdatesSettings } from '@/components/UpdatesSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
 import { ModelsKeysPane } from '@/components/Settings/ModelsKeysPane';
+import { SettingsRow } from '@/components/Settings/SettingsRow';
+import { TranscriptionExtras } from '@/components/Settings/TranscriptionExtras';
 import { SummariesPane } from '@/components/Settings/SummariesPane';
 import { CopilotSettings } from '@/components/CopilotSettings';
 import { KnowledgeSettings } from '@/components/KnowledgeSettings';
@@ -56,7 +58,14 @@ function SettingsContent() {
   let body: React.ReactNode;
   switch (pane) {
     case 'recording': body = <RecordingSettings />; break;
-    case 'transcription': body = <TranscriptSettings transcriptModelConfig={transcriptModelConfig} setTranscriptModelConfig={setTranscriptModelConfig} />; break;
+    case 'transcription': body = (
+      <>
+        <SettingsRow label="Transcription model" block>
+          <TranscriptSettings transcriptModelConfig={transcriptModelConfig} setTranscriptModelConfig={setTranscriptModelConfig} />
+        </SettingsRow>
+        <TranscriptionExtras />
+      </>
+    ); break;
     case 'speakers': body = <SpeakerSettings />; break;
     case 'models': body = <ModelsKeysPane />; break;
     case 'summaries': body = <SummariesPane />; break;

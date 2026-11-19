@@ -8,6 +8,9 @@ import { toast } from 'sonner';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useConfig } from '@/contexts/ConfigContext';
 import { OldAudioReview } from '@/components/OldAudio/OldAudioReview';
+import { SettingsRow, useSavedTick } from '@/components/Settings/SettingsRow';
+import { NotificationsRow } from '@/components/Settings/NotificationsRow';
+import { Button } from '@/components/ui/button';
 import { daysToSelect, OLD_AUDIO_OPTIONS, selectToDays } from '@/lib/old-audio';
 
 export interface RecordingPreferences {
@@ -45,6 +48,9 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const [saving, setSaving] = useState(false);
   const [showRecordingNotification, setShowRecordingNotification] = useState(true);
   const [reviewOpen, setReviewOpen] = useState(false);
+  const [saved, markSaved] = useSavedTick();
+  const [savedRow, setSavedRow] = useState('');
+  const tick = (row: string) => { setSavedRow(row); markSaved(); };
   const { isRecording } = useRecordingState();
   const { setSelectedDevices } = useConfig();
 
@@ -96,7 +102,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   const handleAutoSaveToggle = async (enabled: boolean) => {
     const newPreferences = { ...preferences, auto_save: enabled };
     setPreferences(newPreferences);
-    await savePreferences(newPreferences);
+    await savePreferences(newPreferences, 'Save audio recordings');
   };
 
   const handleDeviceChange = async (devices: SelectedDevices) => {
@@ -111,8 +117,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     // app mount), so a newly-chosen mic isn't honored until the next launch —
     // start keeps sending the stale launch-time device.
     setSelectedDevices(devices);
-    await savePreferences(newPreferences);
-
+    await savePreferences(newPreferences, 'Default audio devices');
   };
 
   const handleDetectionChange = async (value: string) => {
@@ -121,8 +126,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     setPreferences({ ...preferences, meeting_detection });
     try {
       await invoke('set_recording_preferences', { preferences: { ...preferences, meeting_detection } });
-      const label = DETECTION_OPTIONS.find((o) => o.value === meeting_detection)?.label;
-      toast.success(`Meeting detection: ${label}`);
+      tick('Meeting detection');
     } catch (error) {
       console.error('Failed to save meeting detection:', error);
       setPreferences((prev) => ({ ...prev, meeting_detection: previous }));
@@ -138,7 +142,7 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
     setPreferences({ ...preferences, old_audio_days });
     try {
       await invoke('set_recording_preferences', { preferences: { ...preferences, old_audio_days } });
-      toast.success(old_audio_days === null ? 'No reminders about old audio' : `Reminders for audio older than ${old_audio_days} days`);
+      tick('Remind me about audio older than');
     } catch (error) {
       setPreferences((prev) => ({ ...prev, old_audio_days: previous }));
       toast.error('Failed to save the setting', { description: error instanceof Error ? error.message : String(error) });
@@ -160,25 +164,19 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
       const store = await Store.load('preferences.json');
       await store.set('show_recording_notification', enabled);
       await store.save();
-      toast.success('Preference saved');
+      tick('Recording start notification');
     } catch (error) {
       console.error('Failed to save notification preference:', error);
       toast.error('Failed to save preference');
     }
   };
 
-  const savePreferences = async (prefs: RecordingPreferences) => {
+  const savePreferences = async (prefs: RecordingPreferences, row: string) => {
     setSaving(true);
     try {
       await invoke('set_recording_preferences', { preferences: prefs });
       onSave?.(prefs);
-
-      // Show success toast with device details
-      const micDevice = prefs.preferred_mic_device || 'Default';
-      const systemDevice = prefs.preferred_system_device || 'Default';
-      toast.success("Device preferences saved", {
-        description: `Microphone: ${micDevice}, System Audio: ${systemDevice}`
-      });
+      tick(row);
     } catch (error) {
       console.error('Failed to save recording preferences:', error);
       toast.error("Failed to save device preferences", {
@@ -199,112 +197,57 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
   }
 
   return (
-    <div className="space-y-6">
-      <div>
-        <h3 className="text-lg font-semibold mb-4">Recording Settings</h3>
-        <p className="text-sm text-muted-foreground mb-6">
-          Configure how your audio recordings are saved during meetings.
-        </p>
-      </div>
+    <div>
+      <SettingsRow label="Save audio recordings" htmlFor="save-audio" saved={saved && savedRow === 'Save audio recordings'} helper="Automatically save audio files when recording stops">
+        <Switch id="save-audio" aria-label="Save audio recordings" checked={preferences.auto_save} onCheckedChange={handleAutoSaveToggle} disabled={saving} />
+      </SettingsRow>
 
-      {/* Auto Save Toggle */}
-      <div className="flex items-center justify-between p-4 border rounded-lg">
-        <div className="flex-1">
-          <div className="font-medium">Save Audio Recordings</div>
-          <div className="text-sm text-muted-foreground">
-            Automatically save audio files when recording stops
-          </div>
-        </div>
-        <Switch
-          checked={preferences.auto_save}
-          onCheckedChange={handleAutoSaveToggle}
-          disabled={saving}
-        />
-      </div>
-
-      {/* Folder Location - Only shown when auto_save is enabled */}
       {preferences.auto_save && (
-        <div className="space-y-4">
-          <div className="p-4 border rounded-lg bg-muted/50">
-            <div className="font-medium mb-2">Save Location</div>
-            <div className="text-sm text-muted-foreground mb-3 break-all">
-              {preferences.save_folder || 'Default folder'}
-            </div>
-            <button
-              onClick={handleOpenFolder}
-              className="flex items-center gap-2 px-3 py-2 text-sm border border-input rounded-md hover:bg-accent transition-colors"
-            >
-              <FolderOpen className="w-4 h-4" />
-              Open Folder
-            </button>
-          </div>
-
-          <div className="p-4 border rounded-lg bg-blue-50 dark:bg-blue-950/40">
-            <div className="text-sm text-blue-800 dark:text-blue-300">
-              <strong>File Format:</strong> {preferences.file_format.toUpperCase()} files
-            </div>
-            <div className="text-xs text-blue-600 mt-1">
-              Recordings are saved with timestamp: recording_YYYYMMDD_HHMMSS.{preferences.file_format}
-            </div>
-          </div>
-        </div>
+        <SettingsRow
+          label="Save location"
+          helper={`${preferences.save_folder || 'Default folder'} (${preferences.file_format.toUpperCase()}, named recording_YYYYMMDD_HHMMSS.${preferences.file_format})`}
+        >
+          <Button variant="outline" size="sm" onClick={handleOpenFolder}>
+            <FolderOpen className="mr-2 h-4 w-4" />
+            Open Folder
+          </Button>
+        </SettingsRow>
       )}
 
-      {/* Info when auto_save is disabled */}
-      {!preferences.auto_save && (
-        <div className="p-4 border rounded-lg bg-yellow-50 dark:bg-yellow-950/40">
-          <div className="text-sm text-yellow-800 dark:text-yellow-300">
-            Audio recording is disabled. Enable "Save Audio Recordings" to automatically save your meeting audio.
-          </div>
-        </div>
-      )}
+      <SettingsRow label="Recording start notification" htmlFor="recording-start-notification" saved={saved && savedRow === 'Recording start notification'} helper="Show a reminder to inform participants when recording starts">
+        <Switch id="recording-start-notification" aria-label="Recording start notification" checked={showRecordingNotification} onCheckedChange={handleNotificationToggle} />
+      </SettingsRow>
 
-      {/* Recording Notification Toggle */}
-      <div className="flex items-center justify-between p-4 border rounded-lg">
-        <div className="flex-1">
-          <div className="font-medium">Recording Start Notification</div>
-          <div className="text-sm text-muted-foreground">
-            Show reminder to inform participants when recording starts
-          </div>
-        </div>
-        <Switch
-          checked={showRecordingNotification}
-          onCheckedChange={handleNotificationToggle}
-        />
-      </div>
+      <NotificationsRow />
 
-      {/* Meeting Detection */}
-      <div className="p-4 border rounded-lg">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex-1">
-            <div className="font-medium">Meeting Detection</div>
-            <div className="text-sm text-muted-foreground">
-              Detects Zoom, Google Meet and Microsoft Teams calls. Recording stops 5 seconds after you leave the call.
-            </div>
-          </div>
-          <Select value={preferences.meeting_detection} onValueChange={handleDetectionChange}>
-            <SelectTrigger className="w-56" aria-label="Meeting detection">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {DETECTION_OPTIONS.map((o) => (
-                <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </div>
-        {detectionStatus && (
-          <p className="text-sm text-amber-700 dark:text-amber-400 mt-2">{detectionStatus}</p>
-        )}
-      </div>
+      <SettingsRow
+        label="Meeting detection"
+        saved={saved && savedRow === 'Meeting detection'}
+        helper={
+          <>
+            Detects Zoom, Google Meet and Microsoft Teams calls. Recording stops 5 seconds after you leave the call.
+            {detectionStatus && <span className="mt-2 block text-amber-700 dark:text-amber-400">{detectionStatus}</span>}
+          </>
+        }
+      >
+        <Select value={preferences.meeting_detection} onValueChange={handleDetectionChange}>
+          <SelectTrigger className="w-56" aria-label="Meeting detection">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {DETECTION_OPTIONS.map((o) => (
+              <SelectItem key={o.value} value={o.value}>{o.label}</SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </SettingsRow>
 
-      {/* Old audio reminder */}
-      <div className="p-4 border rounded-lg space-y-3">
-        <div className="flex items-center justify-between gap-4">
-          <div className="flex-1">
-            <div className="font-medium">Remind me about audio older than</div>
-            <div className="text-sm text-muted-foreground">Conclave never deletes audio by itself. Transcripts, summaries and notes are always kept. Pin a meeting with “Keep audio” to leave it out.</div>
-          </div>
+      <SettingsRow
+        label="Remind me about audio older than"
+        saved={saved && savedRow === 'Remind me about audio older than'}
+        helper="Conclave never deletes audio by itself. Transcripts, summaries and notes are always kept. Pin a meeting with “Keep audio” to leave it out."
+      >
+        <div className="flex flex-col items-start gap-2">
           <Select value={daysToSelect(preferences.old_audio_days)} onValueChange={handleOldAudioChange}>
             <SelectTrigger className="w-56" aria-label="Remind me about audio older than">
               <SelectValue />
@@ -315,48 +258,42 @@ export function RecordingSettings({ onSave }: RecordingSettingsProps) {
               ))}
             </SelectContent>
           </Select>
+          <button
+            type="button"
+            onClick={() => setReviewOpen(true)}
+            disabled={preferences.old_audio_days === null || isRecording}
+            className="text-sm text-primary hover:underline disabled:opacity-50 disabled:no-underline"
+          >
+            Review old audio…
+          </button>
         </div>
-        <button
-          type="button"
-          onClick={() => setReviewOpen(true)}
-          disabled={preferences.old_audio_days === null || isRecording}
-          className="text-sm text-blue-600 dark:text-blue-400 hover:underline disabled:opacity-50 disabled:no-underline"
-        >
-          Review old audio…
-        </button>
         <OldAudioReview open={reviewOpen} onOpenChange={setReviewOpen} />
-      </div>
+      </SettingsRow>
 
-      {/* Device Preferences */}
-      <div className="space-y-4">
-        <div className="border-t pt-6">
-          <h4 className="text-base font-medium text-foreground mb-4">Default Audio Devices</h4>
-          <p className="text-sm text-muted-foreground mb-4">
-            Set your preferred microphone and system audio devices for recording. These will be automatically selected when starting new recordings.
+      <SettingsRow
+        label="Default audio devices"
+        block
+        saved={saved && savedRow === 'Default audio devices'}
+        helper="Set your preferred microphone and system audio devices for recording. These will be automatically selected when starting new recordings."
+      >
+        {isRecording && (
+          <p
+            role="status"
+            aria-live="polite"
+            className="mb-4 rounded-md border border-amber-200 bg-amber-50 p-2 text-sm text-amber-700 dark:border-amber-800 dark:bg-amber-950/40 dark:text-amber-300"
+          >
+            Device selection is locked while a recording is in progress. Connecting a new device mid-recording will not switch to it. Stop the current meeting to change devices.
           </p>
-
-          {isRecording && (
-            <p
-              role="status"
-              aria-live="polite"
-              className="text-sm text-amber-700 dark:text-amber-300 bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 rounded-md p-2 mb-4"
-            >
-              Device selection is locked while a recording is in progress. Connecting a new device mid-recording will not switch to it. Stop the current meeting to change devices.
-            </p>
-          )}
-
-          <div className="border rounded-lg p-4 bg-muted/50">
-            <DeviceSelection
-              selectedDevices={{
-                micDevice: preferences.preferred_mic_device,
-                systemDevice: preferences.preferred_system_device
-              }}
-              onDeviceChange={handleDeviceChange}
-              disabled={saving || isRecording}
-            />
-          </div>
-        </div>
-      </div>
+        )}
+        <DeviceSelection
+          selectedDevices={{
+            micDevice: preferences.preferred_mic_device,
+            systemDevice: preferences.preferred_system_device,
+          }}
+          onDeviceChange={handleDeviceChange}
+          disabled={saving || isRecording}
+        />
+      </SettingsRow>
     </div>
   );
 }

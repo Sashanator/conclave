@@ -26,13 +26,14 @@ const invoke = mock(async (cmd: string, _a?: unknown): Promise<unknown> => {
   return null;
 });
 let collapsed = false;
+const toggleCollapsed = mock(() => {});
 let rec: Record<string, unknown> = {};
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 mock.module('next/navigation', () => ({ usePathname: () => '/tasks', useRouter: () => ({ push, replace() {} }) }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.rec, useRecordingState: () => rec }));
 mock.module('../../src/components/Sidebar/SidebarProvider', () => ({
   ...originals.provider,
-  useSidebar: () => ({ isCollapsed: collapsed, toggleCollapse() {} }),
+  useSidebar: () => ({ collapsed, toggleCollapsed }),
 }));
 mock.module('../../src/contexts/ImportDialogContext', () => ({ ...originals.imp, useImportDialog: () => ({ openImportDialog }) }));
 mock.module('../../src/components/Feed/FeedBell', () => ({ FeedBell: () => null }));

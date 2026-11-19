@@ -24,7 +24,7 @@ const Sidebar: React.FC = () => {
   const go = (href: string) => {
     if (confirmLeave()) router.push(href);
   };
-  const { isCollapsed, toggleCollapse } = useSidebar();
+  const { collapsed, toggleCollapsed } = useSidebar();
   const { isRecording, liveMeetingId, activeDuration } = useRecordingState();
   const { openImportDialog } = useImportDialog();
   const [version, setVersion] = useState<string | null>(null);
@@ -60,12 +60,12 @@ const Sidebar: React.FC = () => {
         disabled={opts.disabled}
         aria-label={label}
         aria-current={opts.active ? 'page' : undefined}
-        className={`relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-60 ${isCollapsed ? 'justify-center' : 'w-full'} ${
+        className={`relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-60 ${collapsed ? 'justify-center' : 'w-full'} ${
           opts.accent ? 'bg-primary text-primary-foreground hover:bg-primary/90' : opts.active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
         }`}
       >
         {icon}
-        {!isCollapsed && <span className="truncate">{label}</span>}
+        {!collapsed && <span className="truncate">{label}</span>}
         {opts.dot && (
           <>
             <span aria-hidden="true" className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[hsl(var(--rec))]" />
@@ -74,7 +74,7 @@ const Sidebar: React.FC = () => {
         )}
       </button>
     );
-    if (!isCollapsed) return <React.Fragment key={label}>{btn}</React.Fragment>;
+    if (!collapsed) return <React.Fragment key={label}>{btn}</React.Fragment>;
     return (
       <Tooltip key={label}>
         <TooltipTrigger asChild>{btn}</TooltipTrigger>
@@ -86,18 +86,18 @@ const Sidebar: React.FC = () => {
   return (
     <div className="fixed top-0 left-0 h-screen z-40">
       <button
-        onClick={toggleCollapse}
-        aria-label={isCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        onClick={toggleCollapsed}
+        aria-label={collapsed ? 'Expand sidebar' : 'Collapse sidebar'}
         className="absolute -right-6 top-20 z-50 p-1 bg-card hover:bg-accent rounded-full shadow-lg border"
         style={{ transform: 'translateX(50%)' }}
       >
-        {isCollapsed ? <ChevronRightCircle className="w-6 h-6" /> : <ChevronLeftCircle className="w-6 h-6" />}
+        {collapsed ? <ChevronRightCircle className="w-6 h-6" /> : <ChevronLeftCircle className="w-6 h-6" />}
       </button>
 
       <TooltipProvider>
         <nav
           aria-label="Main"
-          className={`h-screen bg-background border-r shadow-sm flex flex-col gap-1 p-2 pt-6 transition-all duration-300 ${isCollapsed ? 'w-16' : 'w-64'}`}
+          className={`h-screen bg-background border-r shadow-sm flex flex-col gap-1 p-2 pt-6 transition-all duration-300 ${collapsed ? 'w-16' : 'w-64'}`}
         >
           {row(
             recordLabel(isRecording, activeDuration),
@@ -112,7 +112,7 @@ const Sidebar: React.FC = () => {
 
           <div className="mt-auto flex flex-col gap-1 border-t border-border pt-2">
             {row('Import audio', <Upload className="w-5 h-5 shrink-0" />, () => openImportDialog())}
-            <div className={`flex items-center gap-1 ${isCollapsed ? 'flex-col' : ''}`}>
+            <div className={`flex items-center gap-1 ${collapsed ? 'flex-col' : ''}`}>
               <div className="flex-1 w-full">
                 {row('Settings', <Settings className="w-5 h-5 shrink-0" />, () => go('/settings'), { active: pathname === '/settings' })}
               </div>

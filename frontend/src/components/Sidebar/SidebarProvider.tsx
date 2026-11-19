@@ -4,6 +4,7 @@ import React, { createContext, useContext, useState, useEffect } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { continueFailed } from '@/lib/resume';
+import { readSidebarCollapsed, writeSidebarCollapsed } from '@/lib/nav';
 import type { SummaryProcessResponse } from '@/types';
 
 
@@ -15,8 +16,8 @@ interface SummaryPoll {
 }
 
 interface SidebarContextType {
-  isCollapsed: boolean;
-  toggleCollapse: () => void;
+  collapsed: boolean;
+  toggleCollapsed: () => void;
   serverAddress: string;
   // Summary polling management
   startSummaryPolling: (
@@ -37,8 +38,12 @@ export const useSidebar = () => {
   return context;
 };
 
+// same rule as isTypingTarget (hooks/useBackShortcut.ts)
+const isTypingTarget = (t: EventTarget | null) =>
+  t instanceof Element && !!t.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
+
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
-  const [isCollapsed, setIsCollapsed] = useState(true);
+  const [collapsed, setCollapsed] = useState(true);
   const [serverAddress, setServerAddress] = useState('');
   const summaryPollsRef = React.useRef(new Map<string, SummaryPoll>());
 
@@ -54,9 +59,27 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     fetchSettings();
   }, []);
 
-  const toggleCollapse = () => {
-    setIsCollapsed(!isCollapsed);
-  };
+  // Read after mount: the static export prerenders the shell, so a lazy initializer would mismatch hydration.
+  useEffect(() => setCollapsed(readSidebarCollapsed(window.innerWidth)), []);
+
+  const toggleCollapsed = React.useCallback(() => {
+    setCollapsed((c) => {
+      writeSidebarCollapsed(!c);
+      return !c;
+    });
+  }, []);
+
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
+      if (e.key.toLowerCase() !== 'b' && e.code !== 'KeyB') return;
+      if (isTypingTarget(e.target)) return;
+      e.preventDefault();
+      toggleCollapsed();
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [toggleCollapsed]);
 
   // Summary polling management
   const stopSummaryPolling = React.useCallback((meetingId: string, processId?: string) => {
@@ -159,8 +182,8 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
 
   return (
     <SidebarContext.Provider value={{
-      isCollapsed,
-      toggleCollapse,
+      collapsed,
+      toggleCollapsed,
       serverAddress,
       startSummaryPolling,
       stopSummaryPolling,

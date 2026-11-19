@@ -216,3 +216,11 @@ export function arrangeRows(
   }
   return sections;
 }
+
+/** Keys of the sections that start closed: with day grouping only today's (else the first) day is open. */
+export function defaultCollapsed(sections: Section[], group: ViewGroup, now: Date): Set<string> {
+  if (group !== 'day') return new Set();
+  const days = sections.map((s) => s.key).filter((k) => k !== 'now');
+  const open = days.includes(format(now, 'yyyy-MM-dd')) ? format(now, 'yyyy-MM-dd') : days[0];
+  return new Set(days.filter((k) => k !== open));
+}

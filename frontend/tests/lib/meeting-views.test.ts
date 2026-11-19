@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  arrangeRows, BUILTIN_VIEW_DEFAULTS, effectiveHidden, parseViewConfig, viewReducer, weekRange,
+  arrangeRows, BUILTIN_VIEW_DEFAULTS, defaultCollapsed, effectiveHidden, parseViewConfig, viewReducer, weekRange,
 } from '@/lib/meeting-views';
 import type { MeetingRow } from '@/lib/meetings';
 
@@ -109,5 +109,30 @@ describe('arrangeRows', () => {
     expect(go({ states: ['cancelled'] })[0].rows.map((r) => r.id)).toEqual(['c1']);
     expect(go({ calendar: true })[0].rows.map((r) => r.id)).toEqual(['c1']);
     expect(go({})[0].rows.map((r) => r.id)).toEqual(['c1', 'f']);
+  });
+});
+
+describe('defaultCollapsed', () => {
+  const day = { ...BUILTIN_VIEW_DEFAULTS.week, filter: {} };
+  const arr = (rs: MeetingRow[], c = day, liveId: string | null = null) =>
+    arrangeRows(rs, c, { liveId, now, templates: [] });
+  test('day grouping opens only today', () => {
+    const s = arr([row('a', d(16, 9)), row('b', d(17, 9)), row('c', d(18, 9))]);
+    expect(defaultCollapsed(s, 'day', now)).toEqual(new Set(['2026-11-16', '2026-11-17']));
+  });
+  test('no today group opens the first group', () => {
+    const rs = [row('a', d(16, 9)), row('b', d(17, 9))];
+    const desc = { ...day, sort: [{ id: 'date' as const, desc: true }] };
+    expect(defaultCollapsed(arr(rs, desc), 'day', now)).toEqual(new Set(['2026-11-16']));
+    expect(defaultCollapsed(arr(rs), 'day', now)).toEqual(new Set(['2026-11-17']));
+  });
+  test('the Now section is never collapsed', () => {
+    const s = arr([row('a', d(16, 9)), row('l', d(17, 9))], day, 'l');
+    expect(defaultCollapsed(s, 'day', now).has('now')).toBe(false);
+  });
+  test('other groupings start all open', () => {
+    const s = arr([row('a', d(16, 9)), row('b', d(17, 9))]);
+    expect(defaultCollapsed(s, 'category', now).size).toBe(0);
+    expect(defaultCollapsed(s, 'none', now).size).toBe(0);
   });
 });

@@ -120,14 +120,12 @@ export function SummaryModelSettings({ refetchTrigger, onSaved }: SummaryModelSe
 
   return (
     <div className='flex flex-col gap-4'>
-      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
-        <ModelSettingsModal
-          modelConfig={modelConfig}
-          setModelConfig={setModelConfig}
-          onSave={handleSaveModelConfig}
-          skipInitialFetch={true}
-        />
-      </div>
+      <ModelSettingsModal
+        modelConfig={modelConfig}
+        setModelConfig={setModelConfig}
+        onSave={handleSaveModelConfig}
+        skipInitialFetch={true}
+      />
     </div>
   );
 }

@@ -142,6 +142,13 @@ describe('meetings table', () => {
     expect(deleteCalls()[0][1]).toEqual({ meetingId: 'cancelled' });
   });
 
+  test('the delete dialog confirm button is outlined, not solid red', async () => {
+    await act(async () => { button('Delete').props.onClick(); });
+    const b = renderer!.root.findAll((n) => typeof n.type !== 'string' && n.props.variant && text(n) === 'Delete meeting')[0];
+    expect(b.props.variant).toBe('outline');
+    expect(b.props.className).toContain('text-destructive');
+  });
+
   test('a failed delete keeps the row and toasts', async () => {
     deleteImpl = async () => { throw new Error('disk busy'); };
     await act(async () => { button('Delete').props.onClick(); });

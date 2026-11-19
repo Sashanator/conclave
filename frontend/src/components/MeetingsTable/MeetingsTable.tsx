@@ -220,7 +220,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   }
 
   return (
-    <>
+    <div className="flex min-h-0 flex-1 flex-col">
       <ViewTabs views={views} activeId={active?.id ?? null} counts={counts} onSelect={setActive} onAdd={() => void addView()}
         onRename={(id, name) => void renameView(id, name)} onDelete={(id) => void removeView(id)} />
       <Toolbar onNew={() => void newMeeting()} query={query} onQuery={setQuery} searchRef={searchRef} config={config} dispatch={dispatch} onAsk={onAsk} />
@@ -303,6 +303,6 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
         // A failed delete keeps the row and the hook toasts the error.
         onConfirm={async () => { const r = deleting; setDeleting(null); if (r) await removeMeeting(r.id); }}
       />
-    </>
+    </div>
   );
 }

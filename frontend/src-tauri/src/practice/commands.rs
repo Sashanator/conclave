@@ -802,9 +802,20 @@ pub async fn practice_retry_report<R: Runtime>(
     if !matches!(row.report_status.as_str(), "failed" | "pending") {
         return Err(NOT_RETRYABLE.to_string());
     }
+    // Claimed here, not in the spawned job, so a start failure reaches the UI instead of the log.
+    claim_retry(&pool_of(&state), &session_id).await?;
     let busy = crate::updates::busy::hold(crate::updates::busy::BusyReason::PracticeReport);
-    tauri::async_runtime::spawn(report_job::run(app, session_id, hold_model(), busy));
+    tauri::async_runtime::spawn(report_job::run_claimed(app, session_id, hold_model(), busy));
     Ok(())
+}
+
+/// Moves a failed or pending report to 'waiting' under the gate the delete also takes.
+pub(crate) async fn claim_retry(pool: &SqlitePool, session_id: &str) -> Result<(), String> {
+    match report_job::claim_for_report(pool, session_id).await {
+        Ok(true) => Ok(()),
+        Ok(false) => Err(NOT_RETRYABLE.to_string()),
+        Err(e) => Err(format!("Could not start the report: {e}")),
+    }
 }
 
 /// Sends a past session to the Recycle Bin, then removes its rows. Refused while it runs or its report does.
@@ -1035,6 +1046,43 @@ mod tests {
             .await
             .unwrap();
         (row.id, folder)
+    }
+
+    #[tokio::test]
+    async fn retry_claim_clears_the_old_error() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let (id, _) = finished_session(&pool, base.path(), "Practice 1").await;
+        sqlx::query("UPDATE practice_sessions SET report_status = 'failed', report_error = 'Claude did not answer' WHERE id = ?")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        claim_retry(&pool, &id).await.unwrap();
+        let (row, _) = db::get_session(&pool, &id).await.unwrap().unwrap();
+        assert_eq!(row.report_status, "waiting");
+        assert_eq!(row.report_error, None);
+    }
+
+    #[tokio::test]
+    async fn retry_claim_refuses_a_ready_report() {
+        let pool = session_pool().await;
+        let base = tempfile::tempdir().unwrap();
+        let (id, _) = finished_session(&pool, base.path(), "Practice 1").await;
+        sqlx::query("UPDATE practice_sessions SET report_status = 'ready' WHERE id = ?")
+            .bind(&id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        assert_eq!(claim_retry(&pool, &id).await, Err(NOT_RETRYABLE.to_string()));
+    }
+
+    #[tokio::test]
+    async fn retry_claim_failure_reaches_the_caller() {
+        let pool = session_pool().await;
+        pool.close().await;
+        let e = claim_retry(&pool, "x").await.unwrap_err();
+        assert!(e.starts_with("Could not start the report: "), "{e}");
     }
 
     #[tokio::test]

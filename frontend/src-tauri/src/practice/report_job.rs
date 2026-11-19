@@ -105,6 +105,18 @@ pub async fn run<R: Runtime>(
             return;
         }
     }
+    run_claimed(app, session_id, hold, _busy).await;
+}
+
+/// Everything after the claim, for a caller that already claimed the report (Retry does, to report a start failure).
+/// Takes the same `hold` and busy guard as `run`; both drop on every exit.
+pub async fn run_claimed<R: Runtime>(
+    app: AppHandle<R>,
+    session_id: String,
+    hold: ModelHold,
+    _busy: crate::updates::busy::BusyGuard,
+) {
+    let pool = app.state::<AppState>().db_manager.pool().clone();
     publish(&app, &session_id, "waiting");
     wait_while_recording().await;
     store(&app, &pool, &session_id, "running", None, None).await;

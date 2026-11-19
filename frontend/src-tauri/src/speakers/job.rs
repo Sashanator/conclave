@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -279,6 +280,7 @@ fn truncate(s: &str) -> String {
 /// The stages of one run. Ok(true) when the result was published, Ok(false) when the run was overtaken.
 async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn JobDeps) -> Result<bool, Stop> {
     let started = Instant::now();
+    info!("speakers: analysis started for {meeting_id}");
     if !deps.is_active() {
         return Err(Stop::Skip(if deps.models_ready() { "feature_off" } else { "models_missing" }));
     }
@@ -289,7 +291,8 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
 
     // The models load on a blocking thread, before anything is decoded.
     let factory = deps.model_factory();
-    let loaded = run_blocking(deps, meeting_id, 0, 0, move |_| factory()).await??;
+    // Loading cannot report progress, so it gets its own generous limit instead of the per-stage one.
+    let loaded = run_blocking_with(deps, meeting_id, "model load", 0, 0, MODEL_LOAD_STALL, move |_| factory()).await??;
     let mut models: Box<dyn SpeakerModels + Send> = Box::new(Failover::new(loaded));
 
     // Decode. The guard deletes the temp file on every failure below; the audio is opened only after success.
@@ -298,12 +301,13 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
     let guard = TempFileGuard::new_in(&temp_dir, meeting_id);
     let decoded_path = guard.path().to_path_buf();
     let t = Instant::now();
-    let decoded = run_blocking(deps, meeting_id, 0, 10, move |progress| {
+    let decoded = run_blocking(deps, meeting_id, "decode", 0, 10, move |progress| {
         decode_to_mono_16k_file(&audio_path, &decoded_path, progress)
     })
     .await?;
     let decoded_secs = decoded.map_err(|e| format!("could not decode the recording: {e:#}"))?;
     let decode_secs = t.elapsed().as_secs_f64();
+    info!("speakers: decoded {decoded_secs:.0}s of audio for {meeting_id} in {decode_secs:.1}s");
     let audio = Arc::new(TempAudio::open(guard).map_err(|e| format!("could not open the decoded audio: {e}"))?);
 
     let last_end: Option<f64> = sqlx::query_scalar("SELECT MAX(audio_end_time) FROM transcripts WHERE meeting_id = ?")
@@ -325,7 +329,7 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
     let step = window_step_secs(decoded_secs);
     let t = Instant::now();
     let reader = Guarded::new(&audio, pool, meeting_id, token);
-    let (turns, back) = run_blocking(deps, meeting_id, 10, 80, move |progress| {
+    let (turns, back) = run_blocking(deps, meeting_id, &format!("diarization of {decoded_secs:.0}s audio"), 10, 80, move |progress| {
         let turns = diarize(&reader, models.as_mut(), step, progress);
         (turns, models)
     })
@@ -338,7 +342,7 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
     let t = Instant::now();
     let mut clusters = clusters_from_turns(&turns);
     let reader = Guarded::new(&audio, pool, meeting_id, token);
-    let (clusters, back) = run_blocking(deps, meeting_id, 80, 95, move |progress| {
+    let (clusters, back) = run_blocking(deps, meeting_id, &format!("centroids of {decoded_secs:.0}s audio"), 80, 95, move |progress| {
         let r = embed_centroids(&reader, models.as_mut(), &mut clusters, progress);
         (r.map(|()| clusters), models)
     })
@@ -359,8 +363,8 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
         let seconds = windows.len() as f64 * SUB_SECS;
         if seconds >= SELF_LEARN_SECS {
             let reader = Guarded::new(&audio, pool, meeting_id, token);
-            let (print, back) = run_blocking(deps, meeting_id, 95, 95, move |_| {
-                let r = centroid_of(&reader, models.as_mut(), &windows);
+            let (print, back) = run_blocking(deps, meeting_id, "self voiceprint", 95, 99, move |progress| {
+                let r = centroid_of(&reader, models.as_mut(), &windows, progress);
                 (r, models)
             })
             .await?;
@@ -398,30 +402,114 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
     Ok(true)
 }
 
+/// A stage that reports no progress for this long is abandoned as stalled.
+const STALL_AFTER: Duration = Duration::from_secs(600);
+/// Model loading reports nothing, so a CPU-only first load gets a much longer leash.
+const MODEL_LOAD_STALL: Duration = Duration::from_secs(1800);
+
+/// Blocking stages still running, including ones abandoned after a stall: they may hold the model files open.
+static BLOCKING_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// True while any speaker blocking work is still running; `speakers_delete_models` refuses then.
+pub(crate) fn blocking_in_flight() -> bool {
+    BLOCKING_IN_FLIGHT.load(Ordering::SeqCst) > 0
+}
+
+/// Counts one running blocking stage; released when the work ends, even by panic.
+struct InFlight(&'static AtomicUsize);
+
+impl InFlight {
+    fn new(counter: &'static AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
+/// Progress lines in the log: at most one per this many percent points or this much time.
+const LOG_EVERY_PERCENT: u8 = 10;
+const LOG_EVERY: Duration = Duration::from_secs(60);
+
+/// True when a stage has been silent for `limit` or longer.
+fn is_stalled(idle: Duration, limit: Duration) -> bool {
+    idle >= limit
+}
+
+/// True when a progress line is due: `LOG_EVERY_PERCENT` points or `LOG_EVERY` since the last one.
+fn progress_due(percent: u8, last_percent: u8, since_last: Duration) -> bool {
+    percent >= last_percent.saturating_add(LOG_EVERY_PERCENT) || since_last >= LOG_EVERY
+}
+
 /// Runs `work` on the blocking pool and forwards its progress (fractions 0..=1) as percent in `from..=to`.
-async fn run_blocking<T, F>(deps: &dyn JobDeps, meeting_id: &str, from: u8, to: u8, work: F) -> Result<T, Stop>
+/// `stage` names the stage in the log (it carries the audio length). A stage silent for `STALL_AFTER` fails as
+/// stalled; the blocking work cannot be cancelled, so it is left to finish and its result is dropped. It writes
+/// nothing itself, and its reader fails once the job is no longer current.
+async fn run_blocking<T, F>(deps: &dyn JobDeps, meeting_id: &str, stage: &str, from: u8, to: u8, work: F) -> Result<T, Stop>
 where
     T: Send + 'static,
     F: FnOnce(&mut dyn FnMut(f32)) -> T + Send + 'static,
 {
+    run_blocking_with(deps, meeting_id, stage, from, to, STALL_AFTER, work).await
+}
+
+async fn run_blocking_with<T, F>(
+    deps: &dyn JobDeps,
+    meeting_id: &str,
+    stage: &str,
+    from: u8,
+    to: u8,
+    stall: Duration,
+    work: F,
+) -> Result<T, Stop>
+where
+    T: Send + 'static,
+    F: FnOnce(&mut dyn FnMut(f32)) -> T + Send + 'static,
+{
+    info!("speakers: {stage} started for {meeting_id}");
+    let started = Instant::now();
     let (tx, mut rx) = mpsc::unbounded_channel::<f32>();
+    let in_flight = InFlight::new(&BLOCKING_IN_FLIGHT);
     let task = tokio::task::spawn_blocking(move || {
+        let _in_flight = in_flight;
         let mut report = |fraction: f32| {
             let _ = tx.send(fraction);
         };
         work(&mut report)
     });
     tokio::pin!(task);
+    let (mut last_seen, mut last_logged, mut last_pct) = (Instant::now(), Instant::now(), from);
+    let mut progress = |fraction: f32, last_seen: &mut Instant| {
+        *last_seen = Instant::now();
+        let pct = percent(from, to, fraction);
+        deps.progress(meeting_id, pct);
+        if progress_due(pct, last_pct, last_logged.elapsed()) {
+            info!("speakers: {stage} {pct}% for {meeting_id}, {:.0}s elapsed", started.elapsed().as_secs_f64());
+            (last_pct, last_logged) = (pct, Instant::now());
+        }
+    };
     let joined = loop {
         tokio::select! {
-            Some(fraction) = rx.recv() => deps.progress(meeting_id, percent(from, to, fraction)),
+            Some(fraction) = rx.recv() => progress(fraction, &mut last_seen),
             res = &mut task => break res,
+            _ = tokio::time::sleep(stall.saturating_sub(last_seen.elapsed()).max(Duration::from_millis(10))) => {
+                if is_stalled(last_seen.elapsed(), stall) {
+                    let reason = format!("stalled: no progress for {}s during {stage}", stall.as_secs());
+                    warn!("speakers: {reason} for {meeting_id}, abandoning the job");
+                    return Err(Stop::Fail(reason));
+                }
+            }
         }
     };
     while let Ok(fraction) = rx.try_recv() {
-        deps.progress(meeting_id, percent(from, to, fraction));
+        progress(fraction, &mut last_seen);
     }
-    joined.map_err(|e| Stop::Fail(format!("speaker analysis stopped unexpectedly: {e}")))
+    let result = joined.map_err(|e| Stop::Fail(format!("speaker analysis stopped unexpectedly: {e}")));
+    info!("speakers: {stage} finished for {meeting_id} in {:.1}s", started.elapsed().as_secs_f64());
+    result
 }
 
 fn percent(from: u8, to: u8, fraction: f32) -> u8 {
@@ -545,7 +633,7 @@ fn embed_centroids(
     let n = clusters.len();
     for (i, c) in clusters.iter_mut().enumerate() {
         if c.seconds >= CENTROID_MIN_SECS {
-            c.centroid = centroid_of(audio, models, &centroid_windows(&c.turns))?;
+            c.centroid = centroid_of(audio, models, &centroid_windows(&c.turns), &mut |_| {})?;
         }
         progress((i + 1) as f32 / n as f32);
     }
@@ -553,9 +641,15 @@ fn embed_centroids(
 }
 
 /// The mean of the embeddings of `windows`. None when no clip gives a usable embedding.
-fn centroid_of(audio: &dyn AudioSource, models: &mut dyn SpeakerModels, windows: &[(f64, f64)]) -> Result<Option<Vec<f32>>, String> {
+fn centroid_of(
+    audio: &dyn AudioSource,
+    models: &mut dyn SpeakerModels,
+    windows: &[(f64, f64)],
+    progress: &mut dyn FnMut(f32),
+) -> Result<Option<Vec<f32>>, String> {
     let mut embeddings = Vec::with_capacity(windows.len());
-    for &(start, end) in windows {
+    for (i, &(start, end)) in windows.iter().enumerate() {
+        progress(i as f32 / windows.len() as f32);
         let clip = read_clip(audio, start, end)?;
         if let Some(v) = models.embed(&clip)? {
             embeddings.push(v);
@@ -984,6 +1078,87 @@ mod tests {
         assert_eq!(st, "failed");
         assert!(reason.unwrap().contains("no models"));
         assert!(deps.events().contains(&"speakers-updated m1".to_string()));
+    }
+
+    #[test]
+    fn stall_and_progress_log_decisions() {
+        let limit = Duration::from_secs(600);
+        assert!(!is_stalled(Duration::from_secs(599), limit));
+        assert!(is_stalled(Duration::from_secs(600), limit));
+        assert!(!progress_due(14, 10, Duration::from_secs(5)));
+        assert!(progress_due(20, 10, Duration::from_secs(5)));
+        assert!(progress_due(11, 10, Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn silent_stage_fails_as_stalled() {
+        let s = setup();
+        let deps = FakeDeps::new(&s.base, &s.temp, None);
+        let res = run_blocking_with(&deps, "m1", "test stage", 0, 10, Duration::from_millis(100), |_| {
+            std::thread::sleep(Duration::from_millis(600));
+        })
+        .await;
+        match res {
+            Err(Stop::Fail(reason)) => assert!(reason.starts_with("stalled"), "{reason}"),
+            _ => panic!("expected a stalled failure"),
+        }
+    }
+
+    #[test]
+    fn in_flight_guard_counts_until_dropped() {
+        static C: AtomicUsize = AtomicUsize::new(0);
+        let a = InFlight::new(&C);
+        let b = InFlight::new(&C);
+        assert_eq!(C.load(Ordering::SeqCst), 2);
+        drop(a);
+        drop(b);
+        assert_eq!(C.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn abandoned_stage_stays_in_flight_until_it_ends() {
+        let s = setup();
+        let deps = FakeDeps::new(&s.base, &s.temp, None);
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let res = run_blocking_with(&deps, "m1", "test stage", 0, 10, Duration::from_millis(100), move |_| {
+            let _ = wait.recv();
+        })
+        .await;
+        assert!(matches!(res, Err(Stop::Fail(_))));
+        assert!(blocking_in_flight(), "abandoned work must still count");
+        drop(release);
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if BLOCKING_IN_FLIGHT.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+        }
+        // Other tests may be running stages at the same time, so only a long wait is a failure.
+    }
+
+    #[test]
+    fn voiceprint_reports_each_window() {
+        let mut models = FakeModels::new(|_| Err("unused".into()), |_, _| Ok(Some(vec![1.0, 0.0])));
+        let audio = vec![0.0f32; 16000 * 4];
+        let mut seen = Vec::new();
+        let r = centroid_of(&audio, &mut models, &[(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)], &mut |f| seen.push(f));
+        assert!(r.unwrap().is_some());
+        assert_eq!(seen.len(), 3);
+    }
+
+    #[tokio::test]
+    async fn reporting_stage_is_not_stalled() {
+        let s = setup();
+        let deps = FakeDeps::new(&s.base, &s.temp, None);
+        let res = run_blocking_with(&deps, "m1", "test stage", 0, 10, Duration::from_millis(300), |progress| {
+            for i in 0..6 {
+                std::thread::sleep(Duration::from_millis(100));
+                progress(i as f32 / 6.0);
+            }
+            7
+        })
+        .await;
+        assert!(matches!(res, Ok(7)));
     }
 
     #[tokio::test]

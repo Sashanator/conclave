@@ -569,6 +569,33 @@ mod allowed_languages_tests {
     }
 }
 
+/// Drops control characters (so a message cannot forge extra log lines) and caps the length.
+fn sanitize_ui_log(message: &str) -> String {
+    message.chars().filter(|c| !c.is_control()).take(500).collect()
+}
+
+#[cfg(test)]
+mod ui_log_tests {
+    use super::sanitize_ui_log;
+
+    #[test]
+    fn strips_control_chars_and_caps_length() {
+        assert_eq!(sanitize_ui_log("a\nINFO fake\r\u{1b}[0mb"), "aINFO fake[0mb");
+        assert_eq!(sanitize_ui_log(&"x".repeat(900)).len(), 500);
+    }
+}
+
+/// Lets the webview write a line to the app log. Messages are short status lines; never transcript text or keys.
+#[tauri::command]
+fn app_log(level: String, message: String) {
+    let message = sanitize_ui_log(&message);
+    match level.as_str() {
+        "warn" => log::warn!("ui: {message}"),
+        "error" => log::error!("ui: {message}"),
+        _ => log::info!("ui: {message}"),
+    }
+}
+
 pub fn run() {
     // Windows release builds have no console, so panic text only survives in the log file.
     let default_hook = std::panic::take_hook();
@@ -617,6 +644,11 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            log::info!(
+                "Conclave {} starting, OS: {}",
+                _app.package_info().version,
+                sysinfo::System::long_os_version().unwrap_or_else(|| "unknown".into())
+            );
             #[cfg(target_os = "windows")]
             match _app.path().resolve(
                 "onnxruntime.dll",
@@ -806,6 +838,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            app_log,
             start_recording,
             stop_recording,
             is_recording,

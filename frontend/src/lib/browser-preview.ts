@@ -215,6 +215,7 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   set_recording_preferences: () => null,
   set_notification_settings: () => null,
   dictate_save_settings: ({ settings }) => settings,
+  app_log: () => null,
   dictate_status: () => ({ enabled: true, model_downloaded: true, mic_ok: true, engine_is_whisper: true, reason: null }),
   // Practice
   practice_status: () => ({ has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null }),

@@ -525,8 +525,11 @@ async fn load_session<R: Runtime>(
     check(token)?;
     let tts_dir = dir.clone();
     let voice_file = format!("{}.json", setup.voice);
+    let language = PracticeLanguage::from_code(&setup.language);
     let (tts, voice) = tokio::task::spawn_blocking(move || -> Result<(Supertonic, Voice), String> {
-        Ok((Supertonic::load(&dir, true)?, load_voice(&dir.join(voice_file))?))
+        let mut tts = Supertonic::load(&dir, true)?;
+        tts.language = language;
+        Ok((tts, load_voice(&dir.join(voice_file))?))
     })
     .await
     .map_err(|e| e.to_string())??;

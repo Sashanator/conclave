@@ -1,5 +1,8 @@
 
+use super::PracticeLanguage;
+
 pub struct Persona<'a> {
+    pub language: PracticeLanguage,
     pub character: &'a str,
     pub situation: &'a str,
     pub plan: Option<&'a str>,
@@ -22,8 +25,8 @@ const RULES: &str = r#"Rules:
 /// The variety line only makes sense with a pool, so it is emitted only with a plan.
 pub fn character_system(p: &Persona, variety_seed: u32) -> String {
     let mut s = format!(
-        "You are role-playing a character in a spoken practice conversation. The learner talks to you by voice, and your replies are read aloud.\n\nCharacter: {}\nSituation: {}\n\n",
-        p.character, p.situation
+        "You are role-playing a character in a spoken practice conversation. The learner talks to you by voice, and your replies are read aloud.\n\nCharacter: {}\nSituation: {}\n\nSpeak {} only.\n\n",
+        p.character, p.situation, p.language.name()
     );
     if let Some(plan) = p.plan {
         s.push_str(&format!(
@@ -212,6 +215,7 @@ mod tests {
     fn character_system_contains_rules_and_plan() {
         let with_plan = character_system(
             &Persona {
+                language: PracticeLanguage::En,
                 character: "Anna, a sceptical hiring manager",
                 situation: "A 20-minute phone screen",
                 plan: Some("PLAN-MARKER: ask about the gap in 2023"),
@@ -228,6 +232,7 @@ mod tests {
 
         let without = character_system(
             &Persona {
+                language: PracticeLanguage::En,
                 character: "Anna",
                 situation: "Phone screen",
                 plan: None,
@@ -240,8 +245,18 @@ mod tests {
     }
 
     #[test]
+    fn character_system_names_the_language() {
+        let sys = |language| {
+            character_system(&Persona { language, character: "Anna", situation: "Call", plan: None }, 0)
+        };
+        assert!(sys(PracticeLanguage::De).contains("Speak German only."));
+        assert!(sys(PracticeLanguage::En).contains("Speak English only."));
+    }
+
+    #[test]
     fn variety_line_depends_on_seed() {
         let persona = Persona {
+            language: PracticeLanguage::En,
             character: "Anna",
             situation: "Phone screen",
             plan: Some("Q1 ... Q20"),

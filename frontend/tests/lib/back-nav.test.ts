@@ -1,9 +1,11 @@
-import { beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
-// Bun loads every test file before running any, so another file's confirm mock may be active: pin the no-host behaviour (window.confirm) here.
-mock.module('../../src/lib/confirm', () => ({
+import { afterAll, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
+const realConfirm = { ...(await import('../../src/lib/confirm')) };
+// Pin the no-host behaviour (window.confirm), installed at run time so other files' confirm mocks do not win.
+beforeAll(() => { mock.module('../../src/lib/confirm', () => ({
   setConfirmHandler() {},
   confirmAction: async (o: { title: string; body?: string }) => window.confirm(o.body ? `${o.title}\n\n${o.body}` : o.title),
-}));
+})); });
+afterAll(() => { mock.module('../../src/lib/confirm', () => realConfirm); });
 const { goBack, readOrigin, rememberOrigin } = await import('../../src/lib/back-nav');
 const { setUnsavedChanges } = await import('../../src/lib/unsaved-guard');
 
@@ -75,6 +77,17 @@ describe('back-nav', () => {
     } finally {
       spy.mockRestore();
     }
+    expect(router.push).toHaveBeenCalledWith('/x');
+  });
+
+  test('rememberOrigin survives a throwing setItem and Back then uses the fallback', async () => {
+    const spy = spyOn(Storage.prototype, 'setItem').mockImplementation(() => { throw new Error('quota'); });
+    try {
+      expect(() => rememberOrigin({ path: '/a', label: 'A' })).not.toThrow();
+    } finally {
+      spy.mockRestore();
+    }
+    await goBack(router, '/x');
     expect(router.push).toHaveBeenCalledWith('/x');
   });
 });

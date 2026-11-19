@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { act, create } from 'react-test-renderer';
 
 const originals = {
@@ -28,10 +28,12 @@ test('the provider keeps only collapse, server address and summary polling, and 
 });
 
 describe('collapsed state', () => {
+  const roots: { unmount(): void }[] = [];
+  afterEach(() => { for (const r of roots.splice(0)) act(() => r.unmount()); });
   const mount = async () => {
     let ctx!: { collapsed: boolean };
     const Probe = () => { ctx = useSidebar() as unknown as { collapsed: boolean }; return null; };
-    await act(async () => { create(<SidebarProvider><Probe /></SidebarProvider>); });
+    await act(async () => { roots.push(create(<SidebarProvider><Probe /></SidebarProvider>)); });
     return () => ctx.collapsed;
   };
   const press = (init: KeyboardEventInit, target: Element = document.body) => {
@@ -66,6 +68,16 @@ describe('collapsed state', () => {
     const e = press({ key: 'b', ctrlKey: true }, p);
     host.remove();
     expect(get()).toBe(start);
+    expect(e.defaultPrevented).toBe(false);
+  });
+  test('Ctrl B does nothing while onboarding shows', async () => {
+    let ctx!: { collapsed: boolean };
+    const Probe = () => { ctx = useSidebar() as unknown as { collapsed: boolean }; return null; };
+    await act(async () => { roots.push(create(<SidebarProvider shortcutsOff><Probe /></SidebarProvider>)); });
+    const start = ctx.collapsed;
+    const e = press({ key: 'b', ctrlKey: true });
+    expect(ctx.collapsed).toBe(start);
+    expect(localStorage.getItem('conclave.sidebarCollapsed')).toBeNull();
     expect(e.defaultPrevented).toBe(false);
   });
   test('Ctrl Shift B does nothing', async () => {

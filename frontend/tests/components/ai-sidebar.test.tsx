@@ -22,6 +22,10 @@ function press(init: Partial<KeyboardEventInit> & { key: string }, prevent = fal
   });
 }
 
+// Unmounted after each test: a leaked open sidebar would swallow Escape for later files.
+const mounted: { unmount(): void }[] = [];
+afterEach(() => { for (const m of mounted.splice(0)) act(() => m.unmount()); });
+
 async function mount(kind: ScreenKind | null) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
@@ -32,6 +36,7 @@ async function mount(kind: ScreenKind | null) {
       </AiSidebarProvider>,
     );
   });
+  mounted.push(r);
   return r;
 }
 const hasAside = (r: ReturnType<typeof create>) => r.root.findAllByType('aside').length === 1;
@@ -59,6 +64,11 @@ describe('AiSidebar', () => {
     expect(hasAside(r)).toBe(true);
     press({ key: 'Escape' });
     expect(hasAside(r)).toBe(false);
+    // Esc that closes the sidebar must not also go Back.
+    const e = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    press({ key: 'j', ctrlKey: true });
+    act(() => { window.dispatchEvent(e); });
+    expect(e.defaultPrevented).toBe(true);
     expect(readSidebarOpen('table')).toBe(false);
   });
 
@@ -86,6 +96,7 @@ describe('Ask chat identity', () => {
     );
     let r!: ReturnType<typeof create>;
     await act(async () => { r = create(tree('a')); });
+    mounted.push(r);
     const keyOf = () => (r.root.findByType(AskChat) as unknown as { _fiber: { key: string } })._fiber.key;
     const first = keyOf();
     await act(async () => { r.update(tree('b')); });

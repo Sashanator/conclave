@@ -1,11 +1,12 @@
-import { afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import { act, create, type ReactTestRenderer } from 'react-test-renderer';
 
-// No afterAll restore: bun loads every test file before running any, so restoring here would overwrite the mocks of files that load later.
 const realNav = { ...await import('next/navigation') };
 const back = mock(() => {});
 const push = mock((_h: string) => {});
-mock.module('next/navigation', () => ({ ...realNav, useRouter: () => ({ back, push }) }));
+// Installed at run time, not load time: later-loading files mock this module too, and bun applies the last mock.
+beforeAll(() => { mock.module('next/navigation', () => ({ ...realNav, useRouter: () => ({ back, push }) })); });
+afterAll(() => { mock.module('next/navigation', () => realNav); });
 
 const { BackCrumb } = await import('../../src/components/BackCrumb');
 const { setUnsavedChanges } = await import('../../src/lib/unsaved-guard');

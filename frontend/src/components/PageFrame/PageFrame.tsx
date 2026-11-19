@@ -14,7 +14,6 @@ export type PageFrameProps = {
 // Left-aligned frame (the shell supplies the left padding); list and reading are height-bounded, dashboard and form scroll as a page.
 export function PageFrame({ variant, title, breadcrumb, actions, rail, subnav, children }: PageFrameProps): JSX.Element {
   const bounded = variant === 'list' || variant === 'reading';
-  const wide = '@[1280px]/frame:';
 
   const header = (
     <div className="shrink-0">
@@ -38,8 +37,8 @@ export function PageFrame({ variant, title, breadcrumb, actions, rail, subnav, c
       <div
         className={cn(
           'grid min-h-0 min-w-0 flex-1 gap-10',
-          `${wide}grid-cols-[minmax(0,80ch)_minmax(360px,560px)]`,
-          rail && `grid-rows-[minmax(0,1fr)_minmax(0,40%)] ${wide}grid-rows-1`,
+          '@[1280px]/frame:grid-cols-[minmax(0,80ch)_minmax(360px,560px)]',
+          rail && 'grid-rows-[minmax(0,1fr)_minmax(0,40%)] @[1280px]/frame:grid-rows-1',
         )}
       >
         <div className="flex min-h-0 min-w-0 max-w-[80ch] flex-col overflow-y-auto">{children}</div>
@@ -54,12 +53,12 @@ export function PageFrame({ variant, title, breadcrumb, actions, rail, subnav, c
     const row = {
       form: 'flex gap-8',
       list: 'flex min-h-0 flex-1 gap-8',
-      reading: `flex min-h-0 flex-1 flex-col gap-8 ${wide}flex-row`,
+      reading: 'flex min-h-0 flex-1 flex-col gap-8 @[1280px]/frame:flex-row',
     }[variant];
     const nav = {
       form: 'w-[220px] shrink-0',
       list: 'w-[220px] shrink-0 overflow-y-auto',
-      reading: `max-h-48 shrink-0 overflow-y-auto ${wide}max-h-none ${wide}w-[300px]`,
+      reading: 'max-h-48 shrink-0 overflow-y-auto @[1280px]/frame:max-h-none @[1280px]/frame:w-[300px]',
     }[variant];
     body = (
       <div className={row}>

@@ -41,6 +41,7 @@ export function AiSidebarProvider({ children }: { children: ReactNode }) {
         e.preventDefault();
         toggle();
       } else if (e.key === 'Escape' && open && !e.defaultPrevented) {
+        e.preventDefault(); // so Esc does not also go Back
         close();
       }
     };

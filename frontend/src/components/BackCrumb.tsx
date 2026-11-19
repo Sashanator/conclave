@@ -2,15 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
-import { useRouter } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { goBack, originIsPrevious, readOrigin } from '@/lib/back-nav';
 import { useBackShortcut } from '@/hooks/useBackShortcut';
 
 export function BackCrumb({ fallback, fallbackLabel }: { fallback: string; fallbackLabel: string }) {
   const router = useRouter();
+  const path = usePathname();
+  const search = useSearchParams()?.toString();
   const [label, setLabel] = useState(fallbackLabel);
   // Read after mount: sessionStorage does not exist in the static export.
-  useEffect(() => { setLabel(originIsPrevious() ? readOrigin()!.label : fallbackLabel); }, [fallbackLabel]);
+  useEffect(() => { setLabel(originIsPrevious() ? readOrigin()!.label : fallbackLabel); }, [fallbackLabel, path, search]);
   const back = () => void goBack(router, fallback);
   useBackShortcut(back);
   return (

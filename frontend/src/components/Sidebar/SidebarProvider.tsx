@@ -39,7 +39,8 @@ export const useSidebar = () => {
   return context;
 };
 
-export function SidebarProvider({ children }: { children: React.ReactNode }) {
+/** shortcutsOff: the shell sets it while onboarding shows, when there is no sidebar to toggle. */
+export function SidebarProvider({ children, shortcutsOff = false }: { children: React.ReactNode; shortcutsOff?: boolean }) {
   const [collapsed, setCollapsed] = useState(true);
   const [serverAddress, setServerAddress] = useState('');
   const summaryPollsRef = React.useRef(new Map<string, SummaryPoll>());
@@ -67,6 +68,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   useEffect(() => {
+    if (shortcutsOff) return;
     const onKey = (e: KeyboardEvent) => {
       if (!e.ctrlKey || e.altKey || e.shiftKey || e.metaKey) return;
       if (e.key.toLowerCase() !== 'b' && e.code !== 'KeyB') return;
@@ -76,7 +78,7 @@ export function SidebarProvider({ children }: { children: React.ReactNode }) {
     };
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [toggleCollapsed]);
+  }, [toggleCollapsed, shortcutsOff]);
 
   // Summary polling management
   const stopSummaryPolling = React.useCallback((meetingId: string, processId?: string) => {

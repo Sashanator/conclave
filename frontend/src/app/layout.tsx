@@ -248,7 +248,7 @@ function AppShell({
               <ConfigProvider>
                 <OllamaDownloadProvider>
                   <OnboardingProvider>
-                    <SidebarProvider>
+                    <SidebarProvider shortcutsOff={showOnboarding}>
                       <TooltipProvider>
                         <RecordingPostProcessingProvider>
                           <ImportDialogProvider onOpen={handleOpenImportDialog}>

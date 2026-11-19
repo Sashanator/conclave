@@ -98,4 +98,10 @@ describe('PageFrame', () => {
     const r = create(<PageFrame variant="reading" breadcrumb={<a href="/">Meetings</a>} title="T">x</PageFrame>);
     expect(JSON.stringify(r.toJSON())).toContain('Meetings');
   });
+
+  test('container-query classes are written literally so Tailwind generates them', () => {
+    const src = require('fs').readFileSync(require('path').join(import.meta.dir, '../../src/components/PageFrame/PageFrame.tsx'), 'utf8');
+    expect(src).not.toContain('${wide}');
+    for (const c of ['@[1280px]/frame:grid-cols-[minmax(0,80ch)_minmax(360px,560px)]', '@[1280px]/frame:grid-rows-1', '@[1280px]/frame:flex-row', '@[1280px]/frame:max-h-none', '@[1280px]/frame:w-[300px]']) expect(src).toContain(c);
+  });
 });

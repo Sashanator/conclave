@@ -34,6 +34,7 @@ import { CopilotProvider } from '@/contexts/CopilotContext'
 import { listenReleaseFailed } from '@/lib/recording-target'
 import { installBrowserPreview } from '@/lib/browser-preview'
 import { ConfirmHost } from '@/components/ConfirmHost'
+import { AiKeyHint } from '@/components/onboarding/AiKeyHint'
 
 
 installBrowserPreview()
@@ -254,6 +255,7 @@ function AppShell({
                           <ImportDialogProvider onOpen={handleOpenImportDialog}>
                             {/* Download progress toast provider - listens for background downloads */}
                             <DownloadProgressToastProvider />
+                            <AiKeyHint />
 
                             {/* Show onboarding or main app */}
                             {showOnboarding ? (

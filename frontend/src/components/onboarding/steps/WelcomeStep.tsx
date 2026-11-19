@@ -18,7 +18,7 @@ export function WelcomeStep() {
     },
     {
       icon: Lock,
-      title: 'Audio stays on this PC; only the transcript is sent for a summary',
+      title: 'Audio stays on this PC; the transcript and your notes go to the AI you choose',
     },
   ];
 

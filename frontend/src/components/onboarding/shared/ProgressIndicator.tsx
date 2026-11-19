@@ -9,7 +9,7 @@ interface ProgressIndicatorProps {
 
 const stepIcons = [
   Lock,         // 1. Welcome
-  BrainCircuit, // 2. Setup Overview
+  BrainCircuit, // 2. AI key
   Download,     // 3. Download Progress
   // Step 4 (Permissions) doesn't need icon - auto-skipped on non-macOS
 ];

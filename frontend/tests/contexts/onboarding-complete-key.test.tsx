@@ -5,13 +5,11 @@ const originals = {
   core: { ...(await import('@tauri-apps/api/core')) },
   event: { ...(await import('@tauri-apps/api/event')) },
   keys: { ...(await import('../../src/lib/models-keys')) },
-  sonner: { ...(await import('sonner')) },
 };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('../../src/lib/models-keys', () => originals.keys);
-  mock.module('sonner', () => originals.sonner);
 });
 
 const calls: string[] = [];
@@ -26,11 +24,9 @@ const saveProviderKey = mock(async (provider: string, key: string) => {
   calls.push(`save:${provider}:${key}`);
   if (failSave) throw new Error('nope');
 });
-const toastError = mock((..._a: unknown[]) => {});
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 mock.module('@tauri-apps/api/event', () => ({ ...originals.event, listen: async () => () => {} }));
 mock.module('../../src/lib/models-keys', () => ({ ...originals.keys, saveProviderKey }));
-mock.module('sonner', () => ({ ...originals.sonner, toast: { ...originals.sonner.toast, error: toastError } }));
 
 const { OnboardingProvider, useOnboarding } = await import('../../src/contexts/OnboardingContext');
 
@@ -42,7 +38,7 @@ async function mount() {
 
 beforeEach(() => {
   calls.length = 0; failComplete = false; failSave = false;
-  saveProviderKey.mockClear(); toastError.mockClear();
+  saveProviderKey.mockClear(); localStorage.clear();
 });
 
 describe('completeOnboarding with a pending key', () => {
@@ -60,15 +56,30 @@ describe('completeOnboarding with a pending key', () => {
     expect(saveProviderKey).not.toHaveBeenCalled();
   });
 
-  test('a failed key save still completes and tells the user', async () => {
+  test('a failed key save still completes and leaves the hint flag, never the key', async () => {
     failSave = true;
     await mount();
     act(() => ctx.setPendingAiKey('sk-x'));
     await act(async () => { await ctx.completeOnboarding(); });
-    expect(toastError).toHaveBeenCalled();
-    const [title, opts] = toastError.mock.calls[0] as [string, { description: string }];
-    expect(title).toBe('Could not save the API key');
-    expect(opts.description).toContain('Settings → Models & keys');
+    expect(localStorage.getItem('conclave.aiKeySaveFailed')).toBe('1');
+    expect(JSON.stringify({ ...localStorage })).not.toContain('sk-x');
+  });
+
+  test('completing without the key step shown leaves the hint, skipping does not', async () => {
+    await mount();
+    await act(async () => { await ctx.completeOnboarding(); });
+    expect(localStorage.getItem('conclave.aiKeySaveFailed')).toBe('1');
+    localStorage.clear();
+    act(() => ctx.setPendingAiKey(null));
+    await act(async () => { await ctx.completeOnboarding(); });
+    expect(localStorage.getItem('conclave.aiKeySaveFailed')).toBeNull();
+  });
+
+  test('a saved key leaves no hint', async () => {
+    await mount();
+    act(() => ctx.setPendingAiKey('sk-x'));
+    await act(async () => { await ctx.completeOnboarding(); });
+    expect(localStorage.getItem('conclave.aiKeySaveFailed')).toBeNull();
   });
 
   test('a failed completion saves no key and rethrows', async () => {

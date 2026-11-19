@@ -36,7 +36,7 @@ export function AiKeyStep() {
       <div className="flex flex-col items-center space-y-6">
         <div className="w-full max-w-md space-y-4">
           <p className="text-sm text-muted-foreground">
-            Conclave writes summaries with Claude, using your own Anthropic API key. Only the transcript is sent; audio stays on this PC.
+            Conclave writes summaries with Claude, using your own Anthropic API key. The transcript and your notes are sent to the provider you choose; audio stays on this PC.
           </p>
           <div className="space-y-2">
             <Label htmlFor="onboarding-ai-key">Anthropic API key</Label>

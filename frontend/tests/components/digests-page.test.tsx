@@ -112,6 +112,7 @@ describe('Digests page', () => {
     expect(invoke).toHaveBeenCalledWith('briefs_list');
     expect(renderer!.root.findAll((n) => n.type === 'h1').map(textOf)).toEqual(['Digests']);
     expect(textOf(buttonNamed('Weekly digest'))).toContain('Weekly digest: 16–21 Oct');
+    expect(textOf(buttonNamed('Weekly digest'))).toContain(formatLongDate(new Date('2026-10-21T09:00:00Z')));
     expect(renderer!.root.findAll((n) => n.type === 'button' && textOf(n).includes('1:1 Ivan'))).toHaveLength(0);
   });
 
@@ -119,7 +120,7 @@ describe('Digests page', () => {
     await mount('id=d1');
     expect(digestGets).toEqual([{ id: 'd1' }]);
     const links = renderer!.root.findAll((n) => n.type === 'a');
-    expect(links.map((l) => l.props.href)).toEqual(['/meeting-details?id=m-old']);
+    expect(links.map((l) => l.props.href)).toEqual(['/meeting-details?id=m-old', '/meeting-details?id=m-old']);
     expect(textOf(links[0])).toBe('Ivan sync');
     expect(links[0].props.className).toContain('rounded');
     expect(links[0].props.className).toContain('border');
@@ -143,5 +144,25 @@ describe('Digests page', () => {
     await mount('id=d1');
     renderer!.root.findAll((n) => n.type === 'a')[0].props.onClick({ defaultPrevented: true });
     expect(readOrigin()).toEqual({ path: '/digests?id=d1', label: 'Digests' });
+  });
+
+  test('with no ?id= the newest digest opens', async () => {
+    await mount('');
+    expect(digestGets).toEqual([{ id: 'd1' }]);
+  });
+
+  test('the rail lists the digest meetings as chips', async () => {
+    await mount('id=d1');
+    const h2 = renderer!.root.findAll((n) => n.type === 'h2' && textOf(n) === 'Meetings in this digest')[0];
+    const rail = renderer!.root.findByProps({ 'aria-labelledby': h2.props.id });
+    const links = rail.findAll((n) => n.type === 'a');
+    expect(links).toHaveLength(1);
+    expect(links[0].props.href).toBe('/meeting-details?id=m-old');
+    expect(textOf(links[0])).toBe('Ivan sync');
+  });
+
+  test('no centred column', async () => {
+    await mount('id=d1');
+    expect(renderer!.root.findAll((n) => typeof n.props.className === 'string' && /mx-auto|max-w-3xl/.test(n.props.className))).toHaveLength(0);
   });
 });

@@ -8,6 +8,7 @@ const originals = {
   provider: { ...await import('../../src/components/Sidebar/SidebarProvider') },
   imp: { ...await import('../../src/contexts/ImportDialogContext') },
   feed: { ...await import('../../src/components/Feed/FeedBell') },
+  confirm: { ...await import('../../src/lib/confirm') },
 };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
@@ -16,6 +17,7 @@ afterAll(() => {
   mock.module('../../src/components/Sidebar/SidebarProvider', () => originals.provider);
   mock.module('../../src/contexts/ImportDialogContext', () => originals.imp);
   mock.module('../../src/components/Feed/FeedBell', () => originals.feed);
+  mock.module('../../src/lib/confirm', () => originals.confirm);
 });
 
 const push = mock((_u: string) => {});
@@ -36,6 +38,8 @@ mock.module('../../src/components/Sidebar/SidebarProvider', () => ({
 }));
 mock.module('../../src/contexts/ImportDialogContext', () => ({ ...originals.imp, useImportDialog: () => ({ openImportDialog }) }));
 mock.module('../../src/components/Feed/FeedBell', () => ({ FeedBell: () => null }));
+const confirmAction = mock(async (o: any): Promise<boolean> => originals.confirm.confirmAction(o));
+mock.module('../../src/lib/confirm', () => ({ ...originals.confirm, confirmAction }));
 
 const Sidebar = (await import('../../src/components/Sidebar')).default;
 const { setUnsavedChanges } = await import('../../src/lib/unsaved-guard');
@@ -51,7 +55,7 @@ const buttons = (r: ReactTestRenderer) => r.root.findAllByType('button').filter(
 beforeEach(() => {
   collapsed = false;
   rec = { isRecording: false, liveMeetingId: null, activeDuration: null };
-  push.mockClear(); invoke.mockClear(); openImportDialog.mockClear();
+  confirmAction.mockClear(); push.mockClear(); invoke.mockClear(); openImportDialog.mockClear();
   sessionStorage.clear(); localStorage.clear();
 });
 
@@ -111,6 +115,22 @@ describe('Sidebar nav', () => {
       expect(invoke).not.toHaveBeenCalledWith('api_route_recording_start', expect.anything());
       expect(push).not.toHaveBeenCalled();
       expect(sessionStorage.getItem('autoStartRecording')).toBeNull();
+    } finally {
+      setUnsavedChanges(false);
+    }
+  });
+
+  test('a dirty guard and a stay answer keep the route', async () => {
+    setUnsavedChanges(true);
+    try {
+      const r = await render();
+      confirmAction.mockImplementationOnce(async () => false);
+      await act(async () => { await buttons(r)[1].props.onClick(); });
+      expect(confirmAction).toHaveBeenCalledTimes(1);
+      expect(push).not.toHaveBeenCalled();
+      confirmAction.mockImplementationOnce(async () => true);
+      await act(async () => { await buttons(r)[1].props.onClick(); });
+      expect(push).toHaveBeenCalledTimes(1);
     } finally {
       setUnsavedChanges(false);
     }

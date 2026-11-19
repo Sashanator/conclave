@@ -1,6 +1,9 @@
 import { clsx, type ClassValue } from "clsx"
 import { twMerge } from "tailwind-merge"
 
+/** Destructive buttons are outlined, never solid red: `<Button variant="outline" className={DESTRUCTIVE_OUTLINE}>`. */
+export const DESTRUCTIVE_OUTLINE = 'border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive'
+
 export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }

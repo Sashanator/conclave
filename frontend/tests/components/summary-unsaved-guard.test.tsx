@@ -39,10 +39,10 @@ const summary = { summary_json: [block] };
 let renderer: ReactTestRenderer | undefined;
 let onSave: ReturnType<typeof mock>;
 // Mirrors the unsaved guard: confirmLeave() asks only while the flag is set, and the stub answers "stay" (false).
-function isDirty(): boolean {
+async function isDirty(): Promise<boolean> {
   let asked = false;
   window.confirm = () => { asked = true; return false; };
-  const leaveAllowed = confirmLeave();
+  const leaveAllowed = await confirmLeave();
   window.confirm = realConfirm;
   return asked && !leaveAllowed;
 }
@@ -70,9 +70,9 @@ afterEach(async () => {
 describe('summary edits and the app-wide unsaved guard', () => {
   test('an edit marks the guard dirty', async () => {
     await act(async () => { renderer = create(<BlockNoteSummaryView summaryData={summary} onSave={onSave} />); });
-    expect(isDirty()).toBe(false);
+    expect(await isDirty()).toBe(false);
     await edit();
-    expect(isDirty()).toBe(true);
+    expect(await isDirty()).toBe(true);
   });
 
   test('unmounting clears the guard', async () => {
@@ -80,16 +80,16 @@ describe('summary edits and the app-wide unsaved guard', () => {
     await edit();
     await act(async () => renderer!.unmount());
     renderer = undefined;
-    expect(isDirty()).toBe(false);
+    expect(await isDirty()).toBe(false);
   });
 
   test('a successful save clears the guard', async () => {
     const ref = createRef<BlockNoteSummaryViewRef>();
     await act(async () => { renderer = create(<BlockNoteSummaryView ref={ref} summaryData={summary} onSave={onSave} />); });
     await edit();
-    expect(isDirty()).toBe(true);
+    expect(await isDirty()).toBe(true);
     await act(async () => { await ref.current!.saveSummary(); });
     expect(onSave).toHaveBeenCalledTimes(1);
-    expect(isDirty()).toBe(false);
+    expect(await isDirty()).toBe(false);
   });
 });

@@ -19,7 +19,7 @@ export function AiSidebar({ children }: { children?: ReactNode }) {
   const { kind, open, scope } = useAiSidebar();
   if (!kind || !open) return null;
   return (
-    <aside aria-label="AI sidebar" className="flex h-screen w-[360px] shrink-0 flex-col border-l border-border bg-background">
+    <aside aria-label="AI sidebar" data-esc-layer className="flex h-screen w-[360px] shrink-0 flex-col border-l border-border bg-background">
       {kind === 'live' ? <LiveBody /> : scope ? <AskChat key={kind === 'meeting' ? scope.meetingIds?.[0] : kind} scope={scope} allowAll={kind === 'table'} /> : children}
     </aside>
   );

@@ -21,8 +21,8 @@ const Sidebar: React.FC = () => {
   const router = useRouter();
   const pathname = usePathname() ?? '';
   // Navigation that discards nothing unless the user agrees (e.g. unsaved template edits)
-  const go = (href: string) => {
-    if (confirmLeave()) router.push(href);
+  const go = async (href: string) => {
+    if (await confirmLeave()) router.push(href);
   };
   const { isCollapsed, toggleCollapse } = useSidebar();
   const { isRecording, liveMeetingId, activeDuration } = useRecordingState();
@@ -40,7 +40,7 @@ const Sidebar: React.FC = () => {
 
   const startRecording = async () => {
     // Ask before routing: a declined leave must not leave an empty row and a queued start behind.
-    if (!confirmLeave()) return;
+    if (!(await confirmLeave())) return;
     const routed = await routeOrFallback('sidebar');
     router.push(queueAutoStart(sessionStorage, routed.meetingId));
   };

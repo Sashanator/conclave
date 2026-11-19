@@ -1,46 +1,39 @@
-import { afterEach, describe, expect, test } from 'bun:test';
-import { confirmLeave, setUnsavedChanges } from '@/lib/unsaved-guard';
+import { afterAll, afterEach, describe, expect, mock, test } from 'bun:test';
 
-const realConfirm = window.confirm;
-let asked: string[] = [];
+const original = { ...(await import('../../src/lib/confirm')) };
+afterAll(() => mock.module('../../src/lib/confirm', () => original));
+
 let answer = true;
-
-function stubConfirm() {
-  asked = [];
-  window.confirm = (message?: string) => {
-    asked.push(message ?? '');
-    return answer;
-  };
-}
+const confirmAction = mock(async (_o: unknown) => answer);
+mock.module('../../src/lib/confirm', () => ({ ...original, confirmAction }));
+const { confirmLeave, setUnsavedChanges } = await import('../../src/lib/unsaved-guard');
 
 afterEach(() => {
   setUnsavedChanges(false);
-  window.confirm = realConfirm;
+  confirmAction.mockClear();
   answer = true;
 });
 
 describe('unsaved guard', () => {
-  test('clean: leaving is allowed without asking', () => {
-    stubConfirm();
-    expect(confirmLeave()).toBe(true);
-    expect(asked).toEqual([]);
+  test('clean: leaving is allowed without asking', async () => {
+    expect(await confirmLeave()).toBe(true);
+    expect(confirmAction).not.toHaveBeenCalled();
   });
 
-  test('dirty: asks, and returns the answer', () => {
-    stubConfirm();
+  test('dirty: asks, and returns the answer', async () => {
     setUnsavedChanges(true);
     answer = true;
-    expect(confirmLeave()).toBe(true);
+    expect(await confirmLeave()).toBe(true);
     answer = false;
-    expect(confirmLeave()).toBe(false);
-    expect(asked).toEqual(['Discard unsaved changes?', 'Discard unsaved changes?']);
+    expect(await confirmLeave()).toBe(false);
+    expect(confirmAction).toHaveBeenCalledTimes(2);
+    expect(confirmAction).toHaveBeenCalledWith({ title: 'Discard unsaved changes?', confirmLabel: 'Discard', destructive: true });
   });
 
-  test('clearing the flag stops the prompt', () => {
-    stubConfirm();
+  test('clearing the flag stops the prompt', async () => {
     setUnsavedChanges(true);
     setUnsavedChanges(false);
-    expect(confirmLeave()).toBe(true);
-    expect(asked).toEqual([]);
+    expect(await confirmLeave()).toBe(true);
+    expect(confirmAction).not.toHaveBeenCalled();
   });
 });

@@ -52,10 +52,6 @@ export interface MeetingShare {
 
 const PERIOD_KEY = 'conclave.statsPeriod';
 
-export function formatUsd(v: number | null): string {
-  return v === null ? '—' : `$${v.toFixed(3)}`;
-}
-
 export function formatTokens(n: number): string {
   if (n < 1000) return String(n);
   const k = (n / 1000).toFixed(1);

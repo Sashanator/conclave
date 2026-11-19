@@ -28,19 +28,21 @@ const invoke = mock(async (cmd: string, _a?: unknown): Promise<unknown> => {
   return null;
 });
 let collapsed = false;
+const toggleCollapsed = mock(() => {});
 let rec: Record<string, unknown> = {};
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 mock.module('next/navigation', () => ({ usePathname: () => '/tasks', useRouter: () => ({ push, replace() {} }) }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.rec, useRecordingState: () => rec }));
 mock.module('../../src/components/Sidebar/SidebarProvider', () => ({
   ...originals.provider,
-  useSidebar: () => ({ isCollapsed: collapsed, toggleCollapse() {} }),
+  useSidebar: () => ({ collapsed, toggleCollapsed }),
 }));
 mock.module('../../src/contexts/ImportDialogContext', () => ({ ...originals.imp, useImportDialog: () => ({ openImportDialog }) }));
 mock.module('../../src/components/Feed/FeedBell', () => ({ FeedBell: () => null }));
 const confirmAction = mock(async (o: any): Promise<boolean> => originals.confirm.confirmAction(o));
 mock.module('../../src/lib/confirm', () => ({ ...originals.confirm, confirmAction }));
 
+const { TooltipContent } = await import('../../src/components/ui/tooltip');
 const Sidebar = (await import('../../src/components/Sidebar')).default;
 const { setUnsavedChanges } = await import('../../src/lib/unsaved-guard');
 
@@ -163,5 +165,51 @@ describe('Sidebar nav', () => {
     expect(JSON.stringify(r.toJSON())).toContain('(new)');
     await act(async () => { localStorage.setItem('whats-new-seen', '1.3.0'); window.dispatchEvent(new Event('whats-new-seen')); });
     expect(JSON.stringify(r.toJSON())).not.toContain('(new)');
+  });
+
+  test('no floating toggle', async () => {
+    const r = await render();
+    const json = JSON.stringify(r.toJSON());
+    expect(json).not.toContain('-right-6');
+    expect(json).not.toContain('rounded-full shadow-lg');
+  });
+
+  test('the collapse row is the last nav row', async () => {
+    toggleCollapsed.mockClear();
+    const r = await render();
+    const all = r.root.findByProps({ 'aria-label': 'Main' }).findAllByType('button');
+    const last = all[all.length - 1];
+    expect(last.props['aria-label']).toBe('Collapse sidebar');
+    expect(text(last)).toContain('Collapse sidebar');
+    expect(text(last)).toContain('Ctrl B');
+    await act(async () => { last.props.onClick(); });
+    expect(toggleCollapsed).toHaveBeenCalled();
+  });
+
+  test('collapsed shows the expand row with the shortcut in its tooltip', async () => {
+    collapsed = true;
+    const r = await render();
+    const all = r.root.findByProps({ 'aria-label': 'Main' }).findAllByType('button');
+    expect(all[all.length - 1].props['aria-label']).toBe('Expand sidebar');
+    const tips = r.root.findAllByType(TooltipContent).map((t) => t.props.children.props.children);
+    expect(tips).toContain('Expand sidebar (Ctrl B)');
+  });
+
+  test('the live recording item is red', async () => {
+    let r = await render();
+    expect(buttons(r)[0].props.className).toContain('bg-primary');
+    rec = { isRecording: true, liveMeetingId: 'm1', activeDuration: 192 };
+    r = await render();
+    const cls = buttons(r)[0].props.className as string;
+    expect(cls).toContain('bg-[hsl(var(--rec))]');
+    expect(cls).toContain('text-white');
+    expect(cls).not.toContain('bg-primary');
+  });
+
+  test('collapsed recording shows the clock in the rail', async () => {
+    collapsed = true;
+    rec = { isRecording: true, liveMeetingId: 'm1', activeDuration: 192 };
+    const r = await render();
+    expect(text(buttons(r)[0])).toContain('03:12');
   });
 });

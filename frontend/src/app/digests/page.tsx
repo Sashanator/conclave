@@ -3,13 +3,22 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { DigestView } from '@/components/Briefs/DigestView';
+import { DigestView, useDigest } from '@/components/Briefs/DigestView';
 
 type Item = { id: string; kind: 'brief' | 'digest'; title: string; createdAt: string };
 
 function formatDate(date: string): string {
   const d = new Date(date);
   return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString();
+}
+
+// Task 44 moves these states into the page layout
+function SelectedDigest({ id }: { id: string }) {
+  const { state, digest } = useDigest(id);
+  if (state === 'loading') return <p className="text-sm text-muted-foreground">Loading…</p>;
+  if (state === 'error') return <p role="alert" className="text-sm text-red-600">Could not load this digest.</p>;
+  if (state === 'missing' || !digest) return <p className="text-sm text-muted-foreground">This digest is no longer there.</p>;
+  return <DigestView digest={digest} from={{ path: `/digests?id=${id}`, label: 'Digests' }} />;
 }
 
 function DigestsContent() {
@@ -69,7 +78,7 @@ function DigestsContent() {
           </ul>
         )}
 
-        {selected && <DigestView key={selected} id={selected} />}
+        {selected && <SelectedDigest key={selected} id={selected} />}
       </div>
     </div>
   );

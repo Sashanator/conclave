@@ -61,6 +61,8 @@ mock.module('next/navigation', () => ({
   useRouter: () => ({ push: () => {} }),
 }));
 
+const { formatLongDate } = await import('../../src/lib/dates');
+const { readOrigin } = await import('../../src/lib/back-nav');
 const { default: DigestsPage } = await import('../../src/app/digests/page');
 
 let renderer: ReactTestRenderer | null = null;
@@ -118,6 +120,9 @@ describe('Digests page', () => {
     expect(digestGets).toEqual([{ id: 'd1' }]);
     const links = renderer!.root.findAll((n) => n.type === 'a');
     expect(links.map((l) => l.props.href)).toEqual(['/meeting-details?id=m-old']);
+    expect(textOf(links[0])).toBe('Ivan sync');
+    expect(links[0].props.className).toContain('rounded');
+    expect(links[0].props.className).toContain('border');
     expect(renderer!.root.findAll((n) => n.type === 'script' || n.type === 'img')).toHaveLength(0);
     const all = JSON.stringify(renderer!.toJSON());
     expect(all).toContain('[M9]');
@@ -125,5 +130,18 @@ describe('Digests page', () => {
     expect(all).not.toContain('https://example.com/p.png');
     expect(all).not.toContain('https://evil.example');
     expect(all).toContain('Ship the plan');
+  });
+
+  test('the period shows long dates', async () => {
+    await mount('id=d1');
+    const text = textOf(renderer!.root.findByType('article'));
+    expect(text).toContain(formatLongDate(new Date('2026-10-16T09:00:00Z')));
+    expect(text).not.toMatch(/\d+\/\d+\/\d{4}/);
+  });
+
+  test('a chip click remembers Digests as the origin', async () => {
+    await mount('id=d1');
+    renderer!.root.findAll((n) => n.type === 'a')[0].props.onClick({ defaultPrevented: true });
+    expect(readOrigin()).toEqual({ path: '/digests?id=d1', label: 'Digests' });
   });
 });

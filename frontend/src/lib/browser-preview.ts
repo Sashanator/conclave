@@ -200,7 +200,7 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   calendar_disconnect: () => ({ connected: false, host: null, last_ok_at: null, last_error: null, last_error_at: null, upcoming: 0 }),
   // Stats
   stats_cost: ({ count }) => Array.from({ length: count }, (_, i) => {
-    const n = count - 1 - i;
+    const n = i;
     return { start: stamp(n), total_usd: n === 0 ? 0.31 : 0.2 + (n % 3) * 0.1, providers: [{ provider: 'claude', input_tokens: 120000, output_tokens: 18000, cost_usd: n === 0 ? 0.31 : 0.2 + (n % 3) * 0.1, unpriced_calls: 0 }] };
   }),
   stats_talk_time: () => ({

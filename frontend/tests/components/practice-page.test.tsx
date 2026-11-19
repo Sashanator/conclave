@@ -301,13 +301,13 @@ beforeEach(async () => {
 
 describe('Practice page', () => {
   test('lists_setups_and_sessions_side_by_side', () => {
-    const headings = renderer!.root.findAll((n) => n.type === 'h3').map(text);
+    const headings = renderer!.root.findAll((n) => n.type === 'h2').map(text);
     expect(headings).toContain('Your setups');
     expect(headings).toContain('Past sessions');
     const grid = renderer!.root.findAll((n) => n.type === 'div' && String(n.props.className).includes('lg:grid-cols-2'));
     expect(grid.length).toBe(1);
     const cards = grid[0].findAll((n) => n.type === 'section' && String(n.props.className).includes('bg-card'));
-    expect(cards.map((c) => text(c.findAll((n) => n.type === 'h3')[0]))).toEqual(['Your setups', 'Past sessions']);
+    expect(cards.map((c) => text(c.findAll((n) => n.type === 'h2')[0]))).toEqual(['Your setups', 'Past sessions']);
   });
 
   test('start_is_re_read_on_focus_and_every_5_s_while_the_list_shows', async () => {
@@ -487,7 +487,7 @@ describe('Practice page', () => {
   });
 
   test('home_links_to_models_and_keys', async () => {
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).not.toContain('Models');
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).not.toContain('Models');
     const link = renderer!.root.findAll((n) => n.type === 'a' && text(n) === 'Set in Models & keys')[0];
     expect(link.props.href).toBe('/settings?tab=models');
     expect(hasDirectText('Models:')).toBe(true);
@@ -764,7 +764,7 @@ describe('Practice report view', () => {
     expect(hasDirectText('words/min')).toBe(true);
     expect(hasDirectText('long pauses')).toBe(true);
 
-    const headings = renderer!.root.findAll((n) => n.type === 'h3').map(text);
+    const headings = renderer!.root.findAll((n) => n.type === 'h2').map(text);
     expect(headings).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
     expect(hasDirectText('um 14 · so basically 9 · like 8')).toBe(true);
   });
@@ -1036,7 +1036,7 @@ describe('Practice report view', () => {
   test('pron_card_shows_note_or_empty_text', async () => {
     detail = { ...detail, report: { ...REPORT, version: 2, pronunciation_note: 'Pronunciation hints unavailable' } };
     await openReport();
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toContain('Pronunciation hints (may be off)');
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).toContain('Pronunciation hints (may be off)');
     expect(hasDirectText('Pronunciation hints unavailable')).toBe(true);
     expect(hasDirectText('No pronunciation hints this time')).toBe(false);
 
@@ -1079,7 +1079,7 @@ describe('Practice report view', () => {
       },
     };
     await openReport();
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toContain('Keeps coming back');
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).toContain('Keeps coming back');
     // Same-setup patterns come first
     const chips = renderer!.root.findAll((n) => n.type === 'span' && text(n).includes(' sessions')).map(text);
     expect(chips).toEqual(['if + will ×4 sessions', 'make research ×3 sessions']);
@@ -1089,14 +1089,14 @@ describe('Practice report view', () => {
     // One trend point is not a trend, and no patterns means nothing to show: the card is hidden
     detail = { ...detail, recurring: { patterns: [], filler_trend: [3.1] } };
     await openReport();
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).not.toContain('Keeps coming back');
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).not.toContain('Keeps coming back');
   });
 
   test('v1_report_hides_new_cards', async () => {
     // The backend fills recurring for any ready report, so a v1 report with earlier sessions has one
     detail = { ...detail, recurring: { patterns: [], filler_trend: [3.1, 2.4] } };
     await openReport();
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
     expect(hasDirectText('Pronunciation hints (may be off)')).toBe(false);
     expect(hasDirectText('Keeps coming back')).toBe(false);
   });

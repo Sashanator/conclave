@@ -18,7 +18,7 @@ export function SessionList({ sessions, onOpen, onDelete }: {
 }) {
   return (
     <section className="bg-card rounded-lg border border-border p-6 shadow-sm">
-      <h3 className="text-lg font-semibold text-foreground mb-2">Past sessions</h3>
+      <h2 className="text-lg font-semibold text-foreground mb-2">Past sessions</h2>
 
       <ul className="divide-y divide-border">
         {sessions.map((s) => (

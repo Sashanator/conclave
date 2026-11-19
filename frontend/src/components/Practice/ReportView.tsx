@@ -40,7 +40,7 @@ function Quote({ item }: { item: ReportItem }) {
   return (
     <>
       {head && `${head} `}
-      {changed && <span className="line-through text-destructive">{changed}</span>}
+      {changed && <span className="line-through text-muted-foreground">{changed}</span>}
       {changed && tail && ' '}
       {tail}
     </>
@@ -253,7 +253,7 @@ export function ReportView({ sessionId }: { sessionId: string }) {
               const items = report.items.filter((i) => i.kind === kind);
               return (
                 <section key={kind} className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">
-                  <h3 className="text-lg font-semibold text-foreground">{`${title} (${items.length})`}</h3>
+                  <h2 className="text-lg font-semibold text-foreground">{`${title} (${items.length})`}</h2>
                   {items.map((item, i) => (
                     <div key={i} className="space-y-1">
                       <p>&ldquo;<Quote item={item} />&rdquo;</p>
@@ -270,7 +270,7 @@ export function ReportView({ sessionId }: { sessionId: string }) {
             })}
 
             <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-2">
-              <h3 className="text-lg font-semibold text-foreground">Fillers and fluency</h3>
+              <h2 className="text-lg font-semibold text-foreground">Fillers and fluency</h2>
               <p className="text-sm text-muted-foreground">
                 {fillers.length ? fillers.map(([word, n]) => `${word} ${n}`).join(' · ') : 'No fillers counted'}
               </p>
@@ -278,7 +278,7 @@ export function ReportView({ sessionId }: { sessionId: string }) {
 
             {report.version >= 2 && (
               <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">
-                <h3 className="text-lg font-semibold text-foreground">Pronunciation hints (may be off)</h3>
+                <h2 className="text-lg font-semibold text-foreground">Pronunciation hints (may be off)</h2>
                 {report.pronunciation.length ? report.pronunciation.map((hint, i) => (
                   <div key={i} className="flex flex-wrap items-center gap-2">
                     <span className="font-medium">{hint.word}</span>
@@ -293,7 +293,7 @@ export function ReportView({ sessionId }: { sessionId: string }) {
 
             {showRecurring && (
               <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">
-                <h3 className="text-lg font-semibold text-foreground">Keeps coming back</h3>
+                <h2 className="text-lg font-semibold text-foreground">Keeps coming back</h2>
                 {patterns.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {patterns.map((p) => (

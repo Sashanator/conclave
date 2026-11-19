@@ -11,7 +11,7 @@ export function SetupList({ setups, canStart, onNew, onEdit, onStart }: {
   return (
     <section className="bg-card rounded-lg border border-border p-6 shadow-sm">
       <div className="flex items-center justify-between mb-2">
-        <h3 className="text-lg font-semibold text-foreground">Your setups</h3>
+        <h2 className="text-lg font-semibold text-foreground">Your setups</h2>
         <Button variant="outline" size="sm" onClick={onNew}>+ New setup</Button>
       </div>
 

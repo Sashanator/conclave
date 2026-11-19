@@ -34,7 +34,7 @@ const TALK = {
 const MEETINGS = [{ meeting_id: 'm-1', title: 'Daily sync', date: '2026-10-20', self_seconds: 30, total_seconds: 100 }];
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'stats_cost') return args?.period === 'month' ? structuredClone(COST_MONTH) : structuredClone(COST_WEEK);
+  if (command === 'stats_cost') return args?.period === 'month' ? structuredClone(COST_MONTH) : structuredClone(COST_WEEK_OVERRIDE ?? COST_WEEK);
   if (command === 'stats_talk_time') return structuredClone(TALK);
   if (command === 'stats_talk_time_meetings') return structuredClone(MEETINGS);
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args ?? {})}`);
@@ -45,6 +45,7 @@ mock.module('@tauri-apps/api/core', () => ({ invoke }));
 const { default: StatsPage } = await import('../../src/app/stats/page');
 
 let renderer: ReactTestRenderer | null = null;
+let COST_WEEK_OVERRIDE: unknown[] | null = null;
 
 async function flush() {
   await act(async () => {
@@ -125,5 +126,42 @@ describe('stats page', () => {
 
     expect(invoke).toHaveBeenCalledWith('stats_talk_time_meetings', { period: 'week', back: 0, templateId: 'tpl-standup' });
     expect(pageText()).toContain('Daily sync');
+  });
+});
+
+describe('cost chart', () => {
+  const chart = () => renderer!.root.findByProps({ 'aria-label': 'Weekly cost' });
+  const items = () => chart().findAll((n) => n.type === 'li');
+  const barHeights = () => chart().findAll((n) => n.type === 'span').map((n) => (n.props.style as { height: string }).height);
+
+  test('bars run oldest to newest with the current period last', () => {
+    const li = items();
+    expect(li.map((n) => labelOf(n))).toEqual(['$0.50' + '12 Oct', '$0.01' + '19 Oct']);
+    expect(li[1].props['aria-current']).toBe('true');
+    expect(li[0].props['aria-current']).toBeUndefined();
+  });
+
+  test('bar heights scale to the largest period', () => {
+    expect(barHeights()).toEqual(['100%', '2.4%']);
+  });
+
+  test('an all-zero range still draws a 1% stub', async () => {
+    COST_WEEK_OVERRIDE = [cost('2026-10-19', 0), cost('2026-10-12', 0)];
+    await act(async () => {
+      renderer!.unmount();
+      renderer = create(<StatsPage />);
+    });
+    await flush();
+    expect(barHeights()).toEqual(['1%', '1%']);
+    COST_WEEK_OVERRIDE = null;
+  });
+
+  test('month view labels bars by month', async () => {
+    await act(async () => {
+      buttonWith('Month').props.onClick();
+    });
+    await flush();
+    const month = renderer!.root.findByProps({ 'aria-label': 'Monthly cost' });
+    expect(labelOf(month)).toContain('Oct');
   });
 });

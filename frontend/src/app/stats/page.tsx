@@ -3,6 +3,7 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { PageFrame } from '@/components/PageFrame/PageFrame';
+import { CostChart } from '@/components/Stats/CostChart';
 import { CostSection } from '@/components/Stats/CostSection';
 import { TalkTimeSection } from '@/components/Stats/TalkTimeSection';
 import { readStatsPeriod, saveStatsPeriod, type CostPeriod, type Period, type TalkTime } from '@/lib/stats';
@@ -70,6 +71,7 @@ export default function StatsPage() {
           <>
             <div className="grid gap-6 2xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
               <CostSection periods={data.cost} period={period} />
+              <CostChart periods={data.cost} period={period} />
             </div>
             <TalkTimeSection key={period} period={period} talk={data.talk} />
           </>

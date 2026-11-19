@@ -12,6 +12,7 @@ const invoke = mock(async (_command: string, _args?: Record<string, unknown>): P
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 
 const meetings = await import('../../src/lib/meetings');
+import { formatRowDate } from '../../src/lib/dates';
 type MeetingRow = import('../../src/lib/meetings').MeetingRow;
 
 const BASE: MeetingRow = {
@@ -94,6 +95,12 @@ describe('formatMeetingDate', () => {
   test('a created-only meeting shows its start time', () => {
     const row = { ...BASE, createdAt: local(2026, 10, 16, 14, 2) };
     expect(meetings.formatMeetingDate(row, new Date(2026, 10, 16, 15, 0))).toBe('Mon 16 Nov · 14:02');
+  });
+
+  test('uses the shared row date style', () => {
+    const row = { ...BASE, startedAt: local(2026, 10, 16, 10, 0), endedAt: local(2026, 10, 16, 10, 45) };
+    const now = new Date(2026, 10, 16, 12, 0);
+    expect(meetings.formatMeetingDate(row, now)).toBe(formatRowDate(new Date(2026, 10, 16, 10, 0), new Date(2026, 10, 16, 10, 45), now));
   });
 
   test('a date in another year includes the year', () => {

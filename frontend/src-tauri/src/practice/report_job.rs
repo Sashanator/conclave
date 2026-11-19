@@ -35,10 +35,21 @@ use super::report::{
     Fluency, ItemKind, PronHint, Report, ReportItem,
 };
 use super::settings;
-use super::{ModelHold, LONG_PAUSE_SECS, RECENT_PATTERNS_MAX, YOU_WAV_RATE};
+use super::{ModelHold, PracticeLanguage, LONG_PAUSE_SECS, RECENT_PATTERNS_MAX, YOU_WAV_RATE};
 
 /// Asks Whisper to write fillers and false starts down, so the transcript keeps them.
 pub const VERBATIM_PROMPT: &str = "Um, uh, so, like, I mean, I- I was, uh, thinking that, you know, we, we had it.";
+/// The German counterpart of `VERBATIM_PROMPT`.
+const VERBATIM_PROMPT_DE: &str = "Ähm, also, ich- ich hab, äh, gedacht, dass wir, na ja, das schon hatten.";
+const PRON_ENGLISH_ONLY: &str = "Pronunciation hints are English-only, so this German session has none";
+
+pub fn verbatim_prompt(language: PracticeLanguage) -> &'static str {
+    match language {
+        PracticeLanguage::En => VERBATIM_PROMPT,
+        PracticeLanguage::De => VERBATIM_PROMPT_DE,
+    }
+}
+
 /// Pause length that splits speech into segments in the word-for-word pass.
 const VERBATIM_REDEMPTION_MS: u32 = 300;
 /// How often a waiting job checks whether a meeting recording has stopped.
@@ -188,9 +199,10 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     let (session, turns) = db::get_session(&pool, &session_id)
         .await?
         .ok_or("Session not found")?;
+    let language = db::session_language(&pool, &session).await?;
     let folder = session.folder_path.ok_or("Session folder is missing")?;
     let wav = Path::new(&folder).join(PRACTICE_FILES[0]);
-    let pass = word_for_word(&app, &pool, &session_id, &wav, &turns, hold).await;
+    let pass = word_for_word(&app, &pool, &session_id, &wav, &turns, language, hold).await;
     // The Whisper model is released before the pronunciation pass and Claude are called, so an idle engine can unload.
     dictate::unload_if_idle().await;
     let (heard, pron_inputs) = pass?;
@@ -203,13 +215,18 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     let learner_texts: Vec<&str> = learner.values().map(String::as_str).collect();
     let timing: Vec<(f64, u32)> = heard.iter().filter_map(|h| h.timing).collect();
     let fluency = fluency(&learner_texts, &timing);
-    let pron = pronunciation(&app, &pool, &session_id, &wav, pron_inputs).await;
+    // Pronunciation hints are English-only: a German session skips the pass, and the model download with it.
+    let pron = if language == PracticeLanguage::De {
+        Ok(vec![])
+    } else {
+        pronunciation(&app, &pool, &session_id, &wav, pron_inputs).await
+    };
     if let Err(e) = &pron {
         warn!("practice: pronunciation hints skipped: {e}");
     }
     // Nothing to grade: an empty report, with no key read and no Claude call (its prompt would be empty).
     if !has_learner_text(&learner_texts) {
-        return Ok(with_pronunciation(build_report(fluency, vec![], &learner), pron));
+        return Ok(finish_pronunciation(build_report(fluency, vec![], &learner), language, pron));
     }
 
     let key = claude::api_key(&pool).await.map_err(|e| report_copy(&e).to_string())?;
@@ -221,14 +238,14 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
         warn!("practice: could not read the recent pattern keys: {e}");
         Vec::new()
     });
-    let (system, user) = report_prompts(&rows, &recent);
+    let (system, user) = report_prompts(&rows, &recent, language);
     let models = settings::current();
     let body = claude::report_body(&models.plan_model, &models.plan_effort, &system, &user, &schema());
     let mut usage = TokenUsage::default();
     let result = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), &mut usage, |_| {}).await;
     claude::record_usage(&pool, &body, &usage).await;
     let text = result.map_err(|e| report_copy(&e).to_string())?;
-    parse_report(&text, fluency, &learner).map(|report| with_pronunciation(report, pron))
+    parse_report(&text, fluency, &learner).map(|report| finish_pronunciation(report, language, pron))
 }
 
 /// Re-transcribes each learner turn that has audio, word for word, and stores it. Other turns keep their live text.
@@ -241,6 +258,7 @@ async fn word_for_word<R: Runtime>(
     session_id: &str,
     wav: &Path,
     turns: &[TurnRow],
+    language: PracticeLanguage,
     _hold: ModelHold,
 ) -> Result<(Vec<Heard>, Vec<PronInput>), String> {
     // Whisper is loaded only when a learner turn has audio to re-transcribe.
@@ -268,8 +286,8 @@ async fn word_for_word<R: Runtime>(
                 let heard = tokio::task::spawn_blocking(move || {
                     tauri::async_runtime::block_on(worker.transcribe_audio_raw(
                         samples,
-                        Some("en".to_string()),
-                        Some(VERBATIM_PROMPT),
+                        Some(language.code().to_string()),
+                        Some(verbatim_prompt(language)),
                     ))
                 })
                 .await;
@@ -395,6 +413,18 @@ pub fn with_pronunciation(report: Report, pron: Result<Vec<PronHint>, String>) -
             pronunciation_note: Some(PRON_UNAVAILABLE.to_string()),
             ..report
         },
+    }
+}
+
+/// German sessions get no hints and an explanatory note; English ones follow `with_pronunciation`.
+pub fn finish_pronunciation(report: Report, language: PracticeLanguage, pron: Result<Vec<PronHint>, String>) -> Report {
+    match language {
+        PracticeLanguage::De => Report {
+            pronunciation: vec![],
+            pronunciation_note: Some(PRON_ENGLISH_ONLY.to_string()),
+            ..report
+        },
+        PracticeLanguage::En => with_pronunciation(report, pron),
     }
 }
 
@@ -664,6 +694,22 @@ mod tests {
         assert_eq!(kept.iter().map(|h| h.turn).collect::<Vec<_>>(), [1, 3]);
         assert!(merge_turns(vec![(1, Err("x".into())), (2, Err("y".into()))]).is_err(), "every turn failed");
         assert!(merge_turns(vec![]).unwrap().is_empty());
+    }
+
+    #[test]
+    fn german_report_skips_pronunciation_with_a_note() {
+        let report = build_report(Fluency::default(), vec![], &BTreeMap::new());
+        let de = finish_pronunciation(report.clone(), PracticeLanguage::De, Ok(vec![]));
+        assert!(de.pronunciation.is_empty());
+        assert_eq!(de.pronunciation_note.as_deref(), Some(PRON_ENGLISH_ONLY));
+        let en = finish_pronunciation(report, PracticeLanguage::En, Err("x".into()));
+        assert_eq!(en.pronunciation_note.as_deref(), Some(PRON_UNAVAILABLE));
+    }
+
+    #[test]
+    fn verbatim_prompt_follows_the_language() {
+        assert_eq!(verbatim_prompt(PracticeLanguage::En), VERBATIM_PROMPT);
+        assert!(verbatim_prompt(PracticeLanguage::De).contains("äh"));
     }
 
     #[test]

@@ -51,7 +51,7 @@ Write the plan for the character playing the examiner. Do not write the learner'
     (system.to_string(), user)
 }
 
-const REPORT_SYSTEM: &str = r#"You review a spoken English practice session. Each turn is labelled with its number and speaker. The learner's turns are verbatim transcripts, fillers and false starts included. Find mistakes in the learner's turns only. Never flag the character's turns.
+const REPORT_SYSTEM: &str = r#"You review a spoken {name} practice session. Check grammar, word choice and phrasing in {name}. Write each note in English; quote and better stay in {name}. Each turn is labelled with its number and speaker. The learner's turns are verbatim transcripts, fillers and false starts included. Find mistakes in the learner's turns only. Never flag the character's turns.
 
 Reply with JSON only, no other text, in this shape:
 {"grammar":[{"turn":2,"quote":"...","better":"...","note":"...","echoed":true,"pattern":"..."}],"unnatural":[{"turn":2,"quote":"...","better":"...","note":"...","pattern":"..."}],"clarity":[{"turn":2,"quote":"...","better":"...","note":"..."}]}
@@ -64,7 +64,7 @@ Reply with JSON only, no other text, in this shape:
 - pattern (grammar and unnatural only): a lowercase key of 2 to 5 words for the kind of mistake, such as "third person s".
 - Report only real problems. Use an empty list when there are none."#;
 
-pub fn report_prompts(turns: &[(i64, &str, &str)], recent_patterns: &[String]) -> (String, String) {
+pub fn report_prompts(turns: &[(i64, &str, &str)], recent_patterns: &[String], language: PracticeLanguage) -> (String, String) {
     // Callers pass the stored speaker ("user" or "character") straight through; the prompt calls the learner "learner".
     let user = turns
         .iter()
@@ -74,7 +74,7 @@ pub fn report_prompts(turns: &[(i64, &str, &str)], recent_patterns: &[String]) -
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let mut system = REPORT_SYSTEM.to_string();
+    let mut system = REPORT_SYSTEM.replace("{name}", language.name());
     if !recent_patterns.is_empty() {
         system.push_str(&format!(
             "\n\nKnown pattern keys from earlier sessions (reuse one when it is the same mistake): {}",
@@ -282,6 +282,7 @@ mod tests {
                 (2, "user", "Um,\nI am engineer."),
             ],
             &[],
+            PracticeLanguage::En,
         );
         assert_eq!(
             user,
@@ -292,14 +293,24 @@ mod tests {
     }
 
     #[test]
+    fn report_prompt_names_the_language() {
+        let turns = [(2, "user", "Ich habe ein Hund.")];
+        let de = report_prompts(&turns, &[], PracticeLanguage::De).0;
+        assert!(de.contains("spoken German practice session"));
+        assert!(de.contains("Write each note in English"));
+        assert!(de.contains("quote and better stay in German"));
+        assert!(report_prompts(&turns, &[], PracticeLanguage::En).0.contains("spoken English practice session"));
+    }
+
+    #[test]
     fn report_prompt_lists_recent_patterns() {
         let turns = [(2, "user", "I has a dog.")];
         let recent = ["third person s".to_string(), "make a decision".to_string()];
-        let (system, _) = report_prompts(&turns, &recent);
+        let (system, _) = report_prompts(&turns, &recent, PracticeLanguage::En);
         assert!(system.contains(
             "Known pattern keys from earlier sessions (reuse one when it is the same mistake): third person s, make a decision"
         ));
-        let (system, _) = report_prompts(&turns, &[]);
+        let (system, _) = report_prompts(&turns, &[], PracticeLanguage::En);
         assert!(!system.contains("Known pattern keys"));
     }
 }

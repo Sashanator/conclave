@@ -1,14 +1,15 @@
 'use client';
 
+import { PageFrame } from '@/components/PageFrame/PageFrame';
 import { TaskList } from '@/components/Tasks/TaskList';
 
 export default function TasksPage() {
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl space-y-6 p-8">
-        <h1 className="text-3xl font-bold">Tasks</h1>
+    <PageFrame variant="list" title="Tasks">
+      {/* the list frame is height-bounded, so the list scrolls itself */}
+      <div className="min-h-0 flex-1 overflow-y-auto">
         <TaskList />
       </div>
-    </div>
+    </PageFrame>
   );
 }

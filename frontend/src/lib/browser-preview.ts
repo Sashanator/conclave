@@ -145,6 +145,7 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   briefs_list: () => [
     { id: 'brief-1', kind: 'brief', title: 'Vendor call', createdAt: '2026-11-17T07:00:00Z' },
     { id: 'digest-1', kind: 'digest', title: 'Week of 9 November', createdAt: '2026-11-16T07:00:00Z' },
+    { id: 'digest-2', kind: 'digest', title: 'Week of 2 November', createdAt: '2026-11-09T07:00:00Z' },
   ],
   brief_get: () => ({
     eventTitle: 'Vendor call', eventStart: monday(15), templateName: 'Standard meeting', previousMeetingId: 'preview-1', previousTitle: 'Weekly product sync', previousDate: '2026-11-10T09:00:00Z',
@@ -153,7 +154,7 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   digest_get: () => ({
     periodStart: '2026-11-09', periodEnd: '2026-11-15',
     markdown: '## Highlights\n\n- The release is on track, the audio device switch is the open risk [M1].\n- The redesign review moved to Thursday [M2].',
-    meetingLinks: [{ id: 'preview-1', title: 'Weekly product sync' }, { id: 'preview-4', title: 'Release planning' }],
+    meetingLinks: [{ id: 'preview-1', title: 'Weekly product sync' }, { id: 'preview-4', title: 'Release planning' }, { id: '', title: 'Deleted meeting' }],
   }),
   // Ask and Copilot
   ask_meetings: () => ({
@@ -185,7 +186,7 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
     current: [{ template_id: 'standard_meeting', template_name: 'Standard meeting', meetings: 4, self_seconds: 1500, total_seconds: 7200 }, { template_id: 'interview', template_name: 'Interview', meetings: 1, self_seconds: 600, total_seconds: 3000 }],
     previous: [{ template_id: 'standard_meeting', template_name: 'Standard meeting', meetings: 3, self_seconds: 1800, total_seconds: 5400 }],
   }),
-  stats_talk_time_meetings: () => [{ meeting_id: 'preview-1', title: 'Weekly product sync', date: '2026-11-10T09:00:00Z', self_seconds: 540, total_seconds: 2700 }],
+  stats_talk_time_meetings: () => [{ meeting_id: 'preview-1', title: 'Weekly product sync', date: '2026-11-10', self_seconds: 540, total_seconds: 2700 }],
   // Dictate
   dictate_get_settings: () => dictateSettings,
   dictate_save_settings: ({ settings }) => settings,

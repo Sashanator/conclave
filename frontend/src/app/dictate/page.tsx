@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
 import { DictateGeneral } from '@/components/Dictate/DictateGeneral';
 import { ModeList } from '@/components/Dictate/ModeList';
 import { DictionaryEditor } from '@/components/Dictate/DictionaryEditor';
@@ -79,18 +80,17 @@ export default function DictatePage() {
     });
   };
 
-  if (!settings) {
-    return <div className="p-8 text-muted-foreground">Loading…</div>;
-  }
-
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-3xl mx-auto p-8 space-y-6">
-        <h1 className="text-3xl font-bold">Dictate</h1>
-        <DictateGeneral settings={settings} status={status} commit={commit} />
-        <ModeList settings={settings} commit={commit} />
-        <DictionaryEditor settings={settings} commit={commit} />
-      </div>
-    </div>
+    <PageFrame variant="form" title="Dictate">
+      {settings ? (
+        <div className="space-y-6">
+          <DictateGeneral settings={settings} status={status} commit={commit} />
+          <ModeList settings={settings} commit={commit} />
+          <DictionaryEditor settings={settings} commit={commit} />
+        </div>
+      ) : (
+        <p className="text-muted-foreground">Loading…</p>
+      )}
+    </PageFrame>
   );
 }

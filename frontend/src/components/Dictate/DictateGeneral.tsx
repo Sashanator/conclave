@@ -1,10 +1,10 @@
 import { useEffect, useState } from 'react';
+import Link from 'next/link';
 import { invoke } from '@tauri-apps/api/core';
 import type { AudioDevice } from '@/components/DeviceSelection';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { LlmOverridePicker } from '@/components/shared/LlmOverridePicker';
 import { BUILT_IN_MODES, hotkeyProblem, withHotkey, type Commit, type DictateSettings, type DictateStatus } from '@/lib/dictate';
 import { HotkeyPicker } from './HotkeyPicker';
 
@@ -30,7 +30,7 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
 
   return (
     <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-5">
-      <h3 className="text-lg font-semibold text-foreground">General</h3>
+      <h2 className="text-lg font-semibold text-foreground">General</h2>
 
       <div className="flex items-center justify-between gap-4">
         <div>
@@ -104,14 +104,7 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
       </div>
 
       <p className="text-sm text-muted-foreground">Used by every mode except &quot;As spoken&quot;</p>
-      <LlmOverridePicker
-        idPrefix="dictate-cleanup"
-        providerLabel="Cleanup provider"
-        modelLabel="Cleanup model"
-        provider={settings.cleanup_provider}
-        model={settings.cleanup_model}
-        onChange={(cleanup_provider, cleanup_model) => commit((s) => ({ ...s, cleanup_provider, cleanup_model }))}
-      />
+      <p className="text-sm">Cleanup model: <Link href="/settings?tab=models" className="underline">Set in Models &amp; keys</Link></p>
     </section>
   );
 }

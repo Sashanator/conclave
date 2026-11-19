@@ -257,7 +257,7 @@ export function ReportView({ sessionId }: { sessionId: string }) {
                   {items.map((item, i) => (
                     <div key={i} className="space-y-1">
                       <p>&ldquo;<Quote item={item} />&rdquo;</p>
-                      <p className="text-emerald-500">{item.better}</p>
+                      <p className="text-emerald-700 dark:text-emerald-400">{item.better}</p>
                       <p className="text-sm text-muted-foreground flex flex-wrap items-center gap-2">
                         <span>{item.note}</span>
                         {playButton(detail, item.turn)}

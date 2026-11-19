@@ -100,6 +100,27 @@ const mkPrep = (over: Record<string, unknown> = {}) => ({
 
 const stamp = (n: number) => { const d = new Date(); d.setDate(d.getDate() - n * 7 - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
 const practiceSession = { id: 'ps-1', setup_name: 'Salary talk', started_at: '2026-11-15T18:00:00Z', duration_secs: 540, report_status: 'ready', summary: 'Good pace; watch the fillers.', end_reason: 'user' };
+const germanSession = { ...practiceSession, id: 'ps-2', setup_name: 'Gehaltsgespräch', started_at: '2026-11-16T18:00:00Z' };
+const practiceReport = {
+  version: 2,
+  fluency: { fillers: { um: 14, like: 8 }, filler_total: 22, words: 1200, speech_secs: 540, wpm: 133.3, long_pauses: 4 },
+  items: [
+    { kind: 'Grammar', turn: 1, quote: 'If I will have more data…', better: 'If I had more data…', note: 'Past simple after "if".', echoed: true, pattern: null },
+    { kind: 'Unnatural', turn: 3, quote: 'I made a research about it', better: 'I did some research on it', note: 'Native speakers "do" research.', echoed: false, pattern: null },
+  ],
+  dropped_items: 0, pronunciation: [], pronunciation_note: null,
+};
+const practiceTurns = [
+  { session_id: 'ps-1', idx: 0, speaker: 'character', live_text: 'So, why do you think you deserve a raise?', verbatim_text: null, at_secs: 0, wav_offset: null, wav_len: null },
+  { session_id: 'ps-1', idx: 1, speaker: 'user', live_text: 'If I will have more data', verbatim_text: 'Um, if I will have more data', at_secs: 12, wav_offset: null, wav_len: null },
+];
+const practiceDetail = (id: string) => ({
+  summary: { ...practiceSession, id }, character: 'A hiring manager, polite but firm', turns: practiceTurns,
+  report: id === 'ps-2'
+    ? { ...practiceReport, pronunciation_note: 'Pronunciation hints are English-only, so this German session has none' }
+    : practiceReport,
+  report_error: null, audio_path: null, recurring: null,
+});
 const dictateSettings = { enabled: true, preferred_mic_device: null, main_hotkey: 'Ctrl+Alt+D', default_mode: 'cleaned-up', cleanup_provider: null, cleanup_model: null, builtin_hotkeys: {}, modes: [], dictionary: ['Conclave'] };
 const knowledge = { provider: null, model: null, my_names: ['Sam'], extract_enabled: true, digest_enabled: true, calendar_marker: '📞' };
 
@@ -197,8 +218,10 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   dictate_status: () => ({ enabled: true, model_downloaded: true, mic_ok: true, engine_is_whisper: true, reason: null }),
   // Practice
   practice_status: () => ({ has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null }),
-  practice_list_setups: () => [{ id: 'setup-1', name: 'Salary talk', character: 'A hiring manager, polite but firm', situation: 'Negotiating a raise', voice: 'F1', seeded: false, has_plan: true, materials: [], session_count: 1 }],
-  practice_list_sessions: () => [practiceSession],
+  practice_list_setups: () => [{ id: 'setup-1', name: 'Salary talk', character: 'A hiring manager, polite but firm', situation: 'Negotiating a raise', voice: 'F1', language: 'en', seeded: false, has_plan: true, materials: [], session_count: 1 },
+    { id: 'setup-2', name: 'Gehaltsgespräch', character: 'Eine Personalleiterin, freundlich aber bestimmt', situation: 'Gehaltsverhandlung', voice: 'F1', language: 'de', seeded: false, has_plan: false, materials: [], session_count: 1 }],
+  practice_list_sessions: () => [practiceSession, germanSession],
+  practice_get_session: ({ id }) => practiceDetail(id),
   practice_get_settings: () => ({ chat_model: 'claude-sonnet-5-5', plan_model: 'claude-opus-5-5', plan_effort: 'high' }),
   practice_save_settings: ({ settings }) => settings,
   practice_download_voices: () => null,

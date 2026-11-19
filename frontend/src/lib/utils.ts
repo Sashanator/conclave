@@ -33,5 +33,3 @@ export function isOllamaNotInstalledError(errorMessage: string): boolean {
 
   return patterns.some(pattern => lowerError.includes(pattern));
 }
-
-export const DESTRUCTIVE_OUTLINE = 'border-destructive/50 text-destructive hover:bg-destructive/10 hover:text-destructive'

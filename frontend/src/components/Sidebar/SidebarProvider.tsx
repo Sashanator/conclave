@@ -5,6 +5,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { continueFailed } from '@/lib/resume';
 import { readSidebarCollapsed, writeSidebarCollapsed } from '@/lib/nav';
+import { isTypingTarget } from '@/hooks/useBackShortcut';
 import type { SummaryProcessResponse } from '@/types';
 
 
@@ -37,10 +38,6 @@ export const useSidebar = () => {
   }
   return context;
 };
-
-// same rule as isTypingTarget (hooks/useBackShortcut.ts)
-const isTypingTarget = (t: EventTarget | null) =>
-  t instanceof Element && !!t.closest('input, textarea, select, [contenteditable]:not([contenteditable="false"])');
 
 export function SidebarProvider({ children }: { children: React.ReactNode }) {
   const [collapsed, setCollapsed] = useState(true);

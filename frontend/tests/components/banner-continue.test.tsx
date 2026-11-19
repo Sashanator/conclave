@@ -73,4 +73,13 @@ describe('banner continue', () => {
       expect(cont.props.title).toBe('Weekly sync with the platform team');
     });
   }
+
+  test('ended banner shows Open', async () => {
+    view = { kind: 'ended', app: 'Zoom', certain: true, line: null, continue_title: null };
+    const r = await render();
+    expect(buttons(r).map(textOf)).toContain('Open');
+    const open = buttons(r).find((b) => textOf(b) === 'Open')!;
+    await act(async () => { await open.props.onClick(); });
+    expect(invoke).toHaveBeenCalledWith('meeting_banner_action', { action: 'open' });
+  });
 });

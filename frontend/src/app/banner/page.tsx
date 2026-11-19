@@ -99,6 +99,14 @@ export default function MeetingBanner() {
     <div className="flex h-screen w-screen select-none items-center gap-3 overflow-hidden rounded-xl border border-border bg-card px-4 text-card-foreground">
       <Mic className="h-5 w-5 shrink-0 text-primary" aria-hidden />
       <span className="flex-1 truncate text-sm font-medium">{text}</span>
+      {view.kind === 'ended' && (
+        <button
+          onClick={() => act('open')}
+          className="rounded-md bg-primary px-3 py-1.5 text-sm font-medium text-primary-foreground hover:bg-primary/90"
+        >
+          Open
+        </button>
+      )}
       {view.kind === 'detected' && (
         <button
           onClick={() => act('record')}

@@ -139,6 +139,11 @@ pub fn get_meeting_banner<R: Runtime>(window: WebviewWindow<R>) -> Option<Banner
     }
 }
 
+/// Which pop-ups bring the main window forward on "open".
+fn focuses_main(kind: Option<&BannerKind>) -> bool {
+    matches!(kind, Some(BannerKind::Mention { .. } | BannerKind::Ended { .. }))
+}
+
 /// `action` is "record", "continue", "open" or "dismiss". Async: a sync command that touches windows can deadlock on Windows.
 #[tauri::command]
 pub async fn meeting_banner_action<R: Runtime>(
@@ -148,9 +153,11 @@ pub async fn meeting_banner_action<R: Runtime>(
 ) -> Result<(), String> {
     let kind = take_if_current(window.label());
     // Focus before the close: Windows grants foreground only while the click's process still owns a window.
-    if action == "open" && matches!(kind, Some(BannerKind::Mention { .. })) {
+    if action == "open" && focuses_main(kind.as_ref()) {
         focus_main_window(&app);
-        let _ = app.emit_to("main", "copilot-open", ());
+        if matches!(kind, Some(BannerKind::Mention { .. })) {
+            let _ = app.emit_to("main", "copilot-open", ());
+        }
     }
     let _ = window.close();
     if action == "record" {
@@ -196,6 +203,14 @@ mod tests {
         assert_eq!(id_from_label(&label_for(42)), Some(42));
         assert_eq!(id_from_label("main"), None);
         assert_eq!(id_from_label("meeting-banner-x"), None);
+    }
+
+    #[test]
+    fn open_focuses_main_for_mention_and_ended() {
+        assert!(focuses_main(Some(&BannerKind::Ended { call: CallApp::Zoom })));
+        assert!(focuses_main(Some(&BannerKind::Mention { line: "x".into() })));
+        assert!(!focuses_main(Some(&BannerKind::Detected { call: CallApp::Zoom, certain: true, offer: None })));
+        assert!(!focuses_main(None));
     }
 
     #[test]

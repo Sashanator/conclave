@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { Button } from '@/components/ui/button';
+import { confirmAction } from '@/lib/confirm';
+import { DESTRUCTIVE_OUTLINE } from '@/lib/utils';
 import { BUILT_IN_MODES, DEFAULT_MODE, hotkeyProblem, newModeId, withHotkey, type Commit, type CustomMode, type DictateSettings } from '@/lib/dictate';
 import { HotkeyPicker } from './HotkeyPicker';
 import { ModeEditor, type ModeDraft } from './ModeEditor';
@@ -21,8 +23,8 @@ export function ModeList({ settings, commit }: { settings: DictateSettings; comm
     setEditing(null);
   };
 
-  const removeMode = (mode: CustomMode) => {
-    if (!window.confirm(`Delete the mode "${mode.name}"?`)) return;
+  const removeMode = async (mode: CustomMode) => {
+    if (!(await confirmAction({ title: `Delete the mode "${mode.name}"?`, confirmLabel: 'Delete', destructive: true }))) return;
     commit((s) => ({
       ...s,
       modes: s.modes.filter((m) => m.id !== mode.id),
@@ -34,7 +36,7 @@ export function ModeList({ settings, commit }: { settings: DictateSettings; comm
   return (
     <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-4">
       <div className="flex items-center justify-between">
-        <h3 className="text-lg font-semibold text-foreground">Modes</h3>
+        <h2 className="text-lg font-semibold text-foreground">Modes</h2>
         <Button size="sm" onClick={() => setEditing('new')}>+ New mode</Button>
       </div>
 
@@ -67,7 +69,7 @@ export function ModeList({ settings, commit }: { settings: DictateSettings; comm
               onChange={(h) => commit((s) => withHotkey(s, m.id, h))}
             />
             <Button variant="outline" size="sm" onClick={() => setEditing(m)}>Edit</Button>
-            <Button variant="destructive" size="sm" aria-label={`Delete ${m.name}`} onClick={() => removeMode(m)}>Delete</Button>
+            <Button variant="outline" size="sm" className={DESTRUCTIVE_OUTLINE} aria-label={`Delete ${m.name}`} onClick={() => removeMode(m)}>Delete</Button>
           </li>
         ))}
       </ul>

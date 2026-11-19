@@ -9,6 +9,7 @@ const originals = {
   sonner: { ...await import('sonner') },
   select: { ...await import('../../src/components/ui/select') },
   switchUi: { ...await import('../../src/components/ui/switch') },
+  confirm: { ...await import('../../src/lib/confirm') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
@@ -18,6 +19,7 @@ afterAll(() => {
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/components/ui/select', () => originals.select);
   mock.module('../../src/components/ui/switch', () => originals.switchUi);
+  mock.module('../../src/lib/confirm', () => originals.confirm);
 });
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
@@ -82,6 +84,8 @@ mock.module('@tauri-apps/api/event', () => ({
     };
   },
 }));
+const confirmAction = mock(async (_opts: unknown) => false);
+mock.module('../../src/lib/confirm', () => ({ ...originals.confirm, confirmAction }));
 mock.module('sonner', () => ({ toast }));
 mock.module('../../src/components/ui/select', () => ({
   Select: passThrough,
@@ -160,8 +164,50 @@ beforeEach(async () => {
 });
 
 describe('Dictate page', () => {
+  test('deleting a mode asks first and saves only on yes', async () => {
+    const del = () => renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Delete Prompt for Claude')[0];
+    const saves = () => calls('dictate_save_settings').length;
+    confirmAction.mockClear();
+    confirmAction.mockResolvedValueOnce(false);
+    await act(async () => { await del().props.onClick(); });
+    await flush();
+    expect(confirmAction).toHaveBeenCalledWith({ title: 'Delete the mode "Prompt for Claude"?', confirmLabel: 'Delete', destructive: true });
+    expect(saves()).toBe(0);
+    confirmAction.mockResolvedValueOnce(true);
+    await act(async () => { await del().props.onClick(); });
+    await flush();
+    expect(saves()).toBe(1);
+    expect(settings.modes.some((m) => m.id === 'prompt-for-claude')).toBe(false);
+  });
+
+  test('the mode Delete button is outline, not filled red', () => {
+    const del = renderer!.root.findAll((n) => n.props['aria-label'] === 'Delete Prompt for Claude' && n.props.variant)[0];
+    expect(del.props.variant).toBe('outline');
+    expect(del.props.className).toContain('text-destructive');
+  });
+
+  test('while loading the page already has its title', async () => {
+    let release!: () => void;
+    holdLoad = new Promise<void>((resolve) => { release = resolve; });
+    await mount();
+    expect(renderer!.root.findAll((n) => n.type === 'h1').map(text)).toEqual(['Dictate']);
+    expect(text(renderer!.root)).toContain('Loading…');
+    release();
+    holdLoad = null;
+    await flush();
+  });
+
+  test('the cleanup model is set in Models & keys', () => {
+    expect(renderer!.root.findAll((n) => n.props.id === 'dictate-cleanup')).toHaveLength(0);
+    const p = renderer!.root.findAll((n) => n.type === 'p' && text(n).startsWith('Cleanup model:'))[0];
+    const link = p.findAll((n) => n.type === 'a')[0];
+    expect(text(link)).toBe('Set in Models & keys');
+    expect(link.props.href).toBe('/settings?tab=models');
+    expect(renderer!.root.findAll((n) => n.type === 'p').map(text)).toContain('Used by every mode except "As spoken"');
+  });
+
   test('renders the General, Modes and Dictionary sections', () => {
-    const headings = renderer!.root.findAll((n) => n.type === 'h3').map(text);
+    const headings = renderer!.root.findAll((n) => n.type === 'h2').map(text);
     expect(headings).toContain('General');
     expect(headings).toContain('Modes');
     expect(headings).toContain('Dictionary');

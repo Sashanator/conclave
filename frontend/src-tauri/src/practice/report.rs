@@ -56,7 +56,8 @@ pub fn select_hints(all: Vec<PronHint>) -> Vec<PronHint> {
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Fluency {
     pub fillers: BTreeMap<String, u32>,
-    pub filler_total: u32,
+    /// None for a session in a language the filler list does not cover (German): nothing was counted.
+    pub filler_total: Option<u32>,
     pub words: u32,
     pub speech_secs: f64,
     pub wpm: f64,

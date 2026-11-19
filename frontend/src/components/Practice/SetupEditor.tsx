@@ -6,7 +6,9 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { VOICES, fitsLimit, materialKind, type MaterialMeta, type SetupInput, type SetupSummary } from '@/lib/practice';
+import { confirmAction } from '@/lib/confirm';
+import { DESTRUCTIVE_OUTLINE } from '@/lib/utils';
+import { PRACTICE_LANGUAGES, VOICES, fitsLimit, materialKind, type MaterialMeta, type PracticeLanguage, type SetupInput, type SetupSummary } from '@/lib/practice';
 
 function Labeled({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -29,6 +31,7 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
   const [character, setCharacter] = useState(setup?.character ?? '');
   const [situation, setSituation] = useState(setup?.situation ?? '');
   const [voice, setVoice] = useState(setup?.voice ?? VOICES[0].id);
+  const [language, setLanguage] = useState<PracticeLanguage>(setup?.language ?? 'en');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pasting, setPasting] = useState(false);
@@ -47,6 +50,7 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
       character: character.trim(),
       situation: situation.trim(),
       voice,
+      language,
     };
     if (!input.name) return setError('Give the setup a name');
     if (!input.character) return setError('Say who the character is');
@@ -63,7 +67,9 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
   };
 
   const remove = async () => {
-    if (!setup || !window.confirm(`Delete the setup "${setup.name}"?`)) return;
+    if (!setup) return;
+    const ok = await confirmAction({ title: 'Delete this setup?', body: `${setup.name} and its files are deleted permanently. This can't be undone.`, confirmLabel: 'Delete', destructive: true });
+    if (!ok) return;
     try {
       await invoke('practice_delete_setup', { id: setup.id });
       onDone();
@@ -124,7 +130,8 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
   };
 
   const removeMaterial = async (m: MaterialMeta) => {
-    if (!window.confirm(`Remove ${m.name} from this setup?`)) return;
+    const ok = await confirmAction({ title: 'Remove this file?', body: `${m.name} is deleted permanently from this setup. This can't be undone.`, confirmLabel: 'Remove', destructive: true });
+    if (!ok) return;
     try {
       await invoke('practice_delete_material', { id: m.id });
       await onChanged();
@@ -240,6 +247,18 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
             {voicePercent !== null && <span className="text-sm text-muted-foreground">{`Downloading voices… ${voicePercent}%`}</span>}
           </div>
         </Labeled>
+        <Labeled label="Language">
+          <Select value={language} onValueChange={(v) => setLanguage(v as PracticeLanguage)}>
+            <SelectTrigger aria-label="Language" className="w-56">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PRACTICE_LANGUAGES.map((l) => (
+                <SelectItem key={l.id} value={l.id}>{l.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </Labeled>
       </div>
 
       {setup && materials.length > 0 && (
@@ -250,7 +269,7 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
       )}
 
       <div className="flex items-center justify-between gap-2 pt-2">
-        {setup ? <Button variant="destructive" onClick={remove}>Delete setup</Button> : <span />}
+        {setup ? <Button variant="outline" className={DESTRUCTIVE_OUTLINE} onClick={remove}>Delete setup</Button> : <span />}
         <div className="flex items-center gap-2">
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button variant="outline" onClick={onDone}>Cancel</Button>

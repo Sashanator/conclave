@@ -1,8 +1,9 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { formatLongDate, formatRowDate } from '../../src/lib/dates';
 import {
-  MATERIAL_MAX_BYTES, type PracticeSettings, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow, VOICES,
+  MATERIAL_MAX_BYTES, type PracticeSettings, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupInput, type SetupSummary, type TurnRow, VOICES,
 } from '../../src/lib/practice';
 
 const originals = {
@@ -10,17 +11,22 @@ const originals = {
   event: { ...await import('@tauri-apps/api/event') },
   sonner: { ...await import('sonner') },
   select: { ...await import('../../src/components/ui/select') },
+  nav: { ...await import('next/navigation') },
+  confirm: { ...await import('../../src/lib/confirm') },
+  backNav: { ...await import('../../src/lib/back-nav') },
 };
 
-const originalConfirm = window.confirm;
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
 afterAll(() => {
-  window.confirm = originalConfirm;
+  renderer?.unmount();
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/components/ui/select', () => originals.select);
+  mock.module('next/navigation', () => originals.nav);
+  mock.module('../../src/lib/confirm', () => originals.confirm);
+  mock.module('../../src/lib/back-nav', () => originals.backNav);
 });
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
@@ -28,12 +34,12 @@ const placeholder = ({ placeholder: text }: { placeholder?: string }) => <>{text
 
 const THESIS: SetupSummary = {
   id: 'seed-thesis', name: 'Thesis defence', character: 'Prof. Weber, strict examiner',
-  situation: "Master's thesis defence at TU Munich.", voice: 'M1', seeded: true, has_plan: false,
+  situation: "Master's thesis defence at TU Munich.", voice: 'M1', language: 'en', seeded: true, has_plan: false,
   materials: [{ id: 'm1', setup_id: 'seed-thesis', kind: 'pdf', name: 'thesis.pdf', bytes: 1000 }], session_count: 2,
 };
 const INTERVIEW: SetupSummary = {
   id: 'seed-interview', name: 'Job interview', character: 'Anna Keller, engineering manager',
-  situation: 'Interview for a backend role.', voice: 'F2', seeded: true, has_plan: false, materials: [], session_count: 0,
+  situation: 'Interview for a backend role.', voice: 'F2', language: 'en', seeded: true, has_plan: false, materials: [], session_count: 0,
 };
 const SESSION: SessionSummary = {
   id: 's1', setup_name: 'Thesis defence', started_at: '2026-10-19T10:00:00Z', duration_secs: 1080,
@@ -133,14 +139,25 @@ mock.module('@tauri-apps/api/event', () => ({
 }));
 mock.module('sonner', () => ({ toast }));
 mock.module('../../src/components/ui/select', () => ({
-  Select: passThrough,
+  Select: ({ children, onValueChange }: { children?: ReactNode; onValueChange?: (v: string) => void }) => <div data-pick={onValueChange}>{children}</div>,
   SelectContent: passThrough, SelectItem: passThrough, SelectTrigger: passThrough, SelectValue: placeholder,
 }));
 
+const router = { push: mock((_href: string) => {}), back: mock(() => {}) };
+let searchId: string | null = 's1';
+// What a rendered <audio> ref points at in the report tests
+let nodeAudio: unknown = null;
+mock.module('next/navigation', () => ({ useRouter: () => router, useSearchParams: () => ({ get: (k: string) => (k === 'id' ? searchId : null) }) }));
+const rememberOrigin = mock((_o: { path: string; label: string }) => {});
+mock.module('../../src/lib/back-nav', () => ({ ...originals.backNav, rememberOrigin }));
+
 const { default: PracticePage } = await import('../../src/app/practice/page');
+const { default: ReportPage } = await import('../../src/app/practice/report/page');
 
 let renderer: ReactTestRenderer | null = null;
-const confirm = mock((_message?: string) => true);
+type ConfirmOpts = { title: string; body?: string; confirmLabel: string; destructive?: boolean };
+const confirm = mock(async (_opts: ConfirmOpts) => true);
+mock.module('../../src/lib/confirm', () => ({ ...originals.confirm, confirmAction: confirm }));
 
 async function flush() {
   await act(async () => {
@@ -220,8 +237,14 @@ function hasDirectText(value: string): boolean {
   return renderer!.root.findAll((n) => n.children.some((c) => c === value)).length > 0;
 }
 
+// The report is its own route: mount it with ?id=s1
 async function openReport() {
-  await clickButton('Open report');
+  searchId = 's1';
+  renderer?.unmount();
+  renderer = null;
+  await act(async () => {
+    renderer = create(<ReportPage />, { createNodeMock: (el) => (el.type === 'audio' ? nodeAudio : null) });
+  });
   await flush();
 }
 
@@ -267,21 +290,24 @@ beforeEach(async () => {
   invoke.mockClear();
   toast.error.mockClear();
   confirm.mockClear();
-  confirm.mockImplementation(() => true);
-  window.confirm = confirm as unknown as typeof window.confirm;
+  router.push.mockClear();
+  rememberOrigin.mockClear();
+  searchId = 's1';
+  nodeAudio = null;
+  confirm.mockImplementation(async () => true);
   listeners.clear();
   await mount();
 });
 
 describe('Practice page', () => {
   test('lists_setups_and_sessions_side_by_side', () => {
-    const headings = renderer!.root.findAll((n) => n.type === 'h3').map(text);
+    const headings = renderer!.root.findAll((n) => n.type === 'h2').map(text);
     expect(headings).toContain('Your setups');
     expect(headings).toContain('Past sessions');
     const grid = renderer!.root.findAll((n) => n.type === 'div' && String(n.props.className).includes('lg:grid-cols-2'));
     expect(grid.length).toBe(1);
     const cards = grid[0].findAll((n) => n.type === 'section' && String(n.props.className).includes('bg-card'));
-    expect(cards.map((c) => text(c.findAll((n) => n.type === 'h3')[0]))).toEqual(['Your setups', 'Past sessions']);
+    expect(cards.map((c) => text(c.findAll((n) => n.type === 'h2')[0]))).toEqual(['Your setups', 'Past sessions']);
   });
 
   test('start_is_re_read_on_focus_and_every_5_s_while_the_list_shows', async () => {
@@ -331,11 +357,6 @@ describe('Practice page', () => {
     expect(buttons('▶ Start').every((b) => b.props.disabled)).toBe(true);
   });
 
-  test('a session row shows the date, the minutes and the summary', () => {
-    const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
-    expect(lines.some((l) => l.includes('18 min') && l.includes('4 grammar · 31 fillers'))).toBe(true);
-  });
-
   test('a cancel while the listener registers means nothing starts', async () => {
     let release!: () => void;
     holdPrepListen = new Promise<void>((resolve) => {
@@ -349,14 +370,6 @@ describe('Practice page', () => {
     expect(calls('practice_start').length).toBe(0);
     expect(listeners.has('practice-prep')).toBe(false);
     expect(renderer!.root.findAll((n) => n.props.role === 'dialog').length).toBe(0);
-  });
-
-  test('a session under 30 s lists as less than a minute', async () => {
-    sessions = [{ ...SESSION, duration_secs: 20 }];
-    await mount();
-    const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
-    expect(lines.some((l) => l.includes('<1 min'))).toBe(true);
-    expect(lines.some((l) => l.includes('0 min'))).toBe(false);
   });
 
   test('new_questions_confirms_and_refreshes_the_setup', async () => {
@@ -380,8 +393,29 @@ describe('Practice page', () => {
     await setField('Character', ' Prof. Weber ');
     await clickButton('Save');
     expect(calls('practice_save_setup')[0][1]).toEqual({
-      input: { id: 'seed-thesis', name: 'Thesis defence v2', character: 'Prof. Weber', situation: "Master's thesis defence at TU Munich.", voice: 'M1' },
+      input: { id: 'seed-thesis', name: 'Thesis defence v2', character: 'Prof. Weber', situation: "Master's thesis defence at TU Munich.", voice: 'M1', language: 'en' },
     });
+  });
+
+  test('setup_editor_saves_the_language', async () => {
+    await clickButton('+ New setup');
+    await setField('Setup name', 'New one');
+    await setField('Character', 'Someone');
+    await clickButton('Save');
+    expect((calls('practice_save_setup')[0][1] as { input: SetupInput }).input.language).toBe('en');
+    invoke.mockClear();
+    await clickButton('Edit');
+    const pick = renderer!.root.findAll((n) => n.type === 'div' && n.props['data-pick'] && n.findAll((c) => c.props['aria-label'] === 'Language').length > 0)[0];
+    await act(async () => pick.props['data-pick']('de'));
+    await clickButton('Save');
+    expect((calls('practice_save_setup')[0][1] as { input: SetupInput }).input.language).toBe('de');
+  });
+
+  test('german_setup_shows_a_language_chip', async () => {
+    expect(hasDirectText('German')).toBe(false);
+    setups = [{ ...THESIS, language: 'de' }, INTERVIEW];
+    await mount();
+    expect(hasDirectText('German')).toBe(true);
   });
 
   test('oversized_file_is_refused_before_upload', async () => {
@@ -407,16 +441,63 @@ describe('Practice page', () => {
     expect(options).toEqual({ headers: { 'x-setup-id': 'seed-thesis', 'x-name': 'abstract%20notes.md', 'x-kind': 'text' } });
   });
 
-  test('delete_session_asks_first', async () => {
-    confirm.mockImplementation(() => false);
+  test('delete_session_asks_with_confirm_action', async () => {
+    confirm.mockImplementation(async () => false);
     await clickButton('Delete');
-    expect(confirm).toHaveBeenCalled();
+    expect(confirm).toHaveBeenCalledWith({ title: 'Delete this session?', body: 'Thesis defence and its report go to the Recycle Bin.', confirmLabel: 'Delete', destructive: true });
     expect(calls('practice_delete_session').length).toBe(0);
 
-    confirm.mockImplementation(() => true);
+    confirm.mockImplementation(async () => true);
     await clickButton('Delete');
     await flush();
     expect(calls('practice_delete_session')[0][1]).toEqual({ id: 's1' });
+  });
+
+  test('delete_setup_and_material_use_confirm_action', async () => {
+    await clickButton('Edit');
+    confirm.mockImplementation(async () => false);
+    await clickButton('Delete setup');
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Delete this setup?', destructive: true }));
+    expect(calls('practice_delete_setup').length).toBe(0);
+    const x = () => renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Remove thesis.pdf')[0];
+    await act(async () => x().props.onClick());
+    expect(calls('practice_delete_material').length).toBe(0);
+
+    confirm.mockImplementation(async () => true);
+    await act(async () => x().props.onClick());
+    await flush();
+    expect(calls('practice_delete_material')[0][1]).toEqual({ id: 'm1' });
+    await clickButton('Delete setup');
+    await flush();
+    expect(calls('practice_delete_setup')[0][1]).toEqual({ id: 'seed-thesis' });
+  });
+
+  test('delete_buttons_are_outline', async () => {
+    const check = () => {
+      const del = renderer!.root.findAll((n) => typeof n.type !== 'string' && ['Delete', 'Delete setup'].includes(n.props.children));
+      expect(del.length).toBeGreaterThan(0);
+      for (const b of del) {
+        expect(b.props.variant).toBe('outline');
+        expect(b.props.className).toContain('text-destructive');
+      }
+    };
+    check();
+    await clickButton('Edit');
+    check();
+  });
+
+  test('home_links_to_models_and_keys', async () => {
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).not.toContain('Models');
+    const link = renderer!.root.findAll((n) => n.type === 'a' && text(n) === 'Set in Models & keys')[0];
+    expect(link.props.href).toBe('/settings?tab=models');
+    expect(hasDirectText('Models:')).toBe(true);
+  });
+
+  test('session_line_uses_the_row_date', () => {
+    const start = new Date(SESSION.started_at);
+    const line = formatRowDate(start, new Date(start.getTime() + SESSION.duration_secs * 1000));
+    expect(hasText(`${line} · ${SESSION.summary}`)).toBe(true);
+    expect(hasText('Oct 19 · 18 min · 4 grammar · 31 fillers')).toBe(false);
   });
 
   test('preview_before_the_first_session_downloads_the_voices_first', async () => {
@@ -550,8 +631,7 @@ describe('Practice page', () => {
     running = { ...running, summary: { ...running.summary, end_reason: 'user' } };
     status = { ...READY, running_session: 'run-1' };
     await mount();
-    expect(tapButtons().length).toBe(0);
-    expect(renderer!.root.findAll((n) => n.type === 'h1' && text(n).startsWith('Thesis defence · ')).length).toBe(1);
+    expect(router.push).toHaveBeenCalledWith('/practice/report?id=run-1');
   });
 
   test('a resumed session is listened to before it is read', async () => {
@@ -594,8 +674,21 @@ describe('Practice page', () => {
     await startCall();
     await emit('practice-state', state('Ended'));
     await flush();
-    expect(tapButtons().length).toBe(0);
-    expect(renderer!.root.findAll((n) => n.type === 'h1' && text(n).startsWith('Thesis defence · ')).length).toBe(1);
+    expect(router.push).toHaveBeenCalledWith('/practice/report?id=session-1');
+  });
+
+  test('ended_call_opens_the_report_route', async () => {
+    await startCall();
+    await emit('practice-state', state('Ended'));
+    await flush();
+    expect(rememberOrigin).toHaveBeenCalledWith({ path: '/practice', label: 'Practice' });
+    expect(router.push).toHaveBeenCalledWith('/practice/report?id=session-1');
+  });
+
+  test('open_report_navigates_to_the_report_route', async () => {
+    await clickButton('Open report');
+    expect(rememberOrigin).toHaveBeenCalledWith({ path: '/practice', label: 'Practice' });
+    expect(router.push).toHaveBeenCalledWith('/practice/report?id=s1');
   });
 
   test('transcript_lists_this_sessions_turns_when_expanded', async () => {
@@ -671,7 +764,7 @@ describe('Practice report view', () => {
     expect(hasDirectText('words/min')).toBe(true);
     expect(hasDirectText('long pauses')).toBe(true);
 
-    const headings = renderer!.root.findAll((n) => n.type === 'h3').map(text);
+    const headings = renderer!.root.findAll((n) => n.type === 'h2').map(text);
     expect(headings).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
     expect(hasDirectText('um 14 · so basically 9 · like 8')).toBe(true);
   });
@@ -680,7 +773,7 @@ describe('Practice report view', () => {
     await openReport();
     const struck = renderer!.root.findAll((n) => String(n.props.className).includes('line-through'));
     expect(struck.map(text)).toEqual(['will have', 'depend']);
-    const better = renderer!.root.findAll((n) => String(n.props.className).includes('text-emerald-500'));
+    const better = renderer!.root.findAll((n) => String(n.props.className).includes('text-emerald-700'));
     expect(better.map(text)).toContain('If I had more data…');
   });
 
@@ -692,12 +785,7 @@ describe('Practice report view', () => {
 
   test('play_button_seeks_to_turn_offset', async () => {
     const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
-    });
-    await flush();
+    nodeAudio = audio;
     await openReport();
 
     expect(renderer!.root.findAll((n) => n.type === 'audio')[0].props.src).toBe('asset://C:/Conclave/practice/s1/you.wav');
@@ -763,28 +851,120 @@ describe('Practice report view', () => {
     expect(hasDirectText('The report could not be written')).toBe(true);
   });
 
-  test('retry_is_disabled_while_the_call_is_in_flight', async () => {
+  const failedDetail = () => {
     detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: 'Claude did not answer' };
+  };
+
+  test('retry_clears_the_old_error_at_once', async () => {
+    failedDetail();
     await openReport();
     let release!: () => void;
     retryImpl = () => new Promise((resolve) => {
       release = () => resolve(null);
     });
     await clickButton('Retry');
-    expect(buttons('Retry')[0].props.disabled).toBe(true);
-    // A second click before the first call returns must not invoke again
-    await clickButton('Retry');
+    expect(hasDirectText('Claude did not answer')).toBe(false);
+    expect(hasDirectText('Starting the report…')).toBe(true);
+    expect(buttons('Retry').length).toBe(0);
     expect(calls('practice_retry_report').length).toBe(1);
 
     await act(async () => release());
     await flush();
-    expect(buttons('Retry')[0].props.disabled).toBe(false);
+    expect(buttons('Retry').length).toBe(1);
+  });
+
+  test('retry_stays_busy_until_the_reload_lands', async () => {
+    failedDetail();
+    await openReport();
+    let releaseGet!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseGet = resolve;
+    });
+    const real = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'practice_get_session') await held;
+      return real(command, args);
+    });
+    try {
+      detail = { ...detail, summary: { ...detail.summary, report_status: 'waiting' } };
+      await clickButton('Retry');
+      await flush();
+      expect(hasDirectText('Claude did not answer')).toBe(false);
+      expect(buttons('Retry').length).toBe(0);
+      expect(hasDirectText('Starting the report…')).toBe(true);
+      await act(async () => releaseGet());
+      await flush();
+      expect(hasDirectText('Waiting for the meeting recording to finish…')).toBe(true);
+    } finally {
+      invoke.mockImplementation(real);
+    }
+  });
+
+  test('a_german_report_has_no_filler_stat_card_or_trend', async () => {
+    detail = {
+      ...detail,
+      report: { ...REPORT, version: 2, fluency: { ...REPORT.fluency, fillers: {}, filler_total: null } },
+      recurring: { patterns: [], filler_trend: [3.1, 2.4] },
+    };
+    await openReport();
+    expect(hasDirectText('fillers')).toBe(false);
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).not.toContain('Fillers and fluency');
+    expect(hasDirectText('Fillers per minute')).toBe(false);
+    expect(hasDirectText('words/min')).toBe(true);
+  });
+
+  test('a_start_failure_replaces_the_old_error', async () => {
+    failedDetail();
+    await openReport();
+    retryImpl = async () => {
+      throw 'Could not start the report: database is locked';
+    };
+    await clickButton('Retry');
+    await flush();
+    expect(hasDirectText('Could not start the report: database is locked')).toBe(true);
+    expect(hasDirectText('Claude did not answer')).toBe(false);
+    expect(buttons('Retry').length).toBe(1);
+  });
+
+  test('a_report_event_clears_the_start_failure', async () => {
+    failedDetail();
+    await openReport();
+    retryImpl = async () => {
+      throw 'Could not start the report: database is locked';
+    };
+    await clickButton('Retry');
+    await flush();
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'running' } };
+    await emit('practice-report', { session_id: 's1', status: 'running' });
+    await flush();
+    expect(hasDirectText('Writing your report…')).toBe(true);
+    expect(hasDirectText('Could not start the report: database is locked')).toBe(false);
   });
 
   test('empty_filler_breakdown_says_so', async () => {
     detail = { ...detail, report: { ...REPORT, fluency: { ...REPORT.fluency, fillers: {}, filler_total: 0 } } };
     await openReport();
     expect(hasDirectText('No fillers counted')).toBe(true);
+  });
+
+  test('report_route_reads_the_id_and_shows_the_breadcrumb', async () => {
+    await openReport();
+    expect(calls('practice_get_session')[0][1]).toEqual({ id: 's1' });
+    const crumb = renderer!.root.findAll((n) => n.props.fallback === '/practice' && n.props.fallbackLabel === 'Practice');
+    expect(crumb.length).toBeGreaterThan(0);
+    expect(renderer!.root.findAll((n) => n.type === 'h1').map(text)).toEqual([`Thesis defence · ${formatLongDate(new Date('2026-10-19T10:00:00Z'))} · 18 min`]);
+  });
+
+  test('report_route_without_an_id_says_so', async () => {
+    invoke.mockClear();
+    searchId = null;
+    renderer?.unmount();
+    await act(async () => {
+      renderer = create(<ReportPage />);
+    });
+    await flush();
+    expect(hasDirectText('No session selected')).toBe(true);
+    expect(calls('practice_get_session').length).toBe(0);
   });
 
   test('short_session_shows_less_than_a_minute', async () => {
@@ -829,12 +1009,7 @@ describe('Practice report view', () => {
 
   test('pron_card_plays_word_span_and_reference', async () => {
     const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
-    });
-    await flush();
+    nodeAudio = audio;
     detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [{ turn: 3, word: 'will', start_secs: 1.5, end_secs: 1.9, score: -7.2, phone: 'IH' }] } };
     await openReport();
 
@@ -857,12 +1032,7 @@ describe('Practice report view', () => {
 
   test('pron_you_pauses_at_its_end_when_timeupdate_does_not_fire', async () => {
     const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
-    });
-    await flush();
+    nodeAudio = audio;
     detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [HINT] } };
     await openReport();
 
@@ -881,12 +1051,7 @@ describe('Practice report view', () => {
 
   test('a_new_clip_or_unmount_cancels_the_pron_you_timer', async () => {
     const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
-    });
-    await flush();
+    nodeAudio = audio;
     detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [HINT] } };
     await openReport();
 
@@ -911,11 +1076,10 @@ describe('Practice report view', () => {
   test('pron_card_shows_note_or_empty_text', async () => {
     detail = { ...detail, report: { ...REPORT, version: 2, pronunciation_note: 'Pronunciation hints unavailable' } };
     await openReport();
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toContain('Pronunciation hints (may be off)');
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).toContain('Pronunciation hints (may be off)');
     expect(hasDirectText('Pronunciation hints unavailable')).toBe(true);
     expect(hasDirectText('No pronunciation hints this time')).toBe(false);
 
-    await clickButton('← Practice');
     detail = { ...detail, report: { ...REPORT, version: 2 } };
     await openReport();
     expect(hasDirectText('No pronunciation hints this time')).toBe(true);
@@ -955,7 +1119,7 @@ describe('Practice report view', () => {
       },
     };
     await openReport();
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toContain('Keeps coming back');
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).toContain('Keeps coming back');
     // Same-setup patterns come first
     const chips = renderer!.root.findAll((n) => n.type === 'span' && text(n).includes(' sessions')).map(text);
     expect(chips).toEqual(['if + will ×4 sessions', 'make research ×3 sessions']);
@@ -963,17 +1127,16 @@ describe('Practice report view', () => {
     expect(hasDirectText('3.1 → 2.4 → 1.8')).toBe(true);
 
     // One trend point is not a trend, and no patterns means nothing to show: the card is hidden
-    await clickButton('← Practice');
     detail = { ...detail, recurring: { patterns: [], filler_trend: [3.1] } };
     await openReport();
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).not.toContain('Keeps coming back');
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).not.toContain('Keeps coming back');
   });
 
   test('v1_report_hides_new_cards', async () => {
     // The backend fills recurring for any ready report, so a v1 report with earlier sessions has one
     detail = { ...detail, recurring: { patterns: [], filler_trend: [3.1, 2.4] } };
     await openReport();
-    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).toEqual(['Grammar (2)', 'Sounds unnatural (1)', 'Could be clearer (1)', 'Fillers and fluency']);
     expect(hasDirectText('Pronunciation hints (may be off)')).toBe(false);
     expect(hasDirectText('Keeps coming back')).toBe(false);
   });

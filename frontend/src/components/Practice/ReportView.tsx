@@ -5,6 +5,9 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
+import { BackCrumb } from '@/components/BackCrumb';
+import { formatLongDate } from '@/lib/dates';
 import {
   characterName, formatClock, minutesLabel, NOTICE_TEXT, YOU_WAV_RATE,
   type ItemKind, type PronHint, type ReportItem, type ReportStatusPayload, type SessionDetail, type TurnRow,
@@ -37,7 +40,7 @@ function Quote({ item }: { item: ReportItem }) {
   return (
     <>
       {head && `${head} `}
-      {changed && <span className="line-through text-destructive">{changed}</span>}
+      {changed && <span className="line-through text-muted-foreground">{changed}</span>}
       {changed && tail && ' '}
       {tail}
     </>
@@ -53,7 +56,7 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
-export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: () => void }) {
+export function ReportView({ sessionId }: { sessionId: string }) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [tab, setTab] = useState<'report' | 'transcript'>('report');
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -71,12 +74,17 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     }
   }, [sessionId]);
 
+  // The start failure of the last Retry or Generate; a report event replaces it
+  const [startError, setStartError] = useState<string | null>(null);
+
   useEffect(() => {
     let gone = false;
     let stop: (() => void) | null = null;
     // The listener is up before the first load, so a report change that lands meanwhile is not missed
     void listen<ReportStatusPayload>('practice-report', (e) => {
-      if (e.payload.session_id === sessionId) void load();
+      if (e.payload.session_id !== sessionId) return;
+      setStartError(null);
+      void load();
     }).then((off) => {
       if (gone) off();
       else stop = off;
@@ -95,16 +103,18 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const retry = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
+    setStartError(null);
     setBusy(true);
     try {
       await invoke('practice_retry_report', { sessionId });
     } catch (err) {
-      toast.error('Could not retry the report', { description: String(err) });
+      setStartError(String(err));
     } finally {
+      // Busy lasts until the reload lands, so the old error and Retry never flash back
+      await load();
       inFlight.current = false;
       setBusy(false);
     }
-    void load();
   };
 
   // from and to are seconds into you.wav; timed also pauses at `to` on a timer
@@ -171,22 +181,22 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     }
   };
 
+  const crumb = <BackCrumb fallback="/practice" fallbackLabel="Practice" />;
   if (!detail) {
     return (
-      <div className="h-full overflow-y-auto">
-        <div className="max-w-4xl mx-auto p-8 space-y-6">
-          <Button variant="ghost" size="sm" onClick={onBack}>← Practice</Button>
-          <p className="text-muted-foreground">Loading…</p>
-        </div>
-      </div>
+      <PageFrame variant="reading" breadcrumb={crumb}>
+        <p className="text-muted-foreground">Loading…</p>
+      </PageFrame>
     );
   }
 
   const s = detail.summary;
   const name = characterName(detail.character);
-  const day = new Date(s.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const day = formatLongDate(new Date(s.started_at));
   const length = minutesLabel(s.duration_secs);
   const report = detail.report;
+  // A German session has no filler count (null): its stat and card are hidden
+  const counted = report?.fluency.filler_total != null;
   const fillers = Object.entries(report?.fluency.fillers ?? {}).filter(([, n]) => n > 0).sort(([, a], [, b]) => b - a);
   const generate = (label: string) => (
     <Button size="sm" disabled={busy} onClick={retry}>{label}</Button>
@@ -194,18 +204,16 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   // Patterns from the same setup first; the order within each group is the one the server sent
   const recurring = detail.recurring;
   const patterns = [...(recurring?.patterns ?? [])].sort((a, b) => Number(b.same_setup) - Number(a.same_setup));
-  const trend = recurring?.filler_trend ?? [];
+  const trend = counted ? recurring?.filler_trend ?? [] : [];
   // Only v2 reports carry the card; the backend fills recurring for any ready report
   const showRecurring = (report?.version ?? 0) >= 2 && (patterns.length > 0 || trend.length >= 2);
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto p-8 space-y-6">
-        <Button variant="ghost" size="sm" onClick={onBack}>← Practice</Button>
+    <PageFrame variant="reading" breadcrumb={crumb} title={`${s.setup_name} · ${day} · ${length}`}>
+      <div className="space-y-6">
         <audio ref={audioRef} src={detail.audio_path ? convertFileSrc(detail.audio_path) : undefined} preload="auto" onTimeUpdate={pauseAtClipEnd} />
 
         <div className="space-y-2">
-          <h1 className="text-3xl font-bold">{`${s.setup_name} · ${day} · ${length}`}</h1>
           {s.end_reason === 'meeting' && <p className="text-sm text-muted-foreground">{NOTICE_TEXT.MeetingStarted}</p>}
           {s.end_reason === 'interrupted' && <p className="text-sm text-muted-foreground">This session was interrupted (Conclave closed)</p>}
         </div>
@@ -239,7 +247,7 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
         ) : report ? (
           <>
             <div className="flex gap-3">
-              <Stat label="fillers" value={report.fluency.filler_total} />
+              {counted && <Stat label="fillers" value={report.fluency.filler_total ?? 0} />}
               <Stat label="words/min" value={Math.round(report.fluency.wpm)} />
               <Stat label="long pauses" value={report.fluency.long_pauses} />
             </div>
@@ -248,11 +256,11 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
               const items = report.items.filter((i) => i.kind === kind);
               return (
                 <section key={kind} className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">
-                  <h3 className="text-lg font-semibold text-foreground">{`${title} (${items.length})`}</h3>
+                  <h2 className="text-lg font-semibold text-foreground">{`${title} (${items.length})`}</h2>
                   {items.map((item, i) => (
                     <div key={i} className="space-y-1">
                       <p>&ldquo;<Quote item={item} />&rdquo;</p>
-                      <p className="text-emerald-500">{item.better}</p>
+                      <p className="text-emerald-700 dark:text-emerald-400">{item.better}</p>
                       <p className="text-sm text-muted-foreground flex flex-wrap items-center gap-2">
                         <span>{item.note}</span>
                         {playButton(detail, item.turn)}
@@ -264,16 +272,18 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
               );
             })}
 
-            <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-2">
-              <h3 className="text-lg font-semibold text-foreground">Fillers and fluency</h3>
-              <p className="text-sm text-muted-foreground">
-                {fillers.length ? fillers.map(([word, n]) => `${word} ${n}`).join(' · ') : 'No fillers counted'}
-              </p>
-            </section>
+            {counted && (
+              <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-2">
+                <h2 className="text-lg font-semibold text-foreground">Fillers and fluency</h2>
+                <p className="text-sm text-muted-foreground">
+                  {fillers.length ? fillers.map(([word, n]) => `${word} ${n}`).join(' · ') : 'No fillers counted'}
+                </p>
+              </section>
+            )}
 
             {report.version >= 2 && (
               <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">
-                <h3 className="text-lg font-semibold text-foreground">Pronunciation hints (may be off)</h3>
+                <h2 className="text-lg font-semibold text-foreground">Pronunciation hints (may be off)</h2>
                 {report.pronunciation.length ? report.pronunciation.map((hint, i) => (
                   <div key={i} className="flex flex-wrap items-center gap-2">
                     <span className="font-medium">{hint.word}</span>
@@ -288,7 +298,7 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
 
             {showRecurring && (
               <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">
-                <h3 className="text-lg font-semibold text-foreground">Keeps coming back</h3>
+                <h2 className="text-lg font-semibold text-foreground">Keeps coming back</h2>
                 {patterns.length > 0 && (
                   <div className="flex flex-wrap gap-2">
                     {patterns.map((p) => (
@@ -305,9 +315,11 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
               </section>
             )}
           </>
+        ) : busy ? (
+          <p className="text-muted-foreground">Starting the report…</p>
         ) : s.report_status === 'failed' ? (
           <div className="space-y-3">
-            <p className="text-sm text-destructive">{detail.report_error || 'The report could not be written'}</p>
+            <p className="text-sm text-destructive">{startError || detail.report_error || 'The report could not be written'}</p>
             {generate('Retry')}
           </div>
         ) : s.report_status === 'running' ? (
@@ -319,6 +331,7 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
           ) : (
             <div className="space-y-3">
               <p className="text-muted-foreground">Report not generated yet</p>
+              {startError && <p className="text-sm text-destructive">{startError}</p>}
               {generate('Generate report')}
             </div>
           )
@@ -331,6 +344,6 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
           </p>
         )}
       </div>
-    </div>
+    </PageFrame>
   );
 }

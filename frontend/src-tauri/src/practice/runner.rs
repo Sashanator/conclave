@@ -32,6 +32,7 @@ use super::prompts::{character_system, Persona, SentenceSplitter, OPENING_USER, 
 use super::report_job;
 use super::session::{Core, EndReason, Effect, Event, Notice, Phase};
 use super::settings;
+use super::PracticeLanguage;
 use super::tts::{Supertonic, Voice};
 use super::{hold_model, ModelHold, LIVE_VAD_REDEMPTION_MS, MAX_TURN_SECS, TTS_SPEED, TTS_STEPS, YOU_WAV_RATE};
 
@@ -234,6 +235,7 @@ struct Runner<R: Runtime> {
     app: AppHandle<R>,
     session_id: String,
     character: String,
+    language: PracticeLanguage,
     system: String,
     /// Read once at session start, so every reply of the session uses the same model.
     chat_model: String,
@@ -279,8 +281,10 @@ struct Runner<R: Runtime> {
 
 impl<R: Runtime> Runner<R> {
     fn new(app: AppHandle<R>, l: Loaded) -> Self {
+        let language = PracticeLanguage::from_code(&l.setup.language);
         let system = character_system(
             &Persona {
+                language,
                 character: &l.setup.character,
                 situation: &l.setup.situation,
                 plan: l.plan.as_deref(),
@@ -305,6 +309,7 @@ impl<R: Runtime> Runner<R> {
             app,
             session_id: l.session_id,
             character: l.setup.character.clone(),
+            language,
             system,
             chat_model: settings::current().chat_model,
             key: l.key,
@@ -421,10 +426,10 @@ impl<R: Runtime> Runner<R> {
         while rx.try_recv().is_ok() {}
         self.last_turn.at_secs = self.elapsed_f64();
         self.capture_stop = Arc::new(AtomicBool::new(false));
-        let (stop, engine, rate) = (self.capture_stop.clone(), self.engine.clone(), self.mic_rate);
+        let (stop, engine, rate, language) = (self.capture_stop.clone(), self.engine.clone(), self.mic_rate, self.language);
         self.mic.set_recording(true);
         self.capture = Some(tokio::task::spawn_blocking(move || {
-            let turn = capture_turn(&rx, rate, &stop, &engine);
+            let turn = capture_turn(&rx, rate, &stop, &engine, language);
             (rx, turn)
         }));
         let tx = self.tx.clone();
@@ -712,9 +717,11 @@ async fn synthesize(
             *fell_back = true;
             warn!("practice: speech failed on the accelerator, retrying on the CPU: {e}");
             let dir = dir.to_path_buf();
-            let cpu = tokio::task::spawn_blocking(move || Supertonic::load(&dir, false))
+            let language = lock(tts).language;
+            let mut cpu = tokio::task::spawn_blocking(move || Supertonic::load(&dir, false))
                 .await
                 .map_err(|e| e.to_string())??;
+            cpu.language = language;
             *lock(tts) = cpu;
             run_synth(tts, voice, text).await
         }
@@ -810,12 +817,13 @@ fn transcribe_segments(
     segments: Vec<SpeechSegment>,
     texts: &mut Vec<String>,
     speech_secs: &mut f32,
+    language: PracticeLanguage,
 ) {
     for segment in segments {
         *speech_secs += segment.samples.len() as f32 / YOU_WAV_RATE as f32;
         let result = tauri::async_runtime::block_on(engine.transcribe_audio_with_confidence(
             segment.samples,
-            Some("en".to_string()),
+            Some(language.code().to_string()),
             None,
             None,
         ));
@@ -833,7 +841,7 @@ fn transcribe_segments(
 
 /// Runs on a blocking thread for one turn: resamples to 16 kHz, keeps the whole turn, and transcribes
 /// each speech segment as the VAD closes it. A VAD or Whisper error loses only its segment, never the audio.
-fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &WhisperEngine) -> Result<CapturedTurn, String> {
+fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &WhisperEngine, language: PracticeLanguage) -> Result<CapturedTurn, String> {
     let mut resampler = TurnResampler::new(rate)?;
     let mut vad = match ContinuousVadProcessor::new(YOU_WAV_RATE, LIVE_VAD_REDEMPTION_MS as u32) {
         Ok(vad) => Some(vad),
@@ -852,7 +860,7 @@ fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &
         turn.turn.extend_from_slice(samples);
         if let Some(vad) = vad.as_mut() {
             match vad.process_audio(samples) {
-                Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
+                Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs, language),
                 Err(e) => warn!("practice: VAD failed on one chunk, it is skipped: {e}"),
             }
         }
@@ -869,7 +877,7 @@ fn capture_turn(rx: &Receiver<Vec<f32>>, rate: u32, stop: &AtomicBool, engine: &
     feed(&resampler.finish()?);
     if let Some(vad) = vad.as_mut() {
         match vad.flush() {
-            Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs),
+            Ok(segments) => transcribe_segments(engine, segments, &mut texts, &mut turn.speech_secs, language),
             Err(e) => warn!("practice: VAD flush failed, the last segment is lost: {e}"),
         }
     }

@@ -15,6 +15,10 @@ describe('browser preview mocks', () => {
     expect((h.copilot_get_settings({}) as any).alert_words).toEqual(['deadline']);
     expect((h.get_recording_state({}) as any).is_recording).toBe(false);
   });
+  test('saving a provider key answers null, dictate settings exist', () => {
+    expect(h.api_save_provider_key({ provider: 'openai', apiKey: 'k' })).toBeNull();
+    expect((h.dictate_get_settings({}) as any).dictionary).toEqual(['Conclave']);
+  });
   test('preview-new has no times and preview-1 has the 📝 template', () => {
     const rows = h.api_list_meeting_rows({}) as any[];
     expect(rows.find((r) => r.id === 'preview-new').startedAt).toBeNull();

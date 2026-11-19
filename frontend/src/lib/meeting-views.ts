@@ -1,4 +1,5 @@
 import { addDays, format, startOfDay, startOfWeek } from 'date-fns';
+import { formatDayLabel } from './dates';
 import { meetingDate, meetingState, type MeetingRow, type MeetingState } from './meetings';
 
 export type ViewFilter = {
@@ -194,7 +195,7 @@ export function arrangeRows(
     for (const r of rest) {
       const d = startOfDay(meetingDate(r));
       const key = format(d, 'yyyy-MM-dd');
-      if (!byDay.has(key)) byDay.set(key, { key, label: format(d, 'EEEE d MMM'), rows: [] });
+      if (!byDay.has(key)) byDay.set(key, { key, label: formatDayLabel(d, now), rows: [] });
       byDay.get(key)!.rows.push(r);
     }
     // Days follow the date sort direction; any other primary sort reads oldest day first.
@@ -215,3 +216,18 @@ export function arrangeRows(
   }
   return sections;
 }
+
+/** Keys of the sections that start closed: with day grouping only today's (else the first) day is open. */
+export function defaultCollapsed(sections: Section[], group: ViewGroup, now: Date): Set<string> {
+  if (group !== 'day') return new Set();
+  const days = sections.map((s) => s.key).filter((k) => k !== 'now');
+  const open = days.includes(format(now, 'yyyy-MM-dd')) ? format(now, 'yyyy-MM-dd') : days[0];
+  return new Set(days.filter((k) => k !== open));
+}
+
+export type ViewUi = { flipped: string[]; query: string; selectedId: string | null; scroll: { px: number; key: string | null } | null };
+// Module memory: survives client navigation, gone after an app restart.
+const viewUi = new Map<string, ViewUi>();
+export const readViewUi = (viewId: string): ViewUi | undefined => viewUi.get(viewId);
+export const saveViewUi = (viewId: string, ui: ViewUi): void => { viewUi.set(viewId, ui); };
+export const clearViewUi = (): void => viewUi.clear();

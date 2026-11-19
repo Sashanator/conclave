@@ -17,6 +17,8 @@ import { SettingsModals } from "@/app/_components/SettingsModal";
 import { useRecordingState, RecordingStatus } from "@/contexts/RecordingStateContext";
 import { useAiSidebarScreen } from "@/components/AiSidebar/AiSidebarProvider";
 import { listMeetingRows, type MeetingRow } from "@/lib/meetings";
+import { BackCrumb } from '@/components/BackCrumb';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
 import { MeetingHeader } from "@/components/MeetingPage/MeetingHeader";
 import { RecordingView } from "@/components/MeetingPage/RecordingView";
 import { NewMeetingView } from "@/components/MeetingPage/NewMeetingView";
@@ -236,7 +238,7 @@ function MeetingDetailsContent() {
 
   // Reset states when meetingId changes (prevent race conditions)
   useEffect(() => {
-    setMeetingDetails(null);
+    // meetingDetails is not nulled: the builder effect does not re-run for source/savedEpoch, and the render gate checks its id.
     setMeetingSummary(null);
     setSummaryResponse(null);
     setError(null);
@@ -258,7 +260,6 @@ function MeetingDetailsContent() {
 
     console.log('Valid meeting ID found, fetching details for:', meetingId);
 
-    setMeetingDetails(null);
     setMeetingSummary(null);
     setSummaryResponse(null);
     setError(null);
@@ -338,10 +339,15 @@ function MeetingDetailsContent() {
     shell = <RecordingView row={row} onChange={setRow} showModal={showModal} />;
   } else if (row && !row.startedAt && !row.hasTranscript) {
     shell = (
-      <div className="h-screen overflow-y-auto">
-        <div className="mx-auto w-full max-w-3xl px-6 pt-6"><MeetingHeader row={row} live={busy} onChange={setRow} onMeetingDeleted={() => router.push('/')} /></div>
-        <NewMeetingView row={row} live={liveElsewhere} disabled={busy} onStart={() => { handleRecordingStart(row.id).catch((e) => toast.error('Could not start recording', { description: e instanceof Error ? e.message : String(e) })); }} />
-      </div>
+      <PageFrame variant="dashboard" title="New meeting" breadcrumb={<BackCrumb fallback="/" fallbackLabel="Meetings" />}>
+        <NewMeetingView
+          row={row}
+          live={liveElsewhere}
+          disabled={busy}
+          header={<MeetingHeader variant="new" row={row} live={busy} onChange={setRow} onMeetingDeleted={() => router.push('/')} />}
+          onStart={() => { handleRecordingStart(row.id).catch((e) => toast.error('Could not start recording', { description: e instanceof Error ? e.message : String(e) })); }}
+        />
+      </PageFrame>
     );
   }
   const modalsEl = <SettingsModals modals={modals} messages={messages} onClose={hideModal} />;
@@ -351,13 +357,8 @@ function MeetingDetailsContent() {
     return (
       <div className="flex items-center justify-center h-screen">{modalsEl}
         <div className="text-center">
-          <p className="text-red-500 mb-4">{error}</p>
-          <button
-            onClick={() => router.push('/')}
-            className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600"
-          >
-            Go Back
-          </button>
+          <p className="text-destructive mb-4">{error}</p>
+          <BackCrumb fallback="/" fallbackLabel="Meetings" />
         </div>
       </div>
     );

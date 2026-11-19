@@ -45,7 +45,7 @@ export async function configuredProviders(): Promise<Set<string>> {
   return found;
 }
 
-/** A provider and model override. "Same as summaries" is null; the model saves on blur or Enter. */
+/** A provider and model override. "Same as Summary" is null; the model saves on blur or Enter. */
 export function LlmOverridePicker({
   idPrefix,
   providerLabel,
@@ -89,7 +89,7 @@ export function LlmOverridePicker({
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            <SelectItem value={SAME_AS_SUMMARIES}>Same as summaries</SelectItem>
+            <SelectItem value={SAME_AS_SUMMARIES}>Same as Summary</SelectItem>
             {providers.map((p) => (
               <SelectItem key={p.id} value={p.id}>{p.label}</SelectItem>
             ))}
@@ -103,7 +103,7 @@ export function LlmOverridePicker({
           className="w-56"
           list={`${idPrefix}-models`}
           disabled={!provider}
-          placeholder={provider ? 'Model name' : 'Same as summaries'}
+          placeholder={provider ? 'Model name' : 'Same as Summary'}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={saveModel}

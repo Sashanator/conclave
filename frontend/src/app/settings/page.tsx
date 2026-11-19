@@ -1,53 +1,49 @@
 'use client';
 
-import React, { useState, useEffect, useLayoutEffect, useRef, Suspense } from 'react';
-import { ArrowLeft, Settings2, Mic, Database as DatabaseIcon, SparkleIcon, Sparkles, FlaskConical, FileText, Users, Coins, BookOpen } from 'lucide-react';
+import React, { useEffect, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { motion } from 'framer-motion';
 import { TranscriptSettings } from '@/components/TranscriptSettings';
 import { RecordingSettings } from '@/components/RecordingSettings';
 import { UpdatesSettings } from '@/components/UpdatesSettings';
 import { PreferenceSettings } from '@/components/PreferenceSettings';
-import { SummaryModelSettings } from '@/components/SummaryModelSettings';
+import { ModelsKeysPane } from '@/components/Settings/ModelsKeysPane';
+import { SettingsRow } from '@/components/Settings/SettingsRow';
+import { TranscriptionExtras } from '@/components/Settings/TranscriptionExtras';
+import { SummariesPane } from '@/components/Settings/SummariesPane';
 import { CopilotSettings } from '@/components/CopilotSettings';
 import { KnowledgeSettings } from '@/components/KnowledgeSettings';
 import { TemplateSettings } from '@/components/TemplateSettings';
 import { TemplateAssistSettings } from '@/components/TemplateAssistSettings';
 import { confirmLeave } from '@/lib/unsaved-guard';
-import { BetaSettings } from '@/components/BetaSettings';
 import { SpeakerSettings } from '@/components/SpeakerSettings';
-import { CostsSettings } from '@/components/CostsSettings';
 import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { useConfig } from '@/contexts/ConfigContext';
-import { Tabs, TabsList, TabsTrigger, TabsContent } from '@/components/ui/tabs';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
+import { SettingsNav } from '@/components/Settings/SettingsNav';
+import { paneForTab, paneLabel, settingId, settingsHref, type SettingsPane } from '@/lib/settings-panes';
 
-// Tabs configuration (constant)
-const TABS = [
-  { value: 'general', label: 'General', icon: Settings2 },
-  { value: 'recording', label: 'Recordings', icon: Mic },
-  { value: 'Transcriptionmodels', label: 'Transcription', icon: DatabaseIcon },
-  { value: 'speakers', label: 'Speakers', icon: Users },
-  { value: 'summaryModels', label: 'Summary', icon: SparkleIcon },
-  { value: 'copilot', label: 'Copilot', icon: Sparkles },
-  { value: 'knowledge', label: 'Knowledge', icon: BookOpen },
-  { value: 'costs', label: 'Costs', icon: Coins },
-  { value: 'templates', label: 'Templates', icon: FileText },
-  { value: 'beta', label: 'Beta', icon: FlaskConical }
-] as const;
+// The target pane loads its rows asynchronously, so look again on the next frames (about 2 s) before giving up.
+function scrollToSetting(label: string) {
+  let frames = 0;
+  const look = () => {
+    const el = document.getElementById(settingId(label));
+    if (el) el.scrollIntoView();
+    else if (frames++ < 120) requestAnimationFrame(look);
+  };
+  requestAnimationFrame(look);
+}
 
 function SettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { transcriptModelConfig, setTranscriptModelConfig } = useConfig();
+  const pane = paneForTab(searchParams.get('tab'));
 
-  // Animation state for tabs. `?tab=` picks the first tab when it names one.
-  const requestedTab = searchParams.get('tab');
-  const [activeTab, setActiveTab] = useState<string>(() => TABS.find((tab) => tab.value === requestedTab)?.value ?? 'general');
-  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
-  const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
-  const changeTab = (tab: string) => {
-    if (confirmLeave()) setActiveTab(tab);
+  const pick = async (p: SettingsPane, label?: string) => {
+    if (!(await confirmLeave())) return;
+    router.replace(settingsHref(p));
+    if (label) scrollToSetting(label);
   };
 
   // Load saved transcript configuration on mount
@@ -70,107 +66,30 @@ function SettingsContent() {
     loadTranscriptConfig();
   }, [setTranscriptModelConfig]);
 
-  // Update underline position when active tab changes
-  useLayoutEffect(() => {
-    const activeIndex = TABS.findIndex(tab => tab.value === activeTab);
-    const activeTabElement = tabRefs.current[activeIndex];
-
-    if (activeTabElement) {
-      const { offsetLeft, offsetWidth } = activeTabElement;
-      setUnderlineStyle({ left: offsetLeft, width: offsetWidth });
-    }
-  }, [activeTab]);
+  let body: React.ReactNode;
+  switch (pane) {
+    case 'recording': body = <RecordingSettings />; break;
+    case 'transcription': body = (
+      <>
+        <SettingsRow label="Transcription model" block>
+          <TranscriptSettings transcriptModelConfig={transcriptModelConfig} setTranscriptModelConfig={setTranscriptModelConfig} />
+        </SettingsRow>
+        <TranscriptionExtras />
+      </>
+    ); break;
+    case 'speakers': body = <SpeakerSettings />; break;
+    case 'models': body = <ModelsKeysPane />; break;
+    case 'summaries': body = <SummariesPane />; break;
+    case 'copilot': body = <CopilotSettings part="answer" />; break;
+    case 'templates': body = <div className="space-y-6"><TemplateAssistSettings /><TemplateSettings /></div>; break;
+    case 'names': body = <><KnowledgeSettings /><CopilotSettings part="alert-words" /></>; break;
+    case 'app': body = <div className="space-y-6"><PreferenceSettings /><UpdatesSettings /></div>; break;
+  }
 
   return (
-    <div className="h-screen flex flex-col">
-      {/* Fixed Header */}
-      <div className="sticky top-0 z-10 bg-background border-b border-border">
-        <div className="max-w-6xl mx-auto px-8 py-6">
-          <div className="flex items-center gap-4">
-            <button
-              onClick={() => confirmLeave() && router.back()}
-              className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
-            >
-              <ArrowLeft className="w-5 h-5" />
-              <span>Back</span>
-            </button>
-            <h1 className="text-3xl font-bold">Settings</h1>
-          </div>
-        </div>
-      </div>
-
-      {/* Scrollable Content */}
-      <div className="flex-1 overflow-y-auto">
-        <div className="max-w-6xl mx-auto p-8 pt-6">
-          {/* Tabs */}
-          <Tabs value={activeTab} onValueChange={changeTab}>
-            <TabsList className="bg-transparent relative rounded-none border-b border-border p-0 h-auto">
-              {TABS.map((tab, index) => {
-                const Icon = tab.icon;
-                return (
-                  <TabsTrigger
-                    key={tab.value}
-                    value={tab.value}
-                    ref={el => { tabRefs.current[index] = el }}
-                    className="flex items-center gap-2 px-6 py-4 bg-transparent rounded-none border-0 data-[state=active]:bg-transparent data-[state=active]:text-foreground data-[state=active]:shadow-none text-muted-foreground hover:text-foreground relative z-10"
-                  >
-                    <Icon className="w-4 h-4" />
-                    {tab.label}
-                  </TabsTrigger>
-                );
-              })}
-
-              <motion.div
-                className="absolute bottom-0 z-20 h-0.5 bg-primary"
-                layoutId="underline"
-                style={{ left: underlineStyle.left, width: underlineStyle.width }}
-                transition={{ type: 'spring', stiffness: 400, damping: 40 }}
-              />
-            </TabsList>
-
-            <TabsContent value="general">
-              <div className="space-y-6">
-                <PreferenceSettings />
-                <UpdatesSettings />
-              </div>
-            </TabsContent>
-            <TabsContent value="recording">
-              <RecordingSettings />
-            </TabsContent>
-            <TabsContent value="Transcriptionmodels">
-              <TranscriptSettings
-                transcriptModelConfig={transcriptModelConfig}
-                setTranscriptModelConfig={setTranscriptModelConfig}
-              />
-            </TabsContent>
-            <TabsContent value="speakers">
-              <SpeakerSettings />
-            </TabsContent>
-            <TabsContent value="summaryModels">
-              <SummaryModelSettings />
-            </TabsContent>
-            <TabsContent value="copilot">
-              <CopilotSettings />
-            </TabsContent>
-            <TabsContent value="knowledge">
-              <KnowledgeSettings />
-            </TabsContent>
-            <TabsContent value="costs">
-              <CostsSettings />
-            </TabsContent>
-            <TabsContent value="templates">
-              <div className="space-y-6">
-                <TemplateAssistSettings />
-                <TemplateSettings />
-              </div>
-            </TabsContent>
-            <TabsContent value="beta" className="mt-6">
-              <BetaSettings />
-            </TabsContent>
-          </Tabs>
-        </div>
-      </div>
-    </div>
+    <PageFrame variant={pane === 'templates' ? 'list' : 'form'} title={paneLabel(pane)} subnav={<SettingsNav pane={pane} onPick={pick} />}>
+      {body}
+    </PageFrame>
   );
 }
 

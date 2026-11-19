@@ -162,3 +162,11 @@ test('the menu stays disabled until the delete request settles', async () => {
   for (const i of m.items()) expect(i.getAttribute('aria-disabled')).toBeNull();
   await m.close();
 });
+
+test('header actions render before the menu', async () => {
+  const m = await mount({ actions: <button type="button">X</button> });
+  const labels = Array.from(m.host.querySelectorAll('button')).map((b) => b.getAttribute('aria-label') ?? b.textContent);
+  expect(labels.indexOf('X')).toBeGreaterThanOrEqual(0);
+  expect(labels.indexOf('X')).toBeLessThan(labels.indexOf('Meeting actions'));
+  await m.close();
+});

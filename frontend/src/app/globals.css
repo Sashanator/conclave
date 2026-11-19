@@ -89,10 +89,10 @@
     --secondary: 0 0% 96.1%;
     --secondary-foreground: 0 0% 9%;
     --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
+    --muted-foreground: 0 0% 40%;
     --accent: 0 0% 96.1%;
     --accent-foreground: 0 0% 9%;
-    --destructive: 0 84.2% 60.2%;
+    --destructive: 0 72% 42%;
     --destructive-foreground: 0 0% 98%;
     --border: 0 0% 89.8%;
     --input: 0 0% 89.8%;
@@ -138,8 +138,8 @@
     --muted-foreground: 0 0% 63.9%;
     --accent: 0 0% 14.9%;
     --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 30.6%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 0 84% 64%;
+    --destructive-foreground: 0 0% 6%;
     --border: 0 0% 14.9%;
     --input: 0 0% 14.9%;
     --ring: 0 0% 83.1%;
@@ -171,8 +171,8 @@
     --muted-foreground: 230 20% 70%;
     --accent: 235 30% 18%;
     --accent-foreground: 40 30% 94%;
-    --destructive: 0 70% 50%;
-    --destructive-foreground: 0 0% 98%;
+    --destructive: 0 80% 66%;
+    --destructive-foreground: 0 0% 6%;
     --border: 235 30% 22%;
     --input: 235 30% 22%;
     --ring: 43 90% 58%;
@@ -293,8 +293,16 @@
   }
 }
 /* Editor follows the app theme (BlockNote's shadcn skin paints its own dark palette). Outside @layer: Tailwind purges unused layered classes. */
-.bn-container.bn-shadcn .bn-editor {
+.bn-container.bn-shadcn .bn-editor,
+.bn-container .bn-default-styles {
   background-color: transparent;
   color: inherit;
   font-family: inherit;
 }
+/* BlockNote reserves 54px beside the text for its drag handle; the summary is left-aligned with the page. */
+.bn-container .bn-editor { padding-inline: 0; }
+.bn-container { --bn-font-family: var(--font-source-sans-3), system-ui, sans-serif !important; }
+/* Summary headings follow the app scale (DESIGN.md: section titles 16px/600). */
+.bn-container [data-content-type=heading] { font-weight: 600; --level: 1.125rem; }
+.bn-container [data-content-type=heading][data-level="2"] { --level: 1rem; }
+.bn-container [data-content-type=heading][data-level="3"] { --level: 0.9375rem; }

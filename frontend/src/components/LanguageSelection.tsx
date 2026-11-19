@@ -2,7 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { Globe } from 'lucide-react';
 import { toast } from 'sonner';
 import { useConfig } from '@/contexts/ConfigContext';
-import { MAX_ALLOWED_LANGUAGES, addLanguage, removeLanguage } from '@/lib/allowed-languages';
+import { LanguagesSpoken } from '@/components/LanguagesSpoken';
 
 export interface Language {
   code: string;
@@ -119,16 +119,19 @@ interface LanguageSelectionProps {
   onLanguageChange: (language: string) => void;
   disabled?: boolean;
   provider?: 'localWhisper' | 'parakeet' | 'deepgram' | 'elevenLabs' | 'groq' | 'openai';
+  /** The Languages spoken block lives on its own on the meeting page. */
+  hideSpoken?: boolean;
 }
 
 export function LanguageSelection({
   selectedLanguage,
   onLanguageChange,
   disabled = false,
-  provider = 'localWhisper'
+  provider = 'localWhisper',
+  hideSpoken = false
 }: LanguageSelectionProps) {
   const [saving, setSaving] = useState(false);
-  const { setSelectedLanguage, allowedLanguages, setAllowedLanguages } = useConfig();
+  const { setSelectedLanguage } = useConfig();
 
   // Parakeet only supports auto-detection (doesn't support manual language selection)
   const isParakeet = provider === 'parakeet';
@@ -166,10 +169,6 @@ export function LanguageSelection({
     lang => lang.code === selectedLanguage
   )?.name || 'Auto Detect (Original Language)';
 
-  const addableLanguages = LANGUAGES.filter(
-    lang => lang.code !== 'auto' && lang.code !== 'auto-translate' && !allowedLanguages.includes(lang.code)
-  );
-
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -195,53 +194,7 @@ export function LanguageSelection({
           ))}
         </select>
 
-        {/* Languages spoken in the meetings: used whenever auto detection runs */}
-        {!isParakeet && (
-          <div className="space-y-2 pt-2">
-            <h3 className="text-sm font-medium text-foreground">Languages spoken in your meetings</h3>
-            <div className="flex flex-wrap gap-2">
-              {allowedLanguages.map((code) => {
-                const name = LANGUAGES.find(lang => lang.code === code)?.name || code;
-                return (
-                  <span
-                    key={code}
-                    className="inline-flex items-center gap-1 px-2 py-1 text-xs bg-background border border-input rounded-full"
-                  >
-                    {name}
-                    <button
-                      type="button"
-                      aria-label={`Remove ${name}`}
-                      onClick={() => setAllowedLanguages(removeLanguage(allowedLanguages, code))}
-                      className="text-muted-foreground hover:text-foreground"
-                    >
-                      ×
-                    </button>
-                  </span>
-                );
-              })}
-            </div>
-            {allowedLanguages.length < MAX_ALLOWED_LANGUAGES && (
-              <select
-                aria-label="Add language"
-                value=""
-                onChange={(e) => {
-                  if (e.target.value) setAllowedLanguages(addLanguage(allowedLanguages, e.target.value));
-                }}
-                className="w-full px-3 py-2 text-sm bg-background border border-input rounded-md shadow-sm focus:outline-none focus:ring-1 focus:ring-ring focus:border-ring"
-              >
-                <option value="">Add language…</option>
-                {addableLanguages.map((language) => (
-                  <option key={language.code} value={language.code}>
-                    {language.name} ({language.code})
-                  </option>
-                ))}
-              </select>
-            )}
-            <p className="text-xs text-muted-foreground">
-              Used whenever the language is Auto Detect, including Re-transcribe and Import. Whisper only chooses among these languages. Leave empty to let it pick any language.
-            </p>
-          </div>
-        )}
+        {!isParakeet && !hideSpoken && <LanguagesSpoken />}
 
         {/* Parakeet language limitation warning */}
         {isParakeet && (
@@ -256,12 +209,6 @@ export function LanguageSelection({
           <p className="text-muted-foreground">
             <strong>Current:</strong> {selectedLanguageName}
           </p>
-          {selectedLanguage === 'auto' && (
-            <div className="p-2 bg-yellow-50 dark:bg-yellow-950/40 border border-yellow-200 dark:border-yellow-800 rounded text-yellow-800 dark:text-yellow-300">
-              <p className="font-medium">⚠️ Auto Detect may produce incorrect results</p>
-              <p className="mt-1">For best accuracy, select your specific language (e.g., English, Spanish, etc.)</p>
-            </div>
-          )}
           {selectedLanguage === 'auto-translate' && (
             <div className="p-2 bg-blue-50 dark:bg-blue-950/40 border border-blue-200 dark:border-blue-800 rounded text-blue-800 dark:text-blue-300">
               <p className="font-medium">🌐 Translation Mode Active</p>

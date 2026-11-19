@@ -10,7 +10,7 @@ use rand::Rng;
 use serde::Deserialize;
 
 use super::tts_text::{preprocess, supported_only, Indexer};
-use super::TTS_RATE;
+use super::{PracticeLanguage, TTS_RATE};
 use crate::speakers::runtime::{open, Backend};
 
 const TTL_DIMS: [usize; 3] = [1, 50, 256];
@@ -33,6 +33,7 @@ pub struct TtsConfig {
 }
 
 pub struct Supertonic {
+    pub language: PracticeLanguage,
     dp: Session,
     text_enc: Session,
     vector_est: Session,
@@ -168,6 +169,7 @@ impl Supertonic {
         let (vocoder, b3) = open(&dir.join("vocoder.onnx"), pref)?;
         log::info!("practice tts: Supertonic graphs on {:?}", [b0, b1, b2, b3]);
         Ok(Self {
+            language: PracticeLanguage::En,
             dp,
             text_enc,
             vector_est,
@@ -253,7 +255,7 @@ impl Supertonic {
     /// Preprocessing and unicode indexing. Unsupported chars are dropped before the ids are built.
     fn text_ids(&self, text: &str) -> Vec<i64> {
         self.indexer
-            .ids(&preprocess(&supported_only(text, &self.indexer), "en"))
+            .ids(&preprocess(&supported_only(text, &self.indexer), self.language.code()))
     }
 
     fn predict_duration(&mut self, ids: &[i64], voice: &Voice, speed: f32) -> Result<f32, String> {
@@ -420,6 +422,20 @@ mod tests {
                 "{text:?}: rust {got}, python {want}"
             );
         }
+    }
+
+    /// Needs ONNX Runtime and `PRACTICE_MODELS_DIR` (the flat Supertonic 3 folder).
+    #[test]
+    #[ignore]
+    fn synthesizes_german() {
+        let dir = models_dir();
+        let mut m = Supertonic::load(&dir, false).unwrap();
+        m.language = PracticeLanguage::De;
+        let voice = load_voice(&dir.join("M1.json")).unwrap();
+        let samples = m
+            .synthesize("Guten Morgen, schön Sie zu sehen.", &voice, TTS_STEPS, TTS_SPEED)
+            .unwrap();
+        assert!(!samples.is_empty() && samples.iter().all(|x| x.is_finite()));
     }
 
     /// Needs ONNX Runtime and `PRACTICE_MODELS_DIR` (the flat Supertonic 3 folder).

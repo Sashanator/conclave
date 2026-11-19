@@ -8,6 +8,7 @@ import { useCopilot, type CopilotCard } from '@/contexts/CopilotContext';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTranscripts } from '@/contexts/TranscriptContext';
 import { actionLabel, answerToNote, MAX_QUESTION_CHARS, splitTimes, type CopilotAction, type CopilotSettings } from '@/lib/copilot';
+import { settingsHref } from '@/lib/settings-panes';
 import { formatRecordingTime } from '@/lib/meeting-notes';
 
 const ACTIONS: CopilotAction[] = ['catch_up', 'what_to_ask', 'explain'];
@@ -25,7 +26,7 @@ export function CopilotPane({ locked }: { locked: boolean }) {
       .then((s) => setAlertWords(s?.alert_words ?? []))
       .catch(() => setAlertWords([]));
   }, []);
-  const edit = () => router.push('/settings?tab=copilot');
+  const edit = () => router.push(settingsHref('names'));
   const [draft, setDraft] = useState('');
   const hasFinal = transcripts.some((t) => !t.is_partial);
   const blocked = pending || locked || !hasFinal;

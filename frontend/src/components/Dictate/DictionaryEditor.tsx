@@ -18,7 +18,7 @@ export function DictionaryEditor({ settings, commit }: { settings: DictateSettin
   return (
     <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-4">
       <div>
-        <h3 className="text-lg font-semibold text-foreground">Dictionary</h3>
+        <h2 className="text-lg font-semibold text-foreground">Dictionary</h2>
         <p className="text-sm text-muted-foreground">Words Whisper should hear and spell right, in dictation and in meetings.</p>
       </div>
 

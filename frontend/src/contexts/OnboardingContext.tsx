@@ -3,6 +3,8 @@
 import React, { createContext, useContext, useState, useEffect, useRef, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
+import { saveProviderKey } from '@/lib/models-keys';
+import { setAiKeyHint } from '@/lib/ai-key-hint';
 import type { PermissionStatus, OnboardingPermissions } from '@/types/onboarding';
 import {
   ONBOARDING_WHISPER_MODEL,
@@ -50,6 +52,7 @@ interface OnboardingContextType {
   setPermissionStatus: (permission: keyof OnboardingPermissions, status: PermissionStatus) => void;
   setPermissionsSkipped: (skipped: boolean) => void;
   completeOnboarding: () => Promise<void>;
+  setPendingAiKey: (key: string | null) => void;
   startBackgroundDownloads: () => Promise<void>;
   retryParakeetDownload: () => Promise<void>;
 }
@@ -86,7 +89,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     initializeDatabaseInBackground();
   }, []);
 
-  // Initialize database silently in background (moved from SetupOverviewStep)
+  // Initialize database silently in background
   const initializeDatabaseInBackground = async () => {
     try {
       console.log('[OnboardingContext] Starting background database initialization');
@@ -260,7 +263,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     }
 
     // Determine the correct step based on verified status
-    // New simplified flow: Step 1: Welcome, Step 2: Setup Overview, Step 3: Download Progress, Step 4: Permissions (macOS)
+    // New simplified flow: Step 1: Welcome, Step 2: AI key, Step 3: Download Progress, Step 4: Permissions (macOS)
     let currentStep = savedStatus.current_step;
     let completed = savedStatus.completed;
 
@@ -305,6 +308,14 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
     }
   };
 
+  // A ref, so the key never enters state, the auto-save or the persisted status.
+  const pendingAiKey = useRef<string | null>(null);
+  const keyStepSkipped = useRef(false);
+  const setPendingAiKey = useCallback((k: string | null) => {
+    pendingAiKey.current = k;
+    keyStepSkipped.current = k === null;
+  }, []);
+
   const completeOnboarding = async () => {
     try {
       // Set completion flag to prevent race conditions with auto-save
@@ -318,6 +329,22 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
 
       // Saves the default transcription and summary configuration (no local summary model)
       await invoke('complete_onboarding');
+      // Save after complete_onboarding, so a failed setup stores no key and the Claude default is written first.
+      const key = pendingAiKey.current;
+      if (key) {
+        try {
+          await saveProviderKey('claude', key);
+        } catch (e) {
+          console.error('[OnboardingContext] Failed to save the API key:', e);
+          setAiKeyHint(); // the page reloads right after, which would wipe a toast; the app shell shows it
+        } finally {
+          pendingAiKey.current = null;
+        }
+      } else if (!keyStepSkipped.current) {
+        // key step not shown this session (e.g. relaunched mid-download): hint only if no Claude key is stored
+        const stored = await invoke<string>('api_get_api_key', { provider: 'claude' }).catch(() => '');
+        if (!stored) setAiKeyHint();
+      }
       setCompleted(true);
       console.log('[OnboardingContext] Onboarding completed');
 
@@ -400,6 +427,7 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
         setPermissionStatus,
         setPermissionsSkipped,
         completeOnboarding,
+        setPendingAiKey,
         startBackgroundDownloads,
         retryParakeetDownload,
       }}

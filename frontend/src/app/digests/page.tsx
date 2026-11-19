@@ -3,25 +3,22 @@
 import { Suspense, useEffect, useState } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { invoke } from '@tauri-apps/api/core';
-import { DigestView } from '@/components/Briefs/DigestView';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
+import { DigestView, MeetingChip, useDigest } from '@/components/Briefs/DigestView';
+import { formatLongDate } from '@/lib/dates';
 
 type Item = { id: string; kind: 'brief' | 'digest'; title: string; createdAt: string };
-
-function formatDate(date: string): string {
-  const d = new Date(date);
-  return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString();
-}
 
 function DigestsContent() {
   const searchParams = useSearchParams();
   const urlId = searchParams.get('id');
   const [items, setItems] = useState<Item[]>([]);
-  const [selected, setSelected] = useState<string | null>(urlId);
+  const [picked, setPicked] = useState<string | null>(urlId);
   const [error, setError] = useState<string | null>(null);
 
   // A feed click on a digest while this page is open changes the query, so follow it.
   useEffect(() => {
-    setSelected(urlId);
+    setPicked(urlId);
   }, [urlId]);
 
   useEffect(() => {
@@ -41,37 +38,54 @@ function DigestsContent() {
   }, []);
 
   const shown = items.filter((item) => item.kind === 'digest');
+  const selected = picked ?? shown[0]?.id ?? null;
+  const { state, digest } = useDigest(selected);
+  const from = { path: `/digests?id=${selected}`, label: 'Digests' };
+  const dateOf = (v: string) => {
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? v : formatLongDate(d);
+  };
+
+  const list =
+    shown.length === 0 ? (
+      <p className="text-sm text-muted-foreground">No digests yet.</p>
+    ) : (
+      <ul className="divide-y divide-border">
+        {shown.map((item) => (
+          <li key={item.id}>
+            <button
+              type="button"
+              aria-pressed={selected === item.id}
+              onClick={() => setPicked(item.id)}
+              className={`block w-full rounded-md px-3 py-2 text-left ${selected === item.id ? 'bg-muted' : 'hover:bg-accent'}`}
+            >
+              <span className="block truncate">{item.title}</span>
+              <span className={`block text-sm ${selected === item.id ? 'text-foreground/75' : 'text-muted-foreground'}`}>{dateOf(item.createdAt)}</span>
+            </button>
+          </li>
+        ))}
+      </ul>
+    );
+
+  const rail = state === 'ready' && digest && (
+    <section aria-labelledby="digest-meetings" className="space-y-2">
+      <h2 id="digest-meetings" className="text-sm font-medium text-muted-foreground">Meetings in this digest</h2>
+      <div className="flex flex-col items-start gap-2">
+        {digest.meetingLinks.map((m, i) => (
+          <MeetingChip key={`${m.id}-${i}`} meeting={m} from={from} />
+        ))}
+      </div>
+    </section>
+  );
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl space-y-6 p-8">
-        <h1 className="text-3xl font-bold">Digests</h1>
-
-        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
-
-        {shown.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No digests yet.</p>
-        ) : (
-          <ul className="divide-y divide-border rounded-lg border border-border bg-card">
-            {shown.map((item) => (
-              <li key={item.id}>
-                <button
-                  type="button"
-                  aria-pressed={selected === item.id}
-                  onClick={() => setSelected(item.id)}
-                  className={`flex w-full items-baseline justify-between gap-3 px-4 py-2 text-left ${selected === item.id ? 'bg-muted' : 'hover:bg-accent'}`}
-                >
-                  <span>{item.title}</span>
-                  <span className="text-sm text-muted-foreground">{formatDate(item.createdAt)}</span>
-                </button>
-              </li>
-            ))}
-          </ul>
-        )}
-
-        {selected && <DigestView key={selected} id={selected} />}
-      </div>
-    </div>
+    <PageFrame variant="reading" title="Digests" subnav={list} rail={rail}>
+      {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+      {selected && state === 'loading' && <p className="text-sm text-muted-foreground">Loading…</p>}
+      {selected && state === 'error' && <p role="alert" className="text-sm text-red-600">Could not load this digest.</p>}
+      {selected && state === 'missing' && <p className="text-sm text-muted-foreground">This digest is no longer there.</p>}
+      {state === 'ready' && digest && <DigestView digest={digest} from={from} />}
+    </PageFrame>
   );
 }
 

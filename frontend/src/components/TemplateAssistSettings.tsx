@@ -2,15 +2,13 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { toast } from 'sonner';
-import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { LlmOverridePicker } from '@/components/shared/LlmOverridePicker';
+import { ModelLinkRow, SettingsRow, useSavedTick } from '@/components/Settings/SettingsRow';
 import { getAssistSettings, saveAssistSettings, type TemplateAssistSettings as AssistSettings } from '@/lib/templateAssist';
 
 export function TemplateAssistSettings() {
   const [view, setView] = useState<AssistSettings | null>(null);
-  // A provider picked without a model. Shown but not saved: the backend takes a provider and model together or neither.
-  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  const [saved, markSaved] = useSavedTick();
   // Edits show at once. Saves run one after another, each from the latest edit.
   const latest = useRef<AssistSettings | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
@@ -43,7 +41,9 @@ export function TemplateAssistSettings() {
     queue.current = queue.current.then(async () => {
       if (gen !== generation.current) return;
       try {
-        await saveAssistSettings(next);
+        // Only includeTranscript is this pane's; the model and the hidden hint flag come from the current settings.
+        await saveAssistSettings({ ...(await getAssistSettings()), includeTranscript: next.includeTranscript });
+        markSaved();
       } catch (err) {
         toast.error('Template assistant settings were not saved', { description: String(err) });
         await load();
@@ -55,34 +55,16 @@ export function TemplateAssistSettings() {
   if (!view) return null;
 
   return (
-    <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-5">
-      <h3 className="text-lg font-semibold text-foreground">Template assistant</h3>
-
-      <LlmOverridePicker
-        idPrefix="template-assist"
-        providerLabel="Model for the template assistant"
-        modelLabel="Model name"
-        provider={pendingProvider ?? view.provider}
-        model={pendingProvider ? null : view.model}
-        onChange={(provider, model) => {
-          if (provider && !model) {
-            setPendingProvider(provider);
-            return;
-          }
-          setPendingProvider(null);
-          commit((v) => ({ ...v, provider, model }));
-        }}
-      />
-
-      <div className="flex items-center justify-between gap-4">
-        <Label htmlFor="template-assist-transcript">Include the transcript by default</Label>
+    <div>
+      <SettingsRow label="Include the transcript by default" htmlFor="template-assist-transcript" saved={saved}>
         <Switch
           id="template-assist-transcript"
           aria-label="Include the transcript by default"
           checked={view.includeTranscript}
           onCheckedChange={(on) => commit((v) => ({ ...v, includeTranscript: on }))}
         />
-      </div>
-    </section>
+      </SettingsRow>
+      <ModelLinkRow />
+    </div>
   );
 }

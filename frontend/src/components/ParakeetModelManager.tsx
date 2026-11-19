@@ -556,7 +556,7 @@ function ModelCard({
           <div className="ml-4 flex items-center gap-2">
             {isAvailable && !isCancelling && (
               <>
-                <div className="flex items-center gap-1.5 text-green-600">
+                <div className="flex items-center gap-1.5 text-green-700 dark:text-green-400">
                   <div className="w-2 h-2 bg-green-500 rounded-full"></div>
                   <span className="text-xs font-medium">Ready</span>
                 </div>

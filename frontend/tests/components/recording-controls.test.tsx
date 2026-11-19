@@ -60,7 +60,6 @@ let onStopFailed: ReturnType<typeof mock>;
 function props() {
   return {
     isRecording: true,
-    barHeights: [] as string[],
     onRecordingStop: (callApi?: boolean) => onRecordingStop(callApi),
     onRecordingStart: async () => {},
     onTranscriptReceived: () => {},

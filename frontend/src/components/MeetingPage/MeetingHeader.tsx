@@ -20,22 +20,30 @@ type Props = {
   onMeetingDeleted?: () => void;
   onRecordingDeleted?: () => void;
   onRegenerateSummary?: (templateId: string) => void;
+  /** Rendered in the title row before the menu. */
+  actions?: React.ReactNode;
+  variant?: 'page' | 'compact' | 'new';
 };
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Emoji above the title, then category and date, with the page menu (the two deletes). */
-export function MeetingHeader({ row, live = false, finished = false, onChange, onTitleSaved, onMeetingDeleted, onRecordingDeleted, onRegenerateSummary }: Props) {
+export function MeetingHeader({ row, live = false, finished = false, onChange, onTitleSaved, onMeetingDeleted, onRecordingDeleted, onRegenerateSummary, actions, variant = 'page' }: Props) {
   const [dialog, setDialog] = useState<'meeting' | 'recording' | null>(null);
   const [deleting, setDeleting] = useState(false);
   const { availableTemplates } = useTemplates();
-  const [title, setTitle] = useState(row.title);
-  useEffect(() => setTitle(row.title), [row.title]);
+  const isNew = variant === 'new';
+  const compact = variant === 'compact'; // the recording page: title and menu on one line
+  const Wrap = isNew ? 'div' : 'h1'; // PageFrame supplies the h1 on the new-meeting page
+  // A new meeting still has its default title: show it as the placeholder, so typing starts from empty.
+  const shown = isNew && row.titleSource === 'default' ? '' : row.title;
+  const [title, setTitle] = useState(shown);
+  useEffect(() => setTitle(shown), [shown]);
   const emoji = row.emoji ?? availableTemplates.find((t) => t.id === row.templateId)?.emoji ?? null;
 
   const saveTitle = async () => {
     const next = title.trim();
-    if (!next) { setTitle(row.title); toast.error('Meeting title cannot be empty'); return; }
+    if (!next) { setTitle(shown); if (!isNew) toast.error('Meeting title cannot be empty'); return; }
     if (next === row.title) return;
     try {
       await invoke('api_save_meeting_title', { meetingId: row.id, title: next });
@@ -71,21 +79,25 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
 
   return (
     <header className="space-y-1">
-      {emoji && <div className="text-3xl" aria-hidden>{emoji}</div>}
-      <div className="flex items-start gap-2">
-      <h1 className="flex min-w-0 flex-1">
+      {emoji && variant === 'page' && <div className="text-3xl" aria-hidden>{emoji}</div>}
+      {isNew && <label htmlFor="meeting-name" className="block text-sm font-medium text-foreground">Meeting name</label>}
+      <div className={compact ? 'flex items-center gap-4' : 'flex items-start gap-2'}>
+      <Wrap className="flex min-w-0 flex-1 text-xl font-semibold">
       <input
-        aria-label="Meeting title"
+        id={isNew ? 'meeting-name' : undefined}
+        aria-label={isNew ? undefined : 'Meeting title'}
+        placeholder={isNew ? row.title : undefined}
         value={title}
         onChange={(e) => setTitle(e.target.value)}
         onBlur={saveTitle}
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-        className="min-w-0 flex-1 bg-transparent text-2xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+        className={`min-w-0 flex-1 rounded bg-transparent text-xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring${compact ? ' truncate' : ''}${isNew ? ' border border-input px-3 py-2' : ''}`}
       />
-      </h1>
+      </Wrap>
+      {actions}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" aria-label="Meeting actions" className="mt-1 rounded p-1 text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+          <button type="button" aria-label="Meeting actions" className={`${compact ? '' : 'mt-1 '}rounded p-1 text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring`}>
             <MoreHorizontal className="h-5 w-5" aria-hidden />
           </button>
         </DropdownMenuTrigger>
@@ -95,7 +107,7 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
         </DropdownMenuContent>
       </DropdownMenu>
       </div>
-      <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+      {!compact && <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
         <select
           aria-label="Category"
           value={row.templateId ?? ''}
@@ -105,8 +117,8 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
           <option value="">No category</option>
           {availableTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
-        <span>{formatMeetingDate(row, new Date(), live)}</span>
-      </div>
+        {!isNew && <span>{formatMeetingDate(row, new Date(), live)}</span>}
+      </div>}
       <DeleteMeetingDialog row={row} open={dialog === 'meeting'} onOpenChange={(o) => !o && setDialog(null)} onConfirm={() => runDelete('meeting')} />
       <DeleteRecordingDialog title={row.title} open={dialog === 'recording'} onOpenChange={(o) => !o && setDialog(null)} onConfirm={() => runDelete('recording')} />
     </header>

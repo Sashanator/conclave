@@ -1,5 +1,13 @@
 # Conclave changelog
 
+## v2.1.0 — 2026-11-19
+- **Wide screens.** Pages use the full width with one left-aligned layout; the sidebar collapses from the bottom row or Ctrl B and remembers its state.
+- **Back to where you were.** A breadcrumb, Esc or Alt+Left return from a meeting to the same view, groups, search and row.
+- **Settings in one place.** Grouped settings with search; every AI model choice and API key lives in Models & keys.
+- **Practice in German.** Each practice setup has a language; German sessions are transcribed and reviewed in German.
+- Onboarding says what runs on your PC and asks for an AI key; the meeting-ended pop-up has an Open button.
+- **Fixes.** View Meeting after stopping a recording no longer spins forever, the automatic summary runs again, and re-saving the same recording no longer creates a duplicate meeting.
+
 ## v2.0.0 — 2026-11-18
 - **Meetings table.** All meetings in one table with saved views, search across transcripts, and grouping by day or category.
 - **Create a meeting first.** Name it, write prep notes, then press Record. Calendar events with 📞 in the title become meetings on their own.

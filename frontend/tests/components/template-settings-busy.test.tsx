@@ -137,6 +137,7 @@ describe('template editor busy state', () => {
     expect(button('Save').props.disabled).toBe(true);
     expect(button('Duplicate').props.disabled).toBe(true);
     expect(button('Delete').props.disabled).toBe(true);
+    expect(button('Delete').props.className).toContain('text-destructive');
     expect(button('New template').props.disabled).toBe(true);
     expect(button('Create with AI').props.disabled).toBe(true);
     expect(renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Beta')[0].props.disabled).toBe(true);
@@ -263,7 +264,7 @@ describe('AI template draft persistence', () => {
     try {
       await createWithAI();
       expect(field('tpl-name', 'input').props.value).toBe('AI draft');
-      expect(confirmLeave()).toBe(false);
+      expect(await confirmLeave()).toBe(false);
       expect(renderer!.root.findAll(n => n.type === 'li').map(text)).toContain('name: Created a meeting template');
       expect(invoke.mock.calls.some(([c]) => c === 'api_save_template')).toBe(false);
       await act(async () => { button('Beta').props.onClick(); });

@@ -47,6 +47,12 @@ beforeEach(async () => {
 });
 
 describe('WhatsNew', () => {
+  test('the page is left-aligned with one h1', () => {
+    const h1 = r.root.findAll((n) => n.type === 'h1');
+    expect(h1.map((n) => n.children.join(''))).toEqual(["What's new"]);
+    expect(r.root.findAll((n) => typeof n.props.className === 'string' && /mx-auto|max-w-2xl/.test(n.props.className))).toHaveLength(0);
+  });
+
   test('an unreadable version says so and writes no seen key', async () => {
     globalThis.localStorage.removeItem('whats-new-seen');
     versionFails = true;

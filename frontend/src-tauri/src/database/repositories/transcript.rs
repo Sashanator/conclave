@@ -163,7 +163,7 @@ impl TranscriptsRepository {
     }
 
     /// Saves a recording into the meeting row it was routed to. Falls back to a new meeting (`true`) when the
-    /// row is gone or already has a transcript. Never touches title, `title_source` or calendar columns.
+    /// row is gone or already holds another recording; a re-save of the same recording (same folder) is a no-op `(id, false)`. Never touches title, `title_source` or calendar columns.
     /// An error rolls everything back, so a failed save never leaves a half-written row.
     pub async fn save_into_or_new(
         pool: &SqlitePool,
@@ -186,7 +186,32 @@ impl TranscriptsRepository {
                 tx.commit().await?;
                 return Ok((id.to_string(), false));
             }
+            // A re-save of the same recording (recovery, double stop, retry): folder_path is unique per recording
+            // (a continued save leaves the earlier row's own folder), so any row with this folder already holds it.
+            // Only when it holds at least as many lines: a fuller re-save of a partial first save must not be dropped
+            // (a duplicate beats loss). NULL never equals, so a folder-less save still falls through.
+            let candidates: Vec<(String,)> = sqlx::query_as(
+                "SELECT m.id FROM meetings m WHERE m.folder_path = ? \
+                 AND (SELECT COUNT(*) FROM transcripts t WHERE t.meeting_id = m.id) >= ? ORDER BY m.id = ? DESC")
+                .bind(&folder_path).bind(transcripts.len() as i64).bind(id).fetch_all(&mut *tx).await?;
+            // Notes count too: a re-save carrying more notes than the stored row must not be dropped.
+            let incoming_notes = sanitize_notes(notes).len();
+            let mut same = None;
+            for (cand,) in candidates {
+                // Unreadable stored notes: not provably the same recording, so skip it (a duplicate beats a failed save).
+                match read_notes_strict(&mut tx, &cand).await {
+                    Ok(n) if n.len() >= incoming_notes => {
+                        same = Some(cand);
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("save_transcript_dedup: skipping candidate meeting {cand}, its notes are unreadable: {e}"),
+                }
+            }
             tx.rollback().await?;
+            if let Some(found) = same {
+                return Ok((found, false));
+            }
             let new_id = Self::save_transcript(pool, meeting_title, transcripts, folder_path, notes, enqueue_speakers, title).await?;
             return Ok((new_id, true));
         }
@@ -911,13 +936,97 @@ mod meeting_date_tests {
     }
 
     #[tokio::test]
-    async fn save_into_meeting_with_transcripts_never_merges() {
+    async fn save_into_meeting_with_another_recording_never_merges() {
         let pool = crate::database::repositories::test_pool().await;
         target(&pool).await;
         save_to(&pool, Some("m-t"), &[], false).await;
-        let (id, fb) = save_to(&pool, Some("m-t"), &[], false).await;
+        let (id, fb) = TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &[seg("x", 0.0, None)], Some("/other".into()), &[], false, &TitleOrigin::default()).await.unwrap();
         assert!(fb && id != "m-t");
         assert_eq!(lines(&pool, "m-t").await, 1);
+    }
+
+    #[tokio::test]
+    async fn resaving_the_same_recording_is_idempotent() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        save_to(&pool, Some("m-t"), &[], false).await;
+        let count = |p: SqlitePool| async move { sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM meetings").fetch_one(&p).await.unwrap() };
+        let before = count(pool.clone()).await;
+        assert_eq!(save_to(&pool, Some("m-t"), &[], false).await, ("m-t".to_string(), false));
+        assert_eq!(count(pool.clone()).await, before);
+        assert_eq!(lines(&pool, "m-t").await, 1);
+        let all: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transcripts").fetch_one(&pool).await.unwrap();
+        assert_eq!(all, 1);
+    }
+
+    #[tokio::test]
+    async fn a_fuller_resave_of_a_partial_save_loses_no_lines() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let origin = TitleOrigin::default();
+        let save = |segs: Vec<TranscriptSegment>| { let pool = pool.clone(); let origin = origin.clone(); async move {
+            TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &segs, Some("/rec1".into()), &[], false, &origin).await.unwrap() } };
+        assert_eq!(save(vec![seg("a", 0.0, None)]).await, ("m-t".to_string(), false));
+        let (id, fb) = save(vec![seg("a", 0.0, None), seg("b", 1.0, None)]).await;
+        assert!(fb && id != "m-t");
+        assert_eq!(lines(&pool, &id).await, 2);
+    }
+
+    #[tokio::test]
+    async fn a_resave_with_more_notes_loses_no_note() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let origin = TitleOrigin::default();
+        let segs = [seg("a", 0.0, None)];
+        let note = MeetingNote { id: "n1".into(), at: None, text: "keep me".into() };
+        let first = TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &segs, Some("/rec3".into()), &[], false, &origin).await.unwrap();
+        assert_eq!(first, ("m-t".to_string(), false));
+        let (id, fb) = TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &segs, Some("/rec3".into()), std::slice::from_ref(&note), false, &origin).await.unwrap();
+        assert!(fb && id != "m-t");
+        let json: String = sqlx::query_scalar("SELECT notes_json FROM meeting_notes WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
+        assert!(json.contains("keep me"));
+    }
+
+    #[tokio::test]
+    async fn a_resave_skips_a_same_folder_meeting_with_unreadable_notes() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let origin = TitleOrigin::default();
+        let segs = [seg("a", 0.0, None)];
+        let first = TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &segs, Some("/rec4".into()), &[], false, &origin).await.unwrap();
+        assert_eq!(first, ("m-t".to_string(), false));
+        sqlx::query("INSERT OR REPLACE INTO meeting_notes (meeting_id, notes_json, created_at, updated_at) VALUES ('m-t', 'not json', 'x', 'x')").execute(&pool).await.unwrap();
+        let (id, fb) = TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &segs, Some("/rec4".into()), &[], false, &origin).await.unwrap();
+        assert!(fb && id != "m-t");
+        assert_eq!(lines(&pool, &id).await, 1);
+    }
+
+    #[tokio::test]
+    async fn resave_after_fallback_finds_the_meeting_by_folder() {
+        let pool = crate::database::repositories::test_pool().await;
+        let origin = TitleOrigin::default();
+        let segs = [seg("a", 0.0, None)];
+        let first = TranscriptsRepository::save_into_or_new(&pool, Some("gone"), "Fresh", &segs, Some("/rec2".into()), &[], false, &origin).await.unwrap();
+        assert!(first.1);
+        let again = TranscriptsRepository::save_into_or_new(&pool, Some("gone"), "Fresh", &segs, Some("/rec2".into()), &[], false, &origin).await.unwrap();
+        assert_eq!(again, (first.0.clone(), false));
+        let meetings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM meetings").fetch_one(&pool).await.unwrap();
+        assert_eq!(meetings, 1);
+        assert_eq!(lines(&pool, &first.0).await, 1);
+    }
+
+    #[tokio::test]
+    async fn resaving_a_recording_with_segments_adds_them_once() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let segs = [seg("a", 0.0, None), seg("b", 1.0, None)];
+        let origin = TitleOrigin::default();
+        let save = || TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &segs, Some("/rec1".into()), &[], false, &origin);
+        assert_eq!(save().await.unwrap(), ("m-t".to_string(), false));
+        assert_eq!(save().await.unwrap(), ("m-t".to_string(), false));
+        assert_eq!(lines(&pool, "m-t").await, 2);
+        let meetings: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM meetings").fetch_one(&pool).await.unwrap();
+        assert_eq!(meetings, 1);
     }
 
     #[tokio::test]

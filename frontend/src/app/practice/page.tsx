@@ -8,9 +8,13 @@ import { Button } from '@/components/ui/button';
 import { SetupList } from '@/components/Practice/SetupList';
 import { SessionList } from '@/components/Practice/SessionList';
 import { SetupEditor } from '@/components/Practice/SetupEditor';
-import { ReportView } from '@/components/Practice/ReportView';
+import { useRouter } from 'next/navigation';
+import { rememberOrigin } from '@/lib/back-nav';
 import { CallView } from '@/components/Practice/CallView';
-import { ModelsCard } from '@/components/Practice/ModelsCard';
+import Link from 'next/link';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
+import { confirmAction } from '@/lib/confirm';
+import { settingsHref } from '@/lib/settings-panes';
 import {
   blockedReason, characterName, planText, type PracticePrepPayload, type PracticeStatus, type SessionDetail, type SessionSummary, type SetupSummary, type VoicesProgressPayload,
 } from '@/lib/practice';
@@ -18,8 +22,7 @@ import {
 type View =
   | { kind: 'list' }
   | { kind: 'edit'; id?: string }
-  | { kind: 'call'; sessionId: string; setupName: string; character: string }
-  | { kind: 'report'; sessionId: string };
+  | { kind: 'call'; sessionId: string; setupName: string; character: string };
 
 type Overlay =
   | { kind: 'voices'; percent: number }
@@ -85,6 +88,12 @@ export default function PracticePage() {
       }
     });
   }, [refresh]);
+
+  const router = useRouter();
+  const openReport = (id: string) => {
+    rememberOrigin({ path: '/practice', label: 'Practice' });
+    router.push(`/practice/report?id=${id}`);
+  };
 
   const backToList = () => {
     setView({ kind: 'list' });
@@ -160,7 +169,8 @@ export default function PracticePage() {
   };
 
   const deleteSession = async (session: SessionSummary) => {
-    if (!window.confirm(`Delete the past session "${session.setup_name}" and its report?`)) return;
+    const ok = await confirmAction({ title: 'Delete this session?', body: `${session.setup_name} and its report are deleted permanently. The recording goes to the Recycle Bin. This can't be undone.`, confirmLabel: 'Delete', destructive: true });
+    if (!ok) return;
     try {
       await invoke('practice_delete_session', { id: session.id });
     } catch (err) {
@@ -175,17 +185,16 @@ export default function PracticePage() {
         sessionId={view.sessionId}
         setupName={view.setupName}
         character={view.character}
-        onEnded={() => setView({ kind: 'report', sessionId: view.sessionId })}
+        onEnded={() => openReport(view.sessionId)}
       />
     );
   }
-  if (view.kind === 'report') return <ReportView sessionId={view.sessionId} onBack={backToList} />;
 
   const editSetup = view.kind === 'edit' && view.id ? setups.find((s) => s.id === view.id) : undefined;
   if (view.kind === 'edit' && (!view.id || editSetup)) {
     return (
-      <div className="h-full overflow-y-auto">
-        <div className="max-w-3xl mx-auto p-8">
+      <PageFrame variant="form">
+        <div>
           <SetupEditor
             key={view.id ?? 'new'}
             setup={editSetup ?? null}
@@ -195,7 +204,7 @@ export default function PracticePage() {
             onDownloadVoices={downloadVoices}
           />
         </div>
-      </div>
+      </PageFrame>
     );
   }
 
@@ -203,9 +212,8 @@ export default function PracticePage() {
   const canStart = status !== null && reason === null && overlay === null;
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-6xl mx-auto p-8 space-y-6">
-        <h1 className="text-3xl font-bold">Practice</h1>
+    <PageFrame variant="dashboard" title="Practice">
+      <div className="space-y-6">
         {reason && <p className="rounded-lg border border-border bg-card p-4 text-sm text-muted-foreground">{reason}</p>}
 
         <div className="grid gap-4 lg:grid-cols-2 items-start">
@@ -218,11 +226,14 @@ export default function PracticePage() {
           />
           <SessionList
             sessions={sessions}
-            onOpen={(s) => setView({ kind: 'report', sessionId: s.id })}
+            onOpen={(s) => openReport(s.id)}
             onDelete={deleteSession}
           />
         </div>
-        <ModelsCard />
+        <p className="text-sm text-muted-foreground">
+          Models:{' '}
+          <Link href={settingsHref('models')} className="underline underline-offset-2 hover:text-foreground">Set in Models &amp; keys</Link>
+        </p>
       </div>
 
       {overlay && (
@@ -246,6 +257,6 @@ export default function PracticePage() {
           </div>
         </div>
       )}
-    </div>
+    </PageFrame>
   );
 }

@@ -38,7 +38,7 @@ export function PrepTickList({ prep, onChange }: { prep: MeetingPrep; onChange(p
               />
               <span className="min-w-0 break-words">
                 {item.text}
-                <span className="ml-2 rounded bg-muted px-1.5 py-0.5 text-xs text-muted-foreground">{item.kind}</span>
+                <span className="ml-2 rounded-full bg-muted px-2 py-0.5 text-xs text-foreground">{item.kind}</span>
               </span>
             </label>
           </li>

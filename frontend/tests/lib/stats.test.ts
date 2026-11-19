@@ -1,15 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { formatTokens, formatUsd, purposeLabel, readStatsPeriod, saveStatsPeriod, sharePct } from '../../src/lib/stats';
-
-describe('formatUsd', () => {
-  test('always three decimals, dash for unpriced', () => {
-    expect(formatUsd(0.004)).toBe('$0.004');
-    expect(formatUsd(0.012)).toBe('$0.012');
-    expect(formatUsd(1.27)).toBe('$1.270');
-    expect(formatUsd(0)).toBe('$0.000');
-    expect(formatUsd(null)).toBe('—');
-  });
-});
+import { formatTokens, purposeLabel, readStatsPeriod, saveStatsPeriod, sharePct } from '../../src/lib/stats';
 
 describe('formatTokens', () => {
   test('plain, thousands and millions', () => {

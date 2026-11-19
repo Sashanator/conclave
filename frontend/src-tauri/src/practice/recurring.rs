@@ -64,10 +64,11 @@ pub fn compute(current: &PastReport, recent: &[PastReport]) -> Recurring {
         .chain(recent.iter().filter(|past| same(past)))
         .take(RECURRING_SESSIONS)
         .filter(|past| past.report.fluency.speech_secs >= TREND_MIN_SPEECH_SECS)
-        .map(|past| {
+        // A German session has no filler count, so it has no point in the trend
+        .filter_map(|past| {
             let fluency = &past.report.fluency;
-            let per_minute = f64::from(fluency.filler_total) / (fluency.speech_secs / 60.0);
-            (per_minute * 10.0).round() / 10.0
+            let per_minute = f64::from(fluency.filler_total?) / (fluency.speech_secs / 60.0);
+            Some((per_minute * 10.0).round() / 10.0)
         })
         .collect();
     filler_trend.reverse();
@@ -100,7 +101,7 @@ mod tests {
             started_at: started.into(),
             report: Report {
                 version: 2,
-                fluency: Fluency { filler_total: fillers, speech_secs, ..Default::default() },
+                fluency: Fluency { filler_total: Some(fillers), speech_secs, ..Default::default() },
                 items,
                 dropped_items: 0,
                 pronunciation: vec![],
@@ -191,5 +192,14 @@ mod tests {
         let got = compute(&current, &[v1]);
         assert_eq!(got.patterns, Vec::new());
         assert_eq!(got.filler_trend, [6.0, 3.0].to_vec());
+    }
+
+    #[test]
+    fn a_session_without_a_filler_count_has_no_trend_point() {
+        let current = past("c", "s1", "2026-10-20T10:00", &[], 4, 80.0);
+        let mut german = past("g", "s1", "2026-10-19T10:00", &[], 0, 80.0);
+        german.report.fluency.filler_total = None;
+        let got = compute(&current, &[german]);
+        assert_eq!(got.filler_trend, [3.0].to_vec());
     }
 }

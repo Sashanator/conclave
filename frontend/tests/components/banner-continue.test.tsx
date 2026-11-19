@@ -59,6 +59,27 @@ describe('banner continue', () => {
     const text = JSON.stringify(r.toJSON());
     expect(text).toContain('Zoom: still the same call?');
     const labels = buttons(r).map((b) => b.props['aria-label'] ?? textOf(b));
-    expect(labels).toEqual(['Continue "Standup"', 'Dismiss']);
+    expect([...labels].sort()).toEqual(['Continue "Standup"', 'Dismiss']); // order-insensitive: Dismiss sits on the message row
+  });
+
+  for (const [kind, msg] of [['detected', 'Zoom meeting detected'], ['continue', 'Zoom: still the same call?']]) {
+    test(`${kind} with an offer keeps the message on its own row`, async () => {
+      view = { kind, app: 'Zoom', certain: true, line: null, continue_title: 'Weekly sync with the platform team' };
+      const r = await render();
+      const span = r.root.find((n) => n.type === 'span' && textOf(n) === msg);
+      expect(span.props.className).not.toContain('truncate');
+      const cont = buttons(r).find((b) => textOf(b).startsWith('Continue'))!;
+      expect(span.parent!.findAll((n) => n === cont)).toHaveLength(0);
+      expect(cont.props.title).toBe('Weekly sync with the platform team');
+    });
+  }
+
+  test('ended banner shows Open', async () => {
+    view = { kind: 'ended', app: 'Zoom', certain: true, line: null, continue_title: null };
+    const r = await render();
+    expect(buttons(r).map(textOf)).toContain('Open');
+    const open = buttons(r).find((b) => textOf(b) === 'Open')!;
+    await act(async () => { await open.props.onClick(); });
+    expect(invoke).toHaveBeenCalledWith('meeting_banner_action', { action: 'open' });
   });
 });

@@ -103,6 +103,10 @@ pub struct RecordingState {
     is_recording: AtomicBool,
     is_paused: AtomicBool,
 
+    // Latest mic and system level (f32 bits), stored by the pipeline once per mix window and read by the level emitter
+    mic_level: AtomicU32,
+    system_level: AtomicU32,
+
     // Audio devices
     microphone_device: Mutex<Option<Arc<AudioDevice>>>,
     system_device: Mutex<Option<Arc<AudioDevice>>>,
@@ -134,6 +138,8 @@ impl RecordingState {
         Arc::new(Self {
             is_recording: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
+            mic_level: AtomicU32::new(0),
+            system_level: AtomicU32::new(0),
             microphone_device: Mutex::new(None),
             system_device: Mutex::new(None),
             audio_sender: Mutex::new(None),
@@ -209,6 +215,16 @@ impl RecordingState {
 
     pub fn is_recording(&self) -> bool {
         self.is_recording.load(Ordering::SeqCst)
+    }
+
+    /// Called from the audio pipeline: two relaxed stores, nothing else.
+    pub fn set_levels(&self, mic: f32, system: f32) {
+        self.mic_level.store(mic.to_bits(), Ordering::Relaxed);
+        self.system_level.store(system.to_bits(), Ordering::Relaxed);
+    }
+
+    pub fn levels(&self) -> (f32, f32) {
+        (f32::from_bits(self.mic_level.load(Ordering::Relaxed)), f32::from_bits(self.system_level.load(Ordering::Relaxed)))
     }
 
     pub fn is_paused(&self) -> bool {
@@ -389,6 +405,8 @@ impl Default for RecordingState {
         Self {
             is_recording: AtomicBool::new(false),
             is_paused: AtomicBool::new(false),
+            mic_level: AtomicU32::new(0),
+            system_level: AtomicU32::new(0),
             microphone_device: Mutex::new(None),
             system_device: Mutex::new(None),
             audio_sender: Mutex::new(None),
@@ -419,6 +437,14 @@ impl Clone for RecordingStats {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn levels_store_and_read() {
+        let state = RecordingState::new();
+        assert_eq!(state.levels(), (0.0, 0.0));
+        state.set_levels(0.5, 0.1);
+        assert_eq!(state.levels(), (0.5, 0.1));
+    }
 
     #[test]
     fn the_ui_hears_about_recoverable_errors_sparingly() {

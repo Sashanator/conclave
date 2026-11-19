@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { MeetingCostLine } from '@/components/MeetingDetails/MeetingCostLine';
 import { setReviewed } from '@/lib/meetings';
 import { splitTasks, taskKeyAction } from '@/lib/meeting-page';
 import type { TaskRow } from '@/lib/tasks';
@@ -11,7 +12,7 @@ import type { TaskRow } from '@/lib/tasks';
 const STATUSES = ['open', 'done', 'dismissed'] as const;
 
 /** "Tasks from this meeting": kept rows on top, removed ones below with Restore. Failed edits toast and roll back. */
-export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false }: { meetingId: string; reviewed?: boolean }) {
+export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false, onCountChange, costRefreshKey }: { meetingId: string; reviewed?: boolean; onCountChange?: (kept: number) => void; costRefreshKey?: string }) {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
   const [reviewed, setReviewedState] = useState(initialReviewed);
   const rows = useRef<(HTMLElement | null)[]>([]);
@@ -27,6 +28,7 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
 
   const { kept, removed } = splitTasks(tasks, meetingId);
   const all = [...kept, ...removed];
+  useEffect(() => { onCountChange?.(kept.length); }, [kept.length, onCountChange]);
 
   // Each step carries the change it makes: a failure rolls back only this task, to the steps that did save.
   type Step = [string, Record<string, unknown>, Partial<TaskRow>];
@@ -88,19 +90,18 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
           {isRemoved ? (task.owner === 'unassigned' ? 'removed by AI' : 'removed') : `You${task.due ? ` · by ${task.due}` : ''}`}
         </div>
       </div>
-      {isRemoved ? (
-        <Button variant="ghost" size="sm" onClick={() => keep(task)}>Restore</Button>
-      ) : (
-        <Button variant="ghost" size="sm" aria-label="Remove task" onClick={() => remove(task)}>✕</Button>
-      )}
+      <div className="flex shrink-0 gap-1">
+        <Button variant="ghost" size="sm" aria-pressed={!isRemoved} onClick={() => keep(task)}>Keep <kbd className="ml-1 text-xs text-muted-foreground">K</kbd></Button>
+        <Button variant="ghost" size="sm" aria-pressed={isRemoved} onClick={() => remove(task)}>Remove <kbd className="ml-1 text-xs text-muted-foreground">X</kbd></Button>
+      </div>
     </li>
   );
 
   return (
     <aside aria-label="Tasks from this meeting" className="space-y-3 p-3">
-      <h2 className="text-sm font-medium">Tasks from this meeting <small aria-live="polite" className="text-muted-foreground">{kept.length} kept</small></h2>
+      <h2 className="text-base font-semibold">Tasks from this meeting <small aria-live="polite" className="text-muted-foreground">{kept.length} kept</small></h2>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span>K keep · X remove · ↑↓ move</span>
+        <span>Keyboard: <kbd>K</kbd> keep · <kbd>X</kbd> remove · <kbd>↑↓</kbd> move</span>
       </div>
       {kept.length > 0 && <ul className="space-y-2">{kept.map((t, i) => row(t, i, false))}</ul>}
       {removed.length > 0 && (
@@ -116,6 +117,7 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
           {reviewed ? 'Reviewed ✓' : 'Done reviewing'}
         </Button>
       </div>
+      <div className="border-t border-border pt-1"><MeetingCostLine meetingId={meetingId} refreshKey={costRefreshKey} /></div>
     </aside>
   );
 }

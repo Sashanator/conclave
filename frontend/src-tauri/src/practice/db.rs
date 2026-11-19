@@ -4,7 +4,7 @@ use std::collections::HashSet;
 
 use crate::practice::recurring::PastReport;
 use crate::practice::report::{pattern_key, Report};
-use crate::practice::{MATERIAL_MAX_BYTES, RECURRING_SESSIONS};
+use crate::practice::{PracticeLanguage, MATERIAL_MAX_BYTES, RECURRING_SESSIONS};
 use chrono::Utc;
 use futures_util::TryStreamExt;
 use serde::{Deserialize, Serialize};
@@ -19,6 +19,7 @@ pub struct SetupRow {
     pub character: String,
     pub situation: String,
     pub voice: String,
+    pub language: String,
     pub seeded: bool,
     pub plan: Option<String>,
     pub plan_fingerprint: Option<String>,
@@ -55,6 +56,8 @@ pub struct SetupInput {
     pub character: String,
     pub situation: String,
     pub voice: String,
+    #[serde(default)]
+    pub language: PracticeLanguage,
 }
 
 #[derive(Debug, Clone, PartialEq, sqlx::FromRow)]
@@ -64,6 +67,7 @@ pub struct SessionRow {
     pub setup_name: String,
     pub character: String,
     pub voice: String,
+    pub language: Option<String>,
     pub started_at: String,
     pub duration_secs: f64,
     pub folder_path: Option<String>,
@@ -195,12 +199,13 @@ pub async fn save_setup(pool: &SqlitePool, input: SetupInput) -> Result<SetupRow
     let id = match input.id {
         Some(id) => {
             let done = sqlx::query(
-                "UPDATE practice_setups SET name = ?, character = ?, situation = ?, voice = ?, updated_at = ? WHERE id = ?",
+                "UPDATE practice_setups SET name = ?, character = ?, situation = ?, voice = ?, language = ?, updated_at = ? WHERE id = ?",
             )
             .bind(&name)
             .bind(&character)
             .bind(&situation)
             .bind(&input.voice)
+            .bind(input.language.code())
             .bind(&now)
             .bind(&id)
             .execute(pool)
@@ -214,13 +219,14 @@ pub async fn save_setup(pool: &SqlitePool, input: SetupInput) -> Result<SetupRow
         None => {
             let id = Uuid::new_v4().to_string();
             sqlx::query(
-                "INSERT INTO practice_setups (id, name, character, situation, voice, seeded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 0, ?, ?)",
+                "INSERT INTO practice_setups (id, name, character, situation, voice, language, seeded, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?)",
             )
             .bind(&id)
             .bind(&name)
             .bind(&character)
             .bind(&situation)
             .bind(&input.voice)
+            .bind(input.language.code())
             .bind(&now)
             .bind(&now)
             .execute(pool)
@@ -374,6 +380,7 @@ pub async fn create_session(
         setup_name: setup.name.clone(),
         character: setup.character.clone(),
         voice: setup.voice.clone(),
+        language: Some(setup.language.clone()),
         started_at: now(),
         duration_secs: 0.0,
         folder_path: Some(folder_path.to_string()),
@@ -385,13 +392,14 @@ pub async fn create_session(
         report_error: None,
     };
     sqlx::query(
-        "INSERT INTO practice_sessions (id, setup_id, setup_name, character, voice, started_at, duration_secs, folder_path, plan, status, report_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        "INSERT INTO practice_sessions (id, setup_id, setup_name, character, voice, language, started_at, duration_secs, folder_path, plan, status, report_status) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&row.id)
     .bind(&row.setup_id)
     .bind(&row.setup_name)
     .bind(&row.character)
     .bind(&row.voice)
+    .bind(&row.language)
     .bind(&row.started_at)
     .bind(row.duration_secs)
     .bind(&row.folder_path)
@@ -613,6 +621,23 @@ pub async fn get_session(
     Ok(Some((session, turns)))
 }
 
+/// Stored language; else (a v2.0.0 row) the setup's current language; else English.
+pub async fn session_language(
+    pool: &SqlitePool,
+    session: &SessionRow,
+) -> Result<PracticeLanguage, String> {
+    if let Some(code) = &session.language {
+        return Ok(PracticeLanguage::from_code(code));
+    }
+    let Some(setup_id) = &session.setup_id else {
+        return Ok(PracticeLanguage::En);
+    };
+    Ok(get_setup(pool, setup_id)
+        .await?
+        .map(|s| PracticeLanguage::from_code(&s.language))
+        .unwrap_or_default())
+}
+
 /// Removes the session's rows only; its turns go with it through the foreign key.
 pub async fn delete_session_rows(pool: &SqlitePool, id: &str) -> Result<(), String> {
     sqlx::query("DELETE FROM practice_sessions WHERE id = ?")
@@ -666,6 +691,7 @@ mod tests {
             character: "Mike, a friendly car mechanic".to_string(),
             situation: "My car makes a strange noise.".to_string(),
             voice: "M3".to_string(),
+            language: PracticeLanguage::En,
         }
     }
 
@@ -685,6 +711,7 @@ mod tests {
             let setup = get_setup(&pool, id).await.unwrap().expect(id);
             assert_eq!(setup.voice, voice);
             assert!(setup.seeded);
+            assert_eq!(setup.language, "en");
         }
         let edited = save_setup(&pool, input(Some("seed-casual"), "Casual chat v2"))
             .await
@@ -693,6 +720,66 @@ mod tests {
         assert!(edited.seeded);
         delete_setup(&pool, "seed-thesis").await.unwrap();
         assert!(get_setup(&pool, "seed-thesis").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn setup_language_is_saved_and_updated() {
+        let pool = test_pool().await;
+        let mut i = input(None, "Deutsch");
+        i.language = PracticeLanguage::De;
+        let row = save_setup(&pool, i).await.unwrap();
+        assert_eq!(row.language, "de");
+        let mut i = input(Some(&row.id), "Deutsch");
+        i.language = PracticeLanguage::En;
+        assert_eq!(save_setup(&pool, i).await.unwrap().language, "en");
+        assert!(sqlx::query("UPDATE practice_setups SET language = 'fr'")
+            .execute(&pool)
+            .await
+            .is_err());
+    }
+
+    #[test]
+    fn setup_input_language_defaults_and_rejects_unknown() {
+        let body = |l: &str| {
+            format!(r#"{{"id":null,"name":"n","character":"c","situation":"s","voice":"M3"{l}}}"#)
+        };
+        let d: SetupInput = serde_json::from_str(&body("")).unwrap();
+        assert_eq!(d.language, PracticeLanguage::En);
+        let d: SetupInput = serde_json::from_str(&body(r#","language":"de""#)).unwrap();
+        assert_eq!(d.language, PracticeLanguage::De);
+        assert!(serde_json::from_str::<SetupInput>(&body(r#","language":"fr""#)).is_err());
+    }
+
+    #[tokio::test]
+    async fn session_stores_its_setups_language() {
+        let pool = test_pool().await;
+        let mut i = input(None, "Deutsch");
+        i.language = PracticeLanguage::De;
+        let setup = save_setup(&pool, i).await.unwrap();
+        let row = create_session(&pool, &setup, "/tmp/x", None).await.unwrap();
+        let (stored, _) = get_session(&pool, &row.id).await.unwrap().unwrap();
+        assert_eq!(stored.language.as_deref(), Some("de"));
+        save_setup(&pool, input(Some(&setup.id), "Deutsch")).await.unwrap();
+        assert_eq!(session_language(&pool, &stored).await.unwrap(), PracticeLanguage::De);
+    }
+
+    #[tokio::test]
+    async fn old_session_follows_its_setups_current_language() {
+        let pool = test_pool().await;
+        let setup = new_setup(&pool, "Old").await;
+        let row = create_session(&pool, &setup, "/tmp/x", None).await.unwrap();
+        sqlx::query("UPDATE practice_sessions SET language = NULL")
+            .execute(&pool)
+            .await
+            .unwrap();
+        let mut i = input(Some(&setup.id), "Old");
+        i.language = PracticeLanguage::De;
+        save_setup(&pool, i).await.unwrap();
+        let (old, _) = get_session(&pool, &row.id).await.unwrap().unwrap();
+        assert_eq!(session_language(&pool, &old).await.unwrap(), PracticeLanguage::De);
+        delete_setup(&pool, &setup.id).await.unwrap();
+        let (old, _) = get_session(&pool, &row.id).await.unwrap().unwrap();
+        assert_eq!(session_language(&pool, &old).await.unwrap(), PracticeLanguage::En);
     }
 
     #[tokio::test]
@@ -1013,7 +1100,7 @@ mod tests {
         // One minute of speech per session, so the filler count is the per-minute rate
         let report_with = |fillers: u32| Report {
             version: 2,
-            fluency: Fluency { filler_total: fillers, speech_secs: 60.0, ..Default::default() },
+            fluency: Fluency { filler_total: Some(fillers), speech_secs: 60.0, ..Default::default() },
             items: vec![],
             dropped_items: 0,
             pronunciation: vec![],

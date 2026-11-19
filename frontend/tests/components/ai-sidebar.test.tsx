@@ -5,8 +5,14 @@ import { AiSidebarProvider } from '../../src/components/AiSidebar/AiSidebarProvi
 const originalNav = { ...(await import('next/navigation')) };
 afterAll(() => { mock.module('next/navigation', () => originalNav); });
 mock.module('next/navigation', () => ({ useRouter: () => ({ push() {} }) }));
-import { AskChat } from '../../src/components/Ask/AskChat';
-import { AiSidebar } from '../../src/components/AiSidebar/AiSidebar';
+const originalCopilot = { ...(await import('../../src/components/Copilot/CopilotPane')) };
+afterAll(() => { mock.module('../../src/components/Copilot/CopilotPane', () => originalCopilot); });
+mock.module('../../src/components/Copilot/CopilotPane', () => ({ CopilotPane: () => null }));
+const { useRecordingState: _u, ...recCtx } = await import('../../src/contexts/RecordingStateContext');
+const originalRec = { ...recCtx, useRecordingState: _u };
+afterAll(() => { mock.module('../../src/contexts/RecordingStateContext', () => originalRec); });
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originalRec, useRecordingState: () => ({}) }));
+const { AiSidebar } = await import('../../src/components/AiSidebar/AiSidebar');
 import { useAiSidebarScreen } from '../../src/components/AiSidebar/AiSidebarProvider';
 
 function Screen({ kind, scope }: { kind: ScreenKind | null; scope?: { label: string; meetingIds: string[] } }) {
@@ -22,6 +28,10 @@ function press(init: Partial<KeyboardEventInit> & { key: string }, prevent = fal
   });
 }
 
+// Unmounted after each test: a leaked open sidebar would swallow Escape for later files.
+const mounted: { unmount(): void }[] = [];
+afterEach(() => { for (const m of mounted.splice(0)) act(() => m.unmount()); });
+
 async function mount(kind: ScreenKind | null) {
   let r!: ReturnType<typeof create>;
   await act(async () => {
@@ -32,6 +42,7 @@ async function mount(kind: ScreenKind | null) {
       </AiSidebarProvider>,
     );
   });
+  mounted.push(r);
   return r;
 }
 const hasAside = (r: ReturnType<typeof create>) => r.root.findAllByType('aside').length === 1;
@@ -59,6 +70,11 @@ describe('AiSidebar', () => {
     expect(hasAside(r)).toBe(true);
     press({ key: 'Escape' });
     expect(hasAside(r)).toBe(false);
+    // Esc that closes the sidebar must not also go Back.
+    const e = new KeyboardEvent('keydown', { key: 'Escape', cancelable: true });
+    press({ key: 'j', ctrlKey: true });
+    act(() => { window.dispatchEvent(e); });
+    expect(e.defaultPrevented).toBe(true);
     expect(readSidebarOpen('table')).toBe(false);
   });
 
@@ -75,20 +91,21 @@ describe('AiSidebar', () => {
   });
 });
 
-describe('Ask chat identity', () => {
-  test('a different meeting scope starts a fresh conversation', async () => {
-    writeSidebarOpen('meeting', true);
-    const tree = (id: string) => (
-      <AiSidebarProvider>
-        <Screen kind="meeting" scope={{ label: 'This meeting', meetingIds: [id] }} />
-        <AiSidebar />
-      </AiSidebarProvider>
-    );
-    let r!: ReturnType<typeof create>;
-    await act(async () => { r = create(tree('a')); });
-    const keyOf = () => (r.root.findByType(AskChat) as unknown as { _fiber: { key: string } })._fiber.key;
-    const first = keyOf();
-    await act(async () => { r.update(tree('b')); });
-    expect(keyOf()).not.toBe(first);
+describe('live screen', () => {
+  test('live: Escape does not close Copilot', async () => {
+    const r = await mount('live');
+    expect(hasAside(r)).toBe(true);
+    press({ key: 'Escape' });
+    expect(hasAside(r)).toBe(true);
+  });
+});
+
+describe('esc layer', () => {
+  test('esc layer only where Esc closes it', async () => {
+    writeSidebarOpen('table', true);
+    const t = await mount('table');
+    expect(t.root.findByType('aside').props['data-esc-layer']).toBeDefined();
+    const l = await mount('live');
+    expect(l.root.findByType('aside').props['data-esc-layer']).toBeUndefined();
   });
 });

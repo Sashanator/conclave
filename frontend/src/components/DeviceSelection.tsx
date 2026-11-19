@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { listen } from '@tauri-apps/api/event';
 import { RefreshCw, Mic, Speaker } from 'lucide-react';
-import { AudioLevelMeter, CompactAudioLevelMeter } from './AudioLevelMeter';
 import { AudioBackendSelector } from './AudioBackendSelector';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Label } from '@/components/ui/label';
@@ -41,9 +39,6 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshing, setRefreshing] = useState(false);
-  const [audioLevels, setAudioLevels] = useState<Map<string, AudioLevelData>>(new Map());
-  const [isMonitoring, setIsMonitoring] = useState(false);
-  const [showLevels, setShowLevels] = useState(false);
 
   // Filter devices by type
   const inputDevices = devices.filter(device => device.device_type === 'Input');
@@ -124,41 +119,6 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
     }
   }, [devices, loading, disabled, selectedDevices]);
 
-  // Set up audio level event listener
-  useEffect(() => {
-    let unlisten: (() => void) | undefined;
-
-    const setupAudioLevelListener = async () => {
-      try {
-        unlisten = await listen<AudioLevelUpdate>('audio-levels', (event) => {
-          const levelUpdate = event.payload;
-          const newLevels = new Map<string, AudioLevelData>();
-
-          levelUpdate.levels.forEach(level => {
-            newLevels.set(level.device_name, level);
-          });
-
-          setAudioLevels(newLevels);
-        });
-      } catch (err) {
-        console.error('Failed to setup audio level listener:', err);
-      }
-    };
-
-    setupAudioLevelListener();
-
-    // Cleanup function
-    return () => {
-      if (unlisten) {
-        unlisten();
-      }
-      // Stop monitoring when component unmounts
-      if (isMonitoring) {
-        stopAudioLevelMonitoring();
-      }
-    };
-  }, [isMonitoring]);
-
   // Handle device refresh
   const handleRefresh = async () => {
     setRefreshing(true);
@@ -183,47 +143,6 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
     onDeviceChange(newDevices);
   };
 
-  // Start audio level monitoring
-  const startAudioLevelMonitoring = async () => {
-    try {
-      // Only monitor input devices for now (microphones)
-      const deviceNames = inputDevices.map(device => device.name);
-      if (deviceNames.length === 0) {
-        setError('No microphone devices found to monitor');
-        return;
-      }
-
-      await invoke('start_audio_level_monitoring', { deviceNames });
-      setIsMonitoring(true);
-      setShowLevels(true);
-      console.log('Started audio level monitoring for input devices:', deviceNames);
-    } catch (err) {
-      console.error('Failed to start audio level monitoring:', err);
-      setError('Failed to start audio level monitoring');
-    }
-  };
-
-  // Stop audio level monitoring
-  const stopAudioLevelMonitoring = async () => {
-    try {
-      await invoke('stop_audio_level_monitoring');
-      setIsMonitoring(false);
-      setAudioLevels(new Map());
-      console.log('Stopped audio level monitoring');
-    } catch (err) {
-      console.error('Failed to stop audio level monitoring:', err);
-    }
-  };
-
-  // Toggle audio level monitoring
-  const toggleAudioLevelMonitoring = async () => {
-    if (isMonitoring) {
-      await stopAudioLevelMonitoring();
-    } else {
-      await startAudioLevelMonitoring();
-    }
-  };
-
   if (loading) {
     return (
       <div className="p-4 space-y-4">
@@ -241,19 +160,6 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
       <div className="flex items-center justify-between">
         <h2 className="text-sm font-medium text-foreground">Audio Devices</h2>
         <div className="flex items-center space-x-2">
-          {/* TODO: Monitoring */}
-          {/* <button */}
-          {/*   onClick={toggleAudioLevelMonitoring} */}
-          {/*   disabled={disabled || inputDevices.length === 0} */}
-          {/*   className={`px-3 py-1 text-xs font-medium rounded-md transition-colors ${ */}
-          {/*     isMonitoring */}
-          {/*       ? 'bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300 hover:bg-red-200 dark:hover:bg-red-900/50' */}
-          {/*       : 'bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-300 hover:bg-green-200 dark:hover:bg-green-900/50' */}
-          {/*   } disabled:pointer-events-none disabled:opacity-50`} */}
-          {/*   title={inputDevices.length === 0 ? 'No microphones available to test' : ''} */}
-          {/* > */}
-          {/*   {isMonitoring ? 'Stop Test' : 'Test Mic'} */}
-          {/* </button> */}
           <button
             onClick={handleRefresh}
             disabled={refreshing || disabled}
@@ -303,41 +209,6 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
           {inputDevices.length === 0 && (
             <p className="text-xs text-muted-foreground">No microphone devices found</p>
           )}
-
-          {/* Audio Level Meters for Input Devices */}
-          {showLevels && inputDevices.length > 0 && (
-            <div className="space-y-2 pt-2 border-t border-border">
-              <p className="text-xs text-muted-foreground font-medium">Microphone Levels:</p>
-              {inputDevices.map((device) => {
-                const levelData = audioLevels.get(device.name);
-                return (
-                  <div key={`level-${device.name}`} className="space-y-1">
-                    <div className="flex items-center justify-between">
-                      <span className="text-xs text-muted-foreground truncate max-w-[200px]">
-                        {device.name}
-                      </span>
-                      {levelData && (
-                        <CompactAudioLevelMeter
-                          rmsLevel={levelData.rms_level}
-                          peakLevel={levelData.peak_level}
-                          isActive={levelData.is_active}
-                        />
-                      )}
-                    </div>
-                    {levelData && (
-                      <AudioLevelMeter
-                        rmsLevel={levelData.rms_level}
-                        peakLevel={levelData.peak_level}
-                        isActive={levelData.is_active}
-                        deviceName={device.name}
-                        size="small"
-                      />
-                    )}
-                  </div>
-                );
-              })}
-            </div>
-          )}
         </div>
 
         {/* System Audio Selection */}
@@ -381,18 +252,6 @@ export function DeviceSelection({ selectedDevices, onDeviceChange, disabled = fa
             </div>
           )}
         </div>
-      </div>
-
-      {/* Info text */}
-      <div className="text-xs text-muted-foreground space-y-1">
-        <p>• <strong>Microphone:</strong> Records your voice and ambient sound</p>
-        <p>• <strong>System Audio:</strong> Records computer audio (music, calls, etc.)</p>
-        {isMonitoring && (
-          <p>• <strong>Mic Levels:</strong> Green = good, Yellow = loud, Red = too loud</p>
-        )}
-        {!isMonitoring && inputDevices.length > 0 && (
-          <p>• <strong>Tip:</strong> Click "Test Mic" to check if your microphone is working</p>
-        )}
       </div>
     </div>
   );

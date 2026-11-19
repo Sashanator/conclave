@@ -802,9 +802,11 @@ export function ModelSettingsModal({
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold">Model Settings</h3>
-      </div>
+      {layout === 'dialog' && (
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold">Model Settings</h3>
+        </div>
+      )}
 
       <div className="space-y-4">
         <div>
@@ -869,7 +871,7 @@ export function ModelSettingsModal({
                 }
               }}
             >
-              <SelectTrigger>
+              <SelectTrigger aria-label="Summary provider">
                 <SelectValue placeholder="Select provider" />
               </SelectTrigger>
               <SelectContent className="max-h-64 overflow-y-auto">
@@ -889,6 +891,7 @@ export function ModelSettingsModal({
                   <Button
                     variant="outline"
                     role="combobox"
+                    aria-label="Summary model"
                     aria-expanded={modelComboboxOpen}
                     className="flex-1 max-w-[200px] justify-between font-normal"
                   >
@@ -1104,6 +1107,7 @@ export function ModelSettingsModal({
                   type="button"
                   variant="ghost"
                   size="icon"
+                  aria-label={showApiKey ? 'Hide API key' : 'Show API key'}
                   onClick={() => setShowApiKey(!showApiKey)}
                 >
                   {showApiKey ? <EyeOff /> : <Eye />}

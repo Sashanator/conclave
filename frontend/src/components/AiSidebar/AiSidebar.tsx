@@ -17,10 +17,10 @@ function LiveBody() {
 /** Right-hand AI panel shell; Ask and Copilot render into `children`. */
 export function AiSidebar({ children }: { children?: ReactNode }) {
   const { kind, open, scope } = useAiSidebar();
-  if (!kind || !open) return null;
+  if (!kind || !open || kind === 'meeting') return null; // the meeting page shows Ask in MeetingRail
   return (
-    <aside aria-label="AI sidebar" className="flex h-screen w-[360px] shrink-0 flex-col border-l border-border bg-background">
-      {kind === 'live' ? <LiveBody /> : scope ? <AskChat key={kind === 'meeting' ? scope.meetingIds?.[0] : kind} scope={scope} allowAll={kind === 'table'} /> : children}
+    <aside aria-label="AI sidebar" data-esc-layer={kind === 'table' ? '' : undefined} className="flex h-screen w-[360px] shrink-0 flex-col border-l border-border bg-background">
+      {kind === 'live' ? <LiveBody /> : scope ? <AskChat key={kind} scope={scope} allowAll={kind === 'table'} /> : children}
     </aside>
   );
 }

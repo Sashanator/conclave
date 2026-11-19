@@ -100,6 +100,27 @@ const mkPrep = (over: Record<string, unknown> = {}) => ({
 
 const stamp = (n: number) => { const d = new Date(); d.setDate(d.getDate() - n * 7 - ((d.getDay() + 6) % 7)); return d.toISOString().slice(0, 10); };
 const practiceSession = { id: 'ps-1', setup_name: 'Salary talk', started_at: '2026-11-15T18:00:00Z', duration_secs: 540, report_status: 'ready', summary: 'Good pace; watch the fillers.', end_reason: 'user' };
+const germanSession = { ...practiceSession, id: 'ps-2', setup_name: 'Gehaltsgespräch', started_at: '2026-11-16T18:00:00Z' };
+const practiceReport = {
+  version: 2,
+  fluency: { fillers: { um: 14, like: 8 }, filler_total: 22, words: 1200, speech_secs: 540, wpm: 133.3, long_pauses: 4 },
+  items: [
+    { kind: 'Grammar', turn: 1, quote: 'If I will have more data…', better: 'If I had more data…', note: 'Past simple after "if".', echoed: true, pattern: null },
+    { kind: 'Unnatural', turn: 3, quote: 'I made a research about it', better: 'I did some research on it', note: 'Native speakers "do" research.', echoed: false, pattern: null },
+  ],
+  dropped_items: 0, pronunciation: [], pronunciation_note: null,
+};
+const practiceTurns = [
+  { session_id: 'ps-1', idx: 0, speaker: 'character', live_text: 'So, why do you think you deserve a raise?', verbatim_text: null, at_secs: 0, wav_offset: null, wav_len: null },
+  { session_id: 'ps-1', idx: 1, speaker: 'user', live_text: 'If I will have more data', verbatim_text: 'Um, if I will have more data', at_secs: 12, wav_offset: null, wav_len: null },
+];
+const practiceDetail = (id: string) => ({
+  summary: { ...practiceSession, id }, character: 'A hiring manager, polite but firm', turns: practiceTurns,
+  report: id === 'ps-2'
+    ? { ...practiceReport, pronunciation_note: 'Pronunciation hints are English-only, so this German session has none' }
+    : practiceReport,
+  report_error: null, audio_path: null, recurring: null,
+});
 const dictateSettings = { enabled: true, preferred_mic_device: null, main_hotkey: 'Ctrl+Alt+D', default_mode: 'cleaned-up', cleanup_provider: null, cleanup_model: null, builtin_hotkeys: {}, modes: [], dictionary: ['Conclave'] };
 const knowledge = { provider: null, model: null, my_names: ['Sam'], extract_enabled: true, digest_enabled: true, calendar_marker: '📞' };
 
@@ -145,6 +166,7 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   briefs_list: () => [
     { id: 'brief-1', kind: 'brief', title: 'Vendor call', createdAt: '2026-11-17T07:00:00Z' },
     { id: 'digest-1', kind: 'digest', title: 'Week of 9 November', createdAt: '2026-11-16T07:00:00Z' },
+    { id: 'digest-2', kind: 'digest', title: 'Week of 2 November', createdAt: '2026-11-09T07:00:00Z' },
   ],
   brief_get: () => ({
     eventTitle: 'Vendor call', eventStart: monday(15), templateName: 'Standard meeting', previousMeetingId: 'preview-1', previousTitle: 'Weekly product sync', previousDate: '2026-11-10T09:00:00Z',
@@ -153,7 +175,7 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   digest_get: () => ({
     periodStart: '2026-11-09', periodEnd: '2026-11-15',
     markdown: '## Highlights\n\n- The release is on track, the audio device switch is the open risk [M1].\n- The redesign review moved to Thursday [M2].',
-    meetingLinks: [{ id: 'preview-1', title: 'Weekly product sync' }, { id: 'preview-4', title: 'Release planning' }],
+    meetingLinks: [{ id: 'preview-1', title: 'Weekly product sync' }, { id: 'preview-4', title: 'Release planning' }, { id: '', title: 'Deleted meeting' }],
   }),
   // Ask and Copilot
   ask_meetings: () => ({
@@ -178,22 +200,28 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   calendar_disconnect: () => ({ connected: false, host: null, last_ok_at: null, last_error: null, last_error_at: null, upcoming: 0 }),
   // Stats
   stats_cost: ({ count }) => Array.from({ length: count }, (_, i) => {
-    const n = count - 1 - i;
+    const n = i;
     return { start: stamp(n), total_usd: n === 0 ? 0.31 : 0.2 + (n % 3) * 0.1, providers: [{ provider: 'claude', input_tokens: 120000, output_tokens: 18000, cost_usd: n === 0 ? 0.31 : 0.2 + (n % 3) * 0.1, unpriced_calls: 0 }] };
   }),
   stats_talk_time: () => ({
     current: [{ template_id: 'standard_meeting', template_name: 'Standard meeting', meetings: 4, self_seconds: 1500, total_seconds: 7200 }, { template_id: 'interview', template_name: 'Interview', meetings: 1, self_seconds: 600, total_seconds: 3000 }],
     previous: [{ template_id: 'standard_meeting', template_name: 'Standard meeting', meetings: 3, self_seconds: 1800, total_seconds: 5400 }],
   }),
-  stats_talk_time_meetings: () => [{ meeting_id: 'preview-1', title: 'Weekly product sync', date: '2026-11-10T09:00:00Z', self_seconds: 540, total_seconds: 2700 }],
+  stats_talk_time_meetings: () => [{ meeting_id: 'preview-1', title: 'Weekly product sync', date: '2026-11-10', self_seconds: 540, total_seconds: 2700 }],
   // Dictate
   dictate_get_settings: () => dictateSettings,
+  api_save_provider_key: () => null,
+  template_assist_save_settings: () => null,
+  set_recording_preferences: () => null,
+  set_notification_settings: () => null,
   dictate_save_settings: ({ settings }) => settings,
   dictate_status: () => ({ enabled: true, model_downloaded: true, mic_ok: true, engine_is_whisper: true, reason: null }),
   // Practice
   practice_status: () => ({ has_claude_key: true, engine_is_whisper: true, voices_ready: true, blocked: null, running_session: null }),
-  practice_list_setups: () => [{ id: 'setup-1', name: 'Salary talk', character: 'A hiring manager, polite but firm', situation: 'Negotiating a raise', voice: 'F1', seeded: false, has_plan: true, materials: [], session_count: 1 }],
-  practice_list_sessions: () => [practiceSession],
+  practice_list_setups: () => [{ id: 'setup-1', name: 'Salary talk', character: 'A hiring manager, polite but firm', situation: 'Negotiating a raise', voice: 'F1', language: 'en', seeded: false, has_plan: true, materials: [], session_count: 1 },
+    { id: 'setup-2', name: 'Gehaltsgespräch', character: 'Eine Personalleiterin, freundlich aber bestimmt', situation: 'Gehaltsverhandlung', voice: 'F1', language: 'de', seeded: false, has_plan: false, materials: [], session_count: 1 }],
+  practice_list_sessions: () => [practiceSession, germanSession],
+  practice_get_session: ({ id }) => practiceDetail(id),
   practice_get_settings: () => ({ chat_model: 'claude-sonnet-5-5', plan_model: 'claude-opus-5-5', plan_effort: 'high' }),
   practice_save_settings: ({ settings }) => settings,
   practice_download_voices: () => null,
@@ -210,7 +238,15 @@ export const previewHandlers: Record<string, (args: any) => unknown> = {
   api_get_meeting_summary_language: () => ({ language: null, storage: 'metadata' }),
   whisper_get_models_directory: () => 'C:\\Users\\preview\\AppData\\Roaming\\Conclave\\models',
   get_default_recordings_folder_path: () => 'C:\\Users\\preview\\Music\\Conclave',
-  get_onboarding_status: () => ({ completed: true, current_step: 4, model_status: { parakeet: 'downloaded' } }),
+  get_onboarding_status: () =>
+    location.search.includes('onboarding=1')
+      ? { completed: false, current_step: 1, model_status: { parakeet: 'not_downloaded', summary: 'not_used' } }
+      : { completed: true, current_step: 4, model_status: { parakeet: 'downloaded' } },
+  get_meeting_banner: () => {
+    const kind = new URLSearchParams(location.search).get('kind') ?? 'detected';
+    return { kind, app: 'Zoom', certain: true, line: null, continue_title: kind === 'ended' ? null : 'Weekly sync with the platform team' };
+  },
+  meeting_banner_action: () => null,
   check_first_launch: () => false,
   get_recording_state: () => ({ is_recording: false, is_paused: false, is_active: false, recording_duration: null, active_duration: null }),
   get_recording_preferences: () => ({ preferred_mic_device: null, preferred_system_device: null, meeting_detection: 'off' }),
@@ -221,6 +257,25 @@ export const previewHandlers: Record<string, (args: any) => unknown> = {
   api_save_meeting_title: () => null,
   get_audio_devices: () => [{ name: 'Preview mic', device_type: 'Input' }, { name: 'Preview speakers', device_type: 'Output' }],
   get_ollama_models: () => [],
+  take_backfill_error: () => null,
+  'plugin:store|load': () => 1,
+  'plugin:store|get': () => [null, false],
+  'plugin:store|set': () => null,
+  'plugin:store|save': () => null,
+  whisper_init: () => null,
+  whisper_get_available_models: () => [
+    { name: 'large-v3-turbo', size_mb: 1620, status: 'Available' },
+    { name: 'small', size_mb: 466, status: 'Missing' },
+  ],
+  api_get_auto_generate_setting: () => true,
+  get_anthropic_models: () => [{ id: 'claude-sonnet-4-5', display_name: 'Claude Sonnet 4.5' }, { id: 'claude-haiku-4-5', display_name: 'Claude Haiku 4.5' }],
+  api_get_template: (a) => ({
+    name: ({ one_to_one: '1:1', interview: 'Interview' } as Record<string, string>)[a?.templateId] ?? 'Standard meeting',
+    emoji: '📝', description: 'Decisions, actions and open questions.', use_when: 'Any regular meeting.', title_keywords: ['sync', 'weekly'], language: 'auto',
+    sections: [{ title: 'Decisions', instruction: 'List each decision with its owner.', format: 'list' }, { title: 'Action items', instruction: 'Who does what, by when.', format: 'list' }],
+  }),
+  save_onboarding_status_cmd: () => null,
+  dictate_pill_view: () => ({ state: 'listening', elapsed_ms: 4200, level: 0.4, mode: 'plain' }),
   api_list_templates: () => ({ templates: [{ id: 'standard_meeting', name: 'Standard meeting', emoji: '📝' }, { id: 'one_to_one', name: '1:1', emoji: '👥' }, { id: 'interview', name: 'Interview', emoji: '🤝' }], errors: [] }),
   get_meeting_audio: () => ({ path: null }),
   get_meeting_notes: () => [],

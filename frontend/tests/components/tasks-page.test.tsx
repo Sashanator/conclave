@@ -77,6 +77,8 @@ const toast = Object.assign(mock((_what: string, _opts?: unknown) => {}), {
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 mock.module('sonner', () => ({ toast }));
 
+const { formatRowDate } = await import('../../src/lib/dates');
+const { readOrigin } = await import('../../src/lib/back-nav');
 const { default: TasksPage } = await import('../../src/app/tasks/page');
 
 
@@ -134,6 +136,26 @@ beforeEach(() => {
 });
 
 describe('Tasks page', () => {
+  test('the group date uses the app date format', async () => {
+    await mount();
+    const text = textOf(renderer!.root);
+    expect(text).toContain(formatRowDate(new Date('2026-10-20T10:00:00Z')));
+    expect(text).not.toMatch(/\d+\/\d+\/\d{4}/);
+  });
+
+  test('the page fills the width', async () => {
+    await mount();
+    expect(renderer!.root.findAll((n) => typeof n.props.className === 'string' && /mx-auto|max-w-3xl/.test(n.props.className))).toHaveLength(0);
+    expect(renderer!.root.findAll((n) => n.type === 'h1').map(textOf)).toEqual(['Tasks']);
+  });
+
+  test('opening the meeting remembers Tasks', async () => {
+    await mount();
+    const link = renderer!.root.findAll((n) => typeof n.props.href === 'string' && n.props.href.includes('meeting-details') && n.props['aria-label'] === undefined)[0];
+    link.props.onClick({ defaultPrevented: true });
+    expect(readOrigin()).toEqual({ path: '/tasks', label: 'Tasks' });
+  });
+
   test('ticking a task calls tasks_set_status with done', async () => {
     await mount();
     await tick(byLabel('Mark done: Send the deck'));

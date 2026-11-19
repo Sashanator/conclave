@@ -1,5 +1,8 @@
 
+use super::PracticeLanguage;
+
 pub struct Persona<'a> {
+    pub language: PracticeLanguage,
     pub character: &'a str,
     pub situation: &'a str,
     pub plan: Option<&'a str>,
@@ -22,8 +25,8 @@ const RULES: &str = r#"Rules:
 /// The variety line only makes sense with a pool, so it is emitted only with a plan.
 pub fn character_system(p: &Persona, variety_seed: u32) -> String {
     let mut s = format!(
-        "You are role-playing a character in a spoken practice conversation. The learner talks to you by voice, and your replies are read aloud.\n\nCharacter: {}\nSituation: {}\n\n",
-        p.character, p.situation
+        "You are role-playing a character in a spoken practice conversation. The learner talks to you by voice, and your replies are read aloud.\n\nCharacter: {}\nSituation: {}\n\nSpeak {} only.\n\n",
+        p.character, p.situation, p.language.name()
     );
     if let Some(plan) = p.plan {
         s.push_str(&format!(
@@ -48,7 +51,7 @@ Write the plan for the character playing the examiner. Do not write the learner'
     (system.to_string(), user)
 }
 
-const REPORT_SYSTEM: &str = r#"You review a spoken English practice session. Each turn is labelled with its number and speaker. The learner's turns are verbatim transcripts, fillers and false starts included. Find mistakes in the learner's turns only. Never flag the character's turns.
+const REPORT_SYSTEM: &str = r#"You review a spoken {name} practice session. Check grammar, word choice and phrasing in {name}. Write each note in English; quote and better stay in {name}. Each turn is labelled with its number and speaker. The learner's turns are verbatim transcripts, fillers and false starts included. Find mistakes in the learner's turns only. Never flag the character's turns.
 
 Reply with JSON only, no other text, in this shape:
 {"grammar":[{"turn":2,"quote":"...","better":"...","note":"...","echoed":true,"pattern":"..."}],"unnatural":[{"turn":2,"quote":"...","better":"...","note":"...","pattern":"..."}],"clarity":[{"turn":2,"quote":"...","better":"...","note":"..."}]}
@@ -61,7 +64,7 @@ Reply with JSON only, no other text, in this shape:
 - pattern (grammar and unnatural only): a lowercase key of 2 to 5 words for the kind of mistake, such as "third person s".
 - Report only real problems. Use an empty list when there are none."#;
 
-pub fn report_prompts(turns: &[(i64, &str, &str)], recent_patterns: &[String]) -> (String, String) {
+pub fn report_prompts(turns: &[(i64, &str, &str)], recent_patterns: &[String], language: PracticeLanguage) -> (String, String) {
     // Callers pass the stored speaker ("user" or "character") straight through; the prompt calls the learner "learner".
     let user = turns
         .iter()
@@ -71,7 +74,7 @@ pub fn report_prompts(turns: &[(i64, &str, &str)], recent_patterns: &[String]) -
         })
         .collect::<Vec<_>>()
         .join("\n");
-    let mut system = REPORT_SYSTEM.to_string();
+    let mut system = REPORT_SYSTEM.replace("{name}", language.name());
     if !recent_patterns.is_empty() {
         system.push_str(&format!(
             "\n\nKnown pattern keys from earlier sessions (reuse one when it is the same mistake): {}",
@@ -212,6 +215,7 @@ mod tests {
     fn character_system_contains_rules_and_plan() {
         let with_plan = character_system(
             &Persona {
+                language: PracticeLanguage::En,
                 character: "Anna, a sceptical hiring manager",
                 situation: "A 20-minute phone screen",
                 plan: Some("PLAN-MARKER: ask about the gap in 2023"),
@@ -228,6 +232,7 @@ mod tests {
 
         let without = character_system(
             &Persona {
+                language: PracticeLanguage::En,
                 character: "Anna",
                 situation: "Phone screen",
                 plan: None,
@@ -240,8 +245,18 @@ mod tests {
     }
 
     #[test]
+    fn character_system_names_the_language() {
+        let sys = |language| {
+            character_system(&Persona { language, character: "Anna", situation: "Call", plan: None }, 0)
+        };
+        assert!(sys(PracticeLanguage::De).contains("Speak German only."));
+        assert!(sys(PracticeLanguage::En).contains("Speak English only."));
+    }
+
+    #[test]
     fn variety_line_depends_on_seed() {
         let persona = Persona {
+            language: PracticeLanguage::En,
             character: "Anna",
             situation: "Phone screen",
             plan: Some("Q1 ... Q20"),
@@ -267,6 +282,7 @@ mod tests {
                 (2, "user", "Um,\nI am engineer."),
             ],
             &[],
+            PracticeLanguage::En,
         );
         assert_eq!(
             user,
@@ -277,14 +293,24 @@ mod tests {
     }
 
     #[test]
+    fn report_prompt_names_the_language() {
+        let turns = [(2, "user", "Ich habe ein Hund.")];
+        let de = report_prompts(&turns, &[], PracticeLanguage::De).0;
+        assert!(de.contains("spoken German practice session"));
+        assert!(de.contains("Write each note in English"));
+        assert!(de.contains("quote and better stay in German"));
+        assert!(report_prompts(&turns, &[], PracticeLanguage::En).0.contains("spoken English practice session"));
+    }
+
+    #[test]
     fn report_prompt_lists_recent_patterns() {
         let turns = [(2, "user", "I has a dog.")];
         let recent = ["third person s".to_string(), "make a decision".to_string()];
-        let (system, _) = report_prompts(&turns, &recent);
+        let (system, _) = report_prompts(&turns, &recent, PracticeLanguage::En);
         assert!(system.contains(
             "Known pattern keys from earlier sessions (reuse one when it is the same mistake): third person s, make a decision"
         ));
-        let (system, _) = report_prompts(&turns, &[]);
+        let (system, _) = report_prompts(&turns, &[], PracticeLanguage::En);
         assert!(!system.contains("Known pattern keys"));
     }
 }

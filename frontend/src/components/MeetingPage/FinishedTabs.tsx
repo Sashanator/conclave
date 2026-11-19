@@ -13,12 +13,11 @@ export function openingTab(requested: MeetingDetailsTab | null | undefined, focu
 const PANE = 'min-h-0 min-w-0 flex-1 flex-col overflow-hidden';
 
 /** The Finished state: four tabs, every pane stays mounted so the editor, the audio and the notes keep their state. */
-export function FinishedTabs({ activeTab, onTabChange, notesCount, summary, tasks, transcript, notes, prep }: {
+export function FinishedTabs({ activeTab, onTabChange, notesCount, summary, transcript, notes, prep }: {
   activeTab: MeetingDetailsTab;
   onTabChange: (tab: MeetingDetailsTab) => void;
   notesCount: number;
   summary: ReactNode;
-  tasks: ReactNode;
   transcript: ReactNode;
   notes: ReactNode;
   prep: ReactNode;
@@ -51,10 +50,7 @@ export function FinishedTabs({ activeTab, onTabChange, notesCount, summary, task
           </button>
         ))}
       </div>
-      <div hidden={activeTab !== 'summary'} role="tabpanel" id="meeting-tab-summary" aria-label="Summary" className={cn('min-h-0 min-w-0 flex-1 overflow-hidden', activeTab === 'summary' && 'flex flex-col md:flex-row')}>
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">{summary}</div>
-        <div className="shrink-0 overflow-y-auto border-t border-border md:w-80 md:border-l md:border-t-0">{tasks}</div>
-      </div>
+      {pane('summary', 'Summary', summary)}
       {pane('transcript', 'Transcript', transcript)}
       {pane('notes', 'My notes', notes)}
       {pane('prep', 'Prep', prep)}

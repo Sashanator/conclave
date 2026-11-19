@@ -5,6 +5,8 @@ import Link from 'next/link';
 import { invoke } from '@tauri-apps/api/core';
 import ReactMarkdown from 'react-markdown';
 import { meetingHref } from '@/lib/meeting-target';
+import { formatLongDate } from '@/lib/dates';
+import { rememberOrigin, type Origin } from '@/lib/back-nav';
 
 export type DigestContent = {
   periodStart: string;
@@ -21,18 +23,26 @@ function withTagLinks(markdown: string): string {
   return markdown.replace(TAG, (_, n: string) => `[M${n}](digest-tag-${n})`);
 }
 
-// Shown as given when it is not a date, so the text is never lost.
+// A YYYY-MM-DD is a local day; any other date string parses as is. Shown raw when it is not a date.
 function formatDay(value: string): string {
-  const d = new Date(value);
-  return Number.isNaN(d.getTime()) ? value : d.toLocaleDateString();
+  const d = new Date(/^\d{4}-\d{2}-\d{2}$/.test(value) ? `${value}T00:00` : value);
+  return Number.isNaN(d.getTime()) ? value : formatLongDate(d);
 }
 
-export function DigestView({ id }: { id: string }) {
+export type DigestState = 'loading' | 'ready' | 'missing' | 'error';
+
+export function useDigest(id: string | null): { state: DigestState; digest: DigestContent | null } {
   const [digest, setDigest] = useState<DigestContent | null>(null);
-  const [state, setState] = useState<'loading' | 'ready' | 'missing' | 'error'>('loading');
+  const [state, setState] = useState<DigestState>('loading');
 
   useEffect(() => {
+    if (id === null) {
+      setDigest(null);
+      setState('missing');
+      return;
+    }
     let live = true;
+    setDigest(null);
     setState('loading');
     invoke<DigestContent | null>('digest_get', { id })
       .then((content) => {
@@ -43,17 +53,33 @@ export function DigestView({ id }: { id: string }) {
       .catch(() => {
         // The error text can echo digest content, so it is not logged
         console.error('Digest failed to load');
-        if (live) setState('error');
+        if (live) {
+          setDigest(null);
+          setState('error');
+        }
       });
     return () => {
       live = false;
     };
   }, [id]);
 
-  if (state === 'loading') return <p className="text-sm text-muted-foreground">Loading…</p>;
-  if (state === 'error') return <p role="alert" className="text-sm text-red-600">Could not load this digest.</p>;
-  if (state === 'missing' || !digest) return <p className="text-sm text-muted-foreground">This digest is no longer there.</p>;
+  return { state, digest };
+}
 
+const CHIP = 'inline-block max-w-[28ch] truncate rounded border px-2 py-0.5 align-middle text-xs';
+const CHIP_LINK = `${CHIP} border-primary/35 bg-primary/10 text-foreground hover:bg-primary/20`;
+
+export function MeetingChip({ meeting, from }: { meeting: { id: string; title: string }; from: Origin }) {
+  if (!meeting.id) return <span title={meeting.title} className={`${CHIP} border-border text-muted-foreground`}>{meeting.title}</span>;
+  return (
+    <Link href={meetingHref({ id: meeting.id })} title={meeting.title} onClick={() => rememberOrigin(from)} className={CHIP_LINK}>
+      {meeting.title}
+    </Link>
+  );
+}
+
+/** `from` is where a chip's meeting page leads Back to. */
+export function DigestView({ digest, from }: { digest: DigestContent; from: Origin }) {
   const links = digest.meetingLinks;
   // Only our [Mn] tags link anywhere. Other links show their text, and images show their alt text, so nothing loads.
   const components = {
@@ -63,18 +89,13 @@ export function DigestView({ id }: { id: string }) {
       const label = `[M${tag[1]}]`;
       const meeting = links[Number(tag[1]) - 1];
       if (!meeting) return <>{label}</>;
-      if (!meeting.id) return <span title={meeting.title}>{label}</span>;
-      return (
-        <Link href={meetingHref({ id: meeting.id })} title={meeting.title} className="hover:underline">
-          {label}
-        </Link>
-      );
+      return <MeetingChip meeting={meeting} from={from} />;
     },
     img: ({ alt }: { alt?: string }) => <>{alt}</>,
   };
 
   return (
-    <article className="space-y-4 rounded-lg border border-border bg-card p-6">
+    <article className="space-y-4">
       <header className="space-y-1">
         <h2 className="text-2xl font-semibold">Weekly digest</h2>
         <p className="text-sm text-muted-foreground">

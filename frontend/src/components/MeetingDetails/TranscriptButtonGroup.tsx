@@ -1,5 +1,6 @@
 "use client";
 
+import { confirmAction } from '@/lib/confirm';
 import { useState, useCallback } from 'react';
 import { Button } from '@/components/ui/button';
 import { ButtonGroup } from '@/components/ui/button-group';
@@ -48,8 +49,8 @@ export function TranscriptButtonGroup({
   const replacesLabels = reidentify || hasSpeakers;
   const [showRetranscribeDialog, setShowRetranscribeDialog] = useState(false);
 
-  const handleIdentify = () => {
-    if (replacesLabels && !window.confirm('Labels, including your manual fixes, will be replaced. Continue?')) return;
+  const handleIdentify = async () => {
+    if (replacesLabels && !(await confirmAction({ title: 'Replace speaker labels?', body: 'Labels, including your manual fixes, will be replaced.', confirmLabel: 'Replace', destructive: true }))) return;
     void onIdentifySpeakers?.();
   };
 

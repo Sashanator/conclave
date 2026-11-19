@@ -12,7 +12,8 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useMeetingRows } from '@/hooks/useMeetingRows';
 import { useMeetingViews } from '@/hooks/useMeetingViews';
-import { arrangeRows, effectiveHidden, parseViewConfig, type SortId } from '@/lib/meeting-views';
+import { arrangeRows, defaultCollapsed, effectiveHidden, parseViewConfig, readViewUi, saveViewUi, type SortId, type ViewUi } from '@/lib/meeting-views';
+import { rememberOrigin } from '@/lib/back-nav';
 import { meetingHref } from '@/lib/meeting-target';
 import { moveSelection, tableKeyAction } from '@/lib/meetings-keys';
 import { createMeeting, meetingState, type MeetingRow } from '@/lib/meetings';
@@ -25,6 +26,8 @@ import { ViewTabs } from './ViewTabs';
 
 const VIRTUALIZE_ABOVE = 200;
 const DEFAULT_WIDTH: Record<string, number> = { name: 280, date: 190, category: 150, summary: 420, reviewed: 90 };
+// Date and Reviewed never shrink or stretch; the other columns share what is left.
+const FIXED_PX: Record<string, number> = { date: 190, reviewed: 84 };
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 type Item = { kind: 'group'; key: string; label: string; count: number; chip: string | null; collapsed: boolean } | { kind: 'row'; key: string; row: MeetingRow };
@@ -56,33 +59,58 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     [rows, config, liveId, now, availableTemplates],
   );
   const data = useMemo(() => sections.flatMap((s) => s.rows), [sections]);
-  const [collapsed, setCollapsed] = useState<Set<string>>(() => new Set());
-  const toggleGroup = (key: string) => setCollapsed((c) => { const n = new Set(c); if (!n.delete(key)) n.add(key); return n; });
+  // Groups the user flipped away from their default; a day that appears later gets its default.
+  const [flipped, setFlipped] = useState<Set<string>>(() => new Set());
+  const defaults = useMemo(() => defaultCollapsed(sections, config.group, now), [sections, config.group, now]);
+  const scrollPos = useRef<ViewUi['scroll']>(null);
+  const pendingScroll = useRef<ViewUi['scroll']>(null);
+  const restoredSel = useRef<string | null>(null); // the selection a restore just applied, which must not scroll the list
+  const [restored, setRestored] = useState(0); // lets the scroll effect run after the restored groups are applied
+  const ui = useRef<ViewUi>({ flipped: [], query: '', selectedId: null, scroll: null });
+  ui.current = { flipped: [...flipped], query, selectedId, scroll: null };
+  // One effect per view: restore its state on entry, save it on exit (switching tabs or leaving the page).
+  const activeId = active?.id;
+  useEffect(() => {
+    if (!activeId) return;
+    const s = readViewUi(activeId);
+    setFlipped(new Set(s?.flipped));
+    setQuery(s?.query ?? '');
+    setSelectedId(s?.selectedId ?? null);
+    restoredSel.current = s?.selectedId ?? null;
+    pendingScroll.current = s?.scroll ?? { px: 0, key: null }; // a view with nothing saved starts at the top
+    setRestored((n) => n + 1);
+    scrollPos.current = s?.scroll ?? null;
+    return () => saveViewUi(activeId, { ...ui.current, scroll: scrollPos.current }); // scroll is a ref, so not in ui.current
+  }, [activeId]);
+  const toggleGroup = (key: string) => setFlipped((c) => { const n = new Set(c); if (!n.delete(key)) n.add(key); return n; });
   const items = useMemo<Item[]>(() => sections.flatMap((s) => {
-    const closed = !!s.label && s.key !== 'now' && collapsed.has(s.key);
+    const closed = !!s.label && s.key !== 'now' && defaults.has(s.key) !== flipped.has(s.key);
     const i = config.group === 'category' ? availableTemplates.findIndex((t) => t.id === s.key) : -1;
     return [
       ...(s.label ? [{ kind: 'group' as const, key: `g-${s.key}`, label: s.label, count: s.rows.length, collapsed: closed,
         chip: config.group === 'category' ? `var(--cat-${i >= 0 ? (i % 4) + 1 : 5})` : null }] : []),
       ...(closed ? [] : s.rows.map((row) => ({ kind: 'row' as const, key: row.id, row }))),
     ];
-  }), [sections, collapsed, config.group, availableTemplates]);
+  }), [sections, defaults, flipped, config.group, availableTemplates]);
 
   const counts = useMemo(() => Object.fromEntries(views.map((v) => [v.id,
     arrangeRows(rows, parseViewConfig(v.id, v.configJson), { liveId, now, templates: availableTemplates }).reduce((n, s) => n + s.rows.length, 0)])),
   [views, rows, liveId, now, availableTemplates]);
 
+  const markOrigin = useCallback(() => rememberOrigin({ path: '/', label: `Meetings / ${active?.name ?? 'All meetings'}` }), [active?.name]);
   const newMeeting = useCallback(async () => {
     if (creating.current) return;
     creating.current = true;
     try {
-      router.push(meetingHref({ id: await createMeeting() }));
+      const id = await createMeeting();
+      markOrigin();
+      router.push(meetingHref({ id }));
     } catch (e) {
       toast.error('Could not create the meeting', { description: errText(e) });
     } finally {
       creating.current = false;
     }
-  }, [router]);
+  }, [router, markOrigin]);
 
   const ids = useMemo(() => (searchMode ? [...new Set((hits ?? []).map((h) => h.meetingId))] : items.flatMap((i) => (i.kind === 'row' ? [i.row.id] : []))), [searchMode, hits, items]);
   const selected = selectedId && ids.includes(selectedId) ? selectedId : null;
@@ -99,7 +127,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
       if (!action) return;
       e.preventDefault(); // Ctrl N would open a window in WebView2; Esc must not also close the sidebar
       if (action === 'up' || action === 'down') setSelectedId(ids[moveSelection(selected ? ids.indexOf(selected) : -1, action === 'down' ? 1 : -1, ids.length)] ?? null);
-      else if (action === 'open') { if (selected) router.push(meetingHref({ id: selected })); }
+      else if (action === 'open') { if (selected) { markOrigin(); router.push(meetingHref({ id: selected })); } }
       else if (action === 'toggle-reviewed') { if (selected && rows.find((r) => r.id === selected)?.hasSummary) void toggleReviewed(selected); }
       else if (action === 'focus-search') searchRef.current?.focus();
       else if (action === 'new-meeting') void newMeeting();
@@ -107,7 +135,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
-  }, [ids, selected, query, rows, router, toggleReviewed, newMeeting]);
+  }, [ids, selected, query, rows, router, toggleReviewed, newMeeting, markOrigin]);
 
   useEffect(() => {
     onScopeChange?.({ viewName: active?.name ?? '', meetingIds: data.map((r) => r.id) });
@@ -118,13 +146,13 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     const col = (id: string, cell: (r: MeetingRow) => ReactNode): ColumnDef<MeetingRow> =>
       ({ id, header: TITLES[id], size: DEFAULT_WIDTH[id], minSize: 60, cell: (c) => cell(c.row.original) });
     return [
-      col('name', (r) => <NameCell row={r} />),
+      col('name', (r) => <NameCell row={r} onOpen={markOrigin} />),
       col('date', (r) => <DateCell row={r} now={now} state={stateOf(r)} />),
       col('category', (r) => <CategoryChip row={r} templates={availableTemplates} onChange={(t) => void changeTemplate(r.id, t)} />),
-      col('summary', (r) => <SummaryCell row={r} state={stateOf(r)} activeDuration={activeDuration} compact={config.density === 'compact'} onDelete={() => setDeleting(r)} />),
+      col('summary', (r) => <SummaryCell row={r} state={stateOf(r)} activeDuration={activeDuration} compact={config.density === 'compact'} onDelete={() => setDeleting(r)} onOpen={markOrigin} />),
       col('reviewed', (r) => <ReviewedCell row={r} onToggle={() => void toggleReviewed(r.id)} />),
     ];
-  }, [liveId, now, availableTemplates, activeDuration, config.density, changeTemplate, toggleReviewed]);
+  }, [liveId, now, availableTemplates, activeDuration, config.density, changeTemplate, toggleReviewed, markOrigin]);
 
   const hidden = effectiveHidden(config);
   const table = useReactTable({
@@ -145,7 +173,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     },
   });
   // Widths are proportions, so the columns always fit beside the AI sidebar instead of scrolling sideways.
-  const sizeTotal = table.getVisibleLeafColumns().reduce((n, c) => n + c.getSize(), 0) || 1;
+  const sizeTotal = table.getVisibleLeafColumns().reduce((n, c) => (c.id in FIXED_PX ? n : n + c.getSize()), 0) || 1;
 
   const virtual = items.length > VIRTUALIZE_ABOVE;
   const virtualizer = useVirtualizer({
@@ -160,11 +188,23 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const padTop = vitems?.length ? vitems[0].start : 0;
   const padBottom = vitems?.length ? virtualizer.getTotalSize() - vitems[vitems.length - 1].end : 0;
   useEffect(() => {
-    if (!selected || searchMode) return;
+    if (!selected) return;
+    const fromRestore = restoredSel.current === selected;
+    restoredSel.current = null;
+    if (searchMode || pendingScroll.current || fromRestore) return; // a restore wins over scroll-to-selected
     if (virtual) { virtualizer.scrollToIndex(items.findIndex((i) => i.key === selected)); return; }
     Array.from(scrollRef.current?.querySelectorAll('[data-row-id]') ?? []).find((el) => el.getAttribute('data-row-id') === selected)
       ?.scrollIntoView?.({ block: 'nearest' });
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const p = pendingScroll.current;
+    if (!p || !loaded || !items.length) return;
+    pendingScroll.current = null;
+    if (virtual && p.key) {
+      const i = items.findIndex((x) => x.key === p.key);
+      if (i >= 0) virtualizer.scrollToIndex(i, { align: 'start' });
+    } else if (scrollRef.current) scrollRef.current.scrollTop = p.px;
+  }, [loaded, items.length, virtual, restored]); // eslint-disable-line react-hooks/exhaustive-deps
   const colCount = table.getVisibleLeafColumns().length + 1;
   const rowById = new Map(table.getRowModel().rows.map((r) => [r.id, r]));
 
@@ -185,25 +225,28 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   }
 
   return (
-    <>
+    <div className="flex min-h-0 flex-1 flex-col">
       <ViewTabs views={views} activeId={active?.id ?? null} counts={counts} onSelect={setActive} onAdd={() => void addView()}
         onRename={(id, name) => void renameView(id, name)} onDelete={(id) => void removeView(id)} />
       <Toolbar onNew={() => void newMeeting()} query={query} onQuery={setQuery} searchRef={searchRef} config={config} dispatch={dispatch} onAsk={onAsk} />
       {!searchMode && <FilterChips filter={config.filter} now={now} templates={availableTemplates} dispatch={dispatch} />}
       {searchMode ? (
         <SearchResults query={query} hits={hits} rows={rows} templates={availableTemplates} now={now} selectedId={selected}
-          onClear={() => setQuery('')} onToggleReviewed={(id) => void toggleReviewed(id)} onChangeTemplate={(id, t) => void changeTemplate(id, t)} />
+          onClear={() => setQuery('')} onToggleReviewed={(id) => void toggleReviewed(id)} onChangeTemplate={(id, t) => void changeTemplate(id, t)} onOpen={markOrigin} />
       ) : !loaded ? (
         <p role="status" className="py-8 text-center text-sm text-muted-foreground">Loading meetings…</p>
       ) : !data.length ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No meetings match this view.</p>
       ) : (
-      <div ref={scrollRef} className={`min-h-0 flex-1 overflow-auto ${config.density === 'compact' ? 'compact' : ''}`}>
+      <div ref={scrollRef} onScroll={(e) => {
+        const top = e.currentTarget.scrollTop;
+        scrollPos.current = { px: top, key: virtual ? items[virtualizer.getVirtualItemForOffset(top)?.index ?? -1]?.key ?? null : null };
+      }} className={`min-h-0 flex-1 overflow-auto ${config.density === 'compact' ? 'compact' : ''}`}>
         <table className="w-full table-fixed border-collapse text-sm">
           <thead>
             <tr>
               {table.getHeaderGroups()[0].headers.map((h) => (
-                <th key={h.id} style={{ width: `${(h.getSize() / sizeTotal) * 100}%` }} className="px-[10px] py-1 text-left text-xs font-semibold text-muted-foreground"
+                <th key={h.id} style={{ width: h.column.id in FIXED_PX ? `${FIXED_PX[h.column.id]}px` : `${(h.getSize() / sizeTotal) * 100}%` }} className="px-[10px] py-1 text-left text-xs font-semibold text-muted-foreground"
                   aria-sort={config.sort[0]?.id === h.column.id ? (config.sort[0].desc ? 'descending' : 'ascending') : undefined}>
                   {SORTABLE.includes(h.column.id as SortId)
                     ? <button type="button" onClick={() => dispatch(nextSort(config, h.column.id as SortId))} className="hover:text-foreground">
@@ -211,8 +254,8 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
                       </button>
                     : flexRender(h.column.columnDef.header, h.getContext())}
                   <HeaderMenu id={h.column.id} config={config} dispatch={dispatch} />
-                  <span role="separator" aria-orientation="vertical" onMouseDown={h.getResizeHandler()} onTouchStart={h.getResizeHandler()}
-                    className="float-right h-4 w-1 cursor-col-resize" />
+                  {!(h.column.id in FIXED_PX) && <span role="separator" aria-orientation="vertical" onMouseDown={h.getResizeHandler()} onTouchStart={h.getResizeHandler()}
+                    className="float-right h-4 w-1 cursor-col-resize" />}
                 </th>
               ))}
               <th style={{ width: 40 }}><span className="sr-only">Actions</span></th>
@@ -248,7 +291,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
                       {flexRender(cell.column.columnDef.cell, cell.getContext())}
                     </td>
                   ))}
-                  <td><RowMenu row={item.row} live={item.row.id === liveId} onDelete={() => setDeleting(item.row)} /></td>
+                  <td><RowMenu row={item.row} live={item.row.id === liveId} onDelete={() => setDeleting(item.row)} onOpen={markOrigin} /></td>
                 </tr>
               );
             })}
@@ -265,6 +308,6 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
         // A failed delete keeps the row and the hook toasts the error.
         onConfirm={async () => { const r = deleting; setDeleting(null); if (r) await removeMeeting(r.id); }}
       />
-    </>
+    </div>
   );
 }

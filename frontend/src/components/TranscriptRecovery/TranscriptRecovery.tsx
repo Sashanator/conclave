@@ -20,7 +20,8 @@ import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { MeetingMetadata, StoredTranscript } from '@/services/indexedDBService';
-import { cn } from '@/lib/utils';
+import { cn, DESTRUCTIVE_OUTLINE } from '@/lib/utils';
+import { confirmAction } from '@/lib/confirm';
 
 interface TranscriptRecoveryProps {
   isOpen: boolean;
@@ -95,7 +96,7 @@ export function TranscriptRecovery({
   const handleDelete = async () => {
     if (!selectedMeetingId) return;
 
-    if (!confirm('Are you sure you want to delete this meeting? This cannot be undone.')) {
+    if (!(await confirmAction({ title: 'Delete this meeting?', body: 'This cannot be undone.', confirmLabel: 'Delete', destructive: true }))) {
       return;
     }
 
@@ -273,7 +274,8 @@ export function TranscriptRecovery({
             Cancel
           </Button>
           <Button
-            variant="destructive"
+            variant="outline"
+            className={DESTRUCTIVE_OUTLINE}
             onClick={handleDelete}
             disabled={!selectedMeetingId || isRecovering || isDeleting}
           >

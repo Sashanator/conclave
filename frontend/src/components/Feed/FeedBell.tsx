@@ -51,7 +51,7 @@ export function FeedBell({ side = 'top' }: { side?: 'top' | 'right' }) {
   }, [refresh]);
 
   const openItem = async (item: FeedItem) => {
-    if (!confirmLeave()) return;
+    if (!(await confirmLeave())) return;
     setOpen(false);
     try {
       await invoke('feed_mark_read', { id: item.id });

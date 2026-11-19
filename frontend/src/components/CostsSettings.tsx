@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Plus, Trash2 } from 'lucide-react';
+import { settingId } from '@/lib/settings-panes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -150,13 +151,13 @@ export function CostsSettings() {
   const messagesFor = (key: string) =>
     [...FIELDS.map(({ field }) => errors[draftKey(key, field)]), errors[draftKey(key, ROW)]].filter((m): m is string => Boolean(m));
 
-  if (loadError) return <p role="alert" className="text-red-600">{`Could not load model prices: ${loadError}`}</p>;
+  if (loadError) return <p role="alert" className="text-destructive">{`Could not load model prices: ${loadError}`}</p>;
   if (!rows) return <p className="text-muted-foreground">Loading…</p>;
 
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Model prices</h2>
+        <h2 id={settingId("Model prices")} className="text-lg font-semibold">Model prices</h2>
         <p className="text-sm text-muted-foreground">Dollars per million tokens, used to estimate the cost of each LLM call.</p>
       </div>
 
@@ -205,7 +206,7 @@ export function CostsSettings() {
                 </tr>
                 {messagesFor(key).map((message, i) => (
                   <tr key={i}>
-                    <td colSpan={FIELDS.length + 3} className="pb-2 text-red-600">{message}</td>
+                    <td colSpan={FIELDS.length + 3} className="pb-2 text-destructive">{message}</td>
                   </tr>
                 ))}
               </Fragment>
@@ -257,7 +258,7 @@ export function CostsSettings() {
             ))}
             <Button variant="ghost" size="sm" onClick={cancelAdd}>Cancel</Button>
           </div>
-          {errors[NEW] && <p className="text-red-600">{errors[NEW]}</p>}
+          {errors[NEW] && <p className="text-destructive">{errors[NEW]}</p>}
         </div>
       ) : (
         <Button variant="outline" onClick={openAdd}>

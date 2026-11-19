@@ -1,6 +1,7 @@
 'use client';
 
 import { Button } from '@/components/ui/button';
+import { DESTRUCTIVE_OUTLINE } from '@/lib/utils';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 
 type Props = { title: string; open: boolean; onOpenChange: (open: boolean) => void; onConfirm: () => void | Promise<void> };
@@ -18,7 +19,7 @@ export function DeleteRecordingDialog({ title, open, onOpenChange, onConfirm }: 
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button variant="destructive" onClick={() => void onConfirm()}>Delete recording</Button>
+          <Button variant="outline" className={DESTRUCTIVE_OUTLINE} onClick={() => void onConfirm()}>Delete recording</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

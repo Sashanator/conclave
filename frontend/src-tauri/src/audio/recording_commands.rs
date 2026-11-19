@@ -583,6 +583,7 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
     // A background task will process device events (hot-swap) without frontend polling.
     let device_event_receiver = manager.take_device_event_receiver();
     let session = manager.get_state().clone();
+    let level_state = session.clone();
 
     // Store the manager globally to keep it alive
     {
@@ -653,6 +654,8 @@ pub async fn start_recording_with_meeting_name<R: Runtime>(
         "workers": 3,
         "meetingId": meeting_id
     })).map_err(|e| e.to_string())?;
+    // Real mic and system levels for the meter, until this recording ends
+    super::simple_level_monitor::spawn_recording_levels(app.clone(), level_state);
 
     // Update tray menu to reflect recording state
     crate::tray::update_tray_menu(&app);
@@ -776,6 +779,7 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
     // A background task will process device events (hot-swap) without frontend polling.
     let device_event_receiver = manager.take_device_event_receiver();
     let session = manager.get_state().clone();
+    let level_state = session.clone();
 
     // Store the manager globally to keep it alive
     {
@@ -849,6 +853,8 @@ pub async fn start_recording_with_devices_and_meeting<R: Runtime>(
         "workers": 3,
         "meetingId": meeting_id
     })).map_err(|e| e.to_string())?;
+    // Real mic and system levels for the meter, until this recording ends
+    super::simple_level_monitor::spawn_recording_levels(app.clone(), level_state);
 
     // Update tray menu to reflect recording state
     crate::tray::update_tray_menu(&app);

@@ -50,7 +50,7 @@ let pageMetadata: unknown = null;
 let autoStarting = false;
 let startResult: () => Promise<void> = async () => {};
 const handleRecordingStart = mock(async (_id?: unknown) => startResult());
-let newProps: { disabled: boolean; onStart: () => void } | undefined;
+let newProps: { disabled: boolean; onStart: () => void; header: React.ReactNode } | undefined;
 let params = new URLSearchParams('id=m1');
 
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
@@ -70,7 +70,7 @@ mock.module('../../src/app/_components/SettingsModal', () => ({ SettingsModals: 
 mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...originals.aiSidebar, useAiSidebarScreen: (kind: unknown) => { screenKind = kind; } }));
 let contentProps: { onMeetingUpdated: () => Promise<void> } | undefined;
 mock.module('../../src/app/meeting-details/page-content', () => ({ default: (p: NonNullable<typeof contentProps>) => { contentProps = p; return null; } }));
-mock.module('../../src/components/MeetingPage/NewMeetingView', () => ({ NewMeetingView: (p: typeof newProps) => { newProps = p; return <div>New view</div>; } }));
+mock.module('../../src/components/MeetingPage/NewMeetingView', () => ({ NewMeetingView: (p: typeof newProps) => { newProps = p; return <div>New view{p!.header}</div>; } }));
 mock.module('../../src/components/MeetingPage/RecordingView', () => ({ RecordingView: (p: { row: unknown }) => <div>{p.row ? 'Recording view' : 'Recording view unrouted'}</div> }));
 let headerProps: { live?: boolean; onMeetingDeleted?: () => void } | undefined;
 mock.module('../../src/components/MeetingPage/MeetingHeader', () => ({ MeetingHeader: (p: NonNullable<typeof headerProps>) => { headerProps = p; return null; } }));

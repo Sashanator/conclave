@@ -9,6 +9,10 @@ import { Button } from "./ui/button"
 import { Input } from "./ui/input"
 import { Progress } from "./ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select"
+import { SettingsRow } from "./Settings/SettingsRow"
+import { confirmAction } from "@/lib/confirm"
+import { formatRowDate } from "@/lib/dates"
+import { DESTRUCTIVE_OUTLINE } from "@/lib/utils"
 import { lastAnalysisText } from "@/lib/speakers"
 import type { Person, SpeakerSettings as Settings } from "@/types"
 
@@ -104,7 +108,7 @@ export function SpeakerSettings() {
   }
 
   const remove = async (id: string) => {
-    if (!window.confirm(DELETE_PROMPT)) return
+    if (!(await confirmAction({ title: 'Delete this voice?', body: DELETE_PROMPT, confirmLabel: 'Delete', destructive: true }))) return
     await call("people_delete", { id }, "Could not delete the voice")
     loadPeople()
   }
@@ -114,18 +118,18 @@ export function SpeakerSettings() {
   const sorted = [...people].sort((a, b) => Number(b.is_self) - Number(a.is_self))
 
   return (
-    <div className="space-y-6">
-      <div className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-4">
-        <div className="flex items-center justify-between">
-          <h3 className="text-lg font-semibold text-foreground">Identify speakers</h3>
-          <Switch
-            aria-label="Identify speakers"
-            checked={settings?.enabled ?? false}
-            disabled={!settings || pending}
-            onCheckedChange={setEnabled}
-          />
-        </div>
+    <div>
+      <SettingsRow label="Identify speakers" htmlFor="identify-speakers">
+        <Switch
+          id="identify-speakers"
+          aria-label="Identify speakers"
+          checked={settings?.enabled ?? false}
+          disabled={!settings || pending}
+          onCheckedChange={setEnabled}
+        />
+      </SettingsRow>
 
+      <div className="space-y-3 border-b border-border py-4 empty:hidden">
         {(settings?.downloading || percent !== null) && (
           <div className="flex items-center gap-3">
             <Progress value={percent ?? 0} className="flex-1" />
@@ -136,7 +140,7 @@ export function SpeakerSettings() {
         {/* Shown after a restart or tab switch too, when the feature is on but its models are missing */}
         {(downloadError || modelsMissing) && (
           <div className="flex items-center gap-3">
-            <p className={`text-sm flex-1 ${downloadError ? "text-red-600" : "text-muted-foreground"}`}>
+            <p className={`text-sm flex-1 ${downloadError ? "text-destructive" : "text-muted-foreground"}`}>
               {downloadError ?? "Speaker models aren't downloaded yet."}
             </p>
             <Button size="sm" onClick={download}>Retry</Button>
@@ -149,8 +153,7 @@ export function SpeakerSettings() {
         </div>
       </div>
 
-      <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
-        <h3 className="text-lg font-semibold text-foreground mb-2">Known voices</h3>
+      <SettingsRow label="Known voices" block>
         <ul className="divide-y divide-border">
           {sorted.map((p) => {
             const others = people.filter((o) => !o.is_self && o.id !== p.id)
@@ -187,7 +190,7 @@ export function SpeakerSettings() {
                         {p.is_self && <span className="ml-2 text-xs text-muted-foreground">this is you</span>}
                       </div>
                       <p className="text-sm text-muted-foreground">
-                        {p.meetings} meetings · last heard {p.last_heard ? new Date(p.last_heard).toLocaleDateString() : "never"}
+                        {p.meetings} meetings · last heard {p.last_heard ? formatRowDate(new Date(p.last_heard)) : "never"}
                       </p>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => setRenaming({ id: p.id, name: p.name })}>Rename</Button>
@@ -205,7 +208,7 @@ export function SpeakerSettings() {
                       </Select>
                     )}
                     {!p.is_self && (
-                      <Button variant="destructive" size="sm" aria-label={`Delete ${p.name}`} onClick={() => remove(p.id)}>Delete</Button>
+                      <Button variant="outline" size="sm" className={DESTRUCTIVE_OUTLINE} aria-label={`Delete ${p.name}`} onClick={() => remove(p.id)}>Delete</Button>
                     )}
                   </>
                 )}
@@ -213,7 +216,7 @@ export function SpeakerSettings() {
             )
           })}
         </ul>
-      </div>
+      </SettingsRow>
     </div>
   )
 }

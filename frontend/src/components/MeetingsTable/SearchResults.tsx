@@ -32,7 +32,7 @@ export function useMeetingSearch(query: string) {
 
 const th = 'px-[10px] py-1 text-left text-xs font-semibold text-muted-foreground';
 
-export function SearchResults({ query, hits, rows, templates, now, selectedId, onClear, onToggleReviewed, onChangeTemplate }: {
+export function SearchResults({ query, hits, rows, templates, now, selectedId, onClear, onToggleReviewed, onChangeTemplate, onOpen }: {
   query: string;
   hits: SearchHit[] | null | undefined; // undefined: still searching; null: the search failed
   rows: MeetingRow[];
@@ -42,6 +42,7 @@ export function SearchResults({ query, hits, rows, templates, now, selectedId, o
   onClear: () => void;
   onToggleReviewed: (id: string) => void;
   onChangeTemplate: (id: string, templateId: string | null) => void;
+  onOpen: () => void;
 }) {
   if (hits === undefined) return <p role="status" className="py-10 text-center text-sm text-muted-foreground">Searching…</p>;
   if (hits === null) {
@@ -82,18 +83,18 @@ export function SearchResults({ query, hits, rows, templates, now, selectedId, o
               <tr key={g.meetingId} data-row-id={g.meetingId} aria-current={selectedId === g.meetingId || undefined}
                 className={`border-b align-top ${selectedId === g.meetingId ? 'bg-accent' : 'hover:bg-accent'}`}>
                 <td className="px-[10px] py-1.5">
-                  <Link href={meetingHref({ id: g.meetingId })} className="font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+                  <Link href={meetingHref({ id: g.meetingId })} onClick={onOpen} className="font-medium hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                     {row?.emoji ? <span aria-hidden>{row.emoji} </span> : null}{row?.title ?? g.hits[0].title}
                   </Link>
                   <div className="mt-1 space-y-1">
                     {g.hits.slice(0, 3).map((h, i) => (
-                      <Link key={`${h.source}-${h.transcriptId ?? i}`} href={snippetHref(h)}
+                      <Link key={`${h.source}-${h.transcriptId ?? i}`} href={snippetHref(h)} onClick={onOpen}
                         className="flex gap-2 rounded px-1 text-xs text-muted-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
                         <span className="shrink-0 font-medium text-foreground">{snippetLabel(h)}</span>
                         <span className="line-clamp-2">{h.snippet}</span>
                       </Link>
                     ))}
-                    {g.more > 0 && <Link href={meetingHref({ id: g.meetingId })} className="block px-1 text-xs underline">{g.more} more in this meeting</Link>}
+                    {g.more > 0 && <Link href={meetingHref({ id: g.meetingId })} onClick={onOpen} className="block px-1 text-xs underline">{g.more} more in this meeting</Link>}
                   </div>
                 </td>
                 <td className="px-[10px] py-1.5 text-muted-foreground">{row ? formatMeetingDate(row, now) : ''}</td>

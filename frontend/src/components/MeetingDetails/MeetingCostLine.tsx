@@ -3,9 +3,12 @@
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { ChevronDown } from 'lucide-react';
-import { formatUsd, purposeLabel, type MeetingCost } from '@/lib/stats';
+import { formatMoney } from '@/lib/dates';
+import { purposeLabel, type MeetingCost } from '@/lib/stats';
 
 /** refreshKey (the summary status) refetches the cost after a summary is generated. */
+const money = (v: number | null) => (v == null ? '—' : formatMoney(v));
+
 export function MeetingCostLine({ meetingId, refreshKey }: { meetingId: string; refreshKey?: string }) {
   const [cost, setCost] = useState<MeetingCost | null>(null);
   const [open, setOpen] = useState(false);
@@ -35,13 +38,13 @@ export function MeetingCostLine({ meetingId, refreshKey }: { meetingId: string; 
         onClick={() => setOpen((o) => !o)}
         className="flex items-center gap-1 hover:text-foreground"
       >
-        <span>{`LLM cost: ${formatUsd(cost.total_usd)} · ${(cost.tokens / 1000).toFixed(1)}k tokens`}</span>
+        <span>{`LLM cost: ${money(cost.total_usd)} · ${(cost.tokens / 1000).toFixed(1)}k tokens`}</span>
         <ChevronDown className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && (
         <ul className="mt-1 space-y-0.5 pl-1">
           {cost.by_purpose.map((p) => (
-            <li key={p.purpose}>{`${purposeLabel(p.purpose)} · ${(p.tokens / 1000).toFixed(1)}k tokens · ${formatUsd(p.cost_usd)}`}</li>
+            <li key={p.purpose}>{`${purposeLabel(p.purpose)} · ${(p.tokens / 1000).toFixed(1)}k tokens · ${money(p.cost_usd)}`}</li>
           ))}
         </ul>
       )}

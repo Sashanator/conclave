@@ -4,7 +4,6 @@ import { Transcript } from '@/types';
 import { useEffect, useRef, useState } from 'react';
 import { ConfidenceIndicator } from './ConfidenceIndicator';
 import { Tooltip, TooltipContent, TooltipTrigger } from './ui/tooltip';
-import { RecordingStatusBar } from './RecordingStatusBar';
 import { motion, AnimatePresence } from 'framer-motion';
 
 interface TranscriptViewProps {
@@ -251,14 +250,6 @@ export const TranscriptView: React.FC<TranscriptViewProps> = ({ transcripts, isR
 
   return (
     <div className="px-4 py-2">
-      {/* Recording Status Bar - Sticky at top, always visible when recording */}
-      <AnimatePresence>
-        {isRecording && (
-          <div className="sticky top-4 z-10 bg-background pb-2">
-            <RecordingStatusBar isPaused={isPaused} />
-          </div>
-        )}
-      </AnimatePresence>
 
       {transcripts?.map((transcript, index) => {
         const isStreaming = streamingTranscript?.id === transcript.id;

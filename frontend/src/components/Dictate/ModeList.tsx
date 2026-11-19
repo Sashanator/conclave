@@ -46,7 +46,7 @@ export function ModeList({ settings, commit }: { settings: DictateSettings; comm
             <div className="flex-1 min-w-0">
               <div>
                 <span className="font-medium">{m.name}</span>
-                <span className="ml-2 rounded px-1.5 py-0.5 text-xs bg-muted text-muted-foreground">built-in</span>
+                <span className="ml-2 rounded px-1.5 py-0.5 text-xs bg-muted text-foreground/75">built-in</span>
               </div>
               <p className="text-sm text-muted-foreground">{m.description}</p>
             </div>

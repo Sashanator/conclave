@@ -62,12 +62,13 @@ export function useDigest(id: string | null): { state: DigestState; digest: Dige
   return { state, digest };
 }
 
-const CHIP = 'inline-flex max-w-[28ch] truncate rounded border border-primary/35 bg-primary/10 px-2 py-0.5 align-middle text-xs text-foreground hover:bg-primary/20';
+const CHIP = 'inline-flex max-w-[28ch] truncate rounded border px-2 py-0.5 align-middle text-xs';
+const CHIP_LINK = `${CHIP} border-primary/35 bg-primary/10 text-foreground hover:bg-primary/20`;
 
 export function MeetingChip({ meeting, from }: { meeting: { id: string; title: string }; from: Origin }) {
-  if (!meeting.id) return <span title={meeting.title} className={`${CHIP} text-muted-foreground`}>{meeting.title}</span>;
+  if (!meeting.id) return <span title={meeting.title} className={`${CHIP} border-border text-muted-foreground`}>{meeting.title}</span>;
   return (
-    <Link href={meetingHref({ id: meeting.id })} title={meeting.title} onClick={() => rememberOrigin(from)} className={CHIP}>
+    <Link href={meetingHref({ id: meeting.id })} title={meeting.title} onClick={() => rememberOrigin(from)} className={CHIP_LINK}>
       {meeting.title}
     </Link>
   );

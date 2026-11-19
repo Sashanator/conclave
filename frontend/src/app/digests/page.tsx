@@ -60,7 +60,7 @@ function DigestsContent() {
               className={`block w-full rounded-md px-3 py-2 text-left ${selected === item.id ? 'bg-muted' : 'hover:bg-accent'}`}
             >
               <span className="block truncate">{item.title}</span>
-              <span className="block text-sm text-muted-foreground">{dateOf(item.createdAt)}</span>
+              <span className={`block text-sm ${selected === item.id ? 'text-foreground/75' : 'text-muted-foreground'}`}>{dateOf(item.createdAt)}</span>
             </button>
           </li>
         ))}

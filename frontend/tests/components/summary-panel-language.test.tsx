@@ -164,7 +164,7 @@ describe('summary panel language change', () => {
     const confirm = spyOn(window, 'confirm').mockImplementation(() => true);
     await renderPanel(summary, true);
     await chooseLanguage('de');
-    expect(confirm).toHaveBeenCalledWith(REGENERATE_DISCARD_PROMPT);
+    expect(confirm).toHaveBeenCalledWith(`Replace your edits?\n\n${REGENERATE_DISCARD_PROMPT}`); // no ConfirmHost: confirmAction falls back to window.confirm
     expect(regenerate).toHaveBeenCalledTimes(1);
     confirm.mockRestore();
   });

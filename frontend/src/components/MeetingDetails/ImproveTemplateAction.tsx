@@ -14,7 +14,7 @@ type Loaded = { saved: TemplateJson; meeting: TemplateMeetingInfo; includeTransc
 
 export function ImproveTemplateAction(props: {
   meetingId: string; templateId: string; templateExists: boolean; open: boolean;
-  onOpenChange: (open: boolean) => void; onRegenerate: (templateId: string) => boolean | void;
+  onOpenChange: (open: boolean) => void; onRegenerate: (templateId: string) => boolean | void | Promise<boolean | void>;
 }) {
   const { meetingId, templateId, templateExists, open, onOpenChange, onRegenerate } = props;
   const [loaded, setLoaded] = useState<Loaded | null>(null);
@@ -93,7 +93,7 @@ export function ImproveTemplateAction(props: {
       <Button onClick={() => {
         if (regeneratingRef.current) return;
         regeneratingRef.current = true;
-        if (onRegenerate(templateId) === false) regeneratingRef.current = false;
+        Promise.resolve(onRegenerate(templateId)).then((r) => { if (r === false) regeneratingRef.current = false; }, () => { regeneratingRef.current = false; });
       }}>Regenerate</Button>
     </div>
   </div> : pending ? <div className="space-y-4 text-sm">

@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
+import { DESTRUCTIVE_OUTLINE } from '@/lib/utils';
 import { formatMegabytes, recordingCount, toggleId, type DeleteResult, type OldAudio } from '@/lib/old-audio';
 import { AUDIO_DELETED_EVENT } from '@/lib/meeting-audio';
 
@@ -89,7 +90,7 @@ export function OldAudioReview({ open, onOpenChange }: { open: boolean; onOpenCh
         )}
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Close</Button>
-          <Button variant="destructive" disabled={busy || selected.length === 0} onClick={remove}>
+          <Button variant="outline" className={DESTRUCTIVE_OUTLINE} disabled={busy || selected.length === 0} onClick={remove}>
             Move {selected.length} to Recycle Bin{selected.length ? ` (${formatMegabytes(total)})` : ''}
           </Button>
         </DialogFooter>

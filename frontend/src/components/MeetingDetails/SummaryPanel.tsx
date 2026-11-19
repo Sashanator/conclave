@@ -227,8 +227,9 @@ export function SummaryPanel({
             }
             const changed = saved.language !== persistedLanguageRef.current;
             persistedLanguageRef.current = saved.language;
-            if (changed && summaryExistsRef.current && shouldRegenerate(summaryDirtyRef.current)) {
-              void onRegenerateSummary();
+            // Not awaited: the save loop must not stall behind the dialog.
+            if (changed && summaryExistsRef.current) {
+              void shouldRegenerate(summaryDirtyRef.current).then((ok) => { if (ok) void onRegenerateSummary(); });
             }
             return;
           }
@@ -353,8 +354,8 @@ export function SummaryPanel({
             <ImproveTemplateAction meetingId={meeting.id} templateId={currentTemplate.id}
               templateExists={templateExists}
               open={improveTemplateOpen} onOpenChange={setImproveTemplateOpen}
-              onRegenerate={id => {
-                if (!shouldRegenerate(isSummaryDirty)) return false;
+              onRegenerate={async id => {
+                if (!(await shouldRegenerate(isSummaryDirty))) return false;
                 setImproveTemplateOpen(false);
                 void onRegenerateSummary(id).catch(err => {
                   toast.error(`Failed to regenerate summary: ${String(err)}`);
@@ -398,8 +399,8 @@ export function SummaryPanel({
           <Button
             variant="outline"
             size="sm"
-            onClick={() => {
-              if (shouldRegenerate(isSummaryDirty)) void onRegenerateSummary();
+            onClick={async () => {
+              if (await shouldRegenerate(isSummaryDirty)) void onRegenerateSummary();
             }}
           >
             Regenerate

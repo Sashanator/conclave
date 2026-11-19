@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, mock, setSystemTime, test } fro
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingRow } from '../../src/lib/meetings';
-import { BUILTIN_VIEW_DEFAULTS } from '../../src/lib/meeting-views';
+import { BUILTIN_VIEW_DEFAULTS, clearViewUi } from '../../src/lib/meeting-views';
 
 let renderer: ReactTestRenderer | null = null;
 const originals = {
@@ -108,6 +108,7 @@ describe('meetings table', () => {
     try { localStorage.clear(); } catch { /* none */ }
     deleteImpl = async () => null;
     if (renderer) await act(async () => { renderer!.unmount(); });
+    clearViewUi(); // after the unmount, which saves the old view's state
     await act(async () => { renderer = create(<MeetingsTable />); });
     await flush();
   });
@@ -217,6 +218,55 @@ describe('meetings table', () => {
     allCfg = '{}';
     await mount();
     expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false).length).toBe(0);
+  });
+
+  describe('per-view memory', () => {
+    const dayCfg = () => { setSystemTime(new Date('2026-11-16T12:00:00Z')); allCfg = JSON.stringify({ group: 'day' }); };
+    const sundayBtn = () => renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] !== undefined && text(n).includes('Sunday 15 Nov'))[0];
+    const row = (id: string) => renderer!.root.findAll((n) => n.type === 'tr' && n.props['data-row-id'] === id)[0];
+    const searchInput = () => renderer!.root.findByProps({ 'aria-label': 'Search meetings, summaries and transcripts' });
+    const tab = (name: string) => renderer!.root.findAll((n) => n.props.role === 'tab' && text(n).includes(name))[0];
+
+    test('coming back restores groups, search text and the selected row', async () => {
+      dayCfg();
+      await mount();
+      await act(async () => { sundayBtn().props.onClick(); });
+      await act(async () => { row('done1').props.onClick(); });
+      await mount();
+      expect(all()).toContain('done2');
+      expect(row('done1').props['aria-current']).toBe(true);
+      await search('plan');
+      await mount();
+      expect(searchInput().props.value).toBe('plan');
+      setSystemTime();
+    });
+
+    test('each view keeps its own state', async () => {
+      dayCfg();
+      await mount();
+      await act(async () => { sundayBtn().props.onClick(); });
+      expect(all()).toContain('done2');
+      await act(async () => { tab('This week').props.onClick(); });
+      await flush();
+      expect(all()).not.toContain('Sunday 15 Nov');
+      await act(async () => { tab('All meetings').props.onClick(); });
+      await flush();
+      expect(all()).toContain('done2');
+      setSystemTime();
+    });
+
+    test('a fresh session starts from the defaults', async () => {
+      dayCfg();
+      await mount();
+      await act(async () => { sundayBtn().props.onClick(); });
+      await search('plan');
+      await act(async () => { renderer!.unmount(); }); // saves on the way out
+      clearViewUi();
+      await mount();
+      expect(all()).not.toContain('done2');
+      expect(searchInput().props.value).toBe('');
+      setSystemTime();
+    });
   });
 
   test('typing a new query never shows the old hits, and shows Searching… instead of the table', async () => {

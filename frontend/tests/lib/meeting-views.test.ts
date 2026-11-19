@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  arrangeRows, BUILTIN_VIEW_DEFAULTS, defaultCollapsed, effectiveHidden, parseViewConfig, viewReducer, weekRange,
+  arrangeRows, BUILTIN_VIEW_DEFAULTS, clearViewUi, defaultCollapsed, effectiveHidden, parseViewConfig, readViewUi, saveViewUi, viewReducer, weekRange,
 } from '@/lib/meeting-views';
 import type { MeetingRow } from '@/lib/meetings';
 
@@ -135,4 +135,14 @@ describe('defaultCollapsed', () => {
     expect(defaultCollapsed(s, 'category', now).size).toBe(0);
     expect(defaultCollapsed(s, 'none', now).size).toBe(0);
   });
+});
+
+test('view ui is kept per view id', () => {
+  clearViewUi();
+  const ui = { flipped: ['2026-11-15'], query: 'plan', selectedId: 'a', scroll: { px: 10, key: null } };
+  saveViewUi('week', ui);
+  expect(readViewUi('week')).toEqual(ui);
+  expect(readViewUi('all')).toBeUndefined();
+  clearViewUi();
+  expect(readViewUi('week')).toBeUndefined();
 });

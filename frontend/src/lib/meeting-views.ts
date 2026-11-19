@@ -224,3 +224,10 @@ export function defaultCollapsed(sections: Section[], group: ViewGroup, now: Dat
   const open = days.includes(format(now, 'yyyy-MM-dd')) ? format(now, 'yyyy-MM-dd') : days[0];
   return new Set(days.filter((k) => k !== open));
 }
+
+export type ViewUi = { flipped: string[]; query: string; selectedId: string | null; scroll: { px: number; key: string | null } | null };
+// Module memory: survives client navigation, gone after an app restart.
+const viewUi = new Map<string, ViewUi>();
+export const readViewUi = (viewId: string): ViewUi | undefined => viewUi.get(viewId);
+export const saveViewUi = (viewId: string, ui: ViewUi): void => { viewUi.set(viewId, ui); };
+export const clearViewUi = (): void => viewUi.clear();

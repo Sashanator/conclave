@@ -1,4 +1,4 @@
-use log::{info, warn};
+use log::{debug, info, warn};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use tauri::{AppHandle, Runtime};
@@ -135,7 +135,7 @@ pub async fn load_recording_preferences<R: Runtime>(
             // `mut` is used only on macOS.
             #[allow(unused_mut)]
             Ok(mut p) => {
-                info!("Loaded recording preferences from store");
+                debug!("Loaded recording preferences from store");
                 // Update macOS backend to current value if needed
                 #[cfg(target_os = "macos")]
                 {
@@ -157,7 +157,7 @@ pub async fn load_recording_preferences<R: Runtime>(
     // Read-side check: the webview can store any number, but the review only uses the offered values.
     prefs.old_audio_days = sanitize_old_audio_days(prefs.old_audio_days);
 
-    info!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}",
+    debug!("Loaded recording preferences: save_folder={:?}, auto_save={}, format={}, mic={:?}, system={:?}",
           prefs.save_folder, prefs.auto_save, prefs.file_format,
           prefs.preferred_mic_device, prefs.preferred_system_device);
     Ok(prefs)

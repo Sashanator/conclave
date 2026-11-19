@@ -42,6 +42,8 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
 
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
 
+const { formatLongDate } = await import('../../src/lib/dates');
+const { readOrigin } = await import('../../src/lib/back-nav');
 const { default: StatsPage } = await import('../../src/app/stats/page');
 
 let renderer: ReactTestRenderer | null = null;
@@ -126,6 +128,43 @@ describe('stats page', () => {
 
     expect(invoke).toHaveBeenCalledWith('stats_talk_time_meetings', { period: 'week', back: 0, templateId: 'tpl-standup' });
     expect(pageText()).toContain('Daily sync');
+  });
+});
+
+describe('talk time', () => {
+  test('talk time is a table with an explained share column', () => {
+    const ths = renderer!.root.findAll((n) => n.type === 'th').map(labelOf);
+    expect(renderer!.root.findAll((n) => n.type === 'table')).toHaveLength(1);
+    for (const h of ['Category', 'Meetings', 'Previous week']) expect(ths.some((t) => t.includes(h))).toBe(true);
+    expect(ths.some((t) => t.includes('Your share of talk time') && t.includes('how much of the talking was you'))).toBe(true);
+  });
+
+  test('each row shows a share bar sized to the share', () => {
+    const row = renderer!.root.findAll((n) => n.type === 'tr' && labelOf(n).includes('Standup'))[0];
+    expect(labelOf(row)).toContain('30%');
+    expect(labelOf(row)).toContain('40%');
+    expect(row.findAll((n) => (n.props.style as { width?: string } | undefined)?.width === '30%').length).toBeGreaterThan(0);
+  });
+
+  test('meeting rows show a long date and remember the origin', async () => {
+    await act(async () => {
+      buttonWith('Standup').props.onClick();
+    });
+    await flush();
+    expect(buttonWith('Standup').props['aria-expanded']).toBe(true);
+    expect(pageText()).toContain(formatLongDate(new Date('2026-10-20T00:00')));
+    expect(pageText()).not.toContain('2026-10-20');
+    const link = renderer!.root.findAll((n) => typeof n.props.href === 'string' && n.props.href.includes('meeting-details'))[0];
+    link.props.onClick();
+    expect(readOrigin()).toEqual({ path: '/stats', label: 'Stats' });
+  });
+
+  test('month view says Previous month', async () => {
+    await act(async () => {
+      buttonWith('Month').props.onClick();
+    });
+    await flush();
+    expect(renderer!.root.findAll((n) => n.type === 'th').map(labelOf)).toContain('Previous month');
   });
 });
 

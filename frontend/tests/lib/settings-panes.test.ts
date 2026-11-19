@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import { SETTINGS_GROUPS, isKnownTab, paneForTab, searchSettings, settingsHref, type SettingsPane } from '@/lib/settings-panes';
+import { SETTINGS_GROUPS, SETTINGS_INDEX, isKnownTab, paneForTab, searchSettings, settingsHref, type SettingsPane } from '@/lib/settings-panes';
 
 const SRC = join(import.meta.dir, '..', '..', 'src');
 const files = (dir: string): string[] =>
@@ -53,5 +53,7 @@ describe('searchSettings', () => {
   });
 });
 
-// Turn on in Task 38, once Tasks 34-38 add the labels.
-test.todo('every SETTINGS_INDEX label appears in src/components or src/app/settings', () => {});
+test('every SETTINGS_INDEX label appears in src/components or src/app/settings', () => {
+  const src = files(SRC).filter((f) => !f.endsWith('settings-panes.ts')).map((f) => readFileSync(f, 'utf8')).join('\n').toLowerCase();
+  expect(SETTINGS_INDEX.map((s) => s.label).filter((l) => !src.includes(l.toLowerCase()))).toEqual([]);
+});

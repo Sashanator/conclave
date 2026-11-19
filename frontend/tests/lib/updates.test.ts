@@ -53,8 +53,8 @@ describe('updates lib', () => {
 
   test('lastCheckLine never checked', () => {
     expect(lastCheckLine({ tokenLast4: null, checkOnStart: true, lastCheck: null, currentVersion: '1.1.0' })).toBe('Not checked yet');
-    const line = lastCheckLine({ tokenLast4: null, checkOnStart: true, lastCheck: { at: '2026-11-16T09:00:00Z', result: 'Up to date' }, currentVersion: '1.1.0' });
-    expect(line).toBe(`Last checked ${new Date('2026-11-16T09:00:00Z').toLocaleString()}: Up to date`);
+    const line = lastCheckLine({ tokenLast4: null, checkOnStart: true, lastCheck: { at: '2026-11-18T07:56:00', result: 'Up to date' }, currentVersion: '1.1.0' });
+    expect(line).toBe('Last checked Wed 18 Nov · 07:56: Up to date');
   });
 
   test('wrappers call the pinned Rust command names with their args', async () => {

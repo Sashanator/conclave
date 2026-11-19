@@ -159,3 +159,22 @@ test('declining the unsaved-edits gate permits a later Regenerate click', async 
     expect(buttons('Regenerate')).toHaveLength(0);
   } finally { confirm.mockRestore(); }
 });
+test('speaker-names Regenerate: cancelling the unsaved-edits confirm does not regenerate, confirming regenerates once', async () => {
+  const confirm = spyOn(window, 'confirm').mockReturnValue(false);
+  try {
+    await mount({ isSummaryDirty: true, namesChanged: true });
+    await click('Regenerate');
+    expect(regenerate).not.toHaveBeenCalled();
+    confirm.mockReturnValue(true);
+    await click('Regenerate');
+    expect(regenerate).toHaveBeenCalledTimes(1);
+  } finally { confirm.mockRestore(); }
+});
+test('cancelling the confirm in the Improve template flow leaves the dialog open and regenerates nothing', async () => {
+  const confirm = spyOn(window, 'confirm').mockReturnValue(false);
+  try {
+    await saveTemplate({ isSummaryDirty: true }); await click('Regenerate');
+    expect(regenerate).not.toHaveBeenCalled();
+    expect(buttons('Regenerate')).toHaveLength(1);
+  } finally { confirm.mockRestore(); }
+});

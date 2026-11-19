@@ -215,7 +215,15 @@ export const previewHandlers: Record<string, (args: any) => unknown> = {
   api_get_meeting_summary_language: () => ({ language: null, storage: 'metadata' }),
   whisper_get_models_directory: () => 'C:\\Users\\preview\\AppData\\Roaming\\Conclave\\models',
   get_default_recordings_folder_path: () => 'C:\\Users\\preview\\Music\\Conclave',
-  get_onboarding_status: () => ({ completed: true, current_step: 4, model_status: { parakeet: 'downloaded' } }),
+  get_onboarding_status: () =>
+    location.search.includes('onboarding=1')
+      ? { completed: false, current_step: 1, model_status: { parakeet: 'not_downloaded', summary: 'not_used' } }
+      : { completed: true, current_step: 4, model_status: { parakeet: 'downloaded' } },
+  get_meeting_banner: () => {
+    const kind = new URLSearchParams(location.search).get('kind') ?? 'detected';
+    return { kind, app: 'Zoom', certain: true, line: null, continue_title: kind === 'ended' ? null : 'Weekly sync with the platform team' };
+  },
+  meeting_banner_action: () => null,
   check_first_launch: () => false,
   get_recording_state: () => ({ is_recording: false, is_paused: false, is_active: false, recording_duration: null, active_duration: null }),
   get_recording_preferences: () => ({ preferred_mic_device: null, preferred_system_device: null, meeting_detection: 'off' }),

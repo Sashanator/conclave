@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import { act, create } from 'react-test-renderer';
 
 const originals = {
@@ -34,7 +34,9 @@ mock.module('../../src/components/PageFrame/PageFrame', () => ({
 for (const n of stubs) mock.module(`../../src/components/${n}`, () => { const k = n.split('/').pop()!; return { [k]: () => <div>{`stub:${k}`}</div> }; });
 
 const Page = (await import('../../src/app/settings/page')).default;
-const render = async () => { let r!: ReturnType<typeof create>; await act(async () => { r = create(<Page />); }); return r; };
+const live: ReturnType<typeof create>[] = [];
+const render = async () => { let r!: ReturnType<typeof create>; await act(async () => { r = create(<Page />); }); live.push(r); return r; };
+afterEach(() => { act(() => { for (const r of live.splice(0)) r.unmount(); }); });
 const inst = (n: any): string => (n.children as any[]).map((c) => (typeof c === 'string' ? c : inst(c))).join('');
 const text = (r: ReturnType<typeof create>) => JSON.stringify(r.toJSON());
 beforeEach(() => { replace.mockClear(); frameProps.length = 0; leave = true; tab = null; });

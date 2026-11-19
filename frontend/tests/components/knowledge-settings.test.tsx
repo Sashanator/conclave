@@ -1,5 +1,5 @@
 import { formatRowDate } from '../../src/lib/dates';
-import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -104,6 +104,8 @@ mock.module('../../src/components/ui/switch', () => ({
 const { KnowledgeSettings } = await import('../../src/components/KnowledgeSettings');
 
 let renderer: ReactTestRenderer | null = null;
+// Unmount so a Saved tick timer cannot fire into another test's renderer
+afterEach(() => { act(() => renderer?.unmount()); renderer = null; });
 
 async function flush() {
   await act(async () => {

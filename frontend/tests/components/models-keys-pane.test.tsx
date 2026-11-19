@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -74,6 +74,9 @@ const shown = (triggerId: string) => {
   const sel = r.root.findAll((n) => n.props.onValueChange !== undefined && n.props.value !== undefined).find((n) => n.findAll((c) => c.props.id === triggerId).length > 0)!;
   return text(sel.findAll((c) => c.type === 'option' && c.props.value === sel.props.value)[0]);
 };
+
+// Unmount so the Saved tick timers cannot fire into another test's renderer
+afterEach(() => { act(() => r?.unmount()); });
 
 beforeEach(() => {
   invoke.mockClear(); emit.mockClear(); toast.error.mockClear(); updateProviderApiKey.mockClear();

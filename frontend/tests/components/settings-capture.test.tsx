@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -63,6 +63,8 @@ const flush = () => act(async () => { await new Promise((x) => setTimeout(x, 0))
 const mount = async (el: JSX.Element) => { await act(async () => { r = create(el); }); await flush(); await flush(); };
 const text = (n: ReactTestInstance): string => n.children.map((c) => (typeof c === 'string' ? c : text(c))).join('');
 const sw = (name: string) => r.root.findAll((n) => n.type === 'button' && n.props.role === 'switch' && n.props['aria-label'] === name)[0];
+
+afterEach(() => { act(() => r?.unmount()); });
 
 beforeEach(() => {
   invoke.mockClear(); toast.success.mockClear(); toast.error.mockClear(); updateNotificationSettings.mockClear(); toggleBetaFeature.mockClear();

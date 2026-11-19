@@ -50,6 +50,7 @@ const fixture = [
 ];
 
 let allCfg = '{}';
+let liveId: string | null = null;
 let rowsImpl: () => MeetingRow[] = () => fixture;
 let searchImpl: () => unknown[] = () => [];
 const push = mock((_href: string) => {});
@@ -60,6 +61,7 @@ const invoke = mock(async (command: string, _args?: Record<string, unknown>): Pr
     case 'api_list_meeting_views': return [
       { id: 'all', name: 'All meetings', position: 0, builtin: true, configJson: allCfg },
       { id: 'week', name: 'This week', position: 1, builtin: true, configJson: JSON.stringify(BUILTIN_VIEW_DEFAULTS.week) },
+      { id: 'unreviewed', name: 'Not reviewed', position: 2, builtin: true, configJson: JSON.stringify(BUILTIN_VIEW_DEFAULTS.unreviewed) },
     ];
     case 'api_create_meeting': return 'preview-new';
     case 'api_search_transcripts': return searchImpl();
@@ -73,7 +75,7 @@ const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 mock.module('@tauri-apps/api/event', () => ({ ...originals.event, listen: async () => () => {} }));
 mock.module('sonner', () => ({ toast: { error: toastError, warning: () => {} } }));
-mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.rec, useRecordingState: () => ({ liveMeetingId: null, activeDuration: null }) }));
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.rec, useRecordingState: () => ({ liveMeetingId: liveId, activeDuration: null }) }));
 mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ ...originals.sidebar, useSidebar: () => ({}) }));
 mock.module('../../src/components/ui/dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children?: ReactNode }) => (open ? <>{children}</> : null),
@@ -103,6 +105,7 @@ describe('meetings table', () => {
     toastError.mockClear();
     push.mockClear();
     allCfg = '{}';
+    liveId = null;
     rowsImpl = () => fixture;
     searchImpl = () => [];
     setSystemTime();
@@ -166,7 +169,7 @@ describe('meetings table', () => {
 
   test('tabs, counts and header sort', async () => {
     await mount();
-    expect(renderer!.root.findAll((n) => n.props.role === 'tab').length).toBe(2);
+    expect(renderer!.root.findAll((n) => n.props.role === 'tab').length).toBe(3);
     expect(all()).toContain('This week');
     await act(async () => { button('Name').props.onClick(); });
     expect(renderer!.root.findAll((n) => n.type === 'th' && n.props['aria-sort'] === 'ascending').length).toBe(1);
@@ -360,6 +363,44 @@ describe('meetings table', () => {
     await flush();
     expect(e.defaultPrevented).toBe(true);
     expect(push).toHaveBeenCalledWith('/meeting-details?id=preview-new');
+  });
+
+  describe('view tab counts', () => {
+    const tabCount = (name: string) => text(renderer!.root.findAll((n) => n.props.role === 'tab' && text(n).startsWith(name))[0]).slice(name.length);
+    const shownRows = async () => { // open every group, then count the rows on screen
+      for (const b of renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false)) await act(async () => { b.props.onClick(); });
+      return new Set(renderer!.root.findAll((n) => n.type === 'tr' && n.props['data-row-id']).map((n) => n.props['data-row-id'])).size;
+    };
+    const open = async (view: string, name: string) => {
+      localStorage.setItem('conclave.meetingsView', view);
+      setSystemTime(new Date('2026-11-16T12:00:00Z'));
+      await mount();
+      return { name };
+    };
+    afterEach(() => setSystemTime());
+    for (const [view, name] of [['week', 'This week'], ['unreviewed', 'Not reviewed']]) {
+      test(`each tab count equals the rows its view shows: ${name}`, async () => {
+        liveId = 'done2'; // Now counts in every view
+        await open(view, name);
+        expect(tabCount(name)).toBe(String(await shownRows()));
+      });
+    }
+    test('the count follows a filter change on the active view', async () => {
+      await open('unreviewed', 'Not reviewed');
+      const before = Number(tabCount('Not reviewed'));
+      await act(async () => { renderer!.root.findAll((n) => String(n.props['aria-label']).startsWith('Remove filter'))[0].props.onClick(); });
+      expect(Number(tabCount('Not reviewed'))).toBe(await shownRows());
+      expect(Number(tabCount('Not reviewed'))).toBeGreaterThan(before);
+    });
+  });
+
+  test('the toolbar keeps its controls', () => {
+    const labels = renderer!.root.findAll((n) => n.type === 'button').map((n) => text(n));
+    expect(labels).toContain('+ Filter');
+    for (const h of ['Name', 'Date', 'Reviewed']) expect(labels.some((l) => l === h)).toBe(true);
+    expect(renderer!.root.findAll((n) => n.props['aria-label'] === 'Actions: done1').length).toBeGreaterThan(0);
+    expect(labels.some((l) => l.includes('Ask') && l.includes('Ctrl J'))).toBe(true);
+    expect(all()).toContain('Calendar');
   });
 
   describe('fits at 1366 px', () => {

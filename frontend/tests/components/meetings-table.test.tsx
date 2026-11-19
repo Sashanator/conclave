@@ -147,9 +147,9 @@ describe('meetings table', () => {
     expect(all()).toContain('Cancelled in calendar');
   });
 
-  const mount = async () => {
+  const mount = async (options?: Parameters<typeof create>[1]) => {
     if (renderer) await act(async () => { renderer!.unmount(); });
-    await act(async () => { renderer = create(<MeetingsTable onScopeChange={scope} />); });
+    await act(async () => { renderer = create(<MeetingsTable onScopeChange={scope} />, options); });
     await flush();
   };
   const search = async (q: string) => {
@@ -218,6 +218,15 @@ describe('meetings table', () => {
     allCfg = '{}';
     await mount();
     expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false).length).toBe(0);
+  });
+
+  test('scroll comes back after a remount', async () => {
+    const nodeMock = (node: object) => ({ createNodeMock: (el: { type: unknown }) => (el.type === 'div' ? node : null) });
+    await mount(nodeMock({ scrollTop: 0, querySelectorAll: () => [] }));
+    await act(async () => { renderer!.root.findAll((n) => n.type === 'div' && n.props.onScroll)[0].props.onScroll({ currentTarget: { scrollTop: 480 } }); });
+    const fresh = { scrollTop: 0, querySelectorAll: () => [] };
+    await mount(nodeMock(fresh));
+    expect(fresh.scrollTop).toBe(480);
   });
 
   describe('per-view memory', () => {

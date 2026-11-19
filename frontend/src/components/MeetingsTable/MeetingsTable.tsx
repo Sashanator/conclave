@@ -60,8 +60,10 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const [flipped, setFlipped] = useState<Set<string>>(() => new Set());
   const defaults = useMemo(() => defaultCollapsed(sections, config.group, now), [sections, config.group, now]);
   const scrollPos = useRef<ViewUi['scroll']>(null);
+  const pendingScroll = useRef<ViewUi['scroll']>(null);
+  const [restored, setRestored] = useState(0); // lets the scroll effect run after the restored groups are applied
   const ui = useRef<ViewUi>({ flipped: [], query: '', selectedId: null, scroll: null });
-  ui.current = { flipped: [...flipped], query, selectedId, scroll: scrollPos.current };
+  ui.current = { flipped: [...flipped], query, selectedId, scroll: null };
   // One effect per view: restore its state on entry, save it on exit (switching tabs or leaving the page).
   const activeId = active?.id;
   useEffect(() => {
@@ -70,7 +72,10 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     setFlipped(new Set(s?.flipped));
     setQuery(s?.query ?? '');
     setSelectedId(s?.selectedId ?? null);
-    return () => saveViewUi(activeId, ui.current);
+    pendingScroll.current = s?.scroll ?? null;
+    setRestored((n) => n + 1);
+    scrollPos.current = s?.scroll ?? null;
+    return () => saveViewUi(activeId, { ...ui.current, scroll: scrollPos.current }); // scroll is a ref, so not in ui.current
   }, [activeId]);
   const toggleGroup = (key: string) => setFlipped((c) => { const n = new Set(c); if (!n.delete(key)) n.add(key); return n; });
   const items = useMemo<Item[]>(() => sections.flatMap((s) => {
@@ -180,6 +185,15 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     Array.from(scrollRef.current?.querySelectorAll('[data-row-id]') ?? []).find((el) => el.getAttribute('data-row-id') === selected)
       ?.scrollIntoView?.({ block: 'nearest' });
   }, [selected]); // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => {
+    const p = pendingScroll.current;
+    if (!p || !loaded || !items.length) return;
+    pendingScroll.current = null;
+    if (virtual && p.key) {
+      const i = items.findIndex((x) => x.key === p.key);
+      if (i >= 0) virtualizer.scrollToIndex(i, { align: 'start' });
+    } else if (scrollRef.current) scrollRef.current.scrollTop = p.px;
+  }, [loaded, items.length, virtual, restored]); // eslint-disable-line react-hooks/exhaustive-deps
   const colCount = table.getVisibleLeafColumns().length + 1;
   const rowById = new Map(table.getRowModel().rows.map((r) => [r.id, r]));
 
@@ -213,7 +227,10 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
       ) : !data.length ? (
         <p className="py-8 text-center text-sm text-muted-foreground">No meetings match this view.</p>
       ) : (
-      <div ref={scrollRef} className={`min-h-0 flex-1 overflow-auto ${config.density === 'compact' ? 'compact' : ''}`}>
+      <div ref={scrollRef} onScroll={(e) => {
+        const top = e.currentTarget.scrollTop;
+        scrollPos.current = { px: top, key: virtual ? items[virtualizer.getVirtualItemForOffset(top)?.index ?? -1]?.key ?? null : null };
+      }} className={`min-h-0 flex-1 overflow-auto ${config.density === 'compact' ? 'compact' : ''}`}>
         <table className="w-full table-fixed border-collapse text-sm">
           <thead>
             <tr>

@@ -61,6 +61,11 @@ describe('arrangeRows', () => {
     expect(labels(s)).toEqual(['Monday 16 Nov', 'Tuesday 17 Nov']);
     expect(s[0].rows.map((r) => r.id)).toEqual(['a', 'b']);
   });
+  test("today's day group is labelled Today", () => {
+    const rs = [row('a', d(16, 10)), row('t', d(18, 9))];
+    const s = arrangeRows(rs, BUILTIN_VIEW_DEFAULTS.week, { liveId: null, now, templates: [] });
+    expect(labels(s)).toEqual(['Monday 16 Nov', 'Today · Wednesday 18 Nov']);
+  });
   test('live row alone in Now, even when filtered out', () => {
     const s = arrangeRows(rows, BUILTIN_VIEW_DEFAULTS.week, { liveId: 'next', now, templates: [] });
     expect(labels(s)).toEqual(['Now', 'Monday 16 Nov', 'Tuesday 17 Nov']);

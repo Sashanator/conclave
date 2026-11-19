@@ -1,4 +1,5 @@
 import { addDays, format, startOfDay, startOfWeek } from 'date-fns';
+import { formatDayLabel } from './dates';
 import { meetingDate, meetingState, type MeetingRow, type MeetingState } from './meetings';
 
 export type ViewFilter = {
@@ -194,7 +195,7 @@ export function arrangeRows(
     for (const r of rest) {
       const d = startOfDay(meetingDate(r));
       const key = format(d, 'yyyy-MM-dd');
-      if (!byDay.has(key)) byDay.set(key, { key, label: format(d, 'EEEE d MMM'), rows: [] });
+      if (!byDay.has(key)) byDay.set(key, { key, label: formatDayLabel(d, now), rows: [] });
       byDay.get(key)!.rows.push(r);
     }
     // Days follow the date sort direction; any other primary sort reads oldest day first.

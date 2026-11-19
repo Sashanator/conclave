@@ -9,6 +9,7 @@ const originals = {
   popover: { ...await import('../../src/components/ui/popover') },
   command: { ...await import('../../src/components/ui/command') },
   config: { ...await import('../../src/contexts/ConfigContext') },
+  confirm: { ...await import('../../src/lib/confirm') },
 };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
@@ -16,8 +17,12 @@ afterAll(() => {
   mock.module('../../src/components/ui/popover', () => originals.popover);
   mock.module('../../src/components/ui/command', () => originals.command);
   mock.module('../../src/contexts/ConfigContext', () => originals.config);
+  mock.module('../../src/lib/confirm', () => originals.confirm);
 });
 
+let answer = true;
+const confirmAction = mock(async (_o: { title: string }) => answer);
+mock.module('../../src/lib/confirm', () => ({ ...originals.confirm, confirmAction }));
 const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
 // Keeps the last Popover's open state and setter, so a test can open a chip's name box
 const popover: { open?: boolean; onOpenChange?: (open: boolean) => void } = {};
@@ -235,7 +240,6 @@ describe('SpeakerLineMenu', () => {
 });
 
 describe('identify button', () => {
-  const EXACT = 'Labels, including your manual fixes, will be replaced. Continue?';
   const group = (job: MeetingSpeakers['job'] = null, hasSpeakers = false) => {
     const onIdentifySpeakers = mock(async () => {});
     return {
@@ -271,41 +275,29 @@ describe('identify button', () => {
   });
 
   test('Re-identify asks first and does nothing on No', async () => {
-    const confirm = spyOn(window, 'confirm').mockImplementation(() => false);
-    try {
-      const { element, onIdentifySpeakers } = group({ status: 'done', reason: null, percent: null });
-      await mount(element);
-      expect(identifyButton().props.title).toBe('Re-identify');
-      await act(async () => { identifyButton().props.onClick(); });
-      expect(confirm).toHaveBeenCalledWith(EXACT);
-      expect(onIdentifySpeakers).not.toHaveBeenCalled();
-    } finally {
-      confirm.mockRestore();
-    }
+    answer = false; confirmAction.mockClear();
+    const { element, onIdentifySpeakers } = group({ status: 'done', reason: null, percent: null });
+    await mount(element);
+    expect(identifyButton().props.title).toBe('Re-identify');
+    await act(async () => { await identifyButton().props.onClick(); });
+    expect(confirmAction.mock.calls[0][0].title).toBe('Replace speaker labels?');
+    expect(onIdentifySpeakers).not.toHaveBeenCalled();
   });
 
   test('asks before replacing labels when speakers exist but the job is not done', async () => {
-    const confirm = spyOn(window, 'confirm').mockImplementation(() => false);
-    try {
-      const { element, onIdentifySpeakers } = group({ status: 'failed', reason: 'boom', percent: null }, true);
-      await mount(element);
-      await act(async () => { identifyButton().props.onClick(); });
-      expect(confirm).toHaveBeenCalledWith(EXACT);
-      expect(onIdentifySpeakers).not.toHaveBeenCalled();
-    } finally {
-      confirm.mockRestore();
-    }
+    answer = false; confirmAction.mockClear();
+    const { element, onIdentifySpeakers } = group({ status: 'failed', reason: 'boom', percent: null }, true);
+    await mount(element);
+    await act(async () => { await identifyButton().props.onClick(); });
+    expect(confirmAction).toHaveBeenCalledTimes(1);
+    expect(onIdentifySpeakers).not.toHaveBeenCalled();
   });
 
   test('Re-identify runs the job on Yes', async () => {
-    const confirm = spyOn(window, 'confirm').mockImplementation(() => true);
-    try {
-      const { element, onIdentifySpeakers } = group({ status: 'done', reason: null, percent: null });
-      await mount(element);
-      await act(async () => { identifyButton().props.onClick(); });
-      expect(onIdentifySpeakers).toHaveBeenCalledTimes(1);
-    } finally {
-      confirm.mockRestore();
-    }
+    answer = true; confirmAction.mockClear();
+    const { element, onIdentifySpeakers } = group({ status: 'done', reason: null, percent: null });
+    await mount(element);
+    await act(async () => { await identifyButton().props.onClick(); });
+    expect(onIdentifySpeakers).toHaveBeenCalledTimes(1);
   });
 });

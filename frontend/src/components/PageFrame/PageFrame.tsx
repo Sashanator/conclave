@@ -38,11 +38,11 @@ export function PageFrame({ variant, title, breadcrumb, actions, rail, subnav, c
         className={cn(
           'grid min-h-0 min-w-0 flex-1 gap-10',
           '@[1280px]/frame:grid-cols-[minmax(0,80ch)_minmax(360px,560px)]',
-          // Stacked (narrow): rows take natural height and the whole column scrolls; side by side each column scrolls itself.
-          rail && 'overflow-y-auto @[1280px]/frame:grid-rows-1 @[1280px]/frame:overflow-visible',
+          // Stacked (narrow): the text column keeps a bounded height with its own scroll (transcript virtualizer, ?line= jump), the page scrolls to the rail; side by side each column scrolls itself.
+          rail && 'content-start overflow-y-auto @[1280px]/frame:grid-rows-1 @[1280px]/frame:overflow-visible',
         )}
       >
-        <div className={cn('flex min-w-0 max-w-[80ch] flex-col', rail ? '@[1280px]/frame:min-h-0 @[1280px]/frame:overflow-y-auto' : 'min-h-0 overflow-y-auto')}>{children}</div>
+        <div className={cn('flex min-w-0 max-w-[80ch] flex-col', rail ? 'h-[75vh] overflow-y-auto @[1280px]/frame:h-auto @[1280px]/frame:min-h-0' : 'min-h-0 overflow-y-auto')}>{children}</div>
         {rail && <div className="min-w-0 @[1280px]/frame:min-h-0 @[1280px]/frame:overflow-y-auto">{rail}</div>}
       </div>
     );

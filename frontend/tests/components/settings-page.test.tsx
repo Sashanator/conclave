@@ -8,7 +8,7 @@ const originals = {
   frame: { ...await import('../../src/components/PageFrame/PageFrame') },
   config: { ...await import('../../src/contexts/ConfigContext') },
 };
-const stubs = ['TranscriptSettings', 'RecordingSettings', 'UpdatesSettings', 'PreferenceSettings', 'SummaryModelSettings', 'CopilotSettings', 'KnowledgeSettings', 'TemplateSettings', 'TemplateAssistSettings', 'SpeakerSettings', 'CostsSettings'];
+const stubs = ['TranscriptSettings', 'RecordingSettings', 'UpdatesSettings', 'PreferenceSettings', 'SummaryModelSettings', 'CopilotSettings', 'KnowledgeSettings', 'TemplateSettings', 'TemplateAssistSettings', 'SpeakerSettings', 'Settings/ModelsKeysPane', 'Settings/SummariesPane'];
 const stubOrig: Record<string, any> = {};
 for (const n of stubs) stubOrig[n] = { ...(await import(`../../src/components/${n}`)) };
 afterAll(() => {
@@ -31,7 +31,7 @@ mock.module('../../src/contexts/ConfigContext', () => ({ ...originals.config, us
 mock.module('../../src/components/PageFrame/PageFrame', () => ({
   PageFrame: (p: any) => { frameProps.push(p); return <div><h1>{p.title}</h1>{p.subnav}{p.children}</div>; },
 }));
-for (const n of stubs) mock.module(`../../src/components/${n}`, () => ({ [n]: () => <div>{`stub:${n}`}</div> }));
+for (const n of stubs) mock.module(`../../src/components/${n}`, () => { const k = n.split('/').pop()!; return { [k]: () => <div>{`stub:${k}`}</div> }; });
 
 const Page = (await import('../../src/app/settings/page')).default;
 const render = async () => { let r!: ReturnType<typeof create>; await act(async () => { r = create(<Page />); }); return r; };

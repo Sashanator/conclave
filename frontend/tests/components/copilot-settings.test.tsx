@@ -164,7 +164,7 @@ describe('Copilot settings', () => {
   });
 
   test('same_as_summaries_default', () => {
-    expect(shownLabel('copilot-provider')).toBe('Same as summaries');
+    expect(shownLabel('copilot-provider')).toBe('Same as Summary');
     expect(input('copilot-model').props.disabled).toBe(true);
   });
 

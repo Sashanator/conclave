@@ -784,22 +784,54 @@ describe('Practice report view', () => {
     expect(hasDirectText('The report could not be written')).toBe(true);
   });
 
-  test('retry_is_disabled_while_the_call_is_in_flight', async () => {
+  const failedDetail = () => {
     detail = { ...detail, summary: { ...detail.summary, report_status: 'failed' }, report: null, report_error: 'Claude did not answer' };
+  };
+
+  test('retry_clears_the_old_error_at_once', async () => {
+    failedDetail();
     await openReport();
     let release!: () => void;
     retryImpl = () => new Promise((resolve) => {
       release = () => resolve(null);
     });
     await clickButton('Retry');
-    expect(buttons('Retry')[0].props.disabled).toBe(true);
-    // A second click before the first call returns must not invoke again
-    await clickButton('Retry');
+    expect(hasDirectText('Claude did not answer')).toBe(false);
+    expect(hasDirectText('Starting the report…')).toBe(true);
+    expect(buttons('Retry').length).toBe(0);
     expect(calls('practice_retry_report').length).toBe(1);
 
     await act(async () => release());
     await flush();
-    expect(buttons('Retry')[0].props.disabled).toBe(false);
+    expect(buttons('Retry').length).toBe(1);
+  });
+
+  test('a_start_failure_replaces_the_old_error', async () => {
+    failedDetail();
+    await openReport();
+    retryImpl = async () => {
+      throw 'Could not start the report: database is locked';
+    };
+    await clickButton('Retry');
+    await flush();
+    expect(hasDirectText('Could not start the report: database is locked')).toBe(true);
+    expect(hasDirectText('Claude did not answer')).toBe(false);
+    expect(buttons('Retry').length).toBe(1);
+  });
+
+  test('a_report_event_clears_the_start_failure', async () => {
+    failedDetail();
+    await openReport();
+    retryImpl = async () => {
+      throw 'Could not start the report: database is locked';
+    };
+    await clickButton('Retry');
+    await flush();
+    detail = { ...detail, summary: { ...detail.summary, report_status: 'running' } };
+    await emit('practice-report', { session_id: 's1', status: 'running' });
+    await flush();
+    expect(hasDirectText('Writing your report…')).toBe(true);
+    expect(hasDirectText('Could not start the report: database is locked')).toBe(false);
   });
 
   test('empty_filler_breakdown_says_so', async () => {

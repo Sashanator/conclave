@@ -71,12 +71,17 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     }
   }, [sessionId]);
 
+  // The start failure of the last Retry or Generate; a report event replaces it
+  const [startError, setStartError] = useState<string | null>(null);
+
   useEffect(() => {
     let gone = false;
     let stop: (() => void) | null = null;
     // The listener is up before the first load, so a report change that lands meanwhile is not missed
     void listen<ReportStatusPayload>('practice-report', (e) => {
-      if (e.payload.session_id === sessionId) void load();
+      if (e.payload.session_id !== sessionId) return;
+      setStartError(null);
+      void load();
     }).then((off) => {
       if (gone) off();
       else stop = off;
@@ -95,11 +100,12 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const retry = async () => {
     if (inFlight.current) return;
     inFlight.current = true;
+    setStartError(null);
     setBusy(true);
     try {
       await invoke('practice_retry_report', { sessionId });
     } catch (err) {
-      toast.error('Could not retry the report', { description: String(err) });
+      setStartError(String(err));
     } finally {
       inFlight.current = false;
       setBusy(false);
@@ -305,9 +311,11 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
               </section>
             )}
           </>
+        ) : busy ? (
+          <p className="text-muted-foreground">Starting the report…</p>
         ) : s.report_status === 'failed' ? (
           <div className="space-y-3">
-            <p className="text-sm text-destructive">{detail.report_error || 'The report could not be written'}</p>
+            <p className="text-sm text-destructive">{startError || detail.report_error || 'The report could not be written'}</p>
             {generate('Retry')}
           </div>
         ) : s.report_status === 'running' ? (
@@ -319,6 +327,7 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
           ) : (
             <div className="space-y-3">
               <p className="text-muted-foreground">Report not generated yet</p>
+              {startError && <p className="text-sm text-destructive">{startError}</p>}
               {generate('Generate report')}
             </div>
           )

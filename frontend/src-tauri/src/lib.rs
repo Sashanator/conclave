@@ -628,6 +628,11 @@ pub fn run() {
         .manage(audio::init_system_audio_state())
         .manage(summary::summary_engine::ModelManagerState(Arc::new(tokio::sync::Mutex::new(None))))
         .setup(|_app| {
+            log::info!(
+                "Conclave {} starting, OS: {}",
+                _app.package_info().version,
+                sysinfo::System::long_os_version().unwrap_or_else(|| "unknown".into())
+            );
             #[cfg(target_os = "windows")]
             match _app.path().resolve(
                 "onnxruntime.dll",

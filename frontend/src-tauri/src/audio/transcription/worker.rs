@@ -144,7 +144,7 @@ pub fn start_transcription_task<R: Runtime>(
                             let should_log_this_chunk = chunk.chunk_id % 10 == 0;
 
                             if should_log_this_chunk {
-                                info!(
+                                debug!(
                                     "👷 Worker {} processing chunk {} with {} samples",
                                     worker_id,
                                     chunk.chunk_id,
@@ -179,18 +179,18 @@ pub fn start_transcription_task<R: Runtime>(
                                         None => "N/A".to_string(),
                                     };
 
-                                    info!("🔍 Worker {} transcription result: {} chars, confidence={}, partial={}",
+                                    debug!("🔍 Worker {} transcription result: {} chars, confidence={}, partial={}",
                 worker_id, transcript.chars().count(), confidence_str, is_partial);
 
                                     if should_emit_transcript(&transcript) {
                                         // PERFORMANCE: Only log transcription results, not every processing step
-                                        info!("✅ Worker {} transcribed: {} chars (confidence: {}, partial: {})",
+                                        debug!("✅ Worker {} transcribed: {} chars (confidence: {}, partial: {})",
                                               worker_id, transcript.chars().count(), confidence_str, is_partial);
 
                                         // Emit speech-detected event for frontend UX (only on first detection per session)
                                         // This is lightweight and provides better user feedback
                                         let current_flag = SPEECH_DETECTED_EMITTED.load(Ordering::SeqCst);
-                                        info!("🔍 Checking speech-detected flag: current={}, will_emit={}", current_flag, !current_flag);
+                                        debug!("🔍 Checking speech-detected flag: current={}, will_emit={}", current_flag, !current_flag);
 
                                         if !current_flag {
                                             SPEECH_DETECTED_EMITTED.store(true, Ordering::SeqCst);
@@ -201,7 +201,7 @@ pub fn start_transcription_task<R: Runtime>(
                                                 Err(e) => error!("🎤 ❌ Failed to emit speech-detected event: {}", e),
                                             }
                                         } else {
-                                            info!("🔍 Speech already detected in this session, not re-emitting");
+                                            debug!("🔍 Speech already detected in this session, not re-emitting");
                                         }
 
                                         // Generate sequence ID and calculate timestamps FIRST
@@ -278,7 +278,7 @@ pub fn start_transcription_task<R: Runtime>(
 
                             // PERFORMANCE: Only log progress every 5th chunk to reduce I/O overhead
                             if completed % 5 == 0 || should_log_this_chunk {
-                                info!(
+                                debug!(
                                     "Worker {}: Progress {}/{} chunks ({:.1}%)",
                                     worker_id,
                                     completed,
@@ -451,7 +451,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
     // Calculate energy for logging/monitoring only
     let energy: f32 =
         speech_samples.iter().map(|&x| x * x).sum::<f32>() / speech_samples.len() as f32;
-    info!(
+    debug!(
         "Processing speech audio chunk {} with {} samples (energy: {:.6})",
         chunk.chunk_id,
         speech_samples.len(),
@@ -471,7 +471,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                         return Ok((String::new(), Some(confidence), is_partial, Vec::new()));
                     }
 
-                    info!(
+                    debug!(
                         "Whisper transcription complete for chunk {}: {} chars (confidence: {:.2}, partial: {})",
                         chunk.chunk_id, cleaned_text.chars().count(), confidence, is_partial
                     );
@@ -507,7 +507,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                         return Ok((String::new(), None, false, Vec::new()));
                     }
 
-                    info!(
+                    debug!(
                         "Parakeet transcription complete for chunk {}: {} chars",
                         chunk.chunk_id, cleaned_text.chars().count()
                     );
@@ -550,7 +550,7 @@ async fn transcribe_chunk_with_provider<R: Runtime>(
                         None => "no confidence".to_string(),
                     };
 
-                    info!(
+                    debug!(
                         "{} transcription complete for chunk {}: {} chars ({}, partial: {})",
                         provider.provider_name(),
                         chunk.chunk_id,

@@ -2,6 +2,7 @@
 
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from '@/components/ui/dialog';
+import { DESTRUCTIVE_OUTLINE } from '@/lib/utils';
 import { deleteMeetingParts, type MeetingRow } from '@/lib/meetings';
 
 type Props = {
@@ -25,7 +26,7 @@ export function DeleteMeetingDialog({ row, open, onOpenChange, onConfirm }: Prop
         </DialogHeader>
         <DialogFooter>
           <Button variant="outline" onClick={() => onOpenChange(false)}>Cancel</Button>
-          <Button variant="destructive" onClick={() => void onConfirm()}>Delete meeting</Button>
+          <Button variant="outline" className={DESTRUCTIVE_OUTLINE} onClick={() => void onConfirm()}>Delete meeting</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

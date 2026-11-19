@@ -12,11 +12,11 @@ const row: MeetingRow = {
 };
 
 // The real Radix menu: it opens from the keyboard and renders into a portal on document.body.
-async function open(live: boolean, onDelete: () => void) {
+async function open(live: boolean, onDelete: () => void, onOpen: () => void = () => {}) {
   const host = document.createElement('div');
   document.body.appendChild(host);
   const root = createRoot(host);
-  await act(async () => { root.render(<RowMenu row={row} live={live} onDelete={onDelete} />); });
+  await act(async () => { root.render(<RowMenu row={row} live={live} onDelete={onDelete} onOpen={onOpen} />); });
   const trigger = host.querySelector('button[aria-label="Actions: Weekly"]')!;
   await act(async () => { trigger.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })); });
   const items = () => Array.from(document.querySelectorAll('[role="menuitem"]')) as HTMLElement[];
@@ -24,6 +24,14 @@ async function open(live: boolean, onDelete: () => void) {
 }
 
 describe('row menu', () => {
+  test('Open tells the caller', async () => {
+    const onOpen = mock(() => {});
+    const m = await open(false, () => {}, onOpen);
+    await act(async () => { m.items().find((i) => i.textContent === 'Open')!.click(); });
+    expect(onOpen).toHaveBeenCalledTimes(1);
+    await m.close();
+  });
+
   test('Delete meeting… asks the caller to confirm', async () => {
     const onDelete = mock(() => {});
     const m = await open(false, onDelete);

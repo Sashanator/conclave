@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { format } from 'date-fns';
+import { formatRowDate } from '@/lib/dates';
 
 // Camel-case shape of the Rust `MeetingRow` returned by `api_list_meeting_rows`.
 export type MeetingRow = {
@@ -55,12 +55,8 @@ export function formatMeetingDate(row: MeetingRow, now: Date, live = false): str
     : row.calendarStart
       ? [row.calendarStart, row.calendarEnd]
       : [row.createdAt, null];
-  const start = parseDbTime(startRaw);
-  const day = format(start, start.getFullYear() === now.getFullYear() ? 'EEE d MMM' : 'EEE d MMM yyyy');
-  let time = format(start, 'HH:mm');
-  if (live) time += '–now';
-  else if (endRaw) time += `–${format(parseDbTime(endRaw), 'HH:mm')}`;
-  return `${day} · ${time}`;
+  const end = endRaw ? parseDbTime(endRaw) : null;
+  return formatRowDate(parseDbTime(startRaw), live ? null : end, now) + (live ? '–now' : '');
 }
 
 /** What "Delete meeting" removes, for the confirm dialog. */

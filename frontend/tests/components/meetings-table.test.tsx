@@ -1,8 +1,9 @@
-import { afterAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingRow } from '../../src/lib/meetings';
-import { BUILTIN_VIEW_DEFAULTS } from '../../src/lib/meeting-views';
+import { readOrigin } from '../../src/lib/back-nav';
+import { BUILTIN_VIEW_DEFAULTS, clearViewUi, saveViewUi } from '../../src/lib/meeting-views';
 
 let renderer: ReactTestRenderer | null = null;
 const originals = {
@@ -16,7 +17,16 @@ const originals = {
   popover: { ...await import('../../src/components/ui/popover') },
   command: { ...await import('../../src/components/ui/command') },
   nav: { ...await import('next/navigation') },
+  virtual: { ...await import('@tanstack/react-virtual') },
 };
+const scrolledTo: number[] = [];
+mock.module('@tanstack/react-virtual', () => ({ // real virtualizer, with scrollToIndex recorded
+  ...originals.virtual,
+  useVirtualizer: (o: Parameters<typeof originals.virtual.useVirtualizer>[0]) => {
+    const v = originals.virtual.useVirtualizer(o);
+    return Object.assign(Object.create(Object.getPrototypeOf(v)), v, { scrollToIndex: (i: number) => { scrolledTo.push(i); } });
+  },
+}));
 afterAll(() => {
   // A mounted table would re-render against the restored real context and throw into later files.
   renderer?.unmount();
@@ -30,6 +40,7 @@ afterAll(() => {
   mock.module('../../src/components/ui/popover', () => originals.popover);
   mock.module('../../src/components/ui/command', () => originals.command);
   mock.module('next/navigation', () => originals.nav);
+  mock.module('@tanstack/react-virtual', () => originals.virtual);
   try { localStorage.clear(); } catch { /* none */ }
 });
 
@@ -49,6 +60,7 @@ const fixture = [
 ];
 
 let allCfg = '{}';
+let liveId: string | null = null;
 let rowsImpl: () => MeetingRow[] = () => fixture;
 let searchImpl: () => unknown[] = () => [];
 const push = mock((_href: string) => {});
@@ -59,6 +71,7 @@ const invoke = mock(async (command: string, _args?: Record<string, unknown>): Pr
     case 'api_list_meeting_views': return [
       { id: 'all', name: 'All meetings', position: 0, builtin: true, configJson: allCfg },
       { id: 'week', name: 'This week', position: 1, builtin: true, configJson: JSON.stringify(BUILTIN_VIEW_DEFAULTS.week) },
+      { id: 'unreviewed', name: 'Not reviewed', position: 2, builtin: true, configJson: JSON.stringify(BUILTIN_VIEW_DEFAULTS.unreviewed) },
     ];
     case 'api_create_meeting': return 'preview-new';
     case 'api_search_transcripts': return searchImpl();
@@ -72,7 +85,7 @@ const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
 mock.module('@tauri-apps/api/core', () => ({ ...originals.core, invoke }));
 mock.module('@tauri-apps/api/event', () => ({ ...originals.event, listen: async () => () => {} }));
 mock.module('sonner', () => ({ toast: { error: toastError, warning: () => {} } }));
-mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.rec, useRecordingState: () => ({ liveMeetingId: null, activeDuration: null }) }));
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.rec, useRecordingState: () => ({ liveMeetingId: liveId, activeDuration: null }) }));
 mock.module('../../src/components/Sidebar/SidebarProvider', () => ({ ...originals.sidebar, useSidebar: () => ({}) }));
 mock.module('../../src/components/ui/dialog', () => ({
   Dialog: ({ open, children }: { open: boolean; children?: ReactNode }) => (open ? <>{children}</> : null),
@@ -102,12 +115,14 @@ describe('meetings table', () => {
     toastError.mockClear();
     push.mockClear();
     allCfg = '{}';
+    liveId = null;
     rowsImpl = () => fixture;
     searchImpl = () => [];
     setSystemTime();
     try { localStorage.clear(); } catch { /* none */ }
     deleteImpl = async () => null;
     if (renderer) await act(async () => { renderer!.unmount(); });
+    clearViewUi(); // after the unmount, which saves the old view's state
     await act(async () => { renderer = create(<MeetingsTable />); });
     await flush();
   });
@@ -137,6 +152,13 @@ describe('meetings table', () => {
     expect(deleteCalls()[0][1]).toEqual({ meetingId: 'cancelled' });
   });
 
+  test('the delete dialog confirm button is outlined, not solid red', async () => {
+    await act(async () => { button('Delete').props.onClick(); });
+    const b = renderer!.root.findAll((n) => typeof n.type !== 'string' && n.props.variant && text(n) === 'Delete meeting')[0];
+    expect(b.props.variant).toBe('outline');
+    expect(b.props.className).toContain('text-destructive');
+  });
+
   test('a failed delete keeps the row and toasts', async () => {
     deleteImpl = async () => { throw new Error('disk busy'); };
     await act(async () => { button('Delete').props.onClick(); });
@@ -146,9 +168,9 @@ describe('meetings table', () => {
     expect(all()).toContain('Cancelled in calendar');
   });
 
-  const mount = async () => {
+  const mount = async (options?: Parameters<typeof create>[1]) => {
     if (renderer) await act(async () => { renderer!.unmount(); });
-    await act(async () => { renderer = create(<MeetingsTable onScopeChange={scope} />); });
+    await act(async () => { renderer = create(<MeetingsTable onScopeChange={scope} />, options); });
     await flush();
   };
   const search = async (q: string) => {
@@ -164,7 +186,7 @@ describe('meetings table', () => {
 
   test('tabs, counts and header sort', async () => {
     await mount();
-    expect(renderer!.root.findAll((n) => n.props.role === 'tab').length).toBe(2);
+    expect(renderer!.root.findAll((n) => n.props.role === 'tab').length).toBe(3);
     expect(all()).toContain('This week');
     await act(async () => { button('Name').props.onClick(); });
     expect(renderer!.root.findAll((n) => n.type === 'th' && n.props['aria-sort'] === 'ascending').length).toBe(1);
@@ -197,17 +219,106 @@ describe('meetings table', () => {
     expect(all()).not.toContain('Searching all meetings');
   });
 
-  test('group headers show a count and the chevron collapses the group', async () => {
+  test('day grouping opens today only; a click flips one group', async () => {
+    setSystemTime(new Date('2026-11-16T12:00:00Z'));
     allCfg = JSON.stringify({ group: 'day' });
     await mount();
-    const toggles = renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === true);
-    expect(toggles.length).toBeGreaterThan(1);
-    expect(all()).toContain('done1');
-    const first = toggles.find((t) => text(t).includes('Monday 16 Nov'))!;
-    expect(text(first)).toContain('1');
-    await act(async () => { first.props.onClick(); });
-    expect(all()).not.toContain('done1');
-    expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false).length).toBe(1);
+    const toggles = (v: boolean) => renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === v);
+    expect(toggles(true).length).toBe(1);
+    expect(text(toggles(true)[0])).toContain('Today · Monday 16 Nov');
+    const sunday = toggles(false).find((t) => text(t).includes('Sunday 15 Nov'))!;
+    expect(text(sunday)).toContain('1');
+    expect(all()).not.toContain('done2');
+    await act(async () => { sunday.props.onClick(); });
+    expect(all()).toContain('done2');
+    expect(toggles(true).length).toBe(2);
+    setSystemTime();
+  });
+
+  test('category grouping starts with every group open', async () => {
+    allCfg = '{}';
+    await mount();
+    expect(renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false).length).toBe(0);
+  });
+
+  test('scroll comes back after a remount', async () => {
+    const nodeMock = (node: object) => ({ createNodeMock: (el: { type: unknown }) => (el.type === 'div' ? node : null) });
+    await mount(nodeMock({ scrollTop: 0, querySelectorAll: () => [] }));
+    await act(async () => { renderer!.root.findAll((n) => n.type === 'div' && n.props.onScroll)[0].props.onScroll({ currentTarget: { scrollTop: 480 } }); });
+    const fresh = { scrollTop: 0, querySelectorAll: () => [] };
+    await mount(nodeMock(fresh));
+    expect(fresh.scrollTop).toBe(480);
+  });
+
+  test('a view with nothing saved starts at the top, not at the previous view offset', async () => {
+    const node = { scrollTop: 0, querySelectorAll: () => [] };
+    await mount({ createNodeMock: (el: { type: unknown }) => (el.type === 'div' ? node : null) });
+    await act(async () => { renderer!.root.findAll((n) => n.type === 'div' && n.props.onScroll)[0].props.onScroll({ currentTarget: { scrollTop: 480 } }); });
+    node.scrollTop = 480;
+    await act(async () => { renderer!.root.findAll((n) => n.props.role === 'tab' && text(n).includes('This week'))[0].props.onClick(); });
+    await flush();
+    expect(node.scrollTop).toBe(0);
+  });
+
+  test('on a long list the restored scroll wins over scroll-to-selected', async () => {
+    rowsImpl = () => Array.from({ length: 250 }, (_, i) => mk(`r${i}`));
+    const node = { scrollTop: 0, querySelectorAll: () => [] };
+    const opts = { createNodeMock: (el: { type: unknown }) => (el.type === 'div' ? node : null) };
+    await act(async () => { renderer!.unmount(); }); // saves the old state, so seed after it
+    renderer = null;
+    saveViewUi('all', { flipped: [], query: '', selectedId: 'r3', scroll: { px: 480, key: 'r100' } });
+    scrolledTo.length = 0;
+    await mount(opts);
+    expect(scrolledTo).toEqual([expect.any(Number)]); // the restore's own scroll; no second one for the selected row
+  });
+
+  describe('per-view memory', () => {
+    const dayCfg = () => { setSystemTime(new Date('2026-11-16T12:00:00Z')); allCfg = JSON.stringify({ group: 'day' }); };
+    const sundayBtn = () => renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] !== undefined && text(n).includes('Sunday 15 Nov'))[0];
+    const row = (id: string) => renderer!.root.findAll((n) => n.type === 'tr' && n.props['data-row-id'] === id)[0];
+    const searchInput = () => renderer!.root.findByProps({ 'aria-label': 'Search meetings, summaries and transcripts' });
+    const tab = (name: string) => renderer!.root.findAll((n) => n.props.role === 'tab' && text(n).includes(name))[0];
+
+    test('coming back restores groups, search text and the selected row', async () => {
+      dayCfg();
+      await mount();
+      await act(async () => { sundayBtn().props.onClick(); });
+      await act(async () => { row('done1').props.onClick(); });
+      await mount();
+      expect(all()).toContain('done2');
+      expect(row('done1').props['aria-current']).toBe(true);
+      await search('plan');
+      await mount();
+      expect(searchInput().props.value).toBe('plan');
+      setSystemTime();
+    });
+
+    test('each view keeps its own state', async () => {
+      dayCfg();
+      await mount();
+      await act(async () => { sundayBtn().props.onClick(); });
+      expect(all()).toContain('done2');
+      await act(async () => { tab('This week').props.onClick(); });
+      await flush();
+      expect(all()).not.toContain('Sunday 15 Nov');
+      await act(async () => { tab('All meetings').props.onClick(); });
+      await flush();
+      expect(all()).toContain('done2');
+      setSystemTime();
+    });
+
+    test('a fresh session starts from the defaults', async () => {
+      dayCfg();
+      await mount();
+      await act(async () => { sundayBtn().props.onClick(); });
+      await search('plan');
+      await act(async () => { renderer!.unmount(); }); // saves on the way out
+      clearViewUi();
+      await mount();
+      expect(all()).not.toContain('done2');
+      expect(searchInput().props.value).toBe('');
+      setSystemTime();
+    });
   });
 
   test('typing a new query never shows the old hits, and shows Searching… instead of the table', async () => {
@@ -291,6 +402,118 @@ describe('meetings table', () => {
     await flush();
     expect(e.defaultPrevented).toBe(true);
     expect(push).toHaveBeenCalledWith('/meeting-details?id=preview-new');
+  });
+
+  describe('view tab counts', () => {
+    const tabCount = (name: string) => text(renderer!.root.findAll((n) => n.props.role === 'tab' && text(n).startsWith(name))[0]).slice(name.length);
+    const shownRows = async () => { // open every group, then count the rows on screen
+      for (const b of renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false)) await act(async () => { b.props.onClick(); });
+      return new Set(renderer!.root.findAll((n) => n.type === 'tr' && n.props['data-row-id']).map((n) => n.props['data-row-id'])).size;
+    };
+    const open = async (view: string, name: string) => {
+      localStorage.setItem('conclave.meetingsView', view);
+      setSystemTime(new Date('2026-11-16T12:00:00Z'));
+      await mount();
+      return { name };
+    };
+    afterEach(() => setSystemTime());
+    for (const [view, name] of [['week', 'This week'], ['unreviewed', 'Not reviewed']]) {
+      test(`each tab count equals the rows its view shows: ${name}`, async () => {
+        liveId = 'done2'; // Now counts in every view
+        await open(view, name);
+        expect(tabCount(name)).toBe(String(await shownRows()));
+      });
+    }
+    test('the count follows a filter change on the active view', async () => {
+      await open('unreviewed', 'Not reviewed');
+      const before = Number(tabCount('Not reviewed'));
+      await act(async () => { renderer!.root.findAll((n) => String(n.props['aria-label']).startsWith('Remove filter'))[0].props.onClick(); });
+      expect(Number(tabCount('Not reviewed'))).toBe(await shownRows());
+      expect(Number(tabCount('Not reviewed'))).toBeGreaterThan(before);
+    });
+  });
+
+  test('the toolbar keeps its controls', () => {
+    const labels = renderer!.root.findAll((n) => n.type === 'button').map((n) => text(n));
+    expect(labels).toContain('+ Filter');
+    for (const h of ['Name', 'Date', 'Reviewed']) expect(labels.some((l) => l === h)).toBe(true);
+    expect(renderer!.root.findAll((n) => n.props['aria-label'] === 'Actions: done1').length).toBeGreaterThan(0);
+    expect(labels.some((l) => l.includes('Ask') && l.includes('Ctrl J'))).toBe(true);
+    expect(all()).toContain('Calendar');
+  });
+
+  describe('fits at 1366 px', () => {
+    beforeEach(async () => { // the All view groups by category, which hides that column
+      localStorage.setItem('conclave.meetingsView', 'week');
+      setSystemTime(new Date('2026-11-16T12:00:00Z'));
+      await mount();
+    });
+    afterEach(() => setSystemTime());
+    const ths = () => renderer!.root.findAll((n) => n.type === 'th' && n.props.style?.width !== undefined && n.props.scope === undefined);
+    const th = (label: string) => ths().find((n) => text(n).startsWith(label))!;
+    test('Date and Reviewed have fixed widths, the rest share the remainder', () => {
+      expect(th('Date').props.style.width).toBe('190px');
+      expect(th('Reviewed').props.style.width).toBe('84px');
+      const pct = ['Name', 'Category', 'Summary'].map((l) => String(th(l).props.style.width));
+      expect(pct.every((w) => w.endsWith('%'))).toBe(true);
+      expect(pct.reduce((n, w) => n + parseFloat(w), 0)).toBeCloseTo(100, 1);
+      expect(th('Date').findAll((n) => n.props.role === 'separator').length).toBe(0);
+      expect(th('Name').findAll((n) => n.props.role === 'separator').length).toBe(1);
+    });
+    test('chips never wrap', async () => {
+      for (const b of renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false)) await act(async () => { b.props.onClick(); });
+      const chip = renderer!.root.findAll((n) => n.type === 'button' && String(n.props['aria-label']).startsWith('Template:'))[0];
+      expect(chip.props.className).toContain('truncate');
+      expect(chip.props.className).toContain('max-w-full');
+      const wrap = renderer!.root.findAll((n) => n.type === 'span' && text(n).startsWith('Not recorded yet') && String(n.props.className).includes('flex'))[0];
+      expect(wrap.props.className).toContain('whitespace-nowrap');
+    });
+  });
+
+  describe('origin for Back', () => {
+    const week = { path: '/', label: 'Meetings / This week' };
+    const weekView = async (today = '2026-11-16T12:00:00Z') => {
+      sessionStorage.clear();
+      localStorage.setItem('conclave.meetingsView', 'week');
+      setSystemTime(new Date(today)); // only today's day group starts open
+      rowsImpl = () => fixture.map((r) => (r.id === 'missed' ? { ...r, calendarStart: '2026-11-16T09:00:00+00:00', createdAt: '2026-11-16 09:00:00+00:00' } : r));
+      await mount();
+    };
+    afterEach(() => setSystemTime());
+    const click = (label: string) => act(async () => {
+      renderer!.root.findAll((n) => n.type === 'a' && text(n).includes(label))[0].props.onClick({ defaultPrevented: true, preventDefault() {} });
+    });
+    test('Enter opens the selected row', async () => {
+      await weekView();
+      await act(async () => { renderer!.root.findAll((n) => n.type === 'tr' && n.props['data-row-id'] === 'done1')[0].props.onClick(); });
+      key('Enter');
+      expect(readOrigin()).toEqual(week);
+      expect(push).toHaveBeenCalledWith('/meeting-details?id=done1');
+    });
+    test('New meeting', async () => {
+      await weekView();
+      key('n', { ctrlKey: true });
+      await flush();
+      expect(readOrigin()).toEqual(week);
+    });
+    test('the name link', async () => {
+      await weekView();
+      await click('done1');
+      expect(readOrigin()).toEqual(week);
+    });
+    test('Open prep', async () => {
+      await weekView('2026-11-17T12:00:00Z'); // a day later, so the 16 Nov call reads as not recorded
+      await act(async () => { renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false)[0].props.onClick(); });
+      await click('Open prep');
+      expect(readOrigin()).toEqual(week);
+    });
+    test('a search hit title', async () => {
+      await weekView();
+      searchImpl = () => [{ meetingId: 'done1', title: 'done1', source: 'transcript', snippet: 'a snippet', transcriptId: 't1', audioStart: 0, totalInMeeting: 1 }];
+      await search('plan');
+      await click('done1');
+      expect(readOrigin()).toEqual(week);
+    });
   });
 
   test('the delete dialog names the brief of a calendar meeting', async () => {

@@ -1,7 +1,7 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
-import { formatLongDate } from '../../src/lib/dates';
+import { formatLongDate, formatRowDate } from '../../src/lib/dates';
 import {
   MATERIAL_MAX_BYTES, type PracticeSettings, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupInput, type SetupSummary, type TurnRow, VOICES,
 } from '../../src/lib/practice';
@@ -12,20 +12,20 @@ const originals = {
   sonner: { ...await import('sonner') },
   select: { ...await import('../../src/components/ui/select') },
   nav: { ...await import('next/navigation') },
+  confirm: { ...await import('../../src/lib/confirm') },
   backNav: { ...await import('../../src/lib/back-nav') },
 };
 
-const originalConfirm = window.confirm;
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
 afterAll(() => {
   renderer?.unmount();
-  window.confirm = originalConfirm;
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/components/ui/select', () => originals.select);
   mock.module('next/navigation', () => originals.nav);
+  mock.module('../../src/lib/confirm', () => originals.confirm);
   mock.module('../../src/lib/back-nav', () => originals.backNav);
 });
 
@@ -155,7 +155,9 @@ const { default: PracticePage } = await import('../../src/app/practice/page');
 const { default: ReportPage } = await import('../../src/app/practice/report/page');
 
 let renderer: ReactTestRenderer | null = null;
-const confirm = mock((_message?: string) => true);
+type ConfirmOpts = { title: string; body?: string; confirmLabel: string; destructive?: boolean };
+const confirm = mock(async (_opts: ConfirmOpts) => true);
+mock.module('../../src/lib/confirm', () => ({ ...originals.confirm, confirmAction: confirm }));
 
 async function flush() {
   await act(async () => {
@@ -292,8 +294,7 @@ beforeEach(async () => {
   rememberOrigin.mockClear();
   searchId = 's1';
   nodeAudio = null;
-  confirm.mockImplementation(() => true);
-  window.confirm = confirm as unknown as typeof window.confirm;
+  confirm.mockImplementation(async () => true);
   listeners.clear();
   await mount();
 });
@@ -356,11 +357,6 @@ describe('Practice page', () => {
     expect(buttons('▶ Start').every((b) => b.props.disabled)).toBe(true);
   });
 
-  test('a session row shows the date, the minutes and the summary', () => {
-    const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
-    expect(lines.some((l) => l.includes('18 min') && l.includes('4 grammar · 31 fillers'))).toBe(true);
-  });
-
   test('a cancel while the listener registers means nothing starts', async () => {
     let release!: () => void;
     holdPrepListen = new Promise<void>((resolve) => {
@@ -374,14 +370,6 @@ describe('Practice page', () => {
     expect(calls('practice_start').length).toBe(0);
     expect(listeners.has('practice-prep')).toBe(false);
     expect(renderer!.root.findAll((n) => n.props.role === 'dialog').length).toBe(0);
-  });
-
-  test('a session under 30 s lists as less than a minute', async () => {
-    sessions = [{ ...SESSION, duration_secs: 20 }];
-    await mount();
-    const lines = renderer!.root.findAll((n) => n.type === 'p').map(text);
-    expect(lines.some((l) => l.includes('<1 min'))).toBe(true);
-    expect(lines.some((l) => l.includes('0 min'))).toBe(false);
   });
 
   test('new_questions_confirms_and_refreshes_the_setup', async () => {
@@ -453,16 +441,63 @@ describe('Practice page', () => {
     expect(options).toEqual({ headers: { 'x-setup-id': 'seed-thesis', 'x-name': 'abstract%20notes.md', 'x-kind': 'text' } });
   });
 
-  test('delete_session_asks_first', async () => {
-    confirm.mockImplementation(() => false);
+  test('delete_session_asks_with_confirm_action', async () => {
+    confirm.mockImplementation(async () => false);
     await clickButton('Delete');
-    expect(confirm).toHaveBeenCalled();
+    expect(confirm).toHaveBeenCalledWith({ title: 'Delete this session?', body: 'Thesis defence and its report go to the Recycle Bin.', confirmLabel: 'Delete', destructive: true });
     expect(calls('practice_delete_session').length).toBe(0);
 
-    confirm.mockImplementation(() => true);
+    confirm.mockImplementation(async () => true);
     await clickButton('Delete');
     await flush();
     expect(calls('practice_delete_session')[0][1]).toEqual({ id: 's1' });
+  });
+
+  test('delete_setup_and_material_use_confirm_action', async () => {
+    await clickButton('Edit');
+    confirm.mockImplementation(async () => false);
+    await clickButton('Delete setup');
+    expect(confirm).toHaveBeenCalledWith(expect.objectContaining({ title: 'Delete this setup?', destructive: true }));
+    expect(calls('practice_delete_setup').length).toBe(0);
+    const x = () => renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Remove thesis.pdf')[0];
+    await act(async () => x().props.onClick());
+    expect(calls('practice_delete_material').length).toBe(0);
+
+    confirm.mockImplementation(async () => true);
+    await act(async () => x().props.onClick());
+    await flush();
+    expect(calls('practice_delete_material')[0][1]).toEqual({ id: 'm1' });
+    await clickButton('Delete setup');
+    await flush();
+    expect(calls('practice_delete_setup')[0][1]).toEqual({ id: 'seed-thesis' });
+  });
+
+  test('delete_buttons_are_outline', async () => {
+    const check = () => {
+      const del = renderer!.root.findAll((n) => typeof n.type !== 'string' && ['Delete', 'Delete setup'].includes(n.props.children));
+      expect(del.length).toBeGreaterThan(0);
+      for (const b of del) {
+        expect(b.props.variant).toBe('outline');
+        expect(b.props.className).toContain('text-destructive');
+      }
+    };
+    check();
+    await clickButton('Edit');
+    check();
+  });
+
+  test('home_links_to_models_and_keys', async () => {
+    expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).not.toContain('Models');
+    const link = renderer!.root.findAll((n) => n.type === 'a' && text(n) === 'Set in Models & keys')[0];
+    expect(link.props.href).toBe('/settings?tab=models');
+    expect(hasDirectText('Models:')).toBe(true);
+  });
+
+  test('session_line_uses_the_row_date', () => {
+    const start = new Date(SESSION.started_at);
+    const line = formatRowDate(start, new Date(start.getTime() + SESSION.duration_secs * 1000));
+    expect(hasText(`${line} · ${SESSION.summary}`)).toBe(true);
+    expect(hasText('Oct 19 · 18 min · 4 grammar · 31 fillers')).toBe(false);
   });
 
   test('preview_before_the_first_session_downloads_the_voices_first', async () => {
@@ -738,7 +773,7 @@ describe('Practice report view', () => {
     await openReport();
     const struck = renderer!.root.findAll((n) => String(n.props.className).includes('line-through'));
     expect(struck.map(text)).toEqual(['will have', 'depend']);
-    const better = renderer!.root.findAll((n) => String(n.props.className).includes('text-emerald-500'));
+    const better = renderer!.root.findAll((n) => String(n.props.className).includes('text-emerald-700'));
     expect(better.map(text)).toContain('If I had more data…');
   });
 

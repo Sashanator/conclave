@@ -1,10 +1,12 @@
 import { Button } from '@/components/ui/button';
-import { minutesLabel, type SessionSummary } from '@/lib/practice';
+import { formatRowDate } from '@/lib/dates';
+import { DESTRUCTIVE_OUTLINE } from '@/lib/utils';
+import type { SessionSummary } from '@/lib/practice';
 
-// "Oct 19 · 18 min · 4 grammar · 31 fillers"
+// "Mon 19 Oct · 10:00–10:18 · 4 grammar · 31 fillers"
 function sessionLine(s: SessionSummary): string {
-  const day = new Date(s.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  const parts = [day, minutesLabel(s.duration_secs)];
+  const start = new Date(s.started_at);
+  const parts = [formatRowDate(start, new Date(start.getTime() + s.duration_secs * 1000))];
   if (s.summary) parts.push(s.summary);
   return parts.join(' · ');
 }
@@ -26,7 +28,7 @@ export function SessionList({ sessions, onOpen, onDelete }: {
               <p className="text-sm text-muted-foreground">{sessionLine(s)}</p>
             </div>
             <Button variant="outline" size="sm" onClick={() => onOpen(s)}>Open report</Button>
-            <Button variant="destructive" size="sm" onClick={() => onDelete(s)}>Delete</Button>
+            <Button variant="outline" size="sm" className={DESTRUCTIVE_OUTLINE} onClick={() => onDelete(s)}>Delete</Button>
           </li>
         ))}
       </ul>

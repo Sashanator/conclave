@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { confirmAction } from '@/lib/confirm';
+import { DESTRUCTIVE_OUTLINE } from '@/lib/utils';
 import { PRACTICE_LANGUAGES, VOICES, fitsLimit, materialKind, type MaterialMeta, type PracticeLanguage, type SetupInput, type SetupSummary } from '@/lib/practice';
 
 function Labeled({ label, children }: { label: string; children: ReactNode }) {
@@ -65,7 +67,9 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
   };
 
   const remove = async () => {
-    if (!setup || !window.confirm(`Delete the setup "${setup.name}"?`)) return;
+    if (!setup) return;
+    const ok = await confirmAction({ title: 'Delete this setup?', body: `${setup.name} goes to the Recycle Bin.`, confirmLabel: 'Delete', destructive: true });
+    if (!ok) return;
     try {
       await invoke('practice_delete_setup', { id: setup.id });
       onDone();
@@ -126,7 +130,8 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
   };
 
   const removeMaterial = async (m: MaterialMeta) => {
-    if (!window.confirm(`Remove ${m.name} from this setup?`)) return;
+    const ok = await confirmAction({ title: 'Remove this file?', body: `${m.name} is removed from this setup.`, confirmLabel: 'Remove', destructive: true });
+    if (!ok) return;
     try {
       await invoke('practice_delete_material', { id: m.id });
       await onChanged();
@@ -264,7 +269,7 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
       )}
 
       <div className="flex items-center justify-between gap-2 pt-2">
-        {setup ? <Button variant="destructive" onClick={remove}>Delete setup</Button> : <span />}
+        {setup ? <Button variant="outline" className={DESTRUCTIVE_OUTLINE} onClick={remove}>Delete setup</Button> : <span />}
         <div className="flex items-center gap-2">
           {error && <p className="text-sm text-destructive">{error}</p>}
           <Button variant="outline" onClick={onDone}>Cancel</Button>

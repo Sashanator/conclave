@@ -444,7 +444,7 @@ describe('Practice page', () => {
   test('delete_session_asks_with_confirm_action', async () => {
     confirm.mockImplementation(async () => false);
     await clickButton('Delete');
-    expect(confirm).toHaveBeenCalledWith({ title: 'Delete this session?', body: 'Thesis defence and its report go to the Recycle Bin.', confirmLabel: 'Delete', destructive: true });
+    expect(confirm).toHaveBeenCalledWith({ title: 'Delete this session?', body: "Thesis defence and its report are deleted permanently. The recording goes to the Recycle Bin. This can't be undone.", confirmLabel: 'Delete', destructive: true });
     expect(calls('practice_delete_session').length).toBe(0);
 
     confirm.mockImplementation(async () => true);

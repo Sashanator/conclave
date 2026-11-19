@@ -169,7 +169,7 @@ export default function PracticePage() {
   };
 
   const deleteSession = async (session: SessionSummary) => {
-    const ok = await confirmAction({ title: 'Delete this session?', body: `${session.setup_name} and its report go to the Recycle Bin.`, confirmLabel: 'Delete', destructive: true });
+    const ok = await confirmAction({ title: 'Delete this session?', body: `${session.setup_name} and its report are deleted permanently. The recording goes to the Recycle Bin. This can't be undone.`, confirmLabel: 'Delete', destructive: true });
     if (!ok) return;
     try {
       await invoke('practice_delete_session', { id: session.id });

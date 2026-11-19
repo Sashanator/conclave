@@ -298,3 +298,7 @@
   color: inherit;
   font-family: inherit;
 }
+/* Summary headings follow the app scale (DESIGN.md: section titles 16px/600). */
+.bn-container [data-content-type=heading] { font-weight: 600; --level: 1.125rem; }
+.bn-container [data-content-type=heading][data-level="2"] { --level: 1rem; }
+.bn-container [data-content-type=heading][data-level="3"] { --level: 0.9375rem; }

@@ -7,7 +7,6 @@ import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { ImproveTemplateAction } from './ImproveTemplateAction';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
-import { MeetingCostLine } from './MeetingCostLine';
 import { ExtractionStatusLine } from './ExtractionStatusLine';
 import { useEffect, useRef, useState, RefObject } from 'react';
 import { toast } from 'sonner';
@@ -62,6 +61,7 @@ interface SummaryPanelProps {
   onOpenModelSettings?: (openFn: () => void) => void;
   speakerWaiting?: boolean;
   onSummarizeNow?: () => void;
+  onCostChanged?: () => void;
   namesChanged?: boolean;
 }
 
@@ -97,6 +97,7 @@ export function SummaryPanel({
   onOpenModelSettings,
   speakerWaiting = false,
   onSummarizeNow,
+  onCostChanged,
   namesChanged = false,
 }: SummaryPanelProps) {
   const [editHintMeetingId, setEditHintMeetingId] = useState<string | null>(null);
@@ -104,7 +105,6 @@ export function SummaryPanel({
   const [improveTemplateOpen, setImproveTemplateOpen] = useState(false);
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   // Bumped when task extraction finishes: its usage changes the meeting's cost line
-  const [costRefresh, setCostRefresh] = useState(0);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
   const [langPickerOpen, setLangPickerOpen] = useState(false);
   // The picker stays disabled until the stored language has loaded, so a change is compared with the real value.
@@ -326,8 +326,8 @@ export function SummaryPanel({
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-background overflow-hidden h-full w-full @container">
       {/* Top-level actions — always visible, same pattern as TranscriptPanel */}
-      <div className="p-4 border-b border-border">
-        <div className="flex items-center justify-center w-full min-w-0 gap-2 flex-wrap">
+      <div className="border-b border-border">
+        <div className="flex flex-wrap items-center justify-start gap-2 px-8 py-3">
           <div className="flex-shrink-0 min-w-0">
             <SummaryGeneratorButtonGroup
               modelConfig={modelConfig}
@@ -374,8 +374,7 @@ export function SummaryPanel({
             </div>
           )}
         </div>
-        <MeetingCostLine meetingId={meeting.id} refreshKey={`${summaryStatus}/${costRefresh}`} />
-        <ExtractionStatusLine meetingId={meeting.id} refreshKey={summaryStatus} onSettled={() => setCostRefresh((n) => n + 1)} />
+        <ExtractionStatusLine meetingId={meeting.id} refreshKey={summaryStatus} onSettled={() => onCostChanged?.()} />
       </div>
 
       {editHintMeetingId === meeting.id && canImproveTemplate && (
@@ -452,11 +451,8 @@ export function SummaryPanel({
               }}
             />
           </div>
-          {summaryStatus !== 'idle' && (
-            <div className={`mt-4 p-4 rounded-lg ${summaryStatus === 'error' ? 'bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300' :
-              summaryStatus === 'completed' ? 'bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-300' :
-                'bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
-              }`}>
+          {summaryStatus === 'error' && (
+            <div className="mt-4 p-4 rounded-lg bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300">
               <p className="text-sm font-medium">{getSummaryStatusMessage(summaryStatus)}</p>
             </div>
           )}

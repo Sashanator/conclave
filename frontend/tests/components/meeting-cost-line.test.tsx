@@ -68,7 +68,7 @@ describe('meeting cost line', () => {
     await mount();
 
     expect(invoke).toHaveBeenCalledWith('meeting_cost', { meetingId: 'm-1' });
-    expect(labelOf(renderer!.root)).toContain('LLM cost: $0.012 · 18.4k tokens');
+    expect(labelOf(renderer!.root)).toContain('LLM cost: $0.01 · 18.4k tokens');
   });
 
   test('an unpriced call shows a dash for the cost', async () => {

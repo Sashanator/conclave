@@ -6,7 +6,9 @@ import { StatusOverlays } from '@/app/_components/StatusOverlays';
 import { LiveTranscriptAndNotes } from '@/app/_components/LiveTranscriptAndNotes';
 import { MeetingHeader } from '@/components/MeetingPage/MeetingHeader';
 import type { MeetingRow } from '@/lib/meetings';
-import { AudioLine } from '@/components/MeetingPage/AudioLine';
+import { AudioSummaryLine } from '@/components/MeetingPage/AudioSummaryLine';
+import { LiveLevels } from '@/components/MeetingPage/LiveLevels';
+import { BackCrumb } from '@/components/BackCrumb';
 import { useAiSidebar } from '@/components/AiSidebar/AiSidebarProvider';
 import { useRecordingState, RecordingStatus } from '@/contexts/RecordingStateContext';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -28,35 +30,46 @@ export function RecordingView({ row, onChange, onTitleSaved, showModal }: { row:
   const saving = status === RecordingStatus.SAVING || status === RecordingStatus.PROCESSING_TRANSCRIPTS;
   const failed = status === RecordingStatus.ERROR;
 
+  const timer = (
+    <span className="flex shrink-0 items-center gap-2 text-sm text-foreground" role="status">
+      {isRecording && <span aria-hidden className="h-2 w-2 rounded-full" style={{ backgroundColor: 'hsl(var(--rec))' }} />}
+      {isRecording ? <><span className="sr-only">Recording </span>{formatRecordingTime(activeDuration)}</> : failed ? 'Not saved' : 'Saving…'}
+    </span>
+  );
+  const actions = (
+    <div className="flex shrink-0 flex-nowrap items-center gap-4">
+      {timer}
+      {isRecording && <LiveLevels />}
+      {isRecording && (
+        <RecordingControls
+          labeled
+          isRecording={isRecording}
+          onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
+          onRecordingStart={() => {}}
+          onTranscriptReceived={() => {}}
+          onStopInitiated={() => setIsStopping(true)}
+          onStopFailed={() => setStatus(RecordingStatus.RECORDING)}
+          onTranscriptionError={(message) => showModal('errorAlert', message)}
+          isRecordingDisabled={isRecordingDisabled}
+          isParentProcessing={isProcessingStop}
+          selectedDevices={selectedDevices}
+          meetingName={row?.title}
+        />
+      )}
+    </div>
+  );
+
   return (
-    <div className="flex h-screen flex-col bg-muted/50">
-      <div className="border-b border-border bg-background px-6 pt-4">{row && onChange ? <MeetingHeader row={row} live onChange={onChange} onTitleSaved={onTitleSaved} /> : <h1 className="pb-3 text-xl font-semibold">New recording</h1>}</div>
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-b border-border bg-background px-6 py-3">
-        <span className="flex items-center gap-2 text-sm text-foreground" role="status">
-          {isRecording && <span aria-hidden className="h-2 w-2 rounded-full" style={{ backgroundColor: 'hsl(var(--rec))' }} />}
-          {isRecording ? `Recording ${formatRecordingTime(activeDuration)}` : failed ? 'Not saved' : 'Saving…'}
-        </span>
-        {isRecording && (
-          <RecordingControls
-            labeled
-            isRecording={isRecording}
-            onRecordingStop={(callApi = true) => handleRecordingStop(callApi)}
-            onRecordingStart={() => {}}
-            onTranscriptReceived={() => {}}
-            onStopInitiated={() => setIsStopping(true)}
-            onStopFailed={() => setStatus(RecordingStatus.RECORDING)}
-            barHeights={['4px', '4px', '4px']}
-            onTranscriptionError={(message) => showModal('errorAlert', message)}
-            isRecordingDisabled={isRecordingDisabled}
-            isParentProcessing={isProcessingStop}
-            selectedDevices={selectedDevices}
-            meetingName={row?.title}
-          />
-        )}
-        <div className="ml-auto"><AudioLine disabled /></div>
-      </div>
+    <div className="flex h-screen flex-col bg-background px-8">
+      <div className="pt-8 pb-2"><BackCrumb fallback="/" fallbackLabel="Meetings" /></div>
+      {row && onChange ? (
+        <MeetingHeader variant="compact" row={row} live onChange={onChange} onTitleSaved={onTitleSaved} actions={actions} />
+      ) : (
+        <div className="flex flex-nowrap items-center gap-4"><h1 className="min-w-0 flex-1 truncate text-xl font-semibold">New recording</h1>{actions}</div>
+      )}
+      <div className="py-3"><AudioSummaryLine changeable={false} /></div>
       {failed && (
-        <div role="alert" className="flex items-center gap-3 border-b border-border bg-background px-6 py-2 text-sm text-foreground">
+        <div role="alert" className="flex items-center gap-3 border-b border-border bg-background py-2 text-sm text-foreground">
           <span>The meeting was not saved. Its transcript and notes are still here.</span>
           <button type="button" onClick={() => { void handleRecordingStop(true); }} className="rounded-md border border-border px-3 py-1 hover:bg-accent">
             Try saving again

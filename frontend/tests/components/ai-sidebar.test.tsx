@@ -5,8 +5,14 @@ import { AiSidebarProvider } from '../../src/components/AiSidebar/AiSidebarProvi
 const originalNav = { ...(await import('next/navigation')) };
 afterAll(() => { mock.module('next/navigation', () => originalNav); });
 mock.module('next/navigation', () => ({ useRouter: () => ({ push() {} }) }));
-import { AskChat } from '../../src/components/Ask/AskChat';
-import { AiSidebar } from '../../src/components/AiSidebar/AiSidebar';
+const originalCopilot = { ...(await import('../../src/components/Copilot/CopilotPane')) };
+afterAll(() => { mock.module('../../src/components/Copilot/CopilotPane', () => originalCopilot); });
+mock.module('../../src/components/Copilot/CopilotPane', () => ({ CopilotPane: () => null }));
+const { useRecordingState: _u, ...recCtx } = await import('../../src/contexts/RecordingStateContext');
+const originalRec = { ...recCtx, useRecordingState: _u };
+afterAll(() => { mock.module('../../src/contexts/RecordingStateContext', () => originalRec); });
+mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originalRec, useRecordingState: () => ({}) }));
+const { AiSidebar } = await import('../../src/components/AiSidebar/AiSidebar');
 import { useAiSidebarScreen } from '../../src/components/AiSidebar/AiSidebarProvider';
 
 function Screen({ kind, scope }: { kind: ScreenKind | null; scope?: { label: string; meetingIds: string[] } }) {
@@ -85,21 +91,21 @@ describe('AiSidebar', () => {
   });
 });
 
-describe('Ask chat identity', () => {
-  test('a different meeting scope starts a fresh conversation', async () => {
-    writeSidebarOpen('meeting', true);
-    const tree = (id: string) => (
-      <AiSidebarProvider>
-        <Screen kind="meeting" scope={{ label: 'This meeting', meetingIds: [id] }} />
-        <AiSidebar />
-      </AiSidebarProvider>
-    );
-    let r!: ReturnType<typeof create>;
-    await act(async () => { r = create(tree('a')); });
-    mounted.push(r);
-    const keyOf = () => (r.root.findByType(AskChat) as unknown as { _fiber: { key: string } })._fiber.key;
-    const first = keyOf();
-    await act(async () => { r.update(tree('b')); });
-    expect(keyOf()).not.toBe(first);
+describe('live screen', () => {
+  test('live: Escape does not close Copilot', async () => {
+    const r = await mount('live');
+    expect(hasAside(r)).toBe(true);
+    press({ key: 'Escape' });
+    expect(hasAside(r)).toBe(true);
+  });
+});
+
+describe('esc layer', () => {
+  test('esc layer only where Esc closes it', async () => {
+    writeSidebarOpen('table', true);
+    const t = await mount('table');
+    expect(t.root.findByType('aside').props['data-esc-layer']).toBeDefined();
+    const l = await mount('live');
+    expect(l.root.findByType('aside').props['data-esc-layer']).toBeUndefined();
   });
 });

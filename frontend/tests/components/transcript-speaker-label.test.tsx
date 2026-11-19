@@ -5,18 +5,15 @@ import type { TranscriptSegmentData } from '../../src/types';
 
 const originalPopover = { ...await import('../../src/components/ui/popover') };
 const originalTooltip = { ...await import('../../src/components/ui/tooltip') };
-const originalStatusBar = { ...await import('../../src/components/RecordingStatusBar') };
 afterAll(() => {
   mock.module('../../src/components/ui/popover', () => originalPopover);
   mock.module('../../src/components/ui/tooltip', () => originalTooltip);
-  mock.module('../../src/components/RecordingStatusBar', () => originalStatusBar);
 });
 const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
 mock.module('../../src/components/ui/popover', () => ({
   Popover: pass, PopoverAnchor: pass, PopoverTrigger: pass, PopoverContent: pass,
 }));
 mock.module('../../src/components/ui/tooltip', () => ({ Tooltip: pass, TooltipTrigger: pass, TooltipContent: pass }));
-mock.module('../../src/components/RecordingStatusBar', () => ({ RecordingStatusBar: () => null }));
 const { VirtualizedTranscriptView } = await import('../../src/components/VirtualizedTranscriptView');
 
 const first: TranscriptSegmentData = { id: 'a', timestamp: 1, text: 'Short line.' };

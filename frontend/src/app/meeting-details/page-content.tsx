@@ -1,6 +1,5 @@
 "use client";
 import { useState, useEffect, useRef, useMemo } from 'react';
-import { motion } from 'framer-motion';
 import { MeetingSummary, SummaryProcessResponse, Transcript, TranscriptMark } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
 import { useRouter } from 'next/navigation';
@@ -10,6 +9,11 @@ import { toast } from 'sonner';
 import { TranscriptPanel } from '@/components/MeetingDetails/TranscriptPanel';
 import { SummaryPanel } from '@/components/MeetingDetails/SummaryPanel';
 import { FinishedTabs, type MeetingDetailsTab } from '@/components/MeetingPage/FinishedTabs';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
+import { BackCrumb } from '@/components/BackCrumb';
+import { MeetingRail } from '@/components/MeetingPage/MeetingRail';
+import { useAiSidebar } from '@/components/AiSidebar/AiSidebarProvider';
+import { Button } from '@/components/ui/button';
 import { MeetingTasksPanel } from '@/components/MeetingPage/MeetingTasksPanel';
 import { MeetingBrief } from '@/components/Briefs/MeetingBrief';
 import { PrepTab } from '@/components/MeetingPage/PrepTab';
@@ -95,6 +99,9 @@ export default function PageContent({
   const [customPrompt, setCustomPrompt] = useState<string>('');
   const isRecording = false;
   const [activeTab, setActiveTab] = useState<MeetingDetailsTab>('summary');
+  const [taskCount, setTaskCount] = useState(0);
+  const [costKey, setCostKey] = useState(0);
+  const { open: askOpen, toggle: toggleAsk } = useAiSidebar();
   const notes = useMeetingNotes(meeting.id);
   const audio = useMeetingAudio(meeting.id);
   const router = useRouter();
@@ -279,30 +286,33 @@ export default function PageContent({
   ]);
 
   return (
-    <motion.div
-      initial={{ opacity: 0, y: 20 }}
-      animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.3, ease: 'easeOut' }}
-      className="flex flex-col h-screen min-w-0 bg-muted/50"
+    <PageFrame
+      variant="reading"
+      breadcrumb={<BackCrumb fallback="/" fallbackLabel="Meetings" />}
+      rail={
+        <MeetingRail
+          taskCount={taskCount}
+          tasks={<MeetingTasksPanel meetingId={meeting.id} reviewed={reviewed} onCountChange={setTaskCount} costRefreshKey={`${summaryGeneration.summaryStatus}/${costKey}`} />}
+        />
+      }
     >
       {row && (
-        <div className="border-b border-border bg-background px-6 pt-4 pb-2">
-          <MeetingHeader
-            row={row}
-            finished
-            live={liveMeetingId === meeting.id} // the recording/saving view takes over this page, so only the live target matters
-            onChange={(r) => { onRowChange?.(r); if (r.title !== row.title) meetingData.updateMeetingTitle(r.title); }}
-            onTitleSaved={onMeetingUpdated}
-            onMeetingDeleted={() => router.push('/')}
-            onRecordingDeleted={() => window.location.reload()}
-            onRegenerateSummary={(id) => {
-              const name = templates.availableTemplates.find((t) => t.id === id)?.name ?? id;
-              pickTemplateIfAllowed(meetingData.isSummaryDirty, () => templates.handleTemplateSelection(id, name), () => regenerateSummary(id));
-            }}
-          />
-        </div>
+        <MeetingHeader
+          actions={<Button variant="outline" size="sm" onClick={() => { if (!askOpen) toggleAsk(); }}>Ask <kbd className="ml-1 text-xs text-muted-foreground">Ctrl J</kbd></Button>}
+          row={row}
+          finished
+          live={liveMeetingId === meeting.id} // the recording/saving view takes over this page, so only the live target matters
+          onChange={(r) => { onRowChange?.(r); if (r.title !== row.title) meetingData.updateMeetingTitle(r.title); }}
+          onTitleSaved={onMeetingUpdated}
+          onMeetingDeleted={() => router.push('/')}
+          onRecordingDeleted={() => window.location.reload()}
+          onRegenerateSummary={(id) => {
+            const name = templates.availableTemplates.find((t) => t.id === id)?.name ?? id;
+            pickTemplateIfAllowed(meetingData.isSummaryDirty, () => templates.handleTemplateSelection(id, name), () => regenerateSummary(id));
+          }}
+        />
       )}
-      <div className="flex flex-1 min-w-0 overflow-hidden">
+      <div className="flex min-h-0 flex-1 flex-col">
         <FinishedTabs
           activeTab={activeTab}
           onTabChange={(tab) => {
@@ -310,7 +320,6 @@ export default function PageContent({
             setActiveTab(tab);
           }}
           notesCount={notes.notes.length}
-          tasks={<MeetingTasksPanel meetingId={meeting.id} reviewed={reviewed} />}
           prep={<PrepTab meetingId={meeting.id} briefSlot={<MeetingBrief meetingId={meeting.id} />} />}
           notes={
             <NotesPane
@@ -395,12 +404,13 @@ export default function PageContent({
               speakerWaiting={speakerWaiting}
               onSummarizeNow={() => setSummarizeNowId(meeting.id)}
               namesChanged={speakers.namesChanged}
+              onCostChanged={() => setCostKey((n) => n + 1)}
             />
           }
         />
         {/* One element for the whole page, outside every tab, so switching tabs keeps playback. */}
         {audio.src && <audio ref={audio.audioRef} src={audio.src} preload="metadata" className="hidden" {...audio.audioEvents} />}
       </div>
-    </motion.div>
+    </PageFrame>
   );
 }

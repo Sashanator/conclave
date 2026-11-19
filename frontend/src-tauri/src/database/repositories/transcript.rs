@@ -198,7 +198,8 @@ impl TranscriptsRepository {
             let incoming_notes = sanitize_notes(notes).len();
             let mut same = None;
             for (cand,) in candidates {
-                if read_notes_strict(&mut tx, &cand).await?.len() >= incoming_notes {
+                // Unreadable stored notes: not provably the same recording, so skip it (a duplicate beats a failed save).
+                if matches!(read_notes_strict(&mut tx, &cand).await, Ok(n) if n.len() >= incoming_notes) {
                     same = Some(cand);
                     break;
                 }
@@ -980,6 +981,20 @@ mod meeting_date_tests {
         assert!(fb && id != "m-t");
         let json: String = sqlx::query_scalar("SELECT notes_json FROM meeting_notes WHERE meeting_id = ?").bind(&id).fetch_one(&pool).await.unwrap();
         assert!(json.contains("keep me"));
+    }
+
+    #[tokio::test]
+    async fn a_resave_skips_a_same_folder_meeting_with_unreadable_notes() {
+        let pool = crate::database::repositories::test_pool().await;
+        target(&pool).await;
+        let origin = TitleOrigin::default();
+        let segs = [seg("a", 0.0, None)];
+        let first = TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &segs, Some("/rec4".into()), &[], false, &origin).await.unwrap();
+        assert_eq!(first, ("m-t".to_string(), false));
+        sqlx::query("INSERT OR REPLACE INTO meeting_notes (meeting_id, notes_json, created_at, updated_at) VALUES ('m-t', 'not json', 'x', 'x')").execute(&pool).await.unwrap();
+        let (id, fb) = TranscriptsRepository::save_into_or_new(&pool, Some("m-t"), "Fresh", &segs, Some("/rec4".into()), &[], false, &origin).await.unwrap();
+        assert!(fb && id != "m-t");
+        assert_eq!(lines(&pool, &id).await, 1);
     }
 
     #[tokio::test]

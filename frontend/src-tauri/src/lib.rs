@@ -569,10 +569,26 @@ mod allowed_languages_tests {
     }
 }
 
+/// Drops control characters (so a message cannot forge extra log lines) and caps the length.
+fn sanitize_ui_log(message: &str) -> String {
+    message.chars().filter(|c| !c.is_control()).take(500).collect()
+}
+
+#[cfg(test)]
+mod ui_log_tests {
+    use super::sanitize_ui_log;
+
+    #[test]
+    fn strips_control_chars_and_caps_length() {
+        assert_eq!(sanitize_ui_log("a\nINFO fake\r\u{1b}[0mb"), "aINFO fake[0mb");
+        assert_eq!(sanitize_ui_log(&"x".repeat(900)).len(), 500);
+    }
+}
+
 /// Lets the webview write a line to the app log. Messages are short status lines; never transcript text or keys.
 #[tauri::command]
 fn app_log(level: String, message: String) {
-    let message: String = message.chars().take(500).collect();
+    let message = sanitize_ui_log(&message);
     match level.as_str() {
         "warn" => log::warn!("ui: {message}"),
         "error" => log::error!("ui: {message}"),

@@ -103,19 +103,44 @@ pub fn level_update(mic: f32, system: f32, timestamp: u64) -> AudioLevelUpdate {
 
 /// Emits the real `audio-levels` (the pipeline's own RMS) at most 10 Hz while this recording runs.
 /// The task ends with the recording: every recording has its own `RecordingState`.
+/// Ticks (100 ms each) of an unchanged reading after which the meter drops to zero: a lost device must not freeze it.
+const STALE_TICKS: u32 = 10;
+
+/// Decides what to emit on each tick: a changed reading once, then zeros once if it stays unchanged for a second.
+#[derive(Default)]
+struct Throttle {
+    seen: Option<(f32, f32)>,
+    emitted: Option<(f32, f32)>,
+    stale: u32,
+}
+
+impl Throttle {
+    fn step(&mut self, now: (f32, f32)) -> Option<(f32, f32)> {
+        if self.seen != Some(now) {
+            self.seen = Some(now);
+            self.stale = 0;
+        } else {
+            self.stale += 1;
+            if self.stale == STALE_TICKS && self.emitted != Some((0.0, 0.0)) {
+                self.emitted = Some((0.0, 0.0));
+                return self.emitted;
+            }
+            return None;
+        }
+        if self.emitted == Some(now) { None } else { self.emitted = Some(now); Some(now) }
+    }
+}
+
 pub fn spawn_recording_levels<R: Runtime>(app: AppHandle<R>, state: Arc<RecordingState>) {
     tauri::async_runtime::spawn(async move {
         let mut tick = tokio::time::interval(tokio::time::Duration::from_millis(100));
-        let mut last: Option<(f32, f32)> = None;
+        let mut throttle = Throttle::default();
         let mut warned = false;
         while state.is_recording() {
             tick.tick().await;
             // Paused: show silence once, then stay quiet until audio flows again.
             let now = if state.is_paused() { (0.0, 0.0) } else { state.levels() };
-            if last == Some(now) {
-                continue;
-            }
-            last = Some(now);
+            let Some(now) = throttle.step(now) else { continue };
             let ts = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis() as u64;
             if let Err(e) = app.emit("audio-levels", &level_update(now.0, now.1, ts)) {
                 if !warned {
@@ -133,6 +158,22 @@ pub fn spawn_recording_levels<R: Runtime>(app: AppHandle<R>, state: Arc<Recordin
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn throttle_emits_changes_once_and_zeros_after_a_stale_second() {
+        let mut t = Throttle::default();
+        assert_eq!(t.step((0.2, 0.1)), Some((0.2, 0.1)));
+        for _ in 0..(STALE_TICKS - 1) {
+            assert_eq!(t.step((0.2, 0.1)), None);
+        }
+        assert_eq!(t.step((0.2, 0.1)), Some((0.0, 0.0)), "frozen reading drops to zero once");
+        assert_eq!(t.step((0.2, 0.1)), None);
+        assert_eq!(t.step((0.3, 0.1)), Some((0.3, 0.1)), "audio flowing again is emitted");
+        assert_eq!(t.step((0.0, 0.0)), Some((0.0, 0.0)));
+        for _ in 0..STALE_TICKS + 2 {
+            assert_eq!(t.step((0.0, 0.0)), None, "silence is not re-emitted");
+        }
+    }
 
     #[test]
     fn level_update_shape() {

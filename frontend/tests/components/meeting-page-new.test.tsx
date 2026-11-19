@@ -2,6 +2,7 @@ import { afterAll, beforeEach, expect, mock, test } from 'bun:test';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingRow } from '../../src/lib/meetings';
 
+let provider = 'localWhisper';
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   sonner: { ...await import('sonner') },
@@ -34,7 +35,7 @@ mock.module('sonner', () => ({ toast: { error() { toastErrors++; }, success() {}
 mock.module('../../src/contexts/ConfigContext', () => ({
   useConfig: () => ({
     selectedDevices: { micDevice: 'mic', systemDevice: 'sys' }, setSelectedDevices() {},
-    selectedLanguage: 'auto', setSelectedLanguage() {}, allowedLanguages: ['ru', 'en'], setAllowedLanguages() {}, transcriptModelConfig: { provider: 'parakeet' },
+    selectedLanguage: 'auto', setSelectedLanguage() {}, allowedLanguages: ['ru', 'en'], setAllowedLanguages() {}, transcriptModelConfig: { provider },
   }),
 }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({
@@ -56,7 +57,7 @@ const row: MeetingRow = {
 };
 const plain = (n: ReactTestInstance | string): string => (typeof n === 'string' ? n : n.children.map(plain).join(''));
 const text = (r: ReactTestRenderer) => JSON.stringify(r.toJSON());
-beforeEach(() => { calls.length = 0; toastErrors = 0; });
+beforeEach(() => { provider = 'localWhisper'; calls.length = 0; toastErrors = 0; });
 
 async function mountNew(props: Partial<Parameters<typeof NewMeetingView>[0]> = {}) {
   let r!: ReactTestRenderer;
@@ -223,4 +224,11 @@ test('the header reports a saved title', async () => {
   await act(async () => { input.props.onChange({ target: { value: 'Renamed' } }); });
   await act(async () => { await r.root.findByProps({ 'aria-label': 'Meeting title' }).props.onBlur(); });
   expect(saved).toBe(1);
+});
+
+test('Parakeet hides Languages spoken, as Settings does', async () => {
+  provider = 'parakeet';
+  const t = text(await mountNew());
+  expect(t).not.toContain('Languages spoken');
+  expect(t).toContain('Start recording');
 });

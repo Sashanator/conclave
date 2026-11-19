@@ -9,6 +9,7 @@ import { PrepTickList } from '@/components/Prep/PrepTickList';
 import { PrepChat } from '@/components/Prep/PrepChat';
 import { Button } from '@/components/ui/button';
 import { LanguagesSpoken } from '@/components/LanguagesSpoken';
+import { useConfig } from '@/contexts/ConfigContext';
 import { AudioSummaryLine } from './AudioSummaryLine';
 
 /** A meeting with no recording yet: Start on top, the audio line and languages, with the prep notes in a second column. */
@@ -22,6 +23,7 @@ export function NewMeetingView({ row, live, disabled, onStart, header }: {
   disabled: boolean;
   onStart: () => void;
 }) {
+  const { transcriptModelConfig: { provider } } = useConfig(); // Parakeet only auto-detects: no spoken-languages list, as in Settings
   const [prep, setPrep] = useState<MeetingPrep | null>(null);
   const [material, setMaterial] = useState('');
   const saved = useRef('');
@@ -91,7 +93,7 @@ export function NewMeetingView({ row, live, disabled, onStart, header }: {
           {header}
           {start}
           <AudioSummaryLine changeable={!disabled} />
-          <LanguagesSpoken />
+          {provider !== 'parakeet' && <LanguagesSpoken />}
         </div>
         <section aria-labelledby="prep-notes" className="min-w-0 max-w-[880px] space-y-2">
           <h2 id="prep-notes" className="text-base font-semibold text-foreground">Prep material and chat</h2>

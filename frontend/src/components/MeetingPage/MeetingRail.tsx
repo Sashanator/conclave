@@ -22,13 +22,13 @@ export function MeetingRail({ tasks, taskCount }: { tasks: ReactNode; taskCount:
     </button>
   );
   return (
-    <aside aria-label="Tasks and Ask" className="flex min-h-0 shrink-0 flex-col border-t border-border md:w-80 md:border-l md:border-t-0">
+    <aside aria-label="Tasks and Ask" className="flex h-full min-h-0 w-full flex-col border-t border-border md:border-l md:border-t-0">
       <div role="tablist" aria-label="Tasks and Ask" className="flex shrink-0 gap-1 border-b border-border px-3">
         {tab(!open, 'tasks', `Tasks (${taskCount})`, () => open && close())}
         {tab(open, 'ask', 'Ask', () => !open && toggle())}
       </div>
       <div role="tabpanel" id="rail-panel-tasks" aria-labelledby="rail-tab-tasks" hidden={open} className="min-h-0 flex-1 overflow-y-auto">{tasks}</div>
-      <div role="tabpanel" id="rail-panel-ask" aria-labelledby="rail-tab-ask" hidden={!open} className={cn('min-h-0 flex-1 flex-col overflow-y-auto', open && 'flex')}>
+      <div role="tabpanel" id="rail-panel-ask" aria-labelledby="rail-tab-ask" hidden={!open} className={cn('min-h-0 flex-1 flex-col overflow-hidden', open && 'flex')}>
         {scope && <AskChat key={scope.meetingIds?.[0]} scope={scope} allowAll={false} />}
       </div>
     </aside>

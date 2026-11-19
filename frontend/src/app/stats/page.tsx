@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
 import { CostSection } from '@/components/Stats/CostSection';
 import { TalkTimeSection } from '@/components/Stats/TalkTimeSection';
 import { readStatsPeriod, saveStatsPeriod, type CostPeriod, type Period, type TalkTime } from '@/lib/stats';
@@ -44,35 +45,36 @@ export default function StatsPage() {
     saveStatsPeriod(next);
   };
 
-  return (
-    <div className="h-full overflow-y-auto">
-      <div className="mx-auto max-w-3xl space-y-8 p-8">
-        <div className="flex items-center justify-between">
-          <h1 className="text-3xl font-bold">Stats</h1>
-          <div role="group" aria-label="Period" className="inline-flex rounded-lg border border-border bg-background p-1">
-            {(['week', 'month'] as const).map((p) => (
-              <button
-                key={p}
-                type="button"
-                aria-pressed={period === p}
-                onClick={() => choose(p)}
-                className={`rounded-md px-3 py-1 text-sm ${period === p ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'}`}
-              >
-                {p === 'week' ? 'Week' : 'Month'}
-              </button>
-            ))}
-          </div>
-        </div>
+  const toggle = (
+    <div role="group" aria-label="Period" className="inline-flex rounded-lg border border-border bg-background p-1">
+      {(['week', 'month'] as const).map((p) => (
+        <button
+          key={p}
+          type="button"
+          aria-pressed={period === p}
+          onClick={() => choose(p)}
+          className={`rounded-md px-3 py-1 text-sm ${period === p ? 'bg-muted font-medium' : 'text-muted-foreground hover:text-foreground'}`}
+        >
+          {p === 'week' ? 'Week' : 'Month'}
+        </button>
+      ))}
+    </div>
+  );
 
+  return (
+    <PageFrame variant="dashboard" title="Stats" actions={toggle}>
+      <div className="space-y-8">
         {failed && <p role="alert" className="text-red-600">Could not load stats.</p>}
         {!failed && !data && <p className="text-muted-foreground">Loading…</p>}
         {data && (
           <>
-            <CostSection periods={data.cost} period={period} />
+            <div className="grid gap-6 2xl:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
+              <CostSection periods={data.cost} period={period} />
+            </div>
             <TalkTimeSection key={period} period={period} talk={data.talk} />
           </>
         )}
       </div>
-    </div>
+    </PageFrame>
   );
 }

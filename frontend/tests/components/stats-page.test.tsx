@@ -81,12 +81,12 @@ beforeEach(async () => {
 describe('stats page', () => {
   test('renders the current cost, provider rows and unpriced count', () => {
     const text = pageText();
-    expect(text).toContain('$0.012');
+    expect(text).toContain('$0.01');
+    expect(text).not.toContain('$0.012');
     expect(text).toContain('claude');
     expect(text).toContain('Uncached input 18.4k');
     expect(text).toContain('Output 2.1k');
     expect(text).toContain('2 unpriced');
-    expect(text).toContain('$0.500');
   });
 
   test('the period toggle refetches with the month period and remembers it', async () => {
@@ -98,7 +98,23 @@ describe('stats page', () => {
     expect(invoke).toHaveBeenCalledWith('stats_cost', { period: 'month', count: 13 });
     expect(invoke).toHaveBeenCalledWith('stats_talk_time', { period: 'month' });
     expect(localStorage.getItem('conclave.statsPeriod')).toBe('month');
-    expect(pageText()).toContain('$1.270');
+    expect(pageText()).toContain('$1.27');
+  });
+
+  test('the page title is one h1 "Stats" and the frame is not centred', () => {
+    expect(renderer!.root.findAll((n) => n.type === 'h1').map(labelOf)).toEqual(['Stats']);
+    const cls = renderer!.root.findAll((n) => typeof n.props.className === 'string' && /mx-auto|max-w-3xl/.test(n.props.className));
+    expect(cls).toHaveLength(0);
+  });
+
+  test('the Week/Month toggle sits in the frame actions', async () => {
+    const group = renderer!.root.findAll((n) => n.props.role === 'group' && n.props['aria-label'] === 'Period');
+    expect(group.length).toBeGreaterThan(0);
+    await act(async () => {
+      buttonWith('Month').props.onClick();
+    });
+    await flush();
+    expect(localStorage.getItem('conclave.statsPeriod')).toBe('month');
   });
 
   test('clicking a talk-time type lists its meetings', async () => {

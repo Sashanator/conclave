@@ -1,12 +1,19 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { Suspense, useEffect, useState } from 'react';
 import { ArrowLeft } from 'lucide-react';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { goBack, originIsPrevious, readOrigin } from '@/lib/back-nav';
 import { useBackShortcut } from '@/hooks/useBackShortcut';
 
-export function BackCrumb({ fallback, fallbackLabel }: { fallback: string; fallbackLabel: string }) {
+type Props = { fallback: string; fallbackLabel: string };
+
+// useSearchParams needs a Suspense boundary in the static export, so BackCrumb brings its own.
+export function BackCrumb(props: Props) {
+  return <Suspense fallback={null}><Crumb {...props} /></Suspense>;
+}
+
+function Crumb({ fallback, fallbackLabel }: Props) {
   const router = useRouter();
   const path = usePathname();
   const search = useSearchParams()?.toString();

@@ -1,5 +1,10 @@
 # Conclave changelog
 
+## v2.1.1 — 2026-11-19
+- **The summary no longer waits forever.** If speaker identification stops making progress for 10 minutes, it gives up and the automatic summary is made without speaker names.
+- **Better logs for troubleshooting.** The log now names the app version, shows speaker identification, automatic summary and practice report steps, and drops the repeated settings and speech lines. Logs stay on your PC.
+- The Summary row in Models & keys no longer sits in an extra card.
+
 ## v2.1.0 — 2026-11-19
 - **Wide screens.** Pages use the full width with one left-aligned layout; the sidebar collapses from the bottom row or Ctrl B and remembers its state.
 - **Back to where you were.** A breadcrumb, Esc or Alt+Left return from a meeting to the same view, groups, search and row.

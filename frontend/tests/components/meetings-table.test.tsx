@@ -3,7 +3,7 @@ import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingRow } from '../../src/lib/meetings';
 import { readOrigin } from '../../src/lib/back-nav';
-import { BUILTIN_VIEW_DEFAULTS, clearViewUi } from '../../src/lib/meeting-views';
+import { BUILTIN_VIEW_DEFAULTS, clearViewUi, saveViewUi } from '../../src/lib/meeting-views';
 
 let renderer: ReactTestRenderer | null = null;
 const originals = {
@@ -17,7 +17,16 @@ const originals = {
   popover: { ...await import('../../src/components/ui/popover') },
   command: { ...await import('../../src/components/ui/command') },
   nav: { ...await import('next/navigation') },
+  virtual: { ...await import('@tanstack/react-virtual') },
 };
+const scrolledTo: number[] = [];
+mock.module('@tanstack/react-virtual', () => ({ // real virtualizer, with scrollToIndex recorded
+  ...originals.virtual,
+  useVirtualizer: (o: Parameters<typeof originals.virtual.useVirtualizer>[0]) => {
+    const v = originals.virtual.useVirtualizer(o);
+    return Object.assign(Object.create(Object.getPrototypeOf(v)), v, { scrollToIndex: (i: number) => { scrolledTo.push(i); } });
+  },
+}));
 afterAll(() => {
   // A mounted table would re-render against the restored real context and throw into later files.
   renderer?.unmount();
@@ -31,6 +40,7 @@ afterAll(() => {
   mock.module('../../src/components/ui/popover', () => originals.popover);
   mock.module('../../src/components/ui/command', () => originals.command);
   mock.module('next/navigation', () => originals.nav);
+  mock.module('@tanstack/react-virtual', () => originals.virtual);
   try { localStorage.clear(); } catch { /* none */ }
 });
 
@@ -238,6 +248,28 @@ describe('meetings table', () => {
     const fresh = { scrollTop: 0, querySelectorAll: () => [] };
     await mount(nodeMock(fresh));
     expect(fresh.scrollTop).toBe(480);
+  });
+
+  test('a view with nothing saved starts at the top, not at the previous view offset', async () => {
+    const node = { scrollTop: 0, querySelectorAll: () => [] };
+    await mount({ createNodeMock: (el: { type: unknown }) => (el.type === 'div' ? node : null) });
+    await act(async () => { renderer!.root.findAll((n) => n.type === 'div' && n.props.onScroll)[0].props.onScroll({ currentTarget: { scrollTop: 480 } }); });
+    node.scrollTop = 480;
+    await act(async () => { renderer!.root.findAll((n) => n.props.role === 'tab' && text(n).includes('This week'))[0].props.onClick(); });
+    await flush();
+    expect(node.scrollTop).toBe(0);
+  });
+
+  test('on a long list the restored scroll wins over scroll-to-selected', async () => {
+    rowsImpl = () => Array.from({ length: 250 }, (_, i) => mk(`r${i}`));
+    const node = { scrollTop: 0, querySelectorAll: () => [] };
+    const opts = { createNodeMock: (el: { type: unknown }) => (el.type === 'div' ? node : null) };
+    await act(async () => { renderer!.unmount(); }); // saves the old state, so seed after it
+    renderer = null;
+    saveViewUi('all', { flipped: [], query: '', selectedId: 'r3', scroll: { px: 480, key: 'r100' } });
+    scrolledTo.length = 0;
+    await mount(opts);
+    expect(scrolledTo).toEqual([expect.any(Number)]); // the restore's own scroll; no second one for the selected row
   });
 
   describe('per-view memory', () => {

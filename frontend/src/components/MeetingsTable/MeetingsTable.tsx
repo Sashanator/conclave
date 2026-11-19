@@ -64,6 +64,7 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const defaults = useMemo(() => defaultCollapsed(sections, config.group, now), [sections, config.group, now]);
   const scrollPos = useRef<ViewUi['scroll']>(null);
   const pendingScroll = useRef<ViewUi['scroll']>(null);
+  const restoredSel = useRef<string | null>(null); // the selection a restore just applied, which must not scroll the list
   const [restored, setRestored] = useState(0); // lets the scroll effect run after the restored groups are applied
   const ui = useRef<ViewUi>({ flipped: [], query: '', selectedId: null, scroll: null });
   ui.current = { flipped: [...flipped], query, selectedId, scroll: null };
@@ -75,7 +76,8 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
     setFlipped(new Set(s?.flipped));
     setQuery(s?.query ?? '');
     setSelectedId(s?.selectedId ?? null);
-    pendingScroll.current = s?.scroll ?? null;
+    restoredSel.current = s?.selectedId ?? null;
+    pendingScroll.current = s?.scroll ?? { px: 0, key: null }; // a view with nothing saved starts at the top
     setRestored((n) => n + 1);
     scrollPos.current = s?.scroll ?? null;
     return () => saveViewUi(activeId, { ...ui.current, scroll: scrollPos.current }); // scroll is a ref, so not in ui.current
@@ -186,7 +188,10 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const padTop = vitems?.length ? vitems[0].start : 0;
   const padBottom = vitems?.length ? virtualizer.getTotalSize() - vitems[vitems.length - 1].end : 0;
   useEffect(() => {
-    if (!selected || searchMode) return;
+    if (!selected) return;
+    const fromRestore = restoredSel.current === selected;
+    restoredSel.current = null;
+    if (searchMode || pendingScroll.current || fromRestore) return; // a restore wins over scroll-to-selected
     if (virtual) { virtualizer.scrollToIndex(items.findIndex((i) => i.key === selected)); return; }
     Array.from(scrollRef.current?.querySelectorAll('[data-row-id]') ?? []).find((el) => el.getAttribute('data-row-id') === selected)
       ?.scrollIntoView?.({ block: 'nearest' });

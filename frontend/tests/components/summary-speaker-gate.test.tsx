@@ -23,6 +23,9 @@ const originals = {
   recents: { ...await import('../../src/hooks/useRecentLanguages') },
   transcriptPanel: { ...await import('../../src/components/MeetingDetails/TranscriptPanel') },
   splitView: { ...await import('../../src/components/MeetingPage/FinishedTabs') },
+  rail: { ...await import('../../src/components/MeetingPage/MeetingRail') },
+  crumb: { ...await import('../../src/components/BackCrumb') },
+  aiSidebar: { ...await import('../../src/components/AiSidebar/AiSidebarProvider') },
   audioBar: { ...await import('../../src/components/MeetingDetails/AudioPlayerBar') },
   notesPane: { ...await import('../../src/components/MeetingNotes/NotesPane') },
   meetingData: { ...await import('../../src/hooks/meeting-details/useMeetingData') },
@@ -51,6 +54,9 @@ afterAll(() => {
   mock.module('../../src/hooks/useRecentLanguages', () => originals.recents);
   mock.module('../../src/components/MeetingDetails/TranscriptPanel', () => originals.transcriptPanel);
   mock.module('../../src/components/MeetingPage/FinishedTabs', () => originals.splitView);
+  mock.module('../../src/components/MeetingPage/MeetingRail', () => originals.rail);
+  mock.module('../../src/components/BackCrumb', () => originals.crumb);
+  mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => originals.aiSidebar);
   mock.module('../../src/components/MeetingDetails/AudioPlayerBar', () => originals.audioBar);
   mock.module('../../src/components/MeetingNotes/NotesPane', () => originals.notesPane);
   mock.module('../../src/hooks/meeting-details/useMeetingData', () => originals.meetingData);
@@ -148,6 +154,10 @@ let transcriptProps: { onResumeRecording?: () => void; speakers: { name: (idx: n
 mock.module('../../src/components/MeetingDetails/TranscriptPanel', () => ({
   TranscriptPanel: (props: typeof transcriptProps) => { transcriptProps = props; return null; },
 }));
+// The page shell (rail, back crumb, Ask toggle) is not under test here
+mock.module('../../src/components/MeetingPage/MeetingRail', () => ({ MeetingRail: () => null }));
+mock.module('../../src/components/BackCrumb', () => ({ BackCrumb: () => null }));
+mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...originals.aiSidebar, useAiSidebar: () => ({ open: false, toggle: () => {} }) }));
 mock.module('../../src/components/MeetingPage/FinishedTabs', () => ({
   FinishedTabs: (props: { transcript: ReactNode; summary: ReactNode }) => <>{props.transcript}{props.summary}</>,
 }));

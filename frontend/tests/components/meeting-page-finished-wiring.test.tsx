@@ -32,6 +32,10 @@ const originals = {
   audio: { ...await import('../../src/hooks/useMeetingAudio') },
   desktop: { ...await import('../../src/hooks/useIsDesktop') },
   header: { ...await import('../../src/components/MeetingPage/MeetingHeader') },
+  rail: { ...await import('../../src/components/MeetingPage/MeetingRail') },
+  crumb: { ...await import('../../src/components/BackCrumb') },
+  frame: { ...await import('../../src/components/PageFrame/PageFrame') },
+  aiSidebar: { ...await import('../../src/components/AiSidebar/AiSidebarProvider') },
 };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
@@ -61,6 +65,10 @@ afterAll(() => {
   mock.module('../../src/hooks/useMeetingAudio', () => originals.audio);
   mock.module('../../src/hooks/useIsDesktop', () => originals.desktop);
   mock.module('../../src/components/MeetingPage/MeetingHeader', () => originals.header);
+  mock.module('../../src/components/MeetingPage/MeetingRail', () => originals.rail);
+  mock.module('../../src/components/BackCrumb', () => originals.crumb);
+  mock.module('../../src/components/PageFrame/PageFrame', () => originals.frame);
+  mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => originals.aiSidebar);
 });
 
 const realSetTimeout = globalThis.setTimeout;
@@ -158,9 +166,16 @@ mock.module('../../src/components/MeetingPage/FinishedTabs', () => ({
 mock.module('../../src/components/MeetingDetails/AudioPlayerBar', () => ({ AudioPlayerBar: () => null }));
 mock.module('../../src/components/MeetingNotes/NotesPane', () => ({ NotesPane: () => null }));
 
+let railProps: { tasks: { type: unknown; props: { meetingId: string } }; taskCount: number } | undefined;
+let crumbProps: unknown;
+const toggleAsk = mock(() => {});
+mock.module('../../src/components/MeetingPage/MeetingRail', () => ({ MeetingRail: (p: NonNullable<typeof railProps>) => { railProps = p; return null; } }));
+mock.module('../../src/components/BackCrumb', () => ({ BackCrumb: (p: unknown) => { crumbProps = p; return null; } }));
+mock.module('../../src/components/PageFrame/PageFrame', () => ({ PageFrame: ({ breadcrumb, rail, children }: { breadcrumb?: ReactNode; rail?: ReactNode; children?: ReactNode }) => <>{breadcrumb}{children}{rail}</> }));
+mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...originals.aiSidebar, useAiSidebar: () => ({ open: false, toggle: toggleAsk }) }));
 const updateMeetingTitle = mock((_t: string) => {});
 const handleTemplateSelection = mock((_id: string, _name: string) => {});
-type HeaderProps = { live?: boolean; onChange: (r: unknown) => void; onMeetingDeleted: () => void; onRecordingDeleted: () => void; onRegenerateSummary: (id: string) => void };
+type HeaderProps = { actions?: ReactNode; live?: boolean; onChange: (r: unknown) => void; onMeetingDeleted: () => void; onRecordingDeleted: () => void; onRegenerateSummary: (id: string) => void };
 let headerProps: HeaderProps | undefined;
 mock.module('../../src/components/MeetingPage/MeetingHeader', () => ({ MeetingHeader: (p: HeaderProps) => { headerProps = p; return null; } }));
 let dirty = false;
@@ -266,4 +281,19 @@ test('an unchanged title does not touch the meeting data', async () => {
   await show();
   await act(async () => { headerProps!.onChange({ ...row, templateId: 'x' }); });
   expect(updateMeetingTitle).not.toHaveBeenCalled();
+});
+
+test('the finished page renders the rail with tasks and a back crumb', async () => {
+  await show();
+  expect(crumbProps).toEqual({ fallback: '/', fallbackLabel: 'Meetings' });
+  expect(railProps!.tasks.props.meetingId).toBe('meeting-a');
+});
+
+test('Ask Ctrl J in the header opens the Ask tab', async () => {
+  toggleAsk.mockClear();
+  await show();
+  let r!: ReactTestRenderer;
+  await act(async () => { r = create(<>{headerProps!.actions}</>); });
+  await act(async () => { r.root.findByType('button').props.onClick(); });
+  expect(toggleAsk).toHaveBeenCalledTimes(1);
 });

@@ -20,12 +20,15 @@ type Props = {
   onMeetingDeleted?: () => void;
   onRecordingDeleted?: () => void;
   onRegenerateSummary?: (templateId: string) => void;
+  /** Rendered in the title row before the menu. */
+  actions?: React.ReactNode;
+  variant?: 'page' | 'compact' | 'new';
 };
 
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Emoji above the title, then category and date, with the page menu (the two deletes). */
-export function MeetingHeader({ row, live = false, finished = false, onChange, onTitleSaved, onMeetingDeleted, onRecordingDeleted, onRegenerateSummary }: Props) {
+export function MeetingHeader({ row, live = false, finished = false, onChange, onTitleSaved, onMeetingDeleted, onRecordingDeleted, onRegenerateSummary, actions }: Props) {
   const [dialog, setDialog] = useState<'meeting' | 'recording' | null>(null);
   const [deleting, setDeleting] = useState(false);
   const { availableTemplates } = useTemplates();
@@ -80,9 +83,10 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
         onChange={(e) => setTitle(e.target.value)}
         onBlur={saveTitle}
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-        className="min-w-0 flex-1 bg-transparent text-2xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+        className="min-w-0 flex-1 bg-transparent text-xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
       />
       </h1>
+      {actions}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
           <button type="button" aria-label="Meeting actions" className="mt-1 rounded p-1 text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">

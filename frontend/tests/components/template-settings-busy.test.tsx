@@ -137,6 +137,7 @@ describe('template editor busy state', () => {
     expect(button('Save').props.disabled).toBe(true);
     expect(button('Duplicate').props.disabled).toBe(true);
     expect(button('Delete').props.disabled).toBe(true);
+    expect(button('Delete').props.className).toContain('text-destructive');
     expect(button('New template').props.disabled).toBe(true);
     expect(button('Create with AI').props.disabled).toBe(true);
     expect(renderer!.root.findAll((n) => n.type === 'button' && text(n) === 'Beta')[0].props.disabled).toBe(true);

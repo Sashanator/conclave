@@ -1,3 +1,4 @@
+import { formatRowDate } from '../../src/lib/dates';
 import { afterAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { cloneElement, createContext, useContext, type ReactElement, type ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
@@ -122,6 +123,18 @@ async function type(id: string, tag: 'input' | 'textarea', value: string) {
     field(id, tag).props.onChange({ target: { value } });
   });
 }
+
+describe('template history dates', () => {
+  test('history entries use the shared row date', async () => {
+    renderer?.unmount();
+    await act(async () => { renderer = create(<TemplateSettings />); });
+    await flush();
+    await act(async () => { button('History').props.onClick(); });
+    await flush();
+    expect(historyItem('Before manual edit')).toBeDefined();
+    expect(text(historyItem('Before manual edit')).startsWith(formatRowDate(new Date('2026-10-30T10:00:00Z')))).toBe(true);
+  });
+});
 
 describe('template history restore', () => {
   beforeEach(async () => {

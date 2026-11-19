@@ -189,6 +189,10 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   stats_talk_time_meetings: () => [{ meeting_id: 'preview-1', title: 'Weekly product sync', date: '2026-11-10', self_seconds: 540, total_seconds: 2700 }],
   // Dictate
   dictate_get_settings: () => dictateSettings,
+  api_save_provider_key: () => null,
+  template_assist_save_settings: () => null,
+  set_recording_preferences: () => null,
+  set_notification_settings: () => null,
   dictate_save_settings: ({ settings }) => settings,
   dictate_status: () => ({ enabled: true, model_downloaded: true, mic_ok: true, engine_is_whisper: true, reason: null }),
   // Practice

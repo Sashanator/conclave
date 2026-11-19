@@ -10,6 +10,9 @@ import { Input } from "./ui/input"
 import { Progress } from "./ui/progress"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select"
 import { SettingsRow } from "./Settings/SettingsRow"
+import { confirmAction } from "@/lib/confirm"
+import { formatRowDate } from "@/lib/dates"
+import { DESTRUCTIVE_OUTLINE } from "@/lib/utils"
 import { lastAnalysisText } from "@/lib/speakers"
 import type { Person, SpeakerSettings as Settings } from "@/types"
 
@@ -105,7 +108,7 @@ export function SpeakerSettings() {
   }
 
   const remove = async (id: string) => {
-    if (!window.confirm(DELETE_PROMPT)) return
+    if (!(await confirmAction({ title: 'Delete this voice?', body: DELETE_PROMPT, confirmLabel: 'Delete', destructive: true }))) return
     await call("people_delete", { id }, "Could not delete the voice")
     loadPeople()
   }
@@ -187,7 +190,7 @@ export function SpeakerSettings() {
                         {p.is_self && <span className="ml-2 text-xs text-muted-foreground">this is you</span>}
                       </div>
                       <p className="text-sm text-muted-foreground">
-                        {p.meetings} meetings · last heard {p.last_heard ? new Date(p.last_heard).toLocaleDateString() : "never"}
+                        {p.meetings} meetings · last heard {p.last_heard ? formatRowDate(new Date(p.last_heard)) : "never"}
                       </p>
                     </div>
                     <Button variant="outline" size="sm" onClick={() => setRenaming({ id: p.id, name: p.name })}>Rename</Button>
@@ -205,7 +208,7 @@ export function SpeakerSettings() {
                       </Select>
                     )}
                     {!p.is_self && (
-                      <Button variant="destructive" size="sm" aria-label={`Delete ${p.name}`} onClick={() => remove(p.id)}>Delete</Button>
+                      <Button variant="outline" size="sm" className={DESTRUCTIVE_OUTLINE} aria-label={`Delete ${p.name}`} onClick={() => remove(p.id)}>Delete</Button>
                     )}
                   </>
                 )}

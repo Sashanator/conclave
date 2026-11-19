@@ -706,6 +706,11 @@ impl AudioCapture {
     }
 }
 
+/// The loudest slice of each side in one mix window.
+fn peak_pair(slices: &[crate::speakers::levels::LevelPair]) -> (f32, f32) {
+    slices.iter().fold((0.0, 0.0), |(m, s), &(sm, ss)| (m.max(sm), s.max(ss)))
+}
+
 /// VAD-driven audio processing pipeline
 /// Uses Voice Activity Detection to segment speech in real-time and send only speech to Whisper
 pub struct AudioPipeline {
@@ -901,10 +906,14 @@ impl AudioPipeline {
 
     /// Mixes one window of mic and system audio, then sends it to VAD/transcription and the recording.
     fn send_mixed_window(&mut self, mic_window: Vec<f32>, sys_window: Vec<f32>, timestamp: f64) {
-        // Level track for the You/Others label; skipped entirely unless speaker identification is on
+        // One RMS pass per window (a stack array, no allocation): the level meter reads its peak, and the
+        // You/Others label track gets the slices when speaker identification is on.
+        let slices = crate::speakers::levels::window_levels(&mic_window, &sys_window);
         if crate::speakers::levels::live_is_active() {
-            crate::speakers::levels::live_push(crate::speakers::levels::window_levels(&mic_window, &sys_window));
+            crate::speakers::levels::live_push(slices);
         }
+        let (mic_level, system_level) = peak_pair(&slices);
+        self.state.set_levels(mic_level, system_level);
 
         // Simple mixing without aggressive ducking
         let mixed_clean = self.mixer.mix_window(&mic_window, &sys_window);
@@ -1152,6 +1161,12 @@ fn apply_dictate_mute(device: &DeviceType, data: &mut [f32], muted: impl FnOnce(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn peak_pair_takes_each_sides_max() {
+        assert_eq!(peak_pair(&[(0.1, 0.4), (0.3, 0.2)]), (0.3, 0.4));
+        assert_eq!(peak_pair(&[]), (0.0, 0.0));
+    }
 
     #[test]
     fn pipeline_zeroes_mic_only() {

@@ -40,7 +40,7 @@ export function AiSidebarProvider({ children }: { children: ReactNode }) {
       if (e.ctrlKey && !e.shiftKey && !e.altKey && !e.metaKey && (e.key.toLowerCase() === 'j' || e.code === 'KeyJ')) {
         e.preventDefault();
         toggle();
-      } else if (e.key === 'Escape' && open && !e.defaultPrevented) {
+      } else if (e.key === 'Escape' && open && kind === 'table' && !e.defaultPrevented) {
         e.preventDefault(); // so Esc does not also go Back
         close();
       }

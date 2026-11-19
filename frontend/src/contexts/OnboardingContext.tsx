@@ -341,7 +341,9 @@ export function OnboardingProvider({ children }: { children: React.ReactNode }) 
           pendingAiKey.current = null;
         }
       } else if (!keyStepSkipped.current) {
-        setAiKeyHint(); // key step not shown this session (e.g. relaunched mid-download)
+        // key step not shown this session (e.g. relaunched mid-download): hint only if no Claude key is stored
+        const stored = await invoke<string>('api_get_api_key', { provider: 'claude' }).catch(() => '');
+        if (!stored) setAiKeyHint();
       }
       setCompleted(true);
       console.log('[OnboardingContext] Onboarding completed');

@@ -15,9 +15,11 @@ afterAll(() => {
 const calls: string[] = [];
 let failComplete = false;
 let failSave = false;
+let storedKey = '';
 const invoke = mock(async (command: string): Promise<unknown> => {
   calls.push(command);
   if (command === 'complete_onboarding' && failComplete) throw new Error('boom');
+  if (command === 'api_get_api_key') return storedKey;
   return undefined;
 });
 const saveProviderKey = mock(async (provider: string, key: string) => {
@@ -37,7 +39,7 @@ async function mount() {
 }
 
 beforeEach(() => {
-  calls.length = 0; failComplete = false; failSave = false;
+  calls.length = 0; storedKey = ''; failComplete = false; failSave = false;
   saveProviderKey.mockClear(); localStorage.clear();
 });
 
@@ -71,6 +73,13 @@ describe('completeOnboarding with a pending key', () => {
     expect(localStorage.getItem('conclave.aiKeySaveFailed')).toBe('1');
     localStorage.clear();
     act(() => ctx.setPendingAiKey(null));
+    await act(async () => { await ctx.completeOnboarding(); });
+    expect(localStorage.getItem('conclave.aiKeySaveFailed')).toBeNull();
+  });
+
+  test('an already stored Claude key leaves no hint', async () => {
+    storedKey = 'sk-old';
+    await mount();
     await act(async () => { await ctx.completeOnboarding(); });
     expect(localStorage.getItem('conclave.aiKeySaveFailed')).toBeNull();
   });

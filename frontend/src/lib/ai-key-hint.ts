@@ -5,13 +5,10 @@ export function setAiKeyHint(): void {
   try { localStorage.setItem(KEY, '1'); } catch { /* storage blocked: no hint */ }
 }
 
-/** True once per flag; clears it. */
-export function takeAiKeyHint(): boolean {
-  try {
-    if (localStorage.getItem(KEY) !== '1') return false;
-    localStorage.removeItem(KEY);
-    return true;
-  } catch {
-    return false;
-  }
+export function hasAiKeyHint(): boolean {
+  try { return localStorage.getItem(KEY) === '1'; } catch { return false; }
+}
+
+export function clearAiKeyHint(): void {
+  try { localStorage.removeItem(KEY); } catch { /* ignore */ }
 }

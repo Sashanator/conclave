@@ -255,7 +255,6 @@ function AppShell({
                           <ImportDialogProvider onOpen={handleOpenImportDialog}>
                             {/* Download progress toast provider - listens for background downloads */}
                             <DownloadProgressToastProvider />
-                            <AiKeyHint />
 
                             {/* Show onboarding or main app */}
                             {showOnboarding ? (
@@ -291,6 +290,7 @@ function AppShell({
           </RecordingStateProvider>
 
         <ThemedToaster />
+        <AiKeyHint />
         <ConfirmHost />
     </>
   )

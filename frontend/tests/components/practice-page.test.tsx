@@ -1,6 +1,7 @@
 import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
+import { formatLongDate } from '../../src/lib/dates';
 import {
   MATERIAL_MAX_BYTES, type PracticeSettings, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupInput, type SetupSummary, type TurnRow, VOICES,
 } from '../../src/lib/practice';
@@ -10,17 +11,22 @@ const originals = {
   event: { ...await import('@tauri-apps/api/event') },
   sonner: { ...await import('sonner') },
   select: { ...await import('../../src/components/ui/select') },
+  nav: { ...await import('next/navigation') },
+  backNav: { ...await import('../../src/lib/back-nav') },
 };
 
 const originalConfirm = window.confirm;
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
 afterAll(() => {
+  renderer?.unmount();
   window.confirm = originalConfirm;
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/components/ui/select', () => originals.select);
+  mock.module('next/navigation', () => originals.nav);
+  mock.module('../../src/lib/back-nav', () => originals.backNav);
 });
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
@@ -137,7 +143,16 @@ mock.module('../../src/components/ui/select', () => ({
   SelectContent: passThrough, SelectItem: passThrough, SelectTrigger: passThrough, SelectValue: placeholder,
 }));
 
+const router = { push: mock((_href: string) => {}), back: mock(() => {}) };
+let searchId: string | null = 's1';
+// What a rendered <audio> ref points at in the report tests
+let nodeAudio: unknown = null;
+mock.module('next/navigation', () => ({ useRouter: () => router, useSearchParams: () => ({ get: (k: string) => (k === 'id' ? searchId : null) }) }));
+const rememberOrigin = mock((_o: { path: string; label: string }) => {});
+mock.module('../../src/lib/back-nav', () => ({ ...originals.backNav, rememberOrigin }));
+
 const { default: PracticePage } = await import('../../src/app/practice/page');
+const { default: ReportPage } = await import('../../src/app/practice/report/page');
 
 let renderer: ReactTestRenderer | null = null;
 const confirm = mock((_message?: string) => true);
@@ -220,8 +235,14 @@ function hasDirectText(value: string): boolean {
   return renderer!.root.findAll((n) => n.children.some((c) => c === value)).length > 0;
 }
 
+// The report is its own route: mount it with ?id=s1
 async function openReport() {
-  await clickButton('Open report');
+  searchId = 's1';
+  renderer?.unmount();
+  renderer = null;
+  await act(async () => {
+    renderer = create(<ReportPage />, { createNodeMock: (el) => (el.type === 'audio' ? nodeAudio : null) });
+  });
   await flush();
 }
 
@@ -267,6 +288,10 @@ beforeEach(async () => {
   invoke.mockClear();
   toast.error.mockClear();
   confirm.mockClear();
+  router.push.mockClear();
+  rememberOrigin.mockClear();
+  searchId = 's1';
+  nodeAudio = null;
   confirm.mockImplementation(() => true);
   window.confirm = confirm as unknown as typeof window.confirm;
   listeners.clear();
@@ -571,8 +596,7 @@ describe('Practice page', () => {
     running = { ...running, summary: { ...running.summary, end_reason: 'user' } };
     status = { ...READY, running_session: 'run-1' };
     await mount();
-    expect(tapButtons().length).toBe(0);
-    expect(renderer!.root.findAll((n) => n.type === 'h1' && text(n).startsWith('Thesis defence · ')).length).toBe(1);
+    expect(router.push).toHaveBeenCalledWith('/practice/report?id=run-1');
   });
 
   test('a resumed session is listened to before it is read', async () => {
@@ -615,8 +639,21 @@ describe('Practice page', () => {
     await startCall();
     await emit('practice-state', state('Ended'));
     await flush();
-    expect(tapButtons().length).toBe(0);
-    expect(renderer!.root.findAll((n) => n.type === 'h1' && text(n).startsWith('Thesis defence · ')).length).toBe(1);
+    expect(router.push).toHaveBeenCalledWith('/practice/report?id=session-1');
+  });
+
+  test('ended_call_opens_the_report_route', async () => {
+    await startCall();
+    await emit('practice-state', state('Ended'));
+    await flush();
+    expect(rememberOrigin).toHaveBeenCalledWith({ path: '/practice', label: 'Practice' });
+    expect(router.push).toHaveBeenCalledWith('/practice/report?id=session-1');
+  });
+
+  test('open_report_navigates_to_the_report_route', async () => {
+    await clickButton('Open report');
+    expect(rememberOrigin).toHaveBeenCalledWith({ path: '/practice', label: 'Practice' });
+    expect(router.push).toHaveBeenCalledWith('/practice/report?id=s1');
   });
 
   test('transcript_lists_this_sessions_turns_when_expanded', async () => {
@@ -713,12 +750,7 @@ describe('Practice report view', () => {
 
   test('play_button_seeks_to_turn_offset', async () => {
     const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
-    });
-    await flush();
+    nodeAudio = audio;
     await openReport();
 
     expect(renderer!.root.findAll((n) => n.type === 'audio')[0].props.src).toBe('asset://C:/Conclave/practice/s1/you.wav');
@@ -840,6 +872,26 @@ describe('Practice report view', () => {
     expect(hasDirectText('No fillers counted')).toBe(true);
   });
 
+  test('report_route_reads_the_id_and_shows_the_breadcrumb', async () => {
+    await openReport();
+    expect(calls('practice_get_session')[0][1]).toEqual({ id: 's1' });
+    const crumb = renderer!.root.findAll((n) => n.props.fallback === '/practice' && n.props.fallbackLabel === 'Practice');
+    expect(crumb.length).toBeGreaterThan(0);
+    expect(renderer!.root.findAll((n) => n.type === 'h1').map(text)).toEqual([`Thesis defence · ${formatLongDate(new Date('2026-10-19T10:00:00Z'))} · 18 min`]);
+  });
+
+  test('report_route_without_an_id_says_so', async () => {
+    invoke.mockClear();
+    searchId = null;
+    renderer?.unmount();
+    await act(async () => {
+      renderer = create(<ReportPage />);
+    });
+    await flush();
+    expect(hasDirectText('No session selected')).toBe(true);
+    expect(calls('practice_get_session').length).toBe(0);
+  });
+
   test('short_session_shows_less_than_a_minute', async () => {
     detail = { ...detail, summary: { ...detail.summary, duration_secs: 20 } };
     await openReport();
@@ -882,12 +934,7 @@ describe('Practice report view', () => {
 
   test('pron_card_plays_word_span_and_reference', async () => {
     const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
-    });
-    await flush();
+    nodeAudio = audio;
     detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [{ turn: 3, word: 'will', start_secs: 1.5, end_secs: 1.9, score: -7.2, phone: 'IH' }] } };
     await openReport();
 
@@ -910,12 +957,7 @@ describe('Practice report view', () => {
 
   test('pron_you_pauses_at_its_end_when_timeupdate_does_not_fire', async () => {
     const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
-    });
-    await flush();
+    nodeAudio = audio;
     detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [HINT] } };
     await openReport();
 
@@ -934,12 +976,7 @@ describe('Practice report view', () => {
 
   test('a_new_clip_or_unmount_cancels_the_pron_you_timer', async () => {
     const audio = { currentTime: 0, play: mock(async () => {}), pause: mock(() => {}) };
-    renderer?.unmount();
-    renderer = null;
-    await act(async () => {
-      renderer = create(<PracticePage />, { createNodeMock: (el) => (el.type === 'audio' ? audio : null) });
-    });
-    await flush();
+    nodeAudio = audio;
     detail = { ...detail, report: { ...REPORT, version: 2, pronunciation: [HINT] } };
     await openReport();
 
@@ -968,7 +1005,6 @@ describe('Practice report view', () => {
     expect(hasDirectText('Pronunciation hints unavailable')).toBe(true);
     expect(hasDirectText('No pronunciation hints this time')).toBe(false);
 
-    await clickButton('← Practice');
     detail = { ...detail, report: { ...REPORT, version: 2 } };
     await openReport();
     expect(hasDirectText('No pronunciation hints this time')).toBe(true);
@@ -1016,7 +1052,6 @@ describe('Practice report view', () => {
     expect(hasDirectText('3.1 → 2.4 → 1.8')).toBe(true);
 
     // One trend point is not a trend, and no patterns means nothing to show: the card is hidden
-    await clickButton('← Practice');
     detail = { ...detail, recurring: { patterns: [], filler_trend: [3.1] } };
     await openReport();
     expect(renderer!.root.findAll((n) => n.type === 'h3').map(text)).not.toContain('Keeps coming back');

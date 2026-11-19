@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { SetupList } from '@/components/Practice/SetupList';
 import { SessionList } from '@/components/Practice/SessionList';
 import { SetupEditor } from '@/components/Practice/SetupEditor';
-import { ReportView } from '@/components/Practice/ReportView';
+import { useRouter } from 'next/navigation';
+import { rememberOrigin } from '@/lib/back-nav';
 import { CallView } from '@/components/Practice/CallView';
 import { ModelsCard } from '@/components/Practice/ModelsCard';
 import {
@@ -18,8 +19,7 @@ import {
 type View =
   | { kind: 'list' }
   | { kind: 'edit'; id?: string }
-  | { kind: 'call'; sessionId: string; setupName: string; character: string }
-  | { kind: 'report'; sessionId: string };
+  | { kind: 'call'; sessionId: string; setupName: string; character: string };
 
 type Overlay =
   | { kind: 'voices'; percent: number }
@@ -85,6 +85,12 @@ export default function PracticePage() {
       }
     });
   }, [refresh]);
+
+  const router = useRouter();
+  const openReport = (id: string) => {
+    rememberOrigin({ path: '/practice', label: 'Practice' });
+    router.push(`/practice/report?id=${id}`);
+  };
 
   const backToList = () => {
     setView({ kind: 'list' });
@@ -175,11 +181,10 @@ export default function PracticePage() {
         sessionId={view.sessionId}
         setupName={view.setupName}
         character={view.character}
-        onEnded={() => setView({ kind: 'report', sessionId: view.sessionId })}
+        onEnded={() => openReport(view.sessionId)}
       />
     );
   }
-  if (view.kind === 'report') return <ReportView sessionId={view.sessionId} onBack={backToList} />;
 
   const editSetup = view.kind === 'edit' && view.id ? setups.find((s) => s.id === view.id) : undefined;
   if (view.kind === 'edit' && (!view.id || editSetup)) {
@@ -218,7 +223,7 @@ export default function PracticePage() {
           />
           <SessionList
             sessions={sessions}
-            onOpen={(s) => setView({ kind: 'report', sessionId: s.id })}
+            onOpen={(s) => openReport(s.id)}
             onDelete={deleteSession}
           />
         </div>

@@ -5,6 +5,9 @@ import { convertFileSrc, invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
+import { PageFrame } from '@/components/PageFrame/PageFrame';
+import { BackCrumb } from '@/components/BackCrumb';
+import { formatLongDate } from '@/lib/dates';
 import {
   characterName, formatClock, minutesLabel, NOTICE_TEXT, YOU_WAV_RATE,
   type ItemKind, type PronHint, type ReportItem, type ReportStatusPayload, type SessionDetail, type TurnRow,
@@ -53,7 +56,7 @@ function Stat({ label, value }: { label: string; value: number }) {
   );
 }
 
-export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: () => void }) {
+export function ReportView({ sessionId }: { sessionId: string }) {
   const [detail, setDetail] = useState<SessionDetail | null>(null);
   const [tab, setTab] = useState<'report' | 'transcript'>('report');
   const audioRef = useRef<HTMLAudioElement>(null);
@@ -177,20 +180,18 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
     }
   };
 
+  const crumb = <BackCrumb fallback="/practice" fallbackLabel="Practice" />;
   if (!detail) {
     return (
-      <div className="h-full overflow-y-auto">
-        <div className="max-w-4xl mx-auto p-8 space-y-6">
-          <Button variant="ghost" size="sm" onClick={onBack}>← Practice</Button>
-          <p className="text-muted-foreground">Loading…</p>
-        </div>
-      </div>
+      <PageFrame variant="reading" breadcrumb={crumb}>
+        <p className="text-muted-foreground">Loading…</p>
+      </PageFrame>
     );
   }
 
   const s = detail.summary;
   const name = characterName(detail.character);
-  const day = new Date(s.started_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+  const day = formatLongDate(new Date(s.started_at));
   const length = minutesLabel(s.duration_secs);
   const report = detail.report;
   const fillers = Object.entries(report?.fluency.fillers ?? {}).filter(([, n]) => n > 0).sort(([, a], [, b]) => b - a);
@@ -205,13 +206,11 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
   const showRecurring = (report?.version ?? 0) >= 2 && (patterns.length > 0 || trend.length >= 2);
 
   return (
-    <div className="h-full overflow-y-auto">
-      <div className="max-w-4xl mx-auto p-8 space-y-6">
-        <Button variant="ghost" size="sm" onClick={onBack}>← Practice</Button>
+    <PageFrame variant="reading" breadcrumb={crumb} title={`${s.setup_name} · ${day} · ${length}`}>
+      <div className="space-y-6">
         <audio ref={audioRef} src={detail.audio_path ? convertFileSrc(detail.audio_path) : undefined} preload="auto" onTimeUpdate={pauseAtClipEnd} />
 
         <div className="space-y-2">
-          <h1 className="text-3xl font-bold">{`${s.setup_name} · ${day} · ${length}`}</h1>
           {s.end_reason === 'meeting' && <p className="text-sm text-muted-foreground">{NOTICE_TEXT.MeetingStarted}</p>}
           {s.end_reason === 'interrupted' && <p className="text-sm text-muted-foreground">This session was interrupted (Conclave closed)</p>}
         </div>
@@ -340,6 +339,6 @@ export function ReportView({ sessionId, onBack }: { sessionId: string; onBack: (
           </p>
         )}
       </div>
-    </div>
+    </PageFrame>
   );
 }

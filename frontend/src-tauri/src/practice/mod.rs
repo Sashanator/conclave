@@ -49,6 +49,33 @@ pub mod pron;
 pub mod pron_align;
 pub mod recurring;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PracticeLanguage {
+    #[default]
+    En,
+    De,
+}
+
+impl PracticeLanguage {
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::En => "en",
+            Self::De => "de",
+        }
+    }
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::En => "English",
+            Self::De => "German",
+        }
+    }
+    /// The column CHECK keeps stored values to en/de.
+    pub fn from_code(code: &str) -> Self {
+        if code == "de" { Self::De } else { Self::En }
+    }
+}
+
 pub const CHAT_MAX_TOKENS: u32 = 400;
 pub const LONG_MAX_TOKENS: u32 = 16_000;
 

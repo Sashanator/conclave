@@ -39,7 +39,7 @@ use super::runner::{self, Loaded};
 use super::settings;
 use super::session::{Event, Notice, Phase};
 use super::tts::{load_voice, Supertonic, Voice};
-use super::{hold_model, ModelHold, TTS_RATE, TTS_SPEED, TTS_STEPS};
+use super::{hold_model, ModelHold, PracticeLanguage, TTS_RATE, TTS_SPEED, TTS_STEPS};
 
 const NO_KEY: &str = "Add your Claude API key in Settings to use Practice";
 pub(super) const NOT_WHISPER: &str = "Practice needs Whisper as the transcription engine (Settings → Transcription)";
@@ -67,6 +67,7 @@ pub struct SetupSummary {
     pub character: String,
     pub situation: String,
     pub voice: String,
+    pub language: PracticeLanguage,
     pub seeded: bool,
     pub has_plan: bool,
     pub materials: Vec<MaterialMeta>,
@@ -261,6 +262,7 @@ async fn summarize(pool: &SqlitePool, row: SetupRow) -> Result<SetupSummary, Str
         name: row.name,
         character: row.character,
         situation: row.situation,
+        language: PracticeLanguage::from_code(&row.language),
         voice: row.voice,
         seeded: row.seeded,
         materials,
@@ -864,6 +866,7 @@ mod tests {
             setup_name: "Thesis".into(),
             character: "Examiner".into(),
             voice: "F1".into(),
+            language: None,
             started_at: String::new(),
             duration_secs: 60.0,
             folder_path: None,
@@ -949,6 +952,7 @@ mod tests {
             character: "Examiner".into(),
             situation: situation.into(),
             voice: "F1".into(),
+            language: "en".into(),
             seeded: false,
             plan: Some("plan".into()),
             plan_fingerprint,
@@ -1015,6 +1019,7 @@ mod tests {
             character: "Mike".into(),
             situation: "Car".into(),
             voice: "M3".into(),
+            language: Default::default(),
         };
         let setup = db::save_setup(pool, input).await.unwrap();
         let folder = base.join(name);

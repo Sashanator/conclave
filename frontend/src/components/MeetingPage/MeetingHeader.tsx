@@ -33,6 +33,7 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
   const [deleting, setDeleting] = useState(false);
   const { availableTemplates } = useTemplates();
   const isNew = variant === 'new';
+  const compact = variant === 'compact'; // the recording page: title and menu on one line
   const Wrap = isNew ? 'div' : 'h1'; // PageFrame supplies the h1 on the new-meeting page
   // A new meeting still has its default title: show it as the placeholder, so typing starts from empty.
   const shown = isNew && row.titleSource === 'default' ? '' : row.title;
@@ -78,9 +79,9 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
 
   return (
     <header className="space-y-1">
-      {emoji && !isNew && <div className="text-3xl" aria-hidden>{emoji}</div>}
+      {emoji && variant === 'page' && <div className="text-3xl" aria-hidden>{emoji}</div>}
       {isNew && <label htmlFor="meeting-name" className="block text-sm font-medium text-foreground">Meeting name</label>}
-      <div className="flex items-start gap-2">
+      <div className={compact ? 'flex items-center gap-4' : 'flex items-start gap-2'}>
       <Wrap className="flex min-w-0 flex-1">
       <input
         id={isNew ? 'meeting-name' : undefined}
@@ -90,13 +91,13 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
         onChange={(e) => setTitle(e.target.value)}
         onBlur={saveTitle}
         onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); }}
-        className={`min-w-0 flex-1 rounded bg-transparent text-xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring${isNew ? ' border border-input px-3 py-2' : ''}`}
+        className={`min-w-0 flex-1 rounded bg-transparent text-xl font-semibold text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring${compact ? ' truncate' : ''}${isNew ? ' border border-input px-3 py-2' : ''}`}
       />
       </Wrap>
       {actions}
       <DropdownMenu>
         <DropdownMenuTrigger asChild>
-          <button type="button" aria-label="Meeting actions" className="mt-1 rounded p-1 text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring">
+          <button type="button" aria-label="Meeting actions" className={`${compact ? '' : 'mt-1 '}rounded p-1 text-muted-foreground hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring`}>
             <MoreHorizontal className="h-5 w-5" aria-hidden />
           </button>
         </DropdownMenuTrigger>
@@ -106,7 +107,7 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
         </DropdownMenuContent>
       </DropdownMenu>
       </div>
-      <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
+      {!compact && <div className="flex flex-wrap items-center gap-3 text-sm text-muted-foreground">
         <select
           aria-label="Category"
           value={row.templateId ?? ''}
@@ -117,7 +118,7 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
           {availableTemplates.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
         </select>
         {!isNew && <span>{formatMeetingDate(row, new Date(), live)}</span>}
-      </div>
+      </div>}
       <DeleteMeetingDialog row={row} open={dialog === 'meeting'} onOpenChange={(o) => !o && setDialog(null)} onConfirm={() => runDelete('meeting')} />
       <DeleteRecordingDialog title={row.title} open={dialog === 'recording'} onOpenChange={(o) => !o && setDialog(null)} onConfirm={() => runDelete('recording')} />
     </header>

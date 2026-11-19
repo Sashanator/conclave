@@ -5,18 +5,15 @@ import type { TranscriptSegmentData } from '../../src/types';
 
 const originalPopover = { ...await import('../../src/components/ui/popover') };
 const originalTooltip = { ...await import('../../src/components/ui/tooltip') };
-const originalStatusBar = { ...await import('../../src/components/RecordingStatusBar') };
 afterAll(() => {
   mock.module('../../src/components/ui/popover', () => originalPopover);
   mock.module('../../src/components/ui/tooltip', () => originalTooltip);
-  mock.module('../../src/components/RecordingStatusBar', () => originalStatusBar);
 });
 const pass = ({ children }: { children?: ReactNode }) => <>{children}</>;
 mock.module('../../src/components/ui/popover', () => ({
   Popover: pass, PopoverAnchor: pass, PopoverTrigger: pass, PopoverContent: pass,
 }));
 mock.module('../../src/components/ui/tooltip', () => ({ Tooltip: pass, TooltipTrigger: pass, TooltipContent: pass }));
-mock.module('../../src/components/RecordingStatusBar', () => ({ RecordingStatusBar: () => null }));
 const { VirtualizedTranscriptView } = await import('../../src/components/VirtualizedTranscriptView');
 
 // Longer than the 800 ms reveal, so the typewriter has finished.
@@ -62,4 +59,10 @@ describe('newest transcript line while recording', () => {
     expect(markControl('The newest line is long enough')).toBeDefined();
     expect(JSON.stringify(renderer!.toJSON())).toContain('The newest line is long enough to need the typewriter effect.');
   });
+});
+
+test('a recording transcript has no duplicate Recording status bar', async () => {
+  let r!: ReactTestRenderer;
+  await act(async () => { r = create(<VirtualizedTranscriptView segments={[first]} isRecording onMarkChange={() => {}} />); });
+  expect(JSON.stringify(r.toJSON())).not.toContain('Recording •');
 });

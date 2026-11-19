@@ -18,6 +18,8 @@ const originals = {
   continueControl: { ...await import('../../src/app/_components/ContinueControl') },
   device: { ...await import('../../src/components/DeviceSelection') },
   language: { ...await import('../../src/components/LanguageSelection') },
+  crumb: { ...await import('../../src/components/BackCrumb') },
+  meter: { ...await import('../../src/components/AudioLevelMeter') },
 };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
@@ -34,6 +36,8 @@ afterAll(() => {
   mock.module('../../src/app/_components/ContinueControl', () => originals.continueControl);
   mock.module('../../src/components/DeviceSelection', () => originals.device);
   mock.module('../../src/components/LanguageSelection', () => originals.language);
+  mock.module('../../src/components/BackCrumb', () => originals.crumb);
+  mock.module('../../src/components/AudioLevelMeter', () => originals.meter);
 });
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
@@ -53,14 +57,19 @@ const recording: Record<string, unknown> = {};
 let sidebarOpen = false;
 
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
-mock.module('@tauri-apps/api/event', () => ({ listen: async () => () => {} }));
+const handlers = new Map<string, (e: { payload: unknown }) => void>();
+mock.module('@tauri-apps/api/event', () => ({ listen: async (name: string, h: (e: { payload: unknown }) => void) => { handlers.set(name, h); return () => { handlers.delete(name); }; } }));
+const onBack = mock(() => {});
+mock.module('../../src/components/BackCrumb', () => ({ BackCrumb: () => <button type="button" onClick={onBack}>Back</button> }));
+const meters: Array<{ rmsLevel: number }> = [];
+mock.module('../../src/components/AudioLevelMeter', () => ({ ...originals.meter, CompactAudioLevelMeter: (p: { rmsLevel: number }) => { meters.push(p); return null; } }));
 mock.module('@tauri-apps/api/path', () => ({ appDataDir: async () => '/data' }));
 mock.module('sonner', () => ({ toast: { error() {}, success() {}, warning() {}, info() {} } }));
 mock.module('../../src/components/ui/tooltip', () => ({ Tooltip: passThrough, TooltipTrigger: passThrough, TooltipContent: passThrough, TooltipProvider: passThrough }));
 mock.module('../../src/contexts/ConfigContext', () => ({
   useConfig: () => ({
     selectedDevices: { micDevice: 'mic', systemDevice: 'sys' }, setSelectedDevices() {},
-    selectedLanguage: 'auto', setSelectedLanguage() {}, transcriptModelConfig: { provider: 'parakeet' },
+    selectedLanguage: 'auto', setSelectedLanguage() {}, allowedLanguages: [], transcriptModelConfig: { provider: 'parakeet' },
   }),
 }));
 mock.module('../../src/contexts/RecordingStateContext', () => ({ ...originals.recording, useRecordingState: () => ({ ...recording, setStatus }) }));
@@ -98,9 +107,33 @@ beforeEach(() => {
   Object.assign(recording, { micFollowing: { warning: null }, isRecording: true, isPaused: false, activeDuration: 73, status: 'recording', isStopping: false, isProcessing: false, isSaving: false, isStartingRecording: false });
 });
 
-test('the bar shows the time, Pause and Stop and summarize', async () => {
+test('the header shows the time, Pause, Stop and summarize and the audio line', async () => {
   const t = text((await mount()).root);
-  for (const s of ['Recording 01:13', 'Pause', 'Stop and summarize', 'Live transcript', 'Microphone']) expect(t).toContain(s);
+  for (const s of ['Recording 01:13', 'Pause', 'Stop and summarize', 'Live transcript', 'Mic: mic']) expect(t).toContain(s);
+  expect(t).not.toContain('Microphone');
+});
+
+test('the header is one row', async () => {
+  const r = await mount();
+  const row = r.root.findByProps({ role: 'status' }).parent!;
+  expect(text(row)).toContain('Mic');
+  expect(text(row)).toContain('Stop and summarize');
+});
+
+test('levels come from audio-levels', async () => {
+  meters.length = 0;
+  await mount();
+  await act(async () => { handlers.get('audio-levels')!({ payload: { levels: [{ device_type: 'input', rms_level: 0.5, peak_level: 0.5, is_active: true, device_name: 'microphone' }] } }); });
+  expect(meters[meters.length - 2].rmsLevel).toBe(0.5); // Mic first, System second
+  expect(meters[meters.length - 1].rmsLevel).toBe(0);
+});
+
+test('leaving never stops the recording', async () => {
+  calls.length = 0;
+  const r = await mount();
+  await act(async () => { r.unmount(); });
+  expect(calls).not.toContain('stop_recording');
+  expect(handleRecordingStop).not.toHaveBeenCalled();
 });
 
 test('sidebar open: Transcript and My notes are tabs; closed: no tablist', async () => {

@@ -41,7 +41,8 @@ export function TemplateAssistSettings() {
     queue.current = queue.current.then(async () => {
       if (gen !== generation.current) return;
       try {
-        await saveAssistSettings(next);
+        // Only includeTranscript is this pane's; the model and the hidden hint flag come from the current settings.
+        await saveAssistSettings({ ...(await getAssistSettings()), includeTranscript: next.includeTranscript });
         markSaved();
       } catch (err) {
         toast.error('Template assistant settings were not saved', { description: String(err) });

@@ -7,6 +7,7 @@ const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   sonner: { ...await import('sonner') },
   select: { ...await import('../../src/components/ui/select') },
+  nav: { ...await import('next/navigation') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
@@ -14,7 +15,10 @@ afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/components/ui/select', () => originals.select);
+  mock.module('next/navigation', () => originals.nav);
 });
+
+mock.module('next/navigation', () => ({ ...originals.nav, useRouter: () => ({ replace() {}, push() {} }) }));
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
 
@@ -170,6 +174,15 @@ describe('Copilot settings', () => {
     expect(t).not.toContain('copilot-provider');
     expect(t).toContain('Set in Models & keys');
     expect(renderer!.root.findAll((n) => n.props.href === '/settings?tab=models').length).toBeGreaterThan(0);
+  });
+
+  test('a save keeps a model changed elsewhere since this pane loaded', async () => {
+    settings = { ...BASE_SETTINGS, provider: 'claude', model: 'm' };
+    await mount();
+    settings = { ...settings, provider: 'openai', model: 'gpt-5' };
+    await typeWord('Sasha');
+    await flush();
+    expect(settings).toMatchObject({ provider: 'openai', model: 'gpt-5', alert_words: ['Sasha'] });
   });
 
   test('alert-words part saves keep the loaded provider and model', async () => {

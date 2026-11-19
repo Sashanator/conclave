@@ -283,6 +283,6 @@ describe('Copilot in the sidebar', () => {
     await flush();
     expect(r.root.findAll((n) => n.type === 'p' && textOf(n).includes('No alert words')).length).toBe(1);
     act(() => button(r, 'add').props.onClick());
-    expect(push).toHaveBeenCalledWith('/settings?tab=copilot');
+    expect(push).toHaveBeenCalledWith('/settings?tab=names');
   });
 });

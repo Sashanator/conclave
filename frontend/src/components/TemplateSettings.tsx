@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { ArrowDown, ArrowUp, Copy, History, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { settingId } from '@/lib/settings-panes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -281,7 +282,7 @@ export function TemplateSettings() {
     <div className="grid grid-cols-[16rem_1fr] gap-6">
       <div className="bg-card rounded-lg border border-border p-4 space-y-3 self-start">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-lg font-semibold text-foreground">Templates</h3>
+          <h3 id={settingId("Templates")} className="text-lg font-semibold text-foreground">Templates</h3>
           <Button variant="outline" size="sm" onClick={startNew} disabled={busy}>
             <Plus className="w-4 h-4 mr-1" />
             New template

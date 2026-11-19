@@ -34,6 +34,15 @@ describe('saveProviderKey', () => {
     expect(emit).not.toHaveBeenCalled();
   });
 
+  test('a stored key is a success even when the config re-read fails', async () => {
+    invoke.mockImplementation(async (c) => {
+      if (c === 'api_get_model_config') throw new Error('summary key unreadable');
+      return null;
+    });
+    await expect(saveProviderKey('claude', 'sk')).resolves.toBeUndefined();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
   test('a failed save rejects and does not emit', async () => {
     invoke.mockImplementation(async () => {
       throw new Error('nope');

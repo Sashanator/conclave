@@ -5,8 +5,13 @@ import { getAssistSettings, saveAssistSettings } from '@/lib/templateAssist';
 // Saves one provider's key only. Re-announces the summary config so ConfigContext and the Summary editor drop their stale key copies.
 export async function saveProviderKey(provider: string, apiKey: string): Promise<void> {
   await invoke('api_save_provider_key', { provider, apiKey });
-  const config = await invoke('api_get_model_config');
-  if (config) await emit('model-config-updated', config);
+  // The key is stored: a failed re-announce must not read as a failed save.
+  try {
+    const config = await invoke('api_get_model_config');
+    if (config) await emit('model-config-updated', config);
+  } catch (err) {
+    console.error('Key saved, but the model config could not be re-announced:', err);
+  }
 }
 
 export type ModelFeature = 'copilot' | 'knowledge' | 'templateAssist' | 'dictateCleanup';

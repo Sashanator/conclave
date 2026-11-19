@@ -46,7 +46,9 @@ export function CopilotSettings({ part }: { part: 'answer' | 'alert-words' }) {
     queue.current = queue.current.then(async () => {
       if (gen !== generation.current) return;
       try {
-        const result = await invoke<CopilotSettings>('copilot_save_settings', { settings: next });
+        // Only this pane's fields are written; provider and model come from the current settings, so a change made in Models & keys survives.
+        const cur = await invoke<CopilotSettings>('copilot_get_settings');
+        const result = await invoke<CopilotSettings>('copilot_save_settings', { settings: { ...cur, answer_language: next.answer_language, alert_words: next.alert_words } });
         // A newer edit has already replaced this one, so only the newest result is shown
         if (latest.current === next) show(result);
         markSaved();

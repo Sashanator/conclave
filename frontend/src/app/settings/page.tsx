@@ -23,6 +23,17 @@ import { PageFrame } from '@/components/PageFrame/PageFrame';
 import { SettingsNav } from '@/components/Settings/SettingsNav';
 import { paneForTab, paneLabel, settingId, settingsHref, type SettingsPane } from '@/lib/settings-panes';
 
+// The target pane loads its rows asynchronously, so look again on the next frames (about 2 s) before giving up.
+function scrollToSetting(label: string) {
+  let frames = 0;
+  const look = () => {
+    const el = document.getElementById(settingId(label));
+    if (el) el.scrollIntoView();
+    else if (frames++ < 120) requestAnimationFrame(look);
+  };
+  requestAnimationFrame(look);
+}
+
 function SettingsContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -32,7 +43,7 @@ function SettingsContent() {
   const pick = async (p: SettingsPane, label?: string) => {
     if (!(await confirmLeave())) return;
     router.replace(settingsHref(p));
-    if (label) requestAnimationFrame(() => document.getElementById(settingId(label))?.scrollIntoView());
+    if (label) scrollToSetting(label);
   };
 
   // Load saved transcript configuration on mount

@@ -39,7 +39,7 @@ export function UpdatesSettings() {
 
   const saveToken = async () => {
     setBusy(true); setTokenMsg(null);
-    try { await updatesSetToken(token.trim()); setToken(''); await loadStatus(); }
+    try { await updatesSetToken(token.trim()); setToken(''); markTokenSaved(); await loadStatus(); }
     catch (e) { setTokenMsg({ text: String(e), error: true }); }
     finally { setBusy(false); }
   };
@@ -57,6 +57,7 @@ export function UpdatesSettings() {
   };
   const [toggling, setToggling] = useState(false);
   const [saved, markSaved] = useSavedTick();
+  const [tokenSaved, markTokenSaved] = useSavedTick();
   const toggle = async (enabled: boolean) => {
     setToggling(true);
     setStatus((s) => s && { ...s, checkOnStart: enabled });
@@ -100,7 +101,7 @@ export function UpdatesSettings() {
             <Switch id="update-check-on-start" checked={status.checkOnStart} onCheckedChange={toggle} disabled={toggling} aria-label="Check for updates on start" />
           </SettingsRow>
 
-          <SettingsRow label="GitHub token" htmlFor={status.tokenLast4 === null ? 'update-token' : undefined} helper={TOKEN_HELP} block>
+          <SettingsRow label="GitHub token" saved={tokenSaved} htmlFor={status.tokenLast4 === null ? 'update-token' : undefined} helper={TOKEN_HELP} block>
             {status.tokenLast4 === null ? (
               <div className="flex flex-wrap items-center gap-2">
                 <Input id="update-token" type="password" autoComplete="off" className="w-72" value={token} onChange={(e) => setToken(e.target.value)} />

@@ -128,7 +128,10 @@ export function KnowledgeSettings() {
     queue.current = queue.current.then(async () => {
       if (gen !== generation.current) return;
       try {
-        const result = await invoke<KnowledgeView>('knowledge_save_settings', { input: toInput(next) });
+        // Only this pane's fields are written; provider and model come from the current settings, so a change made in Models & keys survives.
+        const cur = await invoke<KnowledgeView>('knowledge_get_settings');
+        const { my_names, extract_enabled, digest_enabled, calendar_marker } = next;
+        const result = await invoke<KnowledgeView>('knowledge_save_settings', { input: toInput({ ...cur, my_names, extract_enabled, digest_enabled, calendar_marker }) });
         // A newer edit has already replaced this one, so only the newest result is shown
         if (latest.current === next) show(result);
         setSavedRow(row);

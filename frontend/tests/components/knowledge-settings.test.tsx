@@ -165,6 +165,14 @@ beforeEach(() => {
 });
 
 describe('KnowledgeSettings', () => {
+  test('a save keeps a model changed elsewhere since this pane loaded', async () => {
+    await mount();
+    view = { ...view, provider: 'openai', model: 'gpt-5' };
+    await act(async () => { await byLabel('Weekly digest').props.onClick(); });
+    await flush();
+    expect(view).toMatchObject({ provider: 'openai', model: 'gpt-5', digest_enabled: false });
+  });
+
   test('rows, no provider picker, and a toggle save keeps provider and model and shows Saved', async () => {
     view = { ...view, provider: 'claude', model: 'm' };
     calendar = structuredClone(connected);

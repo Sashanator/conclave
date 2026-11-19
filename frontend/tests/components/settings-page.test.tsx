@@ -98,3 +98,24 @@ test('search lists a hit with its pane and navigates; no match message', async (
   await act(async () => { r.root.findByProps({ 'aria-label': 'Search settings' }).props.onChange({ target: { value: 'zzz' } }); });
   expect(text(r)).toContain('No settings match');
 });
+
+test('a search pick scrolls once the target pane has rendered its row', async () => {
+  tab = 'recording';
+  const frames: (() => void)[] = [];
+  const realRaf = globalThis.requestAnimationFrame;
+  globalThis.requestAnimationFrame = ((cb: () => void) => frames.push(cb)) as any;
+  let lookups = 0;
+  const scrollIntoView = mock(() => {});
+  const realGet = document.getElementById.bind(document);
+  document.getElementById = ((id: string) => (id === 'setting-calendar' && ++lookups >= 3 ? ({ scrollIntoView } as any) : null)) as any;
+  try {
+    const r = await render();
+    await act(async () => { r.root.findByProps({ 'aria-label': 'Search settings' }).props.onChange({ target: { value: 'calendar' } }); });
+    const hit = r.root.findAllByType('button').find((b) => inst(b).includes('Names & calendar'))!;
+    await act(async () => { await hit.props.onClick(); });
+    for (let i = 0; i < 5 && frames.length; i++) frames.shift()!();
+    // Earlier tests' retry loops may also look; what matters is that the row was found only on a later frame
+    expect(lookups).toBeGreaterThanOrEqual(3);
+    expect(scrollIntoView).toHaveBeenCalled();
+  } finally { globalThis.requestAnimationFrame = realRaf; document.getElementById = realGet; }
+});

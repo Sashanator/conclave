@@ -1,4 +1,4 @@
-import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -7,6 +7,7 @@ const originals = {
   select: { ...await import('../../src/components/ui/select') },
   switchUi: { ...await import('../../src/components/ui/switch') },
   sonner: { ...await import('sonner') },
+  nav: { ...await import('next/navigation') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
@@ -15,7 +16,11 @@ afterAll(() => {
   mock.module('../../src/components/ui/select', () => originals.select);
   mock.module('../../src/components/ui/switch', () => originals.switchUi);
   mock.module('sonner', () => originals.sonner);
+  mock.module('next/navigation', () => originals.nav);
 });
+const replace = mock((_u: string) => {});
+mock.module('next/navigation', () => ({ ...originals.nav, useRouter: () => ({ replace, push() {} }) }));
+
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
 
@@ -97,10 +102,37 @@ beforeEach(() => {
   settings = { provider: null, model: null, includeTranscript: false, hideEditHint: true };
   saveFails = false;
   invoke.mockClear();
+  replace.mockClear();
   toastError.mockClear();
 });
 
 describe('TemplateAssistSettings', () => {
+  test('a save keeps a model changed elsewhere since this pane loaded', async () => {
+    await mount();
+    settings = { ...settings, provider: 'openai', model: 'gpt-5' };
+    await act(async () => { byLabel('Include the transcript by default').props.onClick(); });
+    await flush();
+    expect(settings).toMatchObject({ provider: 'openai', model: 'gpt-5', includeTranscript: true });
+  });
+
+  test('the Models & keys link asks before leaving when there are unsaved edits', async () => {
+    const { setUnsavedChanges } = await import('../../src/lib/unsaved-guard');
+    await mount();
+    const link = renderer!.root.findAll((n) => n.props.href === '/settings?tab=models' && n.props.onClick)[0];
+    const confirm = spyOn(window, 'confirm').mockImplementation(() => false);
+    setUnsavedChanges(true);
+    try {
+      const e = { preventDefault: mock(() => {}) };
+      await act(async () => { await link.props.onClick(e); });
+      expect(e.preventDefault).toHaveBeenCalled();
+      expect(confirm).toHaveBeenCalled();
+      expect(replace).not.toHaveBeenCalled();
+      confirm.mockImplementation(() => true);
+      await act(async () => { await link.props.onClick(e); });
+      expect(replace).toHaveBeenCalledWith('/settings?tab=models');
+    } finally { setUnsavedChanges(false); confirm.mockRestore(); }
+  });
+
   test('has no model picker, a Models & keys link, and an unchecked transcript switch', async () => {
     await mount();
     expect(JSON.stringify(renderer!.toJSON())).not.toContain('template-assist-provider');
@@ -131,6 +163,6 @@ describe('TemplateAssistSettings', () => {
     });
     await flush();
     expect(toastError).toHaveBeenCalledWith('Template assistant settings were not saved', expect.anything());
-    expect(gets()).toBe(before + 1);
+    expect(gets()).toBe(before + 2); // the save-time read, then the reload
   });
 });

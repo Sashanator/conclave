@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import Link from 'next/link';
+import { useRouter } from 'next/navigation';
+import { confirmLeave } from '@/lib/unsaved-guard';
 import { settingId, settingsHref } from '@/lib/settings-panes';
 
 // The tick shows for 2 s; each markSaved() restarts it.
@@ -46,9 +48,15 @@ export function SettingsRow({ label, helper, htmlFor, saved, block, children }: 
 
 // The model for a feature is chosen in Models & keys.
 export function ModelLinkRow() {
+  const router = useRouter();
+  // Unsaved edits on the page (a dirty template) are confirmed before leaving the pane.
+  const go = async (e: { preventDefault(): void }) => {
+    e.preventDefault();
+    if (await confirmLeave()) router.replace(settingsHref('models'));
+  };
   return (
     <SettingsRow label="Model" helper="Set in Models & keys">
-      <Link href={settingsHref('models')} className="text-sm underline">Models & keys</Link>
+      <Link href={settingsHref('models')} onClick={go} className="text-sm underline">Models & keys</Link>
     </SettingsRow>
   );
 }

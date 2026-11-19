@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Plus, Trash2 } from 'lucide-react';
+import { settingId } from '@/lib/settings-panes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
@@ -156,7 +157,7 @@ export function CostsSettings() {
   return (
     <div className="space-y-4">
       <div>
-        <h2 className="text-lg font-semibold">Model prices</h2>
+        <h2 id={settingId("Model prices")} className="text-lg font-semibold">Model prices</h2>
         <p className="text-sm text-muted-foreground">Dollars per million tokens, used to estimate the cost of each LLM call.</p>
       </div>
 

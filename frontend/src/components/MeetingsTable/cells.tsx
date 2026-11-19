@@ -30,10 +30,10 @@ export function SummaryCell({ row, state, activeDuration, compact = false, onDel
         {`Recording · ${clock(activeDuration ?? 0)}`}
       </span>;
     case 'new':
-      return <span className={`flex items-center gap-2 ${muted}`}>
+      return <span className={`flex min-w-0 items-center gap-2 whitespace-nowrap ${muted}`}>
         <span>Not recorded yet</span>
         {row.calendarUid && <span className="rounded-full bg-muted px-2 text-xs">Calendar</span>}
-        {row.prepPoints > 0 && <span>{`Prep: ${row.prepPoints} point${row.prepPoints === 1 ? '' : 's'}`}</span>}
+        {row.prepPoints > 0 && <span className="truncate">{`Prep: ${row.prepPoints} point${row.prepPoints === 1 ? '' : 's'}`}</span>}
       </span>;
     case 'not-recorded':
       return <span className={`flex items-center gap-2 ${muted}`}>
@@ -68,7 +68,7 @@ export function CategoryChip({ row, templates, onChange }: {
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
         <button type="button" aria-label={`Template: ${label}`}
-          className="rounded-full px-2 text-xs" style={{ background: `hsl(${color} / .12)` }}>
+          className="inline-block max-w-full truncate whitespace-nowrap rounded-full px-2 align-middle text-xs" style={{ background: `hsl(${color} / .12)` }}>
           {label}
         </button>
       </PopoverTrigger>

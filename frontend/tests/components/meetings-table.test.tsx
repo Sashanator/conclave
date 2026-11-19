@@ -362,6 +362,34 @@ describe('meetings table', () => {
     expect(push).toHaveBeenCalledWith('/meeting-details?id=preview-new');
   });
 
+  describe('fits at 1366 px', () => {
+    beforeEach(async () => { // the All view groups by category, which hides that column
+      localStorage.setItem('conclave.meetingsView', 'week');
+      setSystemTime(new Date('2026-11-16T12:00:00Z'));
+      await mount();
+    });
+    afterEach(() => setSystemTime());
+    const ths = () => renderer!.root.findAll((n) => n.type === 'th' && n.props.style?.width !== undefined && n.props.scope === undefined);
+    const th = (label: string) => ths().find((n) => text(n).startsWith(label))!;
+    test('Date and Reviewed have fixed widths, the rest share the remainder', () => {
+      expect(th('Date').props.style.width).toBe('190px');
+      expect(th('Reviewed').props.style.width).toBe('84px');
+      const pct = ['Name', 'Category', 'Summary'].map((l) => String(th(l).props.style.width));
+      expect(pct.every((w) => w.endsWith('%'))).toBe(true);
+      expect(pct.reduce((n, w) => n + parseFloat(w), 0)).toBeCloseTo(100, 1);
+      expect(th('Date').findAll((n) => n.props.role === 'separator').length).toBe(0);
+      expect(th('Name').findAll((n) => n.props.role === 'separator').length).toBe(1);
+    });
+    test('chips never wrap', async () => {
+      for (const b of renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false)) await act(async () => { b.props.onClick(); });
+      const chip = renderer!.root.findAll((n) => n.type === 'button' && String(n.props['aria-label']).startsWith('Template:'))[0];
+      expect(chip.props.className).toContain('truncate');
+      expect(chip.props.className).toContain('max-w-full');
+      const wrap = renderer!.root.findAll((n) => n.type === 'span' && text(n).startsWith('Not recorded yet') && String(n.props.className).includes('flex'))[0];
+      expect(wrap.props.className).toContain('whitespace-nowrap');
+    });
+  });
+
   describe('origin for Back', () => {
     const week = { path: '/', label: 'Meetings / This week' };
     const weekView = async (today = '2026-11-16T12:00:00Z') => {

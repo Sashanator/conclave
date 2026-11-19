@@ -5,6 +5,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -290,7 +291,8 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
 
     // The models load on a blocking thread, before anything is decoded.
     let factory = deps.model_factory();
-    let loaded = run_blocking(deps, meeting_id, "model load", 0, 0, move |_| factory()).await??;
+    // Loading cannot report progress, so it gets its own generous limit instead of the per-stage one.
+    let loaded = run_blocking_with(deps, meeting_id, "model load", 0, 0, MODEL_LOAD_STALL, move |_| factory()).await??;
     let mut models: Box<dyn SpeakerModels + Send> = Box::new(Failover::new(loaded));
 
     // Decode. The guard deletes the temp file on every failure below; the audio is opened only after success.
@@ -361,8 +363,8 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
         let seconds = windows.len() as f64 * SUB_SECS;
         if seconds >= SELF_LEARN_SECS {
             let reader = Guarded::new(&audio, pool, meeting_id, token);
-            let (print, back) = run_blocking(deps, meeting_id, "self voiceprint", 95, 95, move |_| {
-                let r = centroid_of(&reader, models.as_mut(), &windows);
+            let (print, back) = run_blocking(deps, meeting_id, "self voiceprint", 95, 99, move |progress| {
+                let r = centroid_of(&reader, models.as_mut(), &windows, progress);
                 (r, models)
             })
             .await?;
@@ -402,6 +404,32 @@ async fn analyse(pool: &SqlitePool, meeting_id: &str, token: &str, deps: &dyn Jo
 
 /// A stage that reports no progress for this long is abandoned as stalled.
 const STALL_AFTER: Duration = Duration::from_secs(600);
+/// Model loading reports nothing, so a CPU-only first load gets a much longer leash.
+const MODEL_LOAD_STALL: Duration = Duration::from_secs(1800);
+
+/// Blocking stages still running, including ones abandoned after a stall: they may hold the model files open.
+static BLOCKING_IN_FLIGHT: AtomicUsize = AtomicUsize::new(0);
+
+/// True while any speaker blocking work is still running; `speakers_delete_models` refuses then.
+pub(crate) fn blocking_in_flight() -> bool {
+    BLOCKING_IN_FLIGHT.load(Ordering::SeqCst) > 0
+}
+
+/// Counts one running blocking stage; released when the work ends, even by panic.
+struct InFlight(&'static AtomicUsize);
+
+impl InFlight {
+    fn new(counter: &'static AtomicUsize) -> Self {
+        counter.fetch_add(1, Ordering::SeqCst);
+        Self(counter)
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
+}
 /// Progress lines in the log: at most one per this many percent points or this much time.
 const LOG_EVERY_PERCENT: u8 = 10;
 const LOG_EVERY: Duration = Duration::from_secs(60);
@@ -444,7 +472,9 @@ where
     info!("speakers: {stage} started for {meeting_id}");
     let started = Instant::now();
     let (tx, mut rx) = mpsc::unbounded_channel::<f32>();
+    let in_flight = InFlight::new(&BLOCKING_IN_FLIGHT);
     let task = tokio::task::spawn_blocking(move || {
+        let _in_flight = in_flight;
         let mut report = |fraction: f32| {
             let _ = tx.send(fraction);
         };
@@ -603,7 +633,7 @@ fn embed_centroids(
     let n = clusters.len();
     for (i, c) in clusters.iter_mut().enumerate() {
         if c.seconds >= CENTROID_MIN_SECS {
-            c.centroid = centroid_of(audio, models, &centroid_windows(&c.turns))?;
+            c.centroid = centroid_of(audio, models, &centroid_windows(&c.turns), &mut |_| {})?;
         }
         progress((i + 1) as f32 / n as f32);
     }
@@ -611,9 +641,15 @@ fn embed_centroids(
 }
 
 /// The mean of the embeddings of `windows`. None when no clip gives a usable embedding.
-fn centroid_of(audio: &dyn AudioSource, models: &mut dyn SpeakerModels, windows: &[(f64, f64)]) -> Result<Option<Vec<f32>>, String> {
+fn centroid_of(
+    audio: &dyn AudioSource,
+    models: &mut dyn SpeakerModels,
+    windows: &[(f64, f64)],
+    progress: &mut dyn FnMut(f32),
+) -> Result<Option<Vec<f32>>, String> {
     let mut embeddings = Vec::with_capacity(windows.len());
-    for &(start, end) in windows {
+    for (i, &(start, end)) in windows.iter().enumerate() {
+        progress(i as f32 / windows.len() as f32);
         let clip = read_clip(audio, start, end)?;
         if let Some(v) = models.embed(&clip)? {
             embeddings.push(v);
@@ -1066,6 +1102,48 @@ mod tests {
             Err(Stop::Fail(reason)) => assert!(reason.starts_with("stalled"), "{reason}"),
             _ => panic!("expected a stalled failure"),
         }
+    }
+
+    #[test]
+    fn in_flight_guard_counts_until_dropped() {
+        static C: AtomicUsize = AtomicUsize::new(0);
+        let a = InFlight::new(&C);
+        let b = InFlight::new(&C);
+        assert_eq!(C.load(Ordering::SeqCst), 2);
+        drop(a);
+        drop(b);
+        assert_eq!(C.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn abandoned_stage_stays_in_flight_until_it_ends() {
+        let s = setup();
+        let deps = FakeDeps::new(&s.base, &s.temp, None);
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let res = run_blocking_with(&deps, "m1", "test stage", 0, 10, Duration::from_millis(100), move |_| {
+            let _ = wait.recv();
+        })
+        .await;
+        assert!(matches!(res, Err(Stop::Fail(_))));
+        assert!(blocking_in_flight(), "abandoned work must still count");
+        drop(release);
+        for _ in 0..100 {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+            if BLOCKING_IN_FLIGHT.load(Ordering::SeqCst) == 0 {
+                return;
+            }
+        }
+        // Other tests may be running stages at the same time, so only a long wait is a failure.
+    }
+
+    #[test]
+    fn voiceprint_reports_each_window() {
+        let mut models = FakeModels::new(|_| Err("unused".into()), |_, _| Ok(Some(vec![1.0, 0.0])));
+        let audio = vec![0.0f32; 16000 * 4];
+        let mut seen = Vec::new();
+        let r = centroid_of(&audio, &mut models, &[(0.0, 1.0), (1.0, 2.0), (2.0, 3.0)], &mut |f| seen.push(f));
+        assert!(r.unwrap().is_some());
+        assert_eq!(seen.len(), 3);
     }
 
     #[tokio::test]

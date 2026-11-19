@@ -132,6 +132,10 @@ pub async fn speakers_delete_models<R: Runtime>(app: AppHandle<R>) -> Result<(),
     let _exclusive = job::MODEL_LOCK
         .try_write()
         .map_err(|_| "A model download or speaker analysis is running".to_string())?;
+    // A stalled analysis is abandoned, but its blocking thread may still hold the files open.
+    if job::blocking_in_flight() {
+        return Err("A speaker analysis is still winding down; try again in a minute".to_string());
+    }
     let dir = models::models_dir().ok_or("the speaker models folder is not set")?;
     models::delete_models(&dir)?;
     let _ = app.emit("speaker-settings-changed", json!({}));

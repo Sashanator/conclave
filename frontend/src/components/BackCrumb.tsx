@@ -23,8 +23,10 @@ function Crumb({ fallback, fallbackLabel }: Props) {
   const back = () => void goBack(router, fallback);
   useBackShortcut(back);
   return (
-    <button type="button" aria-label={`Back to ${label}`} onClick={back} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
+    <button type="button" onClick={back} className="inline-flex items-center gap-1.5 text-sm text-muted-foreground hover:text-foreground">
       <ArrowLeft className="h-4 w-4" aria-hidden />
+      {/* the accessible name must contain the visible text (WCAG 2.5.3) */}
+      <span className="sr-only">Back to </span>
       {label}
       <kbd className="ml-1 rounded border border-border px-1 text-[11px]">Esc</kbd>
     </button>

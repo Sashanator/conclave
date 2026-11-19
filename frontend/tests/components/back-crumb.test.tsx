@@ -25,7 +25,8 @@ describe('BackCrumb', () => {
     await mount();
     expect(text(button())).toContain('Meetings / This week');
     expect(text(button())).toContain('Esc');
-    expect(button().props['aria-label']).toBe('Back to Meetings / This week');
+    expect(button().props['aria-label']).toBeUndefined();
+    expect(text(button())).toContain('Back to');
     await act(async () => { await button().props.onClick(); });
     expect(back).toHaveBeenCalledTimes(1);
   });

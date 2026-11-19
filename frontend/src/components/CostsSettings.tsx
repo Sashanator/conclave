@@ -150,7 +150,7 @@ export function CostsSettings() {
   const messagesFor = (key: string) =>
     [...FIELDS.map(({ field }) => errors[draftKey(key, field)]), errors[draftKey(key, ROW)]].filter((m): m is string => Boolean(m));
 
-  if (loadError) return <p role="alert" className="text-red-600">{`Could not load model prices: ${loadError}`}</p>;
+  if (loadError) return <p role="alert" className="text-destructive">{`Could not load model prices: ${loadError}`}</p>;
   if (!rows) return <p className="text-muted-foreground">Loading…</p>;
 
   return (
@@ -205,7 +205,7 @@ export function CostsSettings() {
                 </tr>
                 {messagesFor(key).map((message, i) => (
                   <tr key={i}>
-                    <td colSpan={FIELDS.length + 3} className="pb-2 text-red-600">{message}</td>
+                    <td colSpan={FIELDS.length + 3} className="pb-2 text-destructive">{message}</td>
                   </tr>
                 ))}
               </Fragment>
@@ -257,7 +257,7 @@ export function CostsSettings() {
             ))}
             <Button variant="ghost" size="sm" onClick={cancelAdd}>Cancel</Button>
           </div>
-          {errors[NEW] && <p className="text-red-600">{errors[NEW]}</p>}
+          {errors[NEW] && <p className="text-destructive">{errors[NEW]}</p>}
         </div>
       ) : (
         <Button variant="outline" onClick={openAdd}>

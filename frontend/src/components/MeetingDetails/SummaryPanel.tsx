@@ -326,8 +326,8 @@ export function SummaryPanel({
   return (
     <div className="flex-1 min-w-0 flex flex-col bg-background overflow-hidden h-full w-full @container">
       {/* Top-level actions — always visible, same pattern as TranscriptPanel */}
-      <div className="p-4 border-b border-border">
-        <div className="flex items-center justify-center w-full min-w-0 gap-2 flex-wrap">
+      <div className="border-b border-border">
+        <div className="flex flex-wrap items-center justify-start gap-2 px-8 py-3">
           <div className="flex-shrink-0 min-w-0">
             <SummaryGeneratorButtonGroup
               modelConfig={modelConfig}
@@ -451,11 +451,8 @@ export function SummaryPanel({
               }}
             />
           </div>
-          {summaryStatus !== 'idle' && (
-            <div className={`mt-4 p-4 rounded-lg ${summaryStatus === 'error' ? 'bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300' :
-              summaryStatus === 'completed' ? 'bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-300' :
-                'bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300'
-              }`}>
+          {summaryStatus === 'error' && (
+            <div className="mt-4 p-4 rounded-lg bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300">
               <p className="text-sm font-medium">{getSummaryStatusMessage(summaryStatus)}</p>
             </div>
           )}

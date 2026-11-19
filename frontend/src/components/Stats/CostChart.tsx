@@ -6,10 +6,11 @@ import { periodLabel } from './CostSection';
 
 const round1 = (n: number) => Math.round(n * 10) / 10;
 
-function barLabel(start: string, period: Period): string {
+// A month name that repeats among the bars (13 months) gets its year
+function barLabel(start: string, period: Period, withYear: boolean): string {
   if (period === 'week') return periodLabel(start, period);
   const [y, m, d] = start.split('-').map(Number);
-  return new Date(y, m - 1, d).toLocaleDateString('en-GB', { month: 'short' });
+  return new Date(y, m - 1, d).toLocaleDateString('en-GB', withYear ? { month: 'short', year: 'numeric' } : { month: 'short' });
 }
 
 /** periods[0] is the current period; bars run oldest to newest, so the current one is last. */
@@ -17,6 +18,8 @@ export function CostChart({ periods, period }: { periods: CostPeriod[]; period: 
   if (periods.length === 0) return null;
   const title = period === 'week' ? 'Weekly cost' : 'Monthly cost';
   const bars = [...periods].reverse();
+  const monthOf = (start: string) => Number(start.split('-')[1]);
+  const repeats = (start: string) => bars.filter((b) => monthOf(b.start) === monthOf(start)).length > 1;
   const max = Math.max(...bars.map((p) => p.total_usd));
 
   return (
@@ -35,11 +38,11 @@ export function CostChart({ periods, period }: { periods: CostPeriod[]; period: 
             <li
               key={p.start}
               aria-current={current ? 'true' : undefined}
-              className={`flex h-full flex-1 flex-col items-center justify-end text-xs text-muted-foreground ${current ? 'text-foreground font-medium' : ''}`}
+              className={`flex h-full flex-1 flex-col items-center justify-end text-xs ${current ? 'text-foreground font-medium' : 'text-muted-foreground'}`}
             >
               {formatMoney(p.total_usd)}
               <span className="block w-full max-w-14 rounded-t bg-primary" style={{ height: `${pct}%` }} />
-              {barLabel(p.start, period)}
+              {barLabel(p.start, period, repeats(p.start))}
             </li>
           );
         })}

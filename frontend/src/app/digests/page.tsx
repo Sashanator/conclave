@@ -67,7 +67,7 @@ function DigestsContent() {
       </ul>
     );
 
-  const rail = digest && (
+  const rail = state === 'ready' && digest && (
     <section aria-labelledby="digest-meetings" className="space-y-2">
       <h2 id="digest-meetings" className="text-sm font-medium text-muted-foreground">Meetings in this digest</h2>
       <div className="flex flex-col items-start gap-2">

@@ -42,6 +42,7 @@ export function useDigest(id: string | null): { state: DigestState; digest: Dige
       return;
     }
     let live = true;
+    setDigest(null);
     setState('loading');
     invoke<DigestContent | null>('digest_get', { id })
       .then((content) => {
@@ -52,7 +53,10 @@ export function useDigest(id: string | null): { state: DigestState; digest: Dige
       .catch(() => {
         // The error text can echo digest content, so it is not logged
         console.error('Digest failed to load');
-        if (live) setState('error');
+        if (live) {
+          setDigest(null);
+          setState('error');
+        }
       });
     return () => {
       live = false;
@@ -62,7 +66,7 @@ export function useDigest(id: string | null): { state: DigestState; digest: Dige
   return { state, digest };
 }
 
-const CHIP = 'inline-flex max-w-[28ch] truncate rounded border px-2 py-0.5 align-middle text-xs';
+const CHIP = 'inline-block max-w-[28ch] truncate rounded border px-2 py-0.5 align-middle text-xs';
 const CHIP_LINK = `${CHIP} border-primary/35 bg-primary/10 text-foreground hover:bg-primary/20`;
 
 export function MeetingChip({ meeting, from }: { meeting: { id: string; title: string }; from: Origin }) {

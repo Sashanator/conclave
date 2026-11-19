@@ -34,7 +34,7 @@ const TALK = {
 const MEETINGS = [{ meeting_id: 'm-1', title: 'Daily sync', date: '2026-10-20', self_seconds: 30, total_seconds: 100 }];
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
-  if (command === 'stats_cost') return args?.period === 'month' ? structuredClone(COST_MONTH) : structuredClone(COST_WEEK_OVERRIDE ?? COST_WEEK);
+  if (command === 'stats_cost') return args?.period === 'month' ? structuredClone(COST_MONTH_OVERRIDE ?? COST_MONTH) : structuredClone(COST_WEEK_OVERRIDE ?? COST_WEEK);
   if (command === 'stats_talk_time') return structuredClone(TALK);
   if (command === 'stats_talk_time_meetings') return structuredClone(MEETINGS);
   throw new Error(`Unexpected command: ${command} ${JSON.stringify(args ?? {})}`);
@@ -48,6 +48,7 @@ const { default: StatsPage } = await import('../../src/app/stats/page');
 
 let renderer: ReactTestRenderer | null = null;
 let COST_WEEK_OVERRIDE: unknown[] | null = null;
+let COST_MONTH_OVERRIDE: unknown[] | null = null;
 
 async function flush() {
   await act(async () => {
@@ -202,5 +203,18 @@ describe('cost chart', () => {
     await flush();
     const month = renderer!.root.findByProps({ 'aria-label': 'Monthly cost' });
     expect(labelOf(month)).toContain('Oct');
+  });
+
+  test('a month name that repeats gets its year', async () => {
+    COST_MONTH_OVERRIDE = [cost('2026-11-01', 1), cost('2026-10-01', 1), cost('2025-11-01', 1)];
+    await act(async () => {
+      buttonWith('Month').props.onClick();
+    });
+    await flush();
+    COST_MONTH_OVERRIDE = null;
+    const labels = renderer!.root.findByProps({ 'aria-label': 'Monthly cost' }).findAll((n) => n.type === 'li').map(labelOf);
+    expect(labels.some((l) => l.includes('Nov 2025'))).toBe(true);
+    expect(labels.some((l) => l.includes('Nov 2026'))).toBe(true);
+    expect(labels.some((l) => l.endsWith('Oct'))).toBe(true);
   });
 });

@@ -15,6 +15,7 @@ afterAll(() => {
 const LIST = [
   { id: 'b1', kind: 'brief', title: '1:1 Ivan', createdAt: '2026-10-22T09:00:00Z' },
   { id: 'd1', kind: 'digest', title: 'Weekly digest: 16–21 Oct', createdAt: '2026-10-21T09:00:00Z' },
+  { id: 'd2', kind: 'digest', title: 'Older digest', createdAt: '2026-10-14T09:00:00Z' },
 ];
 
 const BRIEF = {
@@ -48,6 +49,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
   }
   if (command === 'digest_get') {
     digestGets.push(args);
+    if (args?.id === 'd2') throw new Error('boom');
     return structuredClone(DIGEST);
   }
   if (command === 'tasks_set_status') return null;
@@ -164,5 +166,14 @@ describe('Digests page', () => {
   test('no centred column', async () => {
     await mount('id=d1');
     expect(renderer!.root.findAll((n) => typeof n.props.className === 'string' && /mx-auto|max-w-3xl/.test(n.props.className))).toHaveLength(0);
+  });
+
+  test('a failed switch clears the rail of the previous digest', async () => {
+    await mount('id=d1');
+    expect(textOf(renderer!.root)).toContain('Meetings in this digest');
+    await click(buttonNamed('Older digest'));
+    const text = textOf(renderer!.root);
+    expect(text).toContain('Could not load this digest.');
+    expect(text).not.toContain('Meetings in this digest');
   });
 });

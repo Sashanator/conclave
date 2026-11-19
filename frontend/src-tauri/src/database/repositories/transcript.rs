@@ -199,9 +199,13 @@ impl TranscriptsRepository {
             let mut same = None;
             for (cand,) in candidates {
                 // Unreadable stored notes: not provably the same recording, so skip it (a duplicate beats a failed save).
-                if matches!(read_notes_strict(&mut tx, &cand).await, Ok(n) if n.len() >= incoming_notes) {
-                    same = Some(cand);
-                    break;
+                match read_notes_strict(&mut tx, &cand).await {
+                    Ok(n) if n.len() >= incoming_notes => {
+                        same = Some(cand);
+                        break;
+                    }
+                    Ok(_) => {}
+                    Err(e) => log::warn!("save_transcript_dedup: skipping candidate meeting {cand}, its notes are unreadable: {e}"),
                 }
             }
             tx.rollback().await?;

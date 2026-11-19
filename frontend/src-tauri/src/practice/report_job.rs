@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use log::warn;
+use log::{info, warn};
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::SqlitePool;
@@ -117,9 +117,12 @@ pub async fn run_claimed<R: Runtime>(
     _busy: crate::updates::busy::BusyGuard,
 ) {
     let pool = app.state::<AppState>().db_manager.pool().clone();
+    let started = std::time::Instant::now();
+    info!("practice: report {session_id} queued");
     publish(&app, &session_id, "waiting");
     wait_while_recording().await;
     store(&app, &pool, &session_id, "running", None, None).await;
+    info!("practice: report {session_id} running");
     // The analysis runs as its own task, so a panic in it still ends in 'failed'.
     let job = tauri::async_runtime::spawn(analyse(app.clone(), pool.clone(), session_id.clone(), hold));
     let result = match job.await {
@@ -131,6 +134,10 @@ pub async fn run_claimed<R: Runtime>(
     };
     dictate::unload_if_idle().await;
     let (status, json, error) = finish(result);
+    match &error {
+        None => info!("practice: report {session_id} finished in {:.1}s", started.elapsed().as_secs_f64()),
+        Some(reason) => warn!("practice: report {session_id} failed after {:.1}s: {reason}", started.elapsed().as_secs_f64()),
+    }
     save_final(&app, &pool, &session_id, status, json, error).await;
 }
 
@@ -212,12 +219,14 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
         .await?
         .ok_or("Session not found")?;
     let language = db::session_language(&pool, &session).await?;
+    info!("practice: report {session_id} analysing {} turn(s), language {}", turns.len(), language.code());
     let folder = session.folder_path.ok_or("Session folder is missing")?;
     let wav = Path::new(&folder).join(PRACTICE_FILES[0]);
     let pass = word_for_word(&app, &pool, &session_id, &wav, &turns, language, hold).await;
     // The Whisper model is released before the pronunciation pass and Claude are called, so an idle engine can unload.
     dictate::unload_if_idle().await;
     let (heard, pron_inputs) = pass?;
+    info!("practice: report {session_id} word-for-word pass done");
 
     let learner: BTreeMap<i64, String> = heard
         .iter()
@@ -233,15 +242,19 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     } else {
         pronunciation(&app, &pool, &session_id, &wav, pron_inputs).await
     };
-    if let Err(e) = &pron {
-        warn!("practice: pronunciation hints skipped: {e}");
+    match &pron {
+        Ok(hints) => info!("practice: report {session_id} pronunciation pass done, {} hint(s)", hints.len()),
+        Err(e) => warn!("practice: pronunciation hints skipped: {e}"),
     }
     // Nothing to grade: an empty report, with no key read and no Claude call (its prompt would be empty).
     if !has_learner_text(&learner_texts) {
         return Ok(finish_pronunciation(build_report(fluency, vec![], &learner), language, pron));
     }
 
-    let key = claude::api_key(&pool).await.map_err(|e| report_copy(&e).to_string())?;
+    let key = claude::api_key(&pool).await.map_err(|e| {
+        warn!("practice: report {session_id} could not read the Claude key: {e:?}");
+        report_copy(&e).to_string()
+    })?;
     let rows: Vec<(i64, &str, &str)> = heard
         .iter()
         .map(|h| (h.idx, h.speaker.as_str(), h.text.as_str()))
@@ -254,9 +267,15 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
     let models = settings::current();
     let body = claude::report_body(&models.plan_model, &models.plan_effort, &system, &user, &schema());
     let mut usage = TokenUsage::default();
+    info!("practice: report {session_id} asking Claude ({})", models.plan_model);
+    let asked = std::time::Instant::now();
     let result = claude::stream(&claude::http_client(), &key, &body, &CancellationToken::new(), &mut usage, |_| {}).await;
     claude::record_usage(&pool, &body, &usage).await;
-    let text = result.map_err(|e| report_copy(&e).to_string())?;
+    let text = result.map_err(|e| {
+        warn!("practice: report {session_id} Claude call failed after {:.1}s: {e:?}", asked.elapsed().as_secs_f64());
+        report_copy(&e).to_string()
+    })?;
+    info!("practice: report {session_id} Claude answered in {:.1}s, {} chars", asked.elapsed().as_secs_f64(), text.chars().count());
     parse_report(&text, fluency, &learner).map(|report| finish_pronunciation(report, language, pron))
 }
 

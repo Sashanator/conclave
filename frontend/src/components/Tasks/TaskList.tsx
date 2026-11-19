@@ -7,6 +7,8 @@ import { Clock, Trash2 } from 'lucide-react';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { formatRowDate } from '@/lib/dates';
+import { rememberOrigin } from '@/lib/back-nav';
 import { meetingHref } from '@/lib/meeting-target';
 import { groupByMeeting, type TaskRow } from '@/lib/tasks';
 
@@ -18,9 +20,11 @@ const SAVE_FAILED = 'Could not save that change. The list has been refreshed.';
 // so the delete waits for the toast to close (timeout or by hand), not for a fixed timer.
 const UNDO_MS = 5000;
 
+const TASKS_ORIGIN = { path: '/tasks', label: 'Tasks' };
+
 function formatDate(date: string): string {
   const d = new Date(date);
-  return Number.isNaN(d.getTime()) ? date : d.toLocaleDateString();
+  return Number.isNaN(d.getTime()) ? date : formatRowDate(d);
 }
 
 export function TaskList() {
@@ -198,7 +202,7 @@ export function TaskList() {
         <section key={group.key} className="space-y-2">
           <header className="flex items-baseline gap-2">
             {group.meetingId ? (
-              <Link href={meetingHref({ id: group.meetingId })} className="font-medium hover:underline">
+              <Link href={meetingHref({ id: group.meetingId })} onClick={() => rememberOrigin(TASKS_ORIGIN)} className="font-medium hover:underline">
                 {group.title}
               </Link>
             ) : (
@@ -285,6 +289,7 @@ function TaskItem({ task, run, scheduleDelete }: { task: TaskRow; run: Run; sche
         <Link
           href={meetingHref({ id: task.meetingId, t: task.at })}
           aria-label="Show in transcript"
+          onClick={() => rememberOrigin(TASKS_ORIGIN)}
           className="text-muted-foreground hover:text-foreground"
         >
           <Clock className="h-4 w-4" />

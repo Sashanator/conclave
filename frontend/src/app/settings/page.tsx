@@ -46,8 +46,8 @@ function SettingsContent() {
   const [activeTab, setActiveTab] = useState<string>(() => TABS.find((tab) => tab.value === requestedTab)?.value ?? 'general');
   const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const [underlineStyle, setUnderlineStyle] = useState({ left: 0, width: 0 });
-  const changeTab = (tab: string) => {
-    if (confirmLeave()) setActiveTab(tab);
+  const changeTab = async (tab: string) => {
+    if (await confirmLeave()) setActiveTab(tab);
   };
 
   // Load saved transcript configuration on mount
@@ -88,7 +88,7 @@ function SettingsContent() {
         <div className="max-w-6xl mx-auto px-8 py-6">
           <div className="flex items-center gap-4">
             <button
-              onClick={() => confirmLeave() && router.back()}
+              onClick={async () => { if (await confirmLeave()) router.back(); }}
               className="flex items-center gap-2 text-muted-foreground hover:text-foreground transition-colors"
             >
               <ArrowLeft className="w-5 h-5" />

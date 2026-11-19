@@ -10,9 +10,9 @@ import type { CategoryInfo } from '@/lib/meeting-views';
 
 const muted = 'text-muted-foreground';
 
-export function NameCell({ row }: { row: MeetingRow }) {
+export function NameCell({ row, onOpen }: { row: MeetingRow; onOpen: () => void }) {
   return (
-    <Link href={meetingHref({ id: row.id })} className="hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+    <Link href={meetingHref({ id: row.id })} onClick={onOpen} className="hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
       {row.emoji ? <span aria-hidden>{row.emoji} </span> : null}{row.title}
     </Link>
   );
@@ -21,8 +21,8 @@ export function NameCell({ row }: { row: MeetingRow }) {
 export const DateCell = ({ row, now, state }: { row: MeetingRow; now: Date; state: MeetingState }) =>
   <span className={muted}>{formatMeetingDate(row, now, state === 'recording')}</span>;
 
-export function SummaryCell({ row, state, activeDuration, compact = false, onDelete }: {
-  row: MeetingRow; state: MeetingState; activeDuration: number | null; compact?: boolean; onDelete: () => void;
+export function SummaryCell({ row, state, activeDuration, compact = false, onDelete, onOpen }: {
+  row: MeetingRow; state: MeetingState; activeDuration: number | null; compact?: boolean; onDelete: () => void; onOpen: () => void;
 }) {
   switch (state) {
     case 'recording':
@@ -38,7 +38,7 @@ export function SummaryCell({ row, state, activeDuration, compact = false, onDel
     case 'not-recorded':
       return <span className={`flex items-center gap-2 ${muted}`}>
         <span>Not recorded</span>
-        <Link href={meetingHref({ id: row.id, tab: 'prep' })} className="text-foreground underline">Open prep</Link>
+        <Link href={meetingHref({ id: row.id, tab: 'prep' })} onClick={onOpen} className="text-foreground underline">Open prep</Link>
       </span>;
     case 'cancelled':
       return <span className={`flex items-center gap-2 ${muted}`}>

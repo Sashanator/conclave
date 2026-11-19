@@ -6,7 +6,7 @@ import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigge
 import { meetingHref } from '@/lib/meeting-target';
 import type { MeetingRow } from '@/lib/meetings';
 
-export function RowMenu({ row, live, onDelete }: { row: MeetingRow; live: boolean; onDelete: () => void }) {
+export function RowMenu({ row, live, onDelete, onOpen }: { row: MeetingRow; live: boolean; onDelete: () => void; onOpen: () => void }) {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -15,7 +15,7 @@ export function RowMenu({ row, live, onDelete }: { row: MeetingRow; live: boolea
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end">
-        <DropdownMenuItem asChild><Link href={meetingHref({ id: row.id })}>Open</Link></DropdownMenuItem>
+        <DropdownMenuItem asChild><Link href={meetingHref({ id: row.id })} onClick={onOpen}>Open</Link></DropdownMenuItem>
         <DropdownMenuItem disabled={live} onSelect={onDelete}>Delete meeting…</DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>

@@ -1,7 +1,8 @@
-import { afterAll, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, setSystemTime, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { MeetingRow } from '../../src/lib/meetings';
+import { readOrigin } from '../../src/lib/back-nav';
 import { BUILTIN_VIEW_DEFAULTS, clearViewUi } from '../../src/lib/meeting-views';
 
 let renderer: ReactTestRenderer | null = null;
@@ -359,6 +360,52 @@ describe('meetings table', () => {
     await flush();
     expect(e.defaultPrevented).toBe(true);
     expect(push).toHaveBeenCalledWith('/meeting-details?id=preview-new');
+  });
+
+  describe('origin for Back', () => {
+    const week = { path: '/', label: 'Meetings / This week' };
+    const weekView = async (today = '2026-11-16T12:00:00Z') => {
+      sessionStorage.clear();
+      localStorage.setItem('conclave.meetingsView', 'week');
+      setSystemTime(new Date(today)); // only today's day group starts open
+      rowsImpl = () => fixture.map((r) => (r.id === 'missed' ? { ...r, calendarStart: '2026-11-16T09:00:00+00:00', createdAt: '2026-11-16 09:00:00+00:00' } : r));
+      await mount();
+    };
+    afterEach(() => setSystemTime());
+    const click = (label: string) => act(async () => {
+      renderer!.root.findAll((n) => n.type === 'a' && text(n).includes(label))[0].props.onClick({ defaultPrevented: true, preventDefault() {} });
+    });
+    test('Enter opens the selected row', async () => {
+      await weekView();
+      await act(async () => { renderer!.root.findAll((n) => n.type === 'tr' && n.props['data-row-id'] === 'done1')[0].props.onClick(); });
+      key('Enter');
+      expect(readOrigin()).toEqual(week);
+      expect(push).toHaveBeenCalledWith('/meeting-details?id=done1');
+    });
+    test('New meeting', async () => {
+      await weekView();
+      key('n', { ctrlKey: true });
+      await flush();
+      expect(readOrigin()).toEqual(week);
+    });
+    test('the name link', async () => {
+      await weekView();
+      await click('done1');
+      expect(readOrigin()).toEqual(week);
+    });
+    test('Open prep', async () => {
+      await weekView('2026-11-17T12:00:00Z'); // a day later, so the 16 Nov call reads as not recorded
+      await act(async () => { renderer!.root.findAll((n) => n.type === 'button' && n.props['aria-expanded'] === false)[0].props.onClick(); });
+      await click('Open prep');
+      expect(readOrigin()).toEqual(week);
+    });
+    test('a search hit title', async () => {
+      await weekView();
+      searchImpl = () => [{ meetingId: 'done1', title: 'done1', source: 'transcript', snippet: 'a snippet', transcriptId: 't1', audioStart: 0, totalInMeeting: 1 }];
+      await search('plan');
+      await click('done1');
+      expect(readOrigin()).toEqual(week);
+    });
   });
 
   test('the delete dialog names the brief of a calendar meeting', async () => {

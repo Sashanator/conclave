@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { TaskRow } from '../../src/lib/tasks';
 import {
+  audioSummary,
   splitTasks,
   taskKeyAction,
   type TaskKeyAction,
@@ -128,5 +129,22 @@ describe('taskKeyAction', () => {
     expect(taskKeyAction({ key: 'Tab' })).toBeNull();
     expect(taskKeyAction({ key: 'j' })).toBeNull();
     expect(taskKeyAction({ key: 'a' })).toBeNull();
+  });
+});
+
+describe('audioSummary', () => {
+  test('drops the device suffix and lists the allowed languages for Auto', () => {
+    expect(audioSummary({ micDevice: 'Headset (input)', systemDevice: 'Speakers (output)', language: 'auto', allowed: ['ru', 'en', 'de'], provider: 'localWhisper' }))
+      .toBe('Mic: Headset · System audio: Speakers · Language: Auto (ru, en, de)');
+  });
+  test('Default devices and a bare Auto for parakeet or an empty list', () => {
+    expect(audioSummary({ micDevice: null, systemDevice: null, language: 'auto', allowed: [], provider: 'parakeet' }))
+      .toBe('Mic: Default · System audio: Default · Language: Auto');
+    expect(audioSummary({ micDevice: null, systemDevice: null, language: 'auto', allowed: ['ru'], provider: 'parakeet' })).toContain('Language: Auto');
+    expect(audioSummary({ micDevice: null, systemDevice: null, language: 'auto', allowed: ['ru'], provider: 'parakeet' })).not.toContain('(ru)');
+  });
+  test('a named language and translation', () => {
+    expect(audioSummary({ micDevice: null, systemDevice: null, language: 'de', allowed: [], provider: 'localWhisper' })).toContain('Language: German');
+    expect(audioSummary({ micDevice: null, systemDevice: null, language: 'auto-translate', allowed: [], provider: 'localWhisper' })).toContain('Auto, translated to English');
   });
 });

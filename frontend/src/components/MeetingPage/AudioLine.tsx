@@ -16,6 +16,7 @@ export function AudioLine({ disabled }: { disabled: boolean }) {
         onLanguageChange={setSelectedLanguage}
         disabled={disabled}
         provider={transcriptModelConfig.provider}
+        hideSpoken
       />
       <MicFollowingLine selectedMic={selectedDevices?.micDevice ?? null} />
     </div>

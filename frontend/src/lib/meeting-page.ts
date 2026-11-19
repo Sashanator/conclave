@@ -1,3 +1,4 @@
+import { LANGUAGES } from '../constants/languages';
 import type { TaskRow } from './tasks';
 
 export type TaskKeyAction = 'keep' | 'remove' | 'up' | 'down';
@@ -65,4 +66,12 @@ export function taskKeyAction(e: TaskKeyEvent): TaskKeyAction | null {
     default:
       return null;
   }
+}
+
+/** `Mic: Headset · System audio: Speakers · Language: Auto (ru, en, de)` for the next recording. */
+export function audioSummary(o: { micDevice: string | null; systemDevice: string | null; language: string; allowed: string[]; provider: string }): string {
+  const device = (d: string | null) => (d ? d.replace(/ \((input|output)\)$/, '') : 'Default');
+  const auto = o.allowed.length > 0 && o.provider !== 'parakeet' ? `Auto (${o.allowed.join(', ')})` : 'Auto';
+  const language = o.language === 'auto' ? auto : o.language === 'auto-translate' ? 'Auto, translated to English' : (LANGUAGES.find((l) => l.code === o.language)?.name ?? o.language);
+  return `Mic: ${device(o.micDevice)} · System audio: ${device(o.systemDevice)} · Language: ${language}`;
 }

@@ -5,6 +5,9 @@ import { listen } from '@tauri-apps/api/event';
 import { CompactAudioLevelMeter } from '@/components/AudioLevelMeter';
 import type { AudioLevelUpdate } from '@/components/DeviceSelection';
 
+/** Raw RMS (speech is about 0.05) on a dB scale: -60 dBFS is 0, 0 dBFS is 1. */
+export const meterLevel = (rms: number): number => (rms > 0 ? Math.min(1, Math.max(0, (20 * Math.log10(rms) + 60) / 60)) : 0);
+
 const SILENT = { rms_level: 0, peak_level: 0, is_active: false };
 
 /** The real microphone and system levels while recording. Decorative: the timer carries the state. */
@@ -24,7 +27,7 @@ export function LiveLevels() {
   const meter = (label: string, l: typeof SILENT) => (
     <span className="flex items-center gap-1.5 text-xs text-muted-foreground">
       {label}
-      <CompactAudioLevelMeter rmsLevel={l.rms_level} peakLevel={l.peak_level} isActive={l.is_active} />
+      <CompactAudioLevelMeter rmsLevel={meterLevel(l.rms_level)} peakLevel={meterLevel(l.peak_level)} isActive={l.is_active} />
     </span>
   );
   return (

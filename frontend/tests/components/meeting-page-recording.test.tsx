@@ -93,6 +93,8 @@ const row: MeetingRow = {
 const text = (n: ReactTestInstance): string => n.children.map((c) => (typeof c === 'string' ? c : text(c))).join('');
 const buttonWith = (r: ReactTestRenderer, label: string) => r.root.findAllByType('button').find((b) => text(b).includes(label));
 
+const { meterLevel } = await import('../../src/components/MeetingPage/LiveLevels');
+
 async function mount(): Promise<ReactTestRenderer> {
   let r!: ReactTestRenderer;
   await act(async () => { r = create(<RecordingView row={row} onChange={() => {}} showModal={() => {}} />); });
@@ -124,8 +126,16 @@ test('levels come from audio-levels', async () => {
   meters.length = 0;
   await mount();
   await act(async () => { handlers.get('audio-levels')!({ payload: { levels: [{ device_type: 'input', rms_level: 0.5, peak_level: 0.5, is_active: true, device_name: 'microphone' }] } }); });
-  expect(meters[meters.length - 2].rmsLevel).toBe(0.5); // Mic first, System second
+  expect(meters[meters.length - 2].rmsLevel).toBeCloseTo(meterLevel(0.5), 5); // Mic first, System second
   expect(meters[meters.length - 1].rmsLevel).toBe(0);
+});
+
+test('meterLevel maps dBFS: -60 is 0, 0 is 1, speech is visible', () => {
+  expect(meterLevel(0)).toBe(0);
+  expect(meterLevel(0.0005)).toBe(0);
+  expect(meterLevel(1)).toBe(1);
+  expect(meterLevel(2)).toBe(1);
+  expect(meterLevel(0.05)).toBeCloseTo(0.567, 2);
 });
 
 test('leaving never stops the recording', async () => {

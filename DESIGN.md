@@ -31,9 +31,9 @@ Three themes, switched by a class on the root element:
 |---|---|---|
 | Light | `:root` | white background `0 0% 100%`, near-black text, primary `0 0% 9%` |
 | Dark | `.dark` | background `0 0% 3.9%`, text `0 0% 98%`, primary `0 0% 98%` |
-| **Conclave (default)** | `.theme-conclave` | deep indigo background `235 45% 9%`, card `235 40% 12%`, warm text `40 30% 94%`, gold primary and ring `43 90% 58%`, border `235 30% 22%`, muted `235 30% 18%`, destructive `0 70% 50%` |
+| Conclave | `.dark.theme-conclave` | deep indigo background `235 45% 9%`, card `235 40% 12%`, warm text `40 30% 94%`, gold primary and ring `43 90% 58%`, border `235 30% 22%`, muted `235 30% 18%`, destructive `0 80% 66%` |
 
-Conclave also restyles `.record-button`. Charts use `--chart-1..5` per theme. Every new component must be checked in all three themes.
+The default preference is **System** (follows Windows light/dark, `lib/theme.ts` `ThemePreference`); Conclave is opt-in in Settings → Appearance. Conclave also restyles `.record-button`. Charts use `--chart-1..5` per theme. Every new component must be checked in all three themes.
 
 ## Typography
 

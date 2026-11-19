@@ -28,7 +28,7 @@ export function MeetingRail({ tasks, taskCount }: { tasks: ReactNode; taskCount:
         {tab(open, 'ask', 'Ask', () => !open && toggle())}
       </div>
       <div role="tabpanel" id="rail-panel-tasks" aria-labelledby="rail-tab-tasks" hidden={open} className="min-h-0 flex-1 overflow-y-auto">{tasks}</div>
-      <div role="tabpanel" id="rail-panel-ask" aria-labelledby="rail-tab-ask" hidden={!open} className="flex min-h-0 flex-1 flex-col overflow-y-auto">
+      <div role="tabpanel" id="rail-panel-ask" aria-labelledby="rail-tab-ask" hidden={!open} className={cn('min-h-0 flex-1 flex-col overflow-y-auto', open && 'flex')}>
         {scope && <AskChat key={scope.meetingIds?.[0]} scope={scope} allowAll={false} />}
       </div>
     </aside>

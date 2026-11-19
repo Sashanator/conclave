@@ -1100,7 +1100,7 @@ mod tests {
         // One minute of speech per session, so the filler count is the per-minute rate
         let report_with = |fillers: u32| Report {
             version: 2,
-            fluency: Fluency { filler_total: fillers, speech_secs: 60.0, ..Default::default() },
+            fluency: Fluency { filler_total: Some(fillers), speech_secs: 60.0, ..Default::default() },
             items: vec![],
             dropped_items: 0,
             pronunciation: vec![],

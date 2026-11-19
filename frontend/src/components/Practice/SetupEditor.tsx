@@ -68,7 +68,7 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
 
   const remove = async () => {
     if (!setup) return;
-    const ok = await confirmAction({ title: 'Delete this setup?', body: `${setup.name} goes to the Recycle Bin.`, confirmLabel: 'Delete', destructive: true });
+    const ok = await confirmAction({ title: 'Delete this setup?', body: `${setup.name} and its files are deleted permanently. This can't be undone.`, confirmLabel: 'Delete', destructive: true });
     if (!ok) return;
     try {
       await invoke('practice_delete_setup', { id: setup.id });
@@ -130,7 +130,7 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
   };
 
   const removeMaterial = async (m: MaterialMeta) => {
-    const ok = await confirmAction({ title: 'Remove this file?', body: `${m.name} is removed from this setup.`, confirmLabel: 'Remove', destructive: true });
+    const ok = await confirmAction({ title: 'Remove this file?', body: `${m.name} is deleted permanently from this setup. This can't be undone.`, confirmLabel: 'Remove', destructive: true });
     if (!ok) return;
     try {
       await invoke('practice_delete_material', { id: m.id });

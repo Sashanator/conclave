@@ -110,10 +110,11 @@ export function ReportView({ sessionId }: { sessionId: string }) {
     } catch (err) {
       setStartError(String(err));
     } finally {
+      // Busy lasts until the reload lands, so the old error and Retry never flash back
+      await load();
       inFlight.current = false;
       setBusy(false);
     }
-    void load();
   };
 
   // from and to are seconds into you.wav; timed also pauses at `to` on a timer
@@ -194,6 +195,8 @@ export function ReportView({ sessionId }: { sessionId: string }) {
   const day = formatLongDate(new Date(s.started_at));
   const length = minutesLabel(s.duration_secs);
   const report = detail.report;
+  // A German session has no filler count (null): its stat and card are hidden
+  const counted = report?.fluency.filler_total != null;
   const fillers = Object.entries(report?.fluency.fillers ?? {}).filter(([, n]) => n > 0).sort(([, a], [, b]) => b - a);
   const generate = (label: string) => (
     <Button size="sm" disabled={busy} onClick={retry}>{label}</Button>
@@ -201,7 +204,7 @@ export function ReportView({ sessionId }: { sessionId: string }) {
   // Patterns from the same setup first; the order within each group is the one the server sent
   const recurring = detail.recurring;
   const patterns = [...(recurring?.patterns ?? [])].sort((a, b) => Number(b.same_setup) - Number(a.same_setup));
-  const trend = recurring?.filler_trend ?? [];
+  const trend = counted ? recurring?.filler_trend ?? [] : [];
   // Only v2 reports carry the card; the backend fills recurring for any ready report
   const showRecurring = (report?.version ?? 0) >= 2 && (patterns.length > 0 || trend.length >= 2);
 
@@ -244,7 +247,7 @@ export function ReportView({ sessionId }: { sessionId: string }) {
         ) : report ? (
           <>
             <div className="flex gap-3">
-              <Stat label="fillers" value={report.fluency.filler_total} />
+              {counted && <Stat label="fillers" value={report.fluency.filler_total ?? 0} />}
               <Stat label="words/min" value={Math.round(report.fluency.wpm)} />
               <Stat label="long pauses" value={report.fluency.long_pauses} />
             </div>
@@ -269,12 +272,14 @@ export function ReportView({ sessionId }: { sessionId: string }) {
               );
             })}
 
-            <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-2">
-              <h2 className="text-lg font-semibold text-foreground">Fillers and fluency</h2>
-              <p className="text-sm text-muted-foreground">
-                {fillers.length ? fillers.map(([word, n]) => `${word} ${n}`).join(' · ') : 'No fillers counted'}
-              </p>
-            </section>
+            {counted && (
+              <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-2">
+                <h2 className="text-lg font-semibold text-foreground">Fillers and fluency</h2>
+                <p className="text-sm text-muted-foreground">
+                  {fillers.length ? fillers.map(([word, n]) => `${word} ${n}`).join(' · ') : 'No fillers counted'}
+                </p>
+              </section>
+            )}
 
             {report.version >= 2 && (
               <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-3">

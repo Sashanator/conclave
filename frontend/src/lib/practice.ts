@@ -83,7 +83,8 @@ export interface TurnRow {
 
 export interface Fluency {
   fillers: Record<string, number>;
-  filler_total: number;
+  /** null for a German session: fillers are not counted there */
+  filler_total: number | null;
   words: number;
   speech_secs: number;
   wpm: number;

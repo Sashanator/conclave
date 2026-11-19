@@ -873,6 +873,46 @@ describe('Practice report view', () => {
     expect(buttons('Retry').length).toBe(1);
   });
 
+  test('retry_stays_busy_until_the_reload_lands', async () => {
+    failedDetail();
+    await openReport();
+    let releaseGet!: () => void;
+    const held = new Promise<void>((resolve) => {
+      releaseGet = resolve;
+    });
+    const real = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
+      if (command === 'practice_get_session') await held;
+      return real(command, args);
+    });
+    try {
+      detail = { ...detail, summary: { ...detail.summary, report_status: 'waiting' } };
+      await clickButton('Retry');
+      await flush();
+      expect(hasDirectText('Claude did not answer')).toBe(false);
+      expect(buttons('Retry').length).toBe(0);
+      expect(hasDirectText('Starting the report…')).toBe(true);
+      await act(async () => releaseGet());
+      await flush();
+      expect(hasDirectText('Waiting for the meeting recording to finish…')).toBe(true);
+    } finally {
+      invoke.mockImplementation(real);
+    }
+  });
+
+  test('a_german_report_has_no_filler_stat_card_or_trend', async () => {
+    detail = {
+      ...detail,
+      report: { ...REPORT, version: 2, fluency: { ...REPORT.fluency, fillers: {}, filler_total: null } },
+      recurring: { patterns: [], filler_trend: [3.1, 2.4] },
+    };
+    await openReport();
+    expect(hasDirectText('fillers')).toBe(false);
+    expect(renderer!.root.findAll((n) => n.type === 'h2').map(text)).not.toContain('Fillers and fluency');
+    expect(hasDirectText('Fillers per minute')).toBe(false);
+    expect(hasDirectText('words/min')).toBe(true);
+  });
+
   test('a_start_failure_replaces_the_old_error', async () => {
     failedDetail();
     await openReport();

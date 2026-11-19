@@ -226,7 +226,7 @@ async fn analyse<R: Runtime>(app: AppHandle<R>, pool: SqlitePool, session_id: St
         .collect();
     let learner_texts: Vec<&str> = learner.values().map(String::as_str).collect();
     let timing: Vec<(f64, u32)> = heard.iter().filter_map(|h| h.timing).collect();
-    let fluency = fluency(&learner_texts, &timing);
+    let fluency = fluency(&learner_texts, &timing, language);
     // Pronunciation hints are English-only: a German session skips the pass, and the model download with it.
     let pron = if language == PracticeLanguage::De {
         Ok(vec![])
@@ -497,17 +497,20 @@ pub fn report_copy(e: &ClaudeError) -> &'static str {
 }
 
 /// Fluency over the learner's texts. `timing` holds (speech seconds, long pauses) for each turn with audio.
-pub fn fluency(texts: &[&str], timing: &[(f64, u32)]) -> Fluency {
+pub fn fluency(texts: &[&str], timing: &[(f64, u32)], language: PracticeLanguage) -> Fluency {
     let mut fillers: BTreeMap<String, u32> = BTreeMap::new();
-    for text in texts {
-        for (filler, n) in count_fillers(text) {
-            *fillers.entry(filler).or_insert(0) += n;
+    // The filler list is English: in German it would count "er" (he) as a filler, so German counts none.
+    if language == PracticeLanguage::En {
+        for text in texts {
+            for (filler, n) in count_fillers(text) {
+                *fillers.entry(filler).or_insert(0) += n;
+            }
         }
     }
     let words: u32 = texts.iter().map(|t| word_count(t)).sum();
     let speech_secs: f64 = timing.iter().map(|t| t.0).sum();
     Fluency {
-        filler_total: fillers.values().sum(),
+        filler_total: (language == PracticeLanguage::En).then(|| fillers.values().sum()),
         fillers,
         words,
         speech_secs,
@@ -540,7 +543,10 @@ pub fn build_report(fluency: Fluency, items: Vec<ReportItem>, learner_turns: &BT
 /// The list line for a report, e.g. "4 grammar · 31 fillers".
 pub fn summary_line(report: &Report) -> String {
     let grammar = report.items.iter().filter(|i| i.kind == ItemKind::Grammar).count();
-    format!("{grammar} grammar · {} fillers", report.fluency.filler_total)
+    match report.fluency.filler_total {
+        Some(n) => format!("{grammar} grammar · {n} fillers"),
+        None => format!("{grammar} grammar"),
+    }
 }
 
 #[cfg(test)]
@@ -577,9 +583,19 @@ mod tests {
     }
 
     #[test]
+    fn german_counts_no_fillers() {
+        let f = fluency(&["Er hat gesagt, er kommt", "Um, er geht"], &[(10.0, 0)], PracticeLanguage::De);
+        assert!(f.fillers.is_empty());
+        assert_eq!(f.filler_total, None);
+        assert_eq!(f.words, 8);
+        let report = build_report(f, vec![], &BTreeMap::new());
+        assert_eq!(summary_line(&report), "0 grammar");
+    }
+
+    #[test]
     fn summary_line_formats_counts() {
         let fluency = Fluency {
-            filler_total: 31,
+            filler_total: Some(31),
             ..Fluency::default()
         };
         let grammar: Vec<ReportItem> = (0..4).map(|t| item(ItemKind::Grammar, t, "x")).collect();
@@ -596,7 +612,7 @@ mod tests {
         let quiet = Report {
             version: 2,
             fluency: Fluency {
-                filler_total: 3,
+                filler_total: Some(3),
                 ..fluency
             },
             items: vec![item(ItemKind::Unnatural, 1, "x")],
@@ -630,11 +646,11 @@ mod tests {
     #[test]
     fn fluency_sums_fillers_words_and_pauses() {
         let texts = ["Um, I think, uh, we ship it", "so, like, yes"];
-        let f = fluency(&texts, &[(10.0, 1), (5.0, 2)]);
+        let f = fluency(&texts, &[(10.0, 1), (5.0, 2)], PracticeLanguage::En);
         assert_eq!(f.fillers.get("um"), Some(&1));
         assert_eq!(f.fillers.get("uh"), Some(&1));
         assert_eq!(f.fillers.get("like"), Some(&1));
-        assert_eq!(f.filler_total, 3);
+        assert_eq!(f.filler_total, Some(3));
         assert_eq!(f.words, 10);
         assert_eq!(f.speech_secs, 15.0);
         assert_eq!(f.long_pauses, 3);

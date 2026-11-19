@@ -99,9 +99,10 @@ beforeEach(() => {
 });
 
 describe('TemplateAssistSettings', () => {
-  test('shows the model picker label and an unchecked transcript switch', async () => {
+  test('has no model picker, a Models & keys link, and an unchecked transcript switch', async () => {
     await mount();
-    expect(labelWith('Model for the template assistant')).toBeDefined();
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain('template-assist-provider');
+    expect(renderer!.root.findAll((n) => n.props.href === '/settings?tab=models').length).toBeGreaterThan(0);
     const sw = byLabel('Include the transcript by default');
     expect(sw.props.id).toBe('template-assist-transcript');
     expect(sw.props['aria-checked']).toBe(false);

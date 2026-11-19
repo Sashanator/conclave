@@ -8,7 +8,8 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
-import { LlmOverridePicker } from '@/components/shared/LlmOverridePicker';
+import { SettingsRow, useSavedTick } from '@/components/Settings/SettingsRow';
+import { formatRowDate } from '@/lib/dates';
 
 // The Rust `KnowledgeSettingsView` (snake_case, no rename)
 type KnowledgeView = {
@@ -50,8 +51,8 @@ function toInput(v: KnowledgeView) {
 export function KnowledgeSettings() {
   const [view, setView] = useState<KnowledgeView | null>(null);
   const [name, setName] = useState('');
-  // A provider picked without a model. Shown but not saved: the backend takes a provider and model together or neither.
-  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  const [saved, markSaved] = useSavedTick();
+  const [savedRow, setSavedRow] = useState('');
   // Edits show at once. Saves run one after another, each from the latest edit.
   const latest = useRef<KnowledgeView | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
@@ -119,7 +120,7 @@ export function KnowledgeSettings() {
     loadCalendar();
   }, []);
 
-  const commit = (change: (v: KnowledgeView) => KnowledgeView) => {
+  const commit = (row: string, change: (v: KnowledgeView) => KnowledgeView) => {
     if (!latest.current) return;
     const next = change(latest.current);
     const gen = generation.current;
@@ -127,9 +128,11 @@ export function KnowledgeSettings() {
     queue.current = queue.current.then(async () => {
       if (gen !== generation.current) return;
       try {
-        const saved = await invoke<KnowledgeView>('knowledge_save_settings', { input: toInput(next) });
+        const result = await invoke<KnowledgeView>('knowledge_save_settings', { input: toInput(next) });
         // A newer edit has already replaced this one, so only the newest result is shown
-        if (latest.current === next) show(saved);
+        if (latest.current === next) show(result);
+        setSavedRow(row);
+        markSaved();
       } catch (err) {
         toast.error('Knowledge settings were not saved', { description: String(err) });
         await load();
@@ -144,7 +147,7 @@ export function KnowledgeSettings() {
     const text = name.trim();
     const taken = view.my_names.some((n) => n.toLowerCase() === text.toLowerCase());
     if (!text || taken || [...text].length > MAX_NAME_CHARS || view.my_names.length >= MAX_NAMES) return; // rejected: keep the text so it can be fixed
-    commit((v) => ({ ...v, my_names: [...v.my_names, text] }));
+    commit('My names', (v) => ({ ...v, my_names: [...v.my_names, text] }));
     setName('');
   };
 
@@ -152,52 +155,15 @@ export function KnowledgeSettings() {
     if (markerDraft === null) return;
     const text = markerDraft;
     setMarkerDraft(null);
-    if (text !== view.calendar_marker) commit((v) => ({ ...v, calendar_marker: text }));
+    if (text !== view.calendar_marker) commit('My calls marker', (v) => ({ ...v, calendar_marker: text }));
   };
 
+  const tick = (row: string) => saved && savedRow === row;
+
   return (
-    <div className="space-y-6">
-      <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-5">
-        <h3 className="text-lg font-semibold text-foreground">Knowledge</h3>
-
-        <LlmOverridePicker
-          idPrefix="knowledge"
-          providerLabel="Knowledge provider"
-          modelLabel="Knowledge model"
-          provider={pendingProvider ?? view.provider}
-          model={pendingProvider ? null : view.model}
-          onChange={(provider, model) => {
-            if (provider && !model) {
-              setPendingProvider(provider);
-              return;
-            }
-            setPendingProvider(null);
-            commit((v) => ({ ...v, provider, model }));
-          }}
-        />
-
-        <div className="flex items-center justify-between gap-4">
-          <Label htmlFor="knowledge-extract">Extract my tasks after each summary</Label>
-          <Switch
-            id="knowledge-extract"
-            aria-label="Extract my tasks after each summary"
-            checked={view.extract_enabled}
-            onCheckedChange={(on) => commit((v) => ({ ...v, extract_enabled: on }))}
-          />
-        </div>
-
-        <div className="flex items-center justify-between gap-4">
-          <Label htmlFor="knowledge-digest">Weekly digest</Label>
-          <Switch
-            id="knowledge-digest"
-            aria-label="Weekly digest"
-            checked={view.digest_enabled}
-            onCheckedChange={(on) => commit((v) => ({ ...v, digest_enabled: on }))}
-          />
-        </div>
-
+    <div>
+      <SettingsRow label="My names" htmlFor="knowledge-name" saved={tick('My names')} block helper="Names the summaries use for you, e.g. Sasha, Саша, Alexander">
         <div className="space-y-2">
-          <Label htmlFor="knowledge-name">My names</Label>
           <Input
             id="knowledge-name"
             aria-label="Add a name"
@@ -211,7 +177,6 @@ export function KnowledgeSettings() {
               }
             }}
           />
-
           <ul className="flex flex-wrap gap-2">
             {view.my_names.map((n) => (
               <li key={n} className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-sm">
@@ -220,29 +185,41 @@ export function KnowledgeSettings() {
                   type="button"
                   aria-label={`Remove ${n}`}
                   className="text-muted-foreground hover:text-foreground"
-                  onClick={() => commit((v) => ({ ...v, my_names: v.my_names.filter((x) => x !== n) }))}
+                  onClick={() => commit('My names', (v) => ({ ...v, my_names: v.my_names.filter((x) => x !== n) }))}
                 >
                   <X className="w-3.5 h-3.5" />
                 </button>
               </li>
             ))}
           </ul>
-
-          <p className="text-xs text-muted-foreground">
-            Names the summaries use for you, e.g. Sasha, Саша, Alexander
-          </p>
         </div>
-      </section>
+      </SettingsRow>
+
+      <SettingsRow label="Extract my tasks after each summary" htmlFor="knowledge-extract" saved={tick('Extract my tasks after each summary')}>
+        <Switch
+          id="knowledge-extract"
+          aria-label="Extract my tasks after each summary"
+          checked={view.extract_enabled}
+          onCheckedChange={(on) => commit('Extract my tasks after each summary', (v) => ({ ...v, extract_enabled: on }))}
+        />
+      </SettingsRow>
+
+      <SettingsRow label="Weekly digest" htmlFor="knowledge-digest" saved={tick('Weekly digest')}>
+        <Switch
+          id="knowledge-digest"
+          aria-label="Weekly digest"
+          checked={view.digest_enabled}
+          onCheckedChange={(on) => commit('Weekly digest', (v) => ({ ...v, digest_enabled: on }))}
+        />
+      </SettingsRow>
 
       {calendar && (
-        <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-4">
-          <h3 className="text-lg font-semibold text-foreground">Calendar</h3>
-
-          <div className="space-y-2">
-            <Label htmlFor="calendar-marker">My calls marker</Label>
+        <>
+          <SettingsRow label="My calls marker" htmlFor="calendar-marker" saved={tick('My calls marker')} helper="Only events whose title contains it become meetings. Changing it never removes existing meetings.">
             <Input
               id="calendar-marker"
               aria-label="My calls marker"
+              className="w-32"
               value={markerDraft ?? view.calendar_marker}
               onChange={(e) => setMarkerDraft(e.target.value)}
               onBlur={saveMarker}
@@ -250,20 +227,18 @@ export function KnowledgeSettings() {
                 if (e.key === 'Enter') saveMarker();
               }}
             />
-            <p className="text-xs text-muted-foreground">
-              Only events whose title contains it become meetings. Changing it never removes existing meetings.
-            </p>
-          </div>
+          </SettingsRow>
 
+          <SettingsRow label="Calendar" block>
           {calendar.connected ? (
             <div className="space-y-2">
               <p className="text-sm text-muted-foreground">{calendar.host}</p>
               <p className="text-sm text-muted-foreground">
-                Last sync: {calendar.last_ok_at ? new Date(calendar.last_ok_at).toLocaleString() : 'never'}
+                Last sync: {calendar.last_ok_at ? formatRowDate(new Date(calendar.last_ok_at)) : 'never'}
               </p>
               {calendar.last_error && (
-                <p className="text-sm text-red-600">
-                  Last error{calendar.last_error_at && ` (${new Date(calendar.last_error_at).toLocaleString()})`}: {calendar.last_error}
+                <p className="text-sm text-destructive">
+                  Last error{calendar.last_error_at && ` (${formatRowDate(new Date(calendar.last_error_at))})`}: {calendar.last_error}
                 </p>
               )}
               <Button variant="outline" size="sm" onClick={disconnect}>
@@ -291,8 +266,9 @@ export function KnowledgeSettings() {
             </div>
           )}
 
-          {feedMessage && <p className={`text-sm ${feedMessage.error ? 'text-red-600' : 'text-muted-foreground'}`}>{feedMessage.text}</p>}
-        </section>
+          {feedMessage && <p className={`text-sm ${feedMessage.error ? 'text-destructive' : 'text-muted-foreground'}`}>{feedMessage.text}</p>}
+          </SettingsRow>
+        </>
       )}
     </div>
   );

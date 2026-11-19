@@ -5,18 +5,16 @@ import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { LlmOverridePicker } from '@/components/shared/LlmOverridePicker';
+import { ModelLinkRow, SettingsRow, useSavedTick } from '@/components/Settings/SettingsRow';
 import { addAlertWord, resolveAnswerLanguage, type CopilotSettings } from '@/lib/copilot';
 import { readPinnedSummaryLanguageDefault } from '@/lib/summary-language-preferences';
 import { LANGUAGE_OPTIONS } from '@/lib/summary-languages';
 
-export function CopilotSettings() {
+export function CopilotSettings({ part }: { part: 'answer' | 'alert-words' }) {
   const [settings, setSettings] = useState<CopilotSettings | null>(null);
   const [word, setWord] = useState('');
-  // A provider picked without a model. Shown but not saved: the backend takes a provider and model together or neither.
-  const [pendingProvider, setPendingProvider] = useState<string | null>(null);
+  const [saved, markSaved] = useSavedTick();
   // Edits show at once. Saves run one after another, each from the latest edit.
   const latest = useRef<CopilotSettings | null>(null);
   const queue = useRef<Promise<void>>(Promise.resolve());
@@ -48,9 +46,10 @@ export function CopilotSettings() {
     queue.current = queue.current.then(async () => {
       if (gen !== generation.current) return;
       try {
-        const saved = await invoke<CopilotSettings>('copilot_save_settings', { settings: next });
+        const result = await invoke<CopilotSettings>('copilot_save_settings', { settings: next });
         // A newer edit has already replaced this one, so only the newest result is shown
-        if (latest.current === next) show(saved);
+        if (latest.current === next) show(result);
+        markSaved();
       } catch (err) {
         toast.error('Copilot settings were not saved', { description: String(err) });
         await load();
@@ -67,45 +66,38 @@ export function CopilotSettings() {
     setWord('');
   };
 
-  return (
-    <section className="bg-card rounded-lg border border-border p-6 shadow-sm space-y-5">
-      <h3 className="text-lg font-semibold text-foreground">Live copilot</h3>
-
-      <LlmOverridePicker
-        idPrefix="copilot"
-        providerLabel="Copilot provider"
-        modelLabel="Copilot model"
-        provider={pendingProvider ?? settings.provider}
-        model={pendingProvider ? null : settings.model}
-        onChange={(provider, model) => {
-          if (provider && !model) {
-            setPendingProvider(provider);
-            return;
-          }
-          setPendingProvider(null);
-          commit((s) => ({ ...s, provider, model }));
-        }}
-      />
-
-      <div className="flex items-center justify-between gap-4">
-        <Label htmlFor="copilot-answer-language">Answer language</Label>
-        <Select
-          value={resolveAnswerLanguage(settings.answer_language, readPinnedSummaryLanguageDefault())}
-          onValueChange={(code) => commit((s) => ({ ...s, answer_language: code }))}
-        >
-          <SelectTrigger id="copilot-answer-language" className="w-56" aria-label="Answer language">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {LANGUAGE_OPTIONS.map((o) => (
-              <SelectItem key={o.code} value={o.code}>{o.label}</SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+  if (part === 'answer') {
+    return (
+      <div>
+        <SettingsRow label="Answer language" htmlFor="copilot-answer-language" saved={saved}>
+          <Select
+            value={resolveAnswerLanguage(settings.answer_language, readPinnedSummaryLanguageDefault())}
+            onValueChange={(code) => commit((s) => ({ ...s, answer_language: code }))}
+          >
+            <SelectTrigger id="copilot-answer-language" className="w-56" aria-label="Answer language">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {LANGUAGE_OPTIONS.map((o) => (
+                <SelectItem key={o.code} value={o.code}>{o.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </SettingsRow>
+        <ModelLinkRow />
       </div>
+    );
+  }
 
+  return (
+    <SettingsRow
+      label="Alert me when someone says"
+      htmlFor="copilot-alert-word"
+      block
+      saved={saved}
+      helper="Add the forms people use, e.g. Sasha, Саша, Alexander, Александр. A word also matches longer words that start with it."
+    >
       <div className="space-y-2">
-        <Label htmlFor="copilot-alert-word">Alert me when someone says</Label>
         <Input
           id="copilot-alert-word"
           aria-label="Add an alert word"
@@ -119,7 +111,6 @@ export function CopilotSettings() {
             }
           }}
         />
-
         <ul className="flex flex-wrap gap-2">
           {settings.alert_words.map((w) => (
             <li key={w} className="flex items-center gap-1.5 rounded-full border border-border px-3 py-1 text-sm">
@@ -135,11 +126,7 @@ export function CopilotSettings() {
             </li>
           ))}
         </ul>
-
-        <p className="text-xs text-muted-foreground">
-          Add the forms people use, e.g. Sasha, Саша, Alexander, Александр. A word also matches longer words that start with it.
-        </p>
       </div>
-    </section>
+    </SettingsRow>
   );
 }

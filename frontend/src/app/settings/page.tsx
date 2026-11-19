@@ -60,9 +60,9 @@ function SettingsContent() {
     case 'speakers': body = <SpeakerSettings />; break;
     case 'models': body = <ModelsKeysPane />; break;
     case 'summaries': body = <SummariesPane />; break;
-    case 'copilot': body = <CopilotSettings />; break;
+    case 'copilot': body = <CopilotSettings part="answer" />; break;
     case 'templates': body = <div className="space-y-6"><TemplateAssistSettings /><TemplateSettings /></div>; break;
-    case 'names': body = <KnowledgeSettings />; break;
+    case 'names': body = <><KnowledgeSettings /><CopilotSettings part="alert-words" /></>; break;
     case 'app': body = <div className="space-y-6"><PreferenceSettings /><UpdatesSettings /></div>; break;
   }
 

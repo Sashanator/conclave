@@ -7,7 +7,6 @@ import { ModelConfig } from '@/components/ModelSettingsModal';
 import { SummaryGeneratorButtonGroup } from './SummaryGeneratorButtonGroup';
 import { ImproveTemplateAction } from './ImproveTemplateAction';
 import { SummaryUpdaterButtonGroup } from './SummaryUpdaterButtonGroup';
-import { MeetingCostLine } from './MeetingCostLine';
 import { ExtractionStatusLine } from './ExtractionStatusLine';
 import { useEffect, useRef, useState, RefObject } from 'react';
 import { toast } from 'sonner';
@@ -62,6 +61,7 @@ interface SummaryPanelProps {
   onOpenModelSettings?: (openFn: () => void) => void;
   speakerWaiting?: boolean;
   onSummarizeNow?: () => void;
+  onCostChanged?: () => void;
   namesChanged?: boolean;
 }
 
@@ -97,6 +97,7 @@ export function SummaryPanel({
   onOpenModelSettings,
   speakerWaiting = false,
   onSummarizeNow,
+  onCostChanged,
   namesChanged = false,
 }: SummaryPanelProps) {
   const [editHintMeetingId, setEditHintMeetingId] = useState<string | null>(null);
@@ -104,7 +105,6 @@ export function SummaryPanel({
   const [improveTemplateOpen, setImproveTemplateOpen] = useState(false);
   const [summaryLang, setSummaryLang] = useState<string | null>(null);
   // Bumped when task extraction finishes: its usage changes the meeting's cost line
-  const [costRefresh, setCostRefresh] = useState(0);
   const [summaryLangStorage, setSummaryLangStorage] = useState<SummaryLanguageStorage>('metadata');
   const [langPickerOpen, setLangPickerOpen] = useState(false);
   // The picker stays disabled until the stored language has loaded, so a change is compared with the real value.
@@ -374,8 +374,7 @@ export function SummaryPanel({
             </div>
           )}
         </div>
-        <MeetingCostLine meetingId={meeting.id} refreshKey={`${summaryStatus}/${costRefresh}`} />
-        <ExtractionStatusLine meetingId={meeting.id} refreshKey={summaryStatus} onSettled={() => setCostRefresh((n) => n + 1)} />
+        <ExtractionStatusLine meetingId={meeting.id} refreshKey={summaryStatus} onSettled={() => onCostChanged?.()} />
       </div>
 
       {editHintMeetingId === meeting.id && canImproveTemplate && (

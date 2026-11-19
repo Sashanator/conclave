@@ -24,6 +24,7 @@ const errors: string[] = [];
 mock.module('@tauri-apps/api/core', () => ({
   invoke: async (command: string, args?: Record<string, unknown>) => {
     calls.push([command, args]);
+    if (command === 'meeting_cost') return { total_usd: 0.012, tokens: 18400, by_purpose: [{ purpose: 'summary', tokens: 18400, cost_usd: 0.012 }] };
     if (command === 'tasks_list') return rows.filter((r) => r.status === args?.status);
     if (failCommand === command && (args?.id === 't2' || args?.id === 'u1')) { await failGate; throw new Error('boom'); }
     if (failing) throw new Error('boom');
@@ -38,9 +39,9 @@ const { lineAtTime, parseMeetingTarget } = await import('../../src/lib/meeting-t
 
 beforeEach(() => { calls.length = 0; errors.length = 0; failing = false; failCommand = null; failGate = null; });
 
-async function mount() {
+async function mount(props: { onCountChange?: (n: number) => void } = {}) {
   let r!: ReactTestRenderer;
-  await act(async () => { r = create(<MeetingTasksPanel meetingId="m1" />); });
+  await act(async () => { r = create(<MeetingTasksPanel meetingId="m1" {...props} />); });
   return r;
 }
 const plain = (n: ReactTestInstance | string): string => (typeof n === 'string' ? n : n.children.map(plain).join(''));
@@ -49,6 +50,7 @@ const row = (r: ReactTestRenderer, text: string): ReactTestInstance =>
 const press = async (n: ReactTestInstance, key: string) => {
   await act(async () => { n.props.onKeyDown({ key, preventDefault() {} }); });
 };
+const buttons = (n: ReactTestInstance) => n.findAll((x) => x.type === 'button');
 const text = (r: ReactTestRenderer) => plain(r.root);
 
 test('opens on Summary; a time or a tab link opens its tab', () => {
@@ -60,13 +62,12 @@ test('opens on Summary; a time or a tab link opens its tab', () => {
   expect(openingTab(parseMeetingTarget(new URLSearchParams('id=m1&tab=prep'))?.tab, null)).toBe('prep');
 });
 
-test('an unassigned task sits under Removed with Restore; k claims it', async () => {
+test('an unassigned task sits under Removed with Keep; k claims it', async () => {
   rows = [task({ id: 'u1', text: 'Run QA', owner: 'unassigned' })];
   const r = await mount();
   expect(text(r)).toContain('Removed (1)');
   expect(text(r)).toContain('removed by AI');
-  expect(text(r)).toContain('Restore');
-  await press(row(r, 'Run QA'), 'k');
+  await act(async () => { buttons(row(r, 'Run QA'))[0].props.onClick(); });
   expect(calls).toContainEqual(['tasks_claim', { id: 'u1' }]);
 });
 
@@ -99,7 +100,7 @@ test('a failed edit rolls back only its own task', async () => {
   expect(errors.length).toBe(1);
   expect(text(r)).toContain('Removed (1)'); // t1 stays removed
   expect(text(r)).toContain('Other');
-  expect(row(r, 'Other').findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Remove task').length).toBe(1);
+  expect(row(r, 'Other').findAll((n) => n.type === 'button' && plain(n) === 'Remove X').length).toBe(1);
 });
 
 test('a restore whose status step fails keeps the saved claim', async () => {
@@ -119,4 +120,24 @@ test('Done reviewing marks the meeting reviewed, then reads Reviewed', async () 
   await act(async () => { btn.props.onClick(); });
   expect(calls).toContainEqual(['api_set_meeting_reviewed', { meetingId: 'm1', reviewed: true }]);
   expect(text(r)).toContain('Reviewed ✓');
+});
+
+test('every task shows Keep and Remove with K and X hints', async () => {
+  rows = [task({ id: 't1', text: 'One' }), task({ id: 't2', text: 'Two' })];
+  const r = await mount();
+  for (const t of ['One', 'Two']) expect(buttons(row(r, t)).map(plain)).toEqual(['Keep K', 'Remove X']);
+  expect(buttons(row(r, 'One'))[0].props['aria-pressed']).toBe(true);
+});
+
+test('reports the kept count', async () => {
+  rows = [task({ id: 't1', text: 'One' }), task({ id: 't2', text: 'Two' })];
+  const counts: number[] = [];
+  await mount({ onCountChange: (n) => counts.push(n) });
+  expect(counts[counts.length - 1]).toBe(2);
+});
+
+test('shows the LLM cost line', async () => {
+  rows = [];
+  const r = await mount();
+  expect(text(r)).toContain('LLM cost: $0.01');
 });

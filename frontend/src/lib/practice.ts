@@ -12,12 +12,19 @@ export interface MaterialMeta {
   bytes: number;
 }
 
+export type PracticeLanguage = 'en' | 'de';
+export const PRACTICE_LANGUAGES: { id: PracticeLanguage; label: string }[] = [
+  { id: 'en', label: 'English' },
+  { id: 'de', label: 'German' },
+];
+
 export interface SetupSummary {
   id: string;
   name: string;
   character: string;
   situation: string;
   voice: string;
+  language: PracticeLanguage;
   seeded: boolean;
   has_plan: boolean;
   materials: MaterialMeta[];
@@ -30,6 +37,7 @@ export interface SetupInput {
   character: string;
   situation: string;
   voice: string;
+  language: PracticeLanguage;
 }
 
 export type ChatModel = 'claude-haiku-5-5' | 'claude-sonnet-5-5' | 'claude-opus-5-5';

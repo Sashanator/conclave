@@ -2,7 +2,7 @@ import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import {
-  MATERIAL_MAX_BYTES, type PracticeSettings, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupSummary, type TurnRow, VOICES,
+  MATERIAL_MAX_BYTES, type PracticeSettings, type PracticeStatus, type Report, type SessionDetail, type SessionSummary, type SetupInput, type SetupSummary, type TurnRow, VOICES,
 } from '../../src/lib/practice';
 
 const originals = {
@@ -28,12 +28,12 @@ const placeholder = ({ placeholder: text }: { placeholder?: string }) => <>{text
 
 const THESIS: SetupSummary = {
   id: 'seed-thesis', name: 'Thesis defence', character: 'Prof. Weber, strict examiner',
-  situation: "Master's thesis defence at TU Munich.", voice: 'M1', seeded: true, has_plan: false,
+  situation: "Master's thesis defence at TU Munich.", voice: 'M1', language: 'en', seeded: true, has_plan: false,
   materials: [{ id: 'm1', setup_id: 'seed-thesis', kind: 'pdf', name: 'thesis.pdf', bytes: 1000 }], session_count: 2,
 };
 const INTERVIEW: SetupSummary = {
   id: 'seed-interview', name: 'Job interview', character: 'Anna Keller, engineering manager',
-  situation: 'Interview for a backend role.', voice: 'F2', seeded: true, has_plan: false, materials: [], session_count: 0,
+  situation: 'Interview for a backend role.', voice: 'F2', language: 'en', seeded: true, has_plan: false, materials: [], session_count: 0,
 };
 const SESSION: SessionSummary = {
   id: 's1', setup_name: 'Thesis defence', started_at: '2026-10-19T10:00:00Z', duration_secs: 1080,
@@ -133,7 +133,7 @@ mock.module('@tauri-apps/api/event', () => ({
 }));
 mock.module('sonner', () => ({ toast }));
 mock.module('../../src/components/ui/select', () => ({
-  Select: passThrough,
+  Select: ({ children, onValueChange }: { children?: ReactNode; onValueChange?: (v: string) => void }) => <div data-pick={onValueChange}>{children}</div>,
   SelectContent: passThrough, SelectItem: passThrough, SelectTrigger: passThrough, SelectValue: placeholder,
 }));
 
@@ -380,8 +380,29 @@ describe('Practice page', () => {
     await setField('Character', ' Prof. Weber ');
     await clickButton('Save');
     expect(calls('practice_save_setup')[0][1]).toEqual({
-      input: { id: 'seed-thesis', name: 'Thesis defence v2', character: 'Prof. Weber', situation: "Master's thesis defence at TU Munich.", voice: 'M1' },
+      input: { id: 'seed-thesis', name: 'Thesis defence v2', character: 'Prof. Weber', situation: "Master's thesis defence at TU Munich.", voice: 'M1', language: 'en' },
     });
+  });
+
+  test('setup_editor_saves_the_language', async () => {
+    await clickButton('+ New setup');
+    await setField('Setup name', 'New one');
+    await setField('Character', 'Someone');
+    await clickButton('Save');
+    expect((calls('practice_save_setup')[0][1] as { input: SetupInput }).input.language).toBe('en');
+    invoke.mockClear();
+    await clickButton('Edit');
+    const pick = renderer!.root.findAll((n) => n.type === 'div' && n.props['data-pick'] && n.findAll((c) => c.props['aria-label'] === 'Language').length > 0)[0];
+    await act(async () => pick.props['data-pick']('de'));
+    await clickButton('Save');
+    expect((calls('practice_save_setup')[0][1] as { input: SetupInput }).input.language).toBe('de');
+  });
+
+  test('german_setup_shows_a_language_chip', async () => {
+    expect(hasDirectText('German')).toBe(false);
+    setups = [{ ...THESIS, language: 'de' }, INTERVIEW];
+    await mount();
+    expect(hasDirectText('German')).toBe(true);
   });
 
   test('oversized_file_is_refused_before_upload', async () => {

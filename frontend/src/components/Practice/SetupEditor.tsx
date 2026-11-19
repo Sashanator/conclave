@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { VOICES, fitsLimit, materialKind, type MaterialMeta, type SetupInput, type SetupSummary } from '@/lib/practice';
+import { PRACTICE_LANGUAGES, VOICES, fitsLimit, materialKind, type MaterialMeta, type PracticeLanguage, type SetupInput, type SetupSummary } from '@/lib/practice';
 
 function Labeled({ label, children }: { label: string; children: ReactNode }) {
   return (
@@ -29,6 +29,7 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
   const [character, setCharacter] = useState(setup?.character ?? '');
   const [situation, setSituation] = useState(setup?.situation ?? '');
   const [voice, setVoice] = useState(setup?.voice ?? VOICES[0].id);
+  const [language, setLanguage] = useState<PracticeLanguage>(setup?.language ?? 'en');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pasting, setPasting] = useState(false);
@@ -47,6 +48,7 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
       character: character.trim(),
       situation: situation.trim(),
       voice,
+      language,
     };
     if (!input.name) return setError('Give the setup a name');
     if (!input.character) return setError('Say who the character is');
@@ -239,6 +241,18 @@ export function SetupEditor({ setup, onDone, onChanged, voicesReady, onDownloadV
             <Button variant="outline" size="sm" disabled={voicePercent !== null} onClick={preview}>▶ Preview</Button>
             {voicePercent !== null && <span className="text-sm text-muted-foreground">{`Downloading voices… ${voicePercent}%`}</span>}
           </div>
+        </Labeled>
+        <Labeled label="Language">
+          <Select value={language} onValueChange={(v) => setLanguage(v as PracticeLanguage)}>
+            <SelectTrigger aria-label="Language" className="w-56">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {PRACTICE_LANGUAGES.map((l) => (
+                <SelectItem key={l.id} value={l.id}>{l.label}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
         </Labeled>
       </div>
 

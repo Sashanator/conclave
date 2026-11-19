@@ -21,6 +21,7 @@ export function SetupList({ setups, canStart, onNew, onEdit, onStart }: {
             <div className="flex-1 min-w-0">
               <div>
                 <span className="font-medium">{s.name}</span>
+                {s.language === 'de' && <span className="ml-2 rounded px-1.5 py-0.5 text-xs bg-muted text-muted-foreground">German</span>}
                 {s.seeded && <span className="ml-2 rounded px-1.5 py-0.5 text-xs bg-muted text-muted-foreground">example</span>}
                 {s.materials.map((m) => (
                   <span key={m.id} className="ml-2 rounded px-1.5 py-0.5 text-xs bg-muted text-muted-foreground">{m.name}</span>

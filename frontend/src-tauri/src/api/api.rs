@@ -626,6 +626,23 @@ pub async fn api_get_api_key<R: Runtime>(
     }
 }
 
+/// Saves one provider's key without touching the summary config. Logs the provider only, never the key.
+#[tauri::command]
+pub async fn api_save_provider_key<R: Runtime>(
+    _app: AppHandle<R>,
+    state: tauri::State<'_, AppState>,
+    provider: String,
+    api_key: String,
+) -> Result<(), String> {
+    log_info!("api_save_provider_key called for provider '{}'", &provider);
+    SettingsRepository::save_provider_key(state.db_manager.pool(), &provider, &api_key)
+        .await
+        .map_err(|e| {
+            log_error!("Failed to save key for provider '{}': {}", &provider, e);
+            e.to_string()
+        })
+}
+
 #[tauri::command]
 pub async fn api_get_transcript_config<R: Runtime>(
     _app: AppHandle<R>,

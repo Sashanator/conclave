@@ -1,5 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import { formatMegabytes } from '@/lib/old-audio';
+import { formatRowDate } from '@/lib/dates';
 
 export interface LastCheck { at: string; result: string }
 export interface UpdatesStatus { tokenLast4: string | null; checkOnStart: boolean; lastCheck: LastCheck | null; currentVersion: string }
@@ -60,6 +61,6 @@ export function backupLabel(b: BackupInfo): string {
 
 export function lastCheckLine(s: UpdatesStatus): string {
   return s.lastCheck
-    ? `Last checked ${new Date(s.lastCheck.at).toLocaleString()}: ${s.lastCheck.result}`
+    ? `Last checked ${formatRowDate(new Date(s.lastCheck.at))}: ${s.lastCheck.result}`
     : 'Not checked yet';
 }

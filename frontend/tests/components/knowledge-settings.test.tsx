@@ -1,4 +1,5 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { formatRowDate } from '../../src/lib/dates';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 
@@ -103,6 +104,8 @@ mock.module('../../src/components/ui/switch', () => ({
 const { KnowledgeSettings } = await import('../../src/components/KnowledgeSettings');
 
 let renderer: ReactTestRenderer | null = null;
+// Unmount so a Saved tick timer cannot fire into another test's renderer
+afterEach(() => { act(() => renderer?.unmount()); renderer = null; });
 
 async function flush() {
   await act(async () => {
@@ -162,6 +165,29 @@ beforeEach(() => {
 });
 
 describe('KnowledgeSettings', () => {
+  test('a save keeps a model changed elsewhere since this pane loaded', async () => {
+    await mount();
+    view = { ...view, provider: 'openai', model: 'gpt-5' };
+    await act(async () => { await byLabel('Weekly digest').props.onClick(); });
+    await flush();
+    expect(view).toMatchObject({ provider: 'openai', model: 'gpt-5', digest_enabled: false });
+  });
+
+  test('rows, no provider picker, and a toggle save keeps provider and model and shows Saved', async () => {
+    view = { ...view, provider: 'claude', model: 'm' };
+    calendar = structuredClone(connected);
+    await mount();
+    const text = allText();
+    for (const row of ['My names', 'Extract my tasks after each summary', 'Weekly digest', 'My calls marker', 'Calendar']) expect(text).toContain(row);
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain('knowledge-provider');
+    await act(async () => {
+      await byLabel('Weekly digest').props.onClick();
+    });
+    await flush();
+    expect(invoke).toHaveBeenCalledWith('knowledge_save_settings', { input: expect.objectContaining({ provider: 'claude', model: 'm', digest_enabled: false }) });
+    expect(allText()).toContain('Saved ✓');
+  });
+
   test('toggling extraction saves extract_enabled false', async () => {
     await mount();
     await act(async () => {
@@ -254,7 +280,7 @@ describe('KnowledgeSettings', () => {
       await byButton('Connect').props.onClick();
     });
     await flush();
-    expect(paragraphWith('calendar feed did not parse').props.className).toContain('text-red-600');
+    expect(paragraphWith('calendar feed did not parse').props.className).toContain('text-destructive');
   });
 
   test('a successful Connect message is not red', async () => {
@@ -266,7 +292,7 @@ describe('KnowledgeSettings', () => {
       await byButton('Connect').props.onClick();
     });
     await flush();
-    expect(paragraphWith('Found 3 upcoming events').props.className).not.toContain('text-red-600');
+    expect(paragraphWith('Found 3 upcoming events').props.className).not.toContain('text-destructive');
   });
 
   test('the connect form still shows when calendar_status fails', async () => {
@@ -338,8 +364,8 @@ describe('KnowledgeSettings', () => {
   test('last_error shows its local time from last_error_at', async () => {
     calendar = { ...structuredClone(connected), last_error: 'feed timed out', last_error_at: '2026-11-16T08:30:00Z' };
     await mount();
-    expect(paragraphWith('feed timed out').props.className).toContain('text-red-600');
-    expect(allText()).toContain(`Last error (${new Date('2026-11-16T08:30:00Z').toLocaleString()}): feed timed out`);
+    expect(paragraphWith('feed timed out').props.className).toContain('text-destructive');
+    expect(allText()).toContain(`Last error (${formatRowDate(new Date('2026-11-16T08:30:00Z'))}): feed timed out`);
   });
 
   test('an empty marker shows the error toast and the stored marker comes back', async () => {

@@ -1,4 +1,4 @@
-import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { afterAll, afterEach, beforeEach, describe, expect, mock, test } from 'bun:test';
 import type { ReactNode } from 'react';
 import { act, create, type ReactTestInstance, type ReactTestRenderer } from 'react-test-renderer';
 import type { CopilotSettings } from '../../src/lib/copilot';
@@ -7,6 +7,7 @@ const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   sonner: { ...await import('sonner') },
   select: { ...await import('../../src/components/ui/select') },
+  nav: { ...await import('next/navigation') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
@@ -14,7 +15,10 @@ afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/components/ui/select', () => originals.select);
+  mock.module('next/navigation', () => originals.nav);
 });
+
+mock.module('next/navigation', () => ({ ...originals.nav, useRouter: () => ({ replace() {}, push() {} }) }));
 
 const passThrough = ({ children }: { children?: ReactNode }) => <>{children}</>;
 
@@ -55,6 +59,8 @@ mock.module('../../src/components/ui/select', () => ({
 const { CopilotSettings: CopilotSettingsPanel } = await import('../../src/components/CopilotSettings');
 
 let renderer: ReactTestRenderer | null = null;
+// Unmount so a Saved tick timer cannot fire into another test's renderer
+afterEach(() => { act(() => renderer?.unmount()); renderer = null; });
 
 async function flush() {
   await act(async () => {
@@ -66,7 +72,7 @@ async function mount() {
   renderer?.unmount();
   renderer = null;
   await act(async () => {
-    renderer = create(<CopilotSettingsPanel />);
+    renderer = create(<div><CopilotSettingsPanel part="answer" /><CopilotSettingsPanel part="alert-words" /></div>);
   });
   await flush();
 }
@@ -163,42 +169,28 @@ describe('Copilot settings', () => {
     expect(wordInput().props.value).toBe('Sasha K');
   });
 
-  test('same_as_summaries_default', () => {
-    expect(shownLabel('copilot-provider')).toBe('Same as summaries');
-    expect(input('copilot-model').props.disabled).toBe(true);
+  test('answer part has no provider picker and links to Models & keys', async () => {
+    const t = JSON.stringify(renderer!.toJSON());
+    expect(t).not.toContain('copilot-provider');
+    expect(t).toContain('Set in Models & keys');
+    expect(renderer!.root.findAll((n) => n.props.href === '/settings?tab=models').length).toBeGreaterThan(0);
   });
 
-  test('picking a provider alone does not save; a model with it saves the pair once', async () => {
-    await act(async () => {
-      selectFor('copilot-provider').props.onValueChange('claude');
-    });
-    await flush();
-    expect(calls('copilot_save_settings').length).toBe(0);
-    expect(shownLabel('copilot-provider')).toBe('Claude');
-    expect(input('copilot-model').props.disabled).toBe(false);
-
-    await act(async () => {
-      input('copilot-model').props.onChange({ target: { value: 'claude-sonnet' } });
-    });
-    await act(async () => {
-      input('copilot-model').props.onBlur();
-    });
-    await flush();
-    const saves = calls('copilot_save_settings');
-    expect(saves.length).toBe(1);
-    expect((saves[0][1] as { settings: CopilotSettings }).settings).toEqual({ provider: 'claude', model: 'claude-sonnet', answer_language: null, alert_words: [] });
-  });
-
-  test('same as summaries saves both empty', async () => {
-    settings = { ...BASE_SETTINGS, provider: 'claude', model: 'claude-sonnet' };
+  test('a save keeps a model changed elsewhere since this pane loaded', async () => {
+    settings = { ...BASE_SETTINGS, provider: 'claude', model: 'm' };
     await mount();
-    await act(async () => {
-      selectFor('copilot-provider').props.onValueChange('same');
-    });
+    settings = { ...settings, provider: 'openai', model: 'gpt-5' };
+    await typeWord('Sasha');
     await flush();
-    const saves = calls('copilot_save_settings');
-    expect(saves.length).toBe(1);
-    expect((saves[0][1] as { settings: CopilotSettings }).settings).toEqual({ provider: null, model: null, answer_language: null, alert_words: [] });
+    expect(settings).toMatchObject({ provider: 'openai', model: 'gpt-5', alert_words: ['Sasha'] });
+  });
+
+  test('alert-words part saves keep the loaded provider and model', async () => {
+    settings = { ...BASE_SETTINGS, provider: 'claude', model: 'm' };
+    await mount();
+    await typeWord('Sasha');
+    await flush();
+    expect((calls('copilot_save_settings').at(-1)![1] as { settings: CopilotSettings }).settings).toMatchObject({ provider: 'claude', model: 'm', alert_words: ['Sasha'] });
   });
 
   test('a failed save shows the error and keeps the last saved words', async () => {

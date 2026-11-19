@@ -8,6 +8,7 @@ const originals = {
   sonner: { ...await import('sonner') },
   select: { ...await import('../../src/components/ui/select') },
   switchUi: { ...await import('../../src/components/ui/switch') },
+  confirm: { ...await import('../../src/lib/confirm') },
 };
 
 // Bun shares module mocks between test files; restore the application modules after this suite.
@@ -17,7 +18,12 @@ afterAll(() => {
   mock.module('sonner', () => originals.sonner);
   mock.module('../../src/components/ui/select', () => originals.select);
   mock.module('../../src/components/ui/switch', () => originals.switchUi);
+  mock.module('../../src/lib/confirm', () => originals.confirm);
 });
+
+let confirmAnswer = true;
+const confirmAction = mock(async (_o: unknown) => confirmAnswer);
+mock.module('../../src/lib/confirm', () => ({ ...originals.confirm, confirmAction }));
 
 type Handler = (event: { payload: unknown }) => void;
 const handlers = new Map<string, Handler>();
@@ -254,25 +260,25 @@ describe('speaker settings tab', () => {
     expect(text(row('alex'))).toContain('Merge into');
   });
 
-  test('Delete confirms with the exact text and then invokes people_delete', async () => {
-    const confirm = spyOn(window, 'confirm').mockImplementation(() => true);
-    await act(async () => {
-      row('alex').findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Delete Alex')[0].props.onClick();
-    });
+  test('Delete confirms through the app dialog and then invokes people_delete', async () => {
+    confirmAnswer = true;
+    confirmAction.mockClear();
+    const del = row('alex').findAll((n) => n.type === 'button' && n.props['aria-label'] === 'Delete Alex')[0];
+    expect(del.props.className).toContain('text-destructive');
+    await act(async () => { del.props.onClick(); });
     await flush();
-    expect(confirm.mock.calls).toEqual([['Voiceprints are removed; past transcripts keep the name']]);
+    expect(confirmAction.mock.calls).toEqual([[{ title: 'Delete this voice?', body: 'Voiceprints are removed; past transcripts keep the name', confirmLabel: 'Delete', destructive: true }]]);
     expect(calls('people_delete')).toEqual([['people_delete', { id: 'alex' }]]);
-    confirm.mockRestore();
   });
 
   test('a cancelled Delete invokes nothing', async () => {
-    const confirm = spyOn(window, 'confirm').mockImplementation(() => false);
+    confirmAnswer = false;
     await act(async () => {
       row('alex').findAll((n) => n.type === 'button' && text(n) === 'Delete')[0].props.onClick();
     });
     await flush();
     expect(calls('people_delete').length).toBe(0);
-    confirm.mockRestore();
+    confirmAnswer = true;
   });
 
   test('Rename submits the trimmed name with people_rename, with a length limit', async () => {

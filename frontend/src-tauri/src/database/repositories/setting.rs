@@ -114,6 +114,38 @@ impl SettingsRepository {
         Ok(())
     }
 
+    /// Saves one provider's key and nothing else: never creates or changes the summary provider/model.
+    pub async fn save_provider_key(
+        pool: &SqlitePool,
+        provider: &str,
+        api_key: &str,
+    ) -> std::result::Result<(), sqlx::Error> {
+        let key = api_key.trim();
+        if key.is_empty() {
+            return Err(sqlx::Error::Protocol("Enter a key".into()));
+        }
+        if provider == "custom-openai" {
+            let Some(mut c) = Self::get_custom_openai_config(pool).await? else {
+                return Err(sqlx::Error::Protocol("Set up the custom server first".into()));
+            };
+            c.api_key = Some(key.to_string());
+            return Self::save_custom_openai_config(pool, &c).await;
+        }
+        let column = match provider {
+            "openai" => "openaiApiKey",
+            "claude" => "anthropicApiKey",
+            "groq" => "groqApiKey",
+            "openrouter" => "openRouterApiKey",
+            _ => return Err(sqlx::Error::Protocol(format!("Invalid provider: {}", provider).into())),
+        };
+        secrets::store().set(column, key).map_err(store_err)?;
+        // UPDATE only: an INSERT here would create a summary config saying OpenAI.
+        sqlx::query(&format!(r#"UPDATE settings SET "{column}" = NULL WHERE id = '1'"#))
+            .execute(pool)
+            .await?;
+        Ok(())
+    }
+
     pub async fn get_api_key(
         pool: &SqlitePool,
         provider: &str,
@@ -602,5 +634,84 @@ mod secret_tests {
         assert!(!err.contains("xxxx"));
         let got = SettingsRepository::get_api_key(&pool, "openai").await.unwrap();
         assert_eq!(got.as_deref(), Some("k1"));
+    }
+}
+
+#[cfg(test)]
+mod provider_key_tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    async fn seed(pool: &SqlitePool) {
+        sqlx::query("INSERT INTO settings (id, provider, model, whisperModel, ollamaEndpoint) VALUES ('1','claude','claude-sonnet-5-5','large-v3-turbo','http://h:11434')")
+            .execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn save_provider_key_leaves_model_config() {
+        let pool = test_pool().await;
+        seed(&pool).await;
+        SettingsRepository::save_provider_key(&pool, "openrouter", "  sk-or  ").await.unwrap();
+        let c = SettingsRepository::get_model_config(&pool).await.unwrap().unwrap();
+        assert_eq!(
+            (c.provider.as_str(), c.model.as_str(), c.whisper_model.as_str(), c.ollama_endpoint.as_deref()),
+            ("claude", "claude-sonnet-5-5", "large-v3-turbo", Some("http://h:11434"))
+        );
+        let got = SettingsRepository::get_api_key(&pool, "openrouter").await.unwrap();
+        assert_eq!(got.as_deref(), Some("sk-or"));
+        let plain: Option<String> = sqlx::query_scalar("SELECT openRouterApiKey FROM settings WHERE id = '1'")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(plain, None);
+    }
+
+    #[tokio::test]
+    async fn save_provider_key_on_fresh_db_keeps_default_provider() {
+        let pool = test_pool().await;
+        SettingsRepository::save_provider_key(&pool, "claude", "k").await.unwrap();
+        assert!(SettingsRepository::get_model_config(&pool).await.unwrap().is_none());
+        let got = SettingsRepository::get_api_key(&pool, "claude").await.unwrap();
+        assert_eq!(got.as_deref(), Some("k"));
+        SettingsRepository::save_model_config(&pool, "claude", "claude-sonnet-5-5", "large-v3", None).await.unwrap();
+        SettingsRepository::save_provider_key(&pool, "claude", "k2").await.unwrap();
+        let c = SettingsRepository::get_model_config(&pool).await.unwrap().unwrap();
+        assert_eq!(c.provider, "claude");
+    }
+
+    #[tokio::test]
+    async fn save_provider_key_custom_keeps_endpoint() {
+        let pool = test_pool().await;
+        seed(&pool).await;
+        let cfg = CustomOpenAIConfig {
+            endpoint: "http://lm:1234/v1".into(),
+            api_key: Some("old".into()),
+            model: "m1".into(),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+        };
+        SettingsRepository::save_custom_openai_config(&pool, &cfg).await.unwrap();
+        SettingsRepository::save_provider_key(&pool, "custom-openai", "new").await.unwrap();
+        let c = SettingsRepository::get_custom_openai_config(&pool).await.unwrap().unwrap();
+        assert_eq!((c.endpoint.as_str(), c.model.as_str(), c.api_key.as_deref()), ("http://lm:1234/v1", "m1", Some("new")));
+        let m = SettingsRepository::get_model_config(&pool).await.unwrap().unwrap();
+        assert_eq!(m.provider, "claude");
+    }
+
+    #[tokio::test]
+    async fn save_provider_key_custom_without_config_errors() {
+        let pool = test_pool().await;
+        assert!(SettingsRepository::save_provider_key(&pool, "custom-openai", "k").await.is_err());
+        assert_eq!(secrets::store().get(secrets::CUSTOM_OPENAI_API_KEY).unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn save_provider_key_rejects_blank_and_keyless() {
+        let pool = test_pool().await;
+        for (p, k) in [("claude", "   "), ("ollama", "k"), ("builtin-ai", "k"), ("nope", "k")] {
+            assert!(SettingsRepository::save_provider_key(&pool, p, k).await.is_err(), "{p}");
+        }
+        for col in ["anthropicApiKey", "ollamaApiKey"] {
+            assert_eq!(secrets::store().get(col).unwrap(), None);
+        }
     }
 }

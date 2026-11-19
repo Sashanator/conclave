@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { toast } from 'sonner';
 import { ArrowDown, ArrowUp, Copy, History, Plus, Sparkles, Trash2 } from 'lucide-react';
+import { settingId } from '@/lib/settings-panes';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -13,6 +14,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { LANGUAGE_OPTIONS } from '@/lib/summary-languages';
 import { setUnsavedChanges } from '@/lib/unsaved-guard';
+import { confirmAction } from '@/lib/confirm';
+import { formatRowDate } from '@/lib/dates';
+import { DESTRUCTIVE_OUTLINE } from '@/lib/utils';
 import {
   draftFromTemplate, emptyDraft, templateFromDraft, validateDraft,
   type TemplateDraft, type TemplateJson,
@@ -25,7 +29,8 @@ import {
 } from '@/lib/templateAssist';
 
 const STANDARD_ID = 'standard_meeting';
-const DISCARD_PROMPT = 'Discard unsaved changes?';
+// Resolves false when the user keeps the draft
+const confirmDiscard = () => confirmAction({ title: 'Discard unsaved changes?', confirmLabel: 'Discard', destructive: true });
 
 interface TemplateInfo { id: string; name: string; use_when: string | null; has_keywords: boolean }
 interface TemplateListing { templates: TemplateInfo[]; errors: string[] }
@@ -117,14 +122,14 @@ export function TemplateSettings() {
       .catch(fail('Could not load templates'));
   }, []);
 
-  const select = (id: string) => {
+  const select = async (id: string) => {
     if (id === currentId) return;
-    if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+    if (dirty && !(await confirmDiscard())) return;
     open(id).catch(fail('Could not open the template'));
   };
 
-  const startNew = () => {
-    if (dirty && !window.confirm(DISCARD_PROMPT)) return false;
+  const startNew = async (): Promise<boolean> => {
+    if (dirty && !(await confirmDiscard())) return false;
     viewRef.current += 1;
     const d = emptyDraft();
     setCurrentId(null);
@@ -236,7 +241,7 @@ export function TemplateSettings() {
 
   // Opens a saved version beside the saved template. Nothing is written until Restore and Save.
   const reviewVersion = (e: HistoryEntry) => runExclusive(async () => {
-    if (currentId === null || (dirty && !window.confirm(DISCARD_PROMPT))) return;
+    if (currentId === null || (dirty && !(await confirmDiscard()))) return;
     try {
       const next = await templateVersion(currentId, e.version);
       const old = await invoke<TemplateJson>('api_get_template', { templateId: currentId });
@@ -256,7 +261,7 @@ export function TemplateSettings() {
   };
 
   const restoreDeleted = (entry: DeletedTemplate) => runExclusive(async () => {
-    if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+    if (dirty && !(await confirmDiscard())) return;
     try {
       const version = await templateVersion(entry.id, entry.version);
       const { templates } = await refresh();
@@ -277,13 +282,13 @@ export function TemplateSettings() {
     <div className="grid grid-cols-[16rem_1fr] gap-6">
       <div className="bg-card rounded-lg border border-border p-4 space-y-3 self-start">
         <div className="flex flex-wrap items-center gap-2">
-          <h3 className="text-lg font-semibold text-foreground">Templates</h3>
+          <h3 id={settingId("Templates")} className="text-lg font-semibold text-foreground">Templates</h3>
           <Button variant="outline" size="sm" onClick={startNew} disabled={busy}>
             <Plus className="w-4 h-4 mr-1" />
             New template
           </Button>
-          <Button variant="outline" size="sm" disabled={busy} onClick={() => {
-            if (dirty && !window.confirm(DISCARD_PROMPT)) return;
+          <Button variant="outline" size="sm" disabled={busy} onClick={async () => {
+            if (dirty && !(await confirmDiscard())) return;
             setAssist({ kind: 'create' });
           }}>
             <Sparkles className="w-4 h-4 mr-1" />
@@ -321,7 +326,7 @@ export function TemplateSettings() {
             {Array.isArray(deleted) && deleted.length === 0 && <DropdownMenuItem disabled>None</DropdownMenuItem>}
             {Array.isArray(deleted) && deleted.map(d => (
               <DropdownMenuItem key={`${d.id}:${d.version}`} onSelect={() => void restoreDeleted(d)}>
-                {`${d.name} · ${new Date(d.deletedAt).toLocaleString()}`}
+                {`${d.name} · ${formatRowDate(new Date(d.deletedAt))}`}
               </DropdownMenuItem>
             ))}
           </DropdownMenuContent>
@@ -450,7 +455,7 @@ export function TemplateSettings() {
                   {Array.isArray(history) && history.length === 0 && <DropdownMenuItem disabled>No earlier versions</DropdownMenuItem>}
                   {Array.isArray(history) && history.map(e => (
                     <DropdownMenuItem key={e.version} onSelect={() => void reviewVersion(e)}>
-                      {`${new Date(e.savedAt).toLocaleString()} · ${historyLabel(e)}`}
+                      {`${formatRowDate(new Date(e.savedAt))} · ${historyLabel(e)}`}
                     </DropdownMenuItem>
                   ))}
                 </DropdownMenuContent>
@@ -510,7 +515,7 @@ export function TemplateSettings() {
           </DialogHeader>
           <DialogFooter>
             <Button variant="outline" onClick={() => setConfirmDelete(false)}>Cancel</Button>
-            <Button variant="destructive" onClick={remove}>Delete</Button>
+            <Button variant="outline" className={DESTRUCTIVE_OUTLINE} onClick={remove}>Delete</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

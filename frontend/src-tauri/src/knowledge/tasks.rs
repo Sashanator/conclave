@@ -183,13 +183,14 @@ fn found(rows: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Open tasks (meeting date desc, then extraction order, manual last) or done tasks (latest done first).
+/// Open tasks (meeting date desc, then extraction order, manual last), done tasks (latest done first) or dismissed ones (newest first).
 pub(crate) async fn list(pool: &SqlitePool, status: &str) -> anyhow::Result<Vec<TaskRow>> {
     let d = crate::database::repositories::meeting::meeting_date_sql("m");
     let open = format!("t.meeting_id IS NULL, julianday({d}) DESC, t.created_at, t.rowid");
     let order = match status {
         "open" => open.as_str(),
         "done" => "t.done_at DESC, t.rowid DESC",
+        "dismissed" => "t.rowid DESC",
         _ => anyhow::bail!("unknown task list"),
     };
     let sql = format!(
@@ -560,7 +561,35 @@ mod tests {
             texts(&open),
             vec!["new second", "new first", "old task", "manual"]
         );
-        assert!(list(&pool, "dismissed").await.is_err());
+        assert!(list(&pool, "bogus").await.is_err());
+        insert_task(&pool, "x", Some("new"), "removed one", "dismissed", "auto", 0).await;
+        assert_eq!(texts(&list(&pool, "dismissed").await.unwrap()), vec!["removed one"]);
+    }
+
+    /// Every status the UI asks `tasks_list` for must be accepted (the meeting page once asked for "dismissed" and the
+    /// backend refused). Read from the TSX sources, so a new status there fails here, and a renamed constant fails loudly.
+    #[tokio::test]
+    async fn list_accepts_every_status_the_frontend_requests() {
+        let quoted = |src: &str, marker: &str| -> Vec<String> {
+            let line = src.lines().find(|l| l.contains(marker)).unwrap_or_else(|| panic!("`{marker}` not found"));
+            line.split('\'').skip(1).step_by(2).map(str::to_string).collect()
+        };
+        let panel = quoted(include_str!("../../../src/components/MeetingPage/MeetingTasksPanel.tsx"), "const STATUSES =");
+        let list_tab = quoted(include_str!("../../../src/components/Tasks/TaskList.tsx"), "type Status =");
+        assert!(panel.iter().any(|s| s == "dismissed"), "panel statuses: {panel:?}");
+        assert!(!list_tab.is_empty(), "TaskList statuses not found");
+        let mut statuses = panel;
+        statuses.extend(list_tab);
+        statuses.sort();
+        statuses.dedup();
+        let pool = test_pool().await;
+        for s in &statuses {
+            insert_task(&pool, &format!("id-{s}"), None, &format!("task {s}"), s, "auto", 0).await;
+        }
+        for s in &statuses {
+            let rows = list(&pool, s).await.unwrap_or_else(|e| panic!("list({s}) failed: {e}"));
+            assert_eq!(texts(&rows), vec![format!("task {s}").as_str()]);
+        }
     }
 
     #[tokio::test]

@@ -92,9 +92,13 @@ export function useRecordingStop(
             // Store folder_path and meeting_name for later use in handleRecordingStop
             if (folder_path) {
               sessionStorage.setItem('last_recording_folder_path', folder_path);
+            } else {
+              sessionStorage.removeItem('last_recording_folder_path');
             }
             if (meeting_name) {
               sessionStorage.setItem('last_recording_meeting_name', meeting_name);
+            } else {
+              sessionStorage.removeItem('last_recording_meeting_name');
             }
             // Always written (or cleared): a stale id from an earlier recording must never reach this save.
             if (meeting_id) {

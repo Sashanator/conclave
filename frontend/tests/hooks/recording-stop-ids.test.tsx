@@ -374,3 +374,14 @@ describe('a current stop toggles the recording flags', () => {
     expect(setIsRecordingDisabled.mock.calls).toEqual([[true], [false]]);
   });
 });
+
+describe('stale stop data', () => {
+  test('a stop event without a folder or name clears the earlier recording\'s values', async () => {
+    await mount();
+    await emitStopped({ message: 'x', folder_path: '/rec/old', meeting_name: 'Old' });
+    expect(sessionStorage.getItem('last_recording_folder_path')).toBe('/rec/old');
+    await emitStopped({ message: 'x' });
+    expect(sessionStorage.getItem('last_recording_folder_path')).toBeNull();
+    expect(sessionStorage.getItem('last_recording_meeting_name')).toBeNull();
+  });
+});

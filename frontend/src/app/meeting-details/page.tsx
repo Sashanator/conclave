@@ -238,7 +238,7 @@ function MeetingDetailsContent() {
 
   // Reset states when meetingId changes (prevent race conditions)
   useEffect(() => {
-    setMeetingDetails(null);
+    // meetingDetails is not nulled: the builder effect does not re-run for source/savedEpoch, and the render gate checks its id.
     setMeetingSummary(null);
     setSummaryResponse(null);
     setError(null);
@@ -260,7 +260,6 @@ function MeetingDetailsContent() {
 
     console.log('Valid meeting ID found, fetching details for:', meetingId);
 
-    setMeetingDetails(null);
     setMeetingSummary(null);
     setSummaryResponse(null);
     setError(null);

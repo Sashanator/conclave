@@ -328,7 +328,7 @@ export function SummaryPanel({
     <div className="flex-1 min-w-0 flex flex-col bg-background overflow-hidden h-full w-full @container">
       {/* Top-level actions — always visible, same pattern as TranscriptPanel */}
       <div className="border-b border-border">
-        <div className="flex flex-wrap items-center justify-start gap-2 px-8 py-3">
+        <div className="flex flex-wrap items-center justify-start gap-2 py-3">
           <div className="flex-shrink-0 min-w-0">
             <SummaryGeneratorButtonGroup
               modelConfig={modelConfig}

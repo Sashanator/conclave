@@ -89,7 +89,7 @@
     --secondary: 0 0% 96.1%;
     --secondary-foreground: 0 0% 9%;
     --muted: 0 0% 96.1%;
-    --muted-foreground: 0 0% 45.1%;
+    --muted-foreground: 0 0% 40%;
     --accent: 0 0% 96.1%;
     --accent-foreground: 0 0% 9%;
     --destructive: 0 72% 42%;
@@ -293,11 +293,15 @@
   }
 }
 /* Editor follows the app theme (BlockNote's shadcn skin paints its own dark palette). Outside @layer: Tailwind purges unused layered classes. */
-.bn-container.bn-shadcn .bn-editor {
+.bn-container.bn-shadcn .bn-editor,
+.bn-container .bn-default-styles {
   background-color: transparent;
   color: inherit;
   font-family: inherit;
 }
+/* BlockNote reserves 54px beside the text for its drag handle; the summary is left-aligned with the page. */
+.bn-container .bn-editor { padding-inline: 0; }
+.bn-container { --bn-font-family: var(--font-source-sans-3), system-ui, sans-serif !important; }
 /* Summary headings follow the app scale (DESIGN.md: section titles 16px/600). */
 .bn-container [data-content-type=heading] { font-weight: 600; --level: 1.125rem; }
 .bn-container [data-content-type=heading][data-level="2"] { --level: 1rem; }

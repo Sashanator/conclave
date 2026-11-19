@@ -357,7 +357,7 @@ function MeetingDetailsContent() {
     return (
       <div className="flex items-center justify-center h-screen">{modalsEl}
         <div className="text-center">
-          <p className="text-red-500 mb-4">{error}</p>
+          <p className="text-destructive mb-4">{error}</p>
           <BackCrumb fallback="/" fallbackLabel="Meetings" />
         </div>
       </div>

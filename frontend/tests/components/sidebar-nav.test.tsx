@@ -52,7 +52,7 @@ async function render(): Promise<ReactTestRenderer> {
   return r;
 }
 const text = (n: any): string => (n.children ?? []).map((c: any) => (typeof c === 'string' ? c : text(c))).join('');
-const buttons = (r: ReactTestRenderer) => r.root.findAllByType('button').filter((b) => b.props['aria-label'] !== 'Collapse sidebar' && b.props['aria-label'] !== 'Expand sidebar');
+const buttons = (r: ReactTestRenderer) => r.root.findAllByType('button').filter((b) => !String(b.props['aria-label']).startsWith('Collapse sidebar') && b.props['aria-label'] !== 'Expand sidebar');
 
 beforeEach(() => {
   collapsed = false;
@@ -179,7 +179,7 @@ describe('Sidebar nav', () => {
     const r = await render();
     const all = r.root.findByProps({ 'aria-label': 'Main' }).findAllByType('button');
     const last = all[all.length - 1];
-    expect(last.props['aria-label']).toBe('Collapse sidebar');
+    expect(last.props['aria-label']).toBe('Collapse sidebar Ctrl B');
     expect(text(last)).toContain('Collapse sidebar');
     expect(text(last)).toContain('Ctrl B');
     await act(async () => { last.props.onClick(); });

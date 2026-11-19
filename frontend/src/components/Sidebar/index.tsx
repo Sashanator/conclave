@@ -59,14 +59,14 @@ const Sidebar: React.FC = () => {
       <button
         onClick={onClick}
         disabled={opts.disabled}
-        aria-label={label}
+        aria-label={!collapsed && opts.hint ? `${label} ${opts.hint}` : label}
         aria-current={opts.active ? 'page' : undefined}
         className={`relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-60 ${collapsed ? 'justify-center' : 'w-full'} ${
           opts.rec ? 'bg-[hsl(var(--rec))] text-white hover:brightness-110' : opts.accent ? 'bg-primary text-primary-foreground hover:bg-primary/90' : opts.active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
         }`}
       >
         {icon}
-        {!collapsed && <span className="truncate">{label}</span>}
+        {!collapsed && <span className="truncate">{label}</span>}{!collapsed && opts.hint && " "}
         {!collapsed && opts.hint && <kbd className="ml-auto text-[11px] text-muted-foreground">{opts.hint}</kbd>}
         {opts.dot && (
           <>

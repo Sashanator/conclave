@@ -82,7 +82,7 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
       {emoji && variant === 'page' && <div className="text-3xl" aria-hidden>{emoji}</div>}
       {isNew && <label htmlFor="meeting-name" className="block text-sm font-medium text-foreground">Meeting name</label>}
       <div className={compact ? 'flex items-center gap-4' : 'flex items-start gap-2'}>
-      <Wrap className="flex min-w-0 flex-1">
+      <Wrap className="flex min-w-0 flex-1 text-xl font-semibold">
       <input
         id={isNew ? 'meeting-name' : undefined}
         aria-label={isNew ? undefined : 'Meeting title'}

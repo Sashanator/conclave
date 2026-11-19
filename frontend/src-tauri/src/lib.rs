@@ -569,6 +569,17 @@ mod allowed_languages_tests {
     }
 }
 
+/// Lets the webview write a line to the app log. Messages are short status lines; never transcript text or keys.
+#[tauri::command]
+fn app_log(level: String, message: String) {
+    let message: String = message.chars().take(500).collect();
+    match level.as_str() {
+        "warn" => log::warn!("ui: {message}"),
+        "error" => log::error!("ui: {message}"),
+        _ => log::info!("ui: {message}"),
+    }
+}
+
 pub fn run() {
     // Windows release builds have no console, so panic text only survives in the log file.
     let default_hook = std::panic::take_hook();
@@ -806,6 +817,7 @@ pub fn run() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            app_log,
             start_recording,
             stop_recording,
             is_recording,

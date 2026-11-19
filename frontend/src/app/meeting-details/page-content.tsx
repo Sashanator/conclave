@@ -32,6 +32,7 @@ import { useMeetingAudio } from '@/hooks/useMeetingAudio';
 import { useMeetingSpeakers } from '@/hooks/useMeetingSpeakers';
 import { useConfig } from '@/contexts/ConfigContext';
 import { lineSpeakerName } from '@/lib/speakers';
+import { appLog } from '@/lib/app-log';
 import { readSummaryMetadata } from '@/lib/summary-content';
 import { pickTemplateIfAllowed, shouldRegenerate } from '@/lib/regenerate-guard';
 import { MeetingHeader } from '@/components/MeetingPage/MeetingHeader';
@@ -251,6 +252,20 @@ export default function PageContent({
     && summaryGeneration.summaryStatus === 'idle'
     && meetingData.transcripts.length > 0
     && !speakerGateOpen;
+  useEffect(() => {
+    if (speakerWaiting) appLog('info', `summary: waiting for speaker ID before auto-generating for ${meeting.id}`);
+  }, [speakerWaiting, meeting.id]);
+  const lastLoggedStatusRef = useRef('');
+  useEffect(() => {
+    const status = summaryGeneration.summaryStatus;
+    const key = `${meeting.id}/${status}`;
+    if (lastLoggedStatusRef.current === key) return;
+    const first = lastLoggedStatusRef.current === '';
+    lastLoggedStatusRef.current = key;
+    if (first || status === 'idle') return; // the page opening is not a transition
+    const level = status === 'error' ? 'warn' : 'info';
+    appLog(level, `summary: ${status} for ${meeting.id} (${modelConfig.provider}/${modelConfig.model})`);
+  }, [summaryGeneration.summaryStatus, meeting.id, modelConfig.provider, modelConfig.model]);
   const replaceOnAuto = regenerateOnAuto
     && (summaryGeneration.summaryStatus === 'completed' || summaryGeneration.summaryStatus === 'error');
   useEffect(() => {
@@ -267,6 +282,7 @@ export default function PageContent({
 
     autoGenerationStartedMeetingIdRef.current = meeting.id;
     console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
+    appLog('info', `summary: auto-generating for ${meeting.id} with ${modelConfig.provider}/${modelConfig.model} (speaker ID ${speakersOn ? 'done' : 'off'}${replaceOnAuto ? ', replacing' : ''})`);
     onAutoGenerateComplete?.();
     speakers.clearNamesChanged();
     if (replaceOnAuto) void regenerateSummary();

@@ -802,9 +802,11 @@ export function ModelSettingsModal({
 
   return (
     <div>
-      <div className="flex justify-between items-center mb-4">
-        <h3 className="text-lg font-semibold">Model Settings</h3>
-      </div>
+      {layout === 'dialog' && (
+        <div className="flex justify-between items-center mb-4">
+          <h3 className="text-lg font-semibold">Model Settings</h3>
+        </div>
+      )}
 
       <div className="space-y-4">
         <div>

@@ -121,11 +121,6 @@ export function SummaryModelSettings({ refetchTrigger, onSaved }: SummaryModelSe
   return (
     <div className='flex flex-col gap-4'>
       <div className="bg-card rounded-lg border border-border p-6 shadow-sm">
-        <h3 className="text-lg font-semibold mb-4">Summary Model Configuration</h3>
-        <p className="text-sm text-muted-foreground mb-6">
-          Configure the AI model used for generating meeting summaries.
-        </p>
-
         <ModelSettingsModal
           modelConfig={modelConfig}
           setModelConfig={setModelConfig}

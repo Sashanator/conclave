@@ -173,7 +173,7 @@ pub async fn api_delete_meeting_view(state: tauri::State<'_, AppState>, id: Stri
 
 /// "Delete recording": keeps the meeting, its prep and notes. Same result shape as `api_delete_meeting`.
 #[tauri::command]
-pub async fn api_delete_recording(state: tauri::State<'_, AppState>, meeting_id: String) -> Result<serde_json::Value, String> {
+pub async fn api_delete_recording(app: tauri::AppHandle, state: tauri::State<'_, AppState>, meeting_id: String) -> Result<serde_json::Value, String> {
     crate::audio::recording_commands::ensure_not_live_now(&meeting_id)?;
     let base = crate::audio::recording_preferences::get_default_recordings_folder();
     let warning = crate::audio::meeting_folder::delete_recording_and_audio(
@@ -185,6 +185,7 @@ pub async fn api_delete_recording(state: tauri::State<'_, AppState>, meeting_id:
     .await
     .map_err(|e| format!("Failed to delete recording: {e}"))?
     .ok_or_else(|| format!("Meeting not found: {meeting_id}"))?;
+    crate::knowledge::tasks::tasks_changed(&app); // the delete clears or removes task rows (R10)
     Ok(serde_json::json!({
         "status": "success",
         "message": "Recording deleted successfully",

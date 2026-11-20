@@ -41,6 +41,8 @@ export function ReviewRow({ task, lookup, actions }: { task: TaskRow; lookup: De
     if (save && text && text !== task.text) actions.edit(task, text, refocus);
     else if (refocus) actions.refocus(task.id);
   };
+  const dueRef = useRef(false); // true while the date input may still save on blur
+  const saveDue = (v: string) => { if ((v || null) !== task.dueDate) actions.setDue(task, v || null); }; // on blur/Enter only: typing a year fires many changes
   const closeDue = () => { setDueOpen(false); actions.refocus(task.id); };
 
   const check = drop ? null : sendCheck({ ...task, review: 'keep' }, lookup);
@@ -90,13 +92,15 @@ export function ReviewRow({ task, lookup, actions }: { task: TaskRow; lookup: De
               autoFocus
               aria-label={`Due date for: ${task.text}`}
               defaultValue={task.dueDate ?? ''}
-              onChange={(e) => actions.setDue(task, e.target.value || null)}
-              onBlur={() => setDueOpen(false)}
-              onKeyDown={(e) => { if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); closeDue(); } }}
+              onBlur={(e) => { if (dueRef.current) saveDue(e.currentTarget.value); dueRef.current = false; setDueOpen(false); }}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dueRef.current = false; closeDue(); }
+                else if (e.key === 'Enter') { e.preventDefault(); saveDue(e.currentTarget.value); dueRef.current = false; closeDue(); }
+              }}
               className="rounded border border-input bg-transparent px-1 text-xs"
             />
           ) : (
-            <button type="button" aria-label={`Due date: ${dueLabel(task)}. Change`} onClick={() => setDueOpen(true)} className="underline-offset-2 hover:underline">{dueLabel(task)}</button>
+            <button type="button" aria-label={`Due date: ${dueLabel(task)}. Change`} onClick={() => { dueRef.current = true; setDueOpen(true); }} className="underline-offset-2 hover:underline">{dueLabel(task)}</button>
           )}
           {drop && <span>· removed by {task.removedBy === 'ai' ? 'AI' : 'you'}</span>}
           {sending && <span>· Sending…</span>}

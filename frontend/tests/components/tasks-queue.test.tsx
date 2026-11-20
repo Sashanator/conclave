@@ -3,9 +3,10 @@ import { createRoot } from 'react-dom/client';
 import { act } from 'react-dom/test-utils';
 import type { TaskRow } from '../../src/lib/tasks';
 
-const originals = { core: { ...(await import('@tauri-apps/api/core')) }, sonner: { ...(await import('sonner')) } };
+const originals = { core: { ...(await import('@tauri-apps/api/core')) }, event: { ...(await import('@tauri-apps/api/event')) }, sonner: { ...(await import('sonner')) } };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
+  mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('sonner', () => originals.sonner);
 });
 
@@ -47,6 +48,8 @@ const invoke = mock(async (cmd: string, args?: any): Promise<unknown> => {
 });
 const toast = Object.assign(mock(() => {}), { error: mock((_: string) => {}), dismiss: mock(() => {}) });
 mock.module('@tauri-apps/api/core', () => ({ invoke }));
+let tasksChanged: (() => void) | null = null;
+mock.module('@tauri-apps/api/event', () => ({ listen: async (_n: string, h: () => void) => { tasksChanged = h; return () => { tasksChanged = null; }; } }));
 mock.module('sonner', () => ({ toast }));
 mock.module('next/link', () => ({ default: ({ href, children, ...p }: any) => <a href={href} {...p}>{children}</a> }));
 
@@ -147,13 +150,40 @@ describe('tasks queue', () => {
     expect(document.activeElement).toBe(row('b'));
   });
 
-  test('due date set then cleared', async () => {
+  test('due date saves on Enter or blur, only when changed, never while typing', async () => {
     await click(row('a').querySelector('button[aria-label^="Due date"]')!);
-    await setValue(row('a').querySelector('input[type="date"]')!, '2026-11-26');
-    expect(writes()[0]).toEqual(['tasks_set_due_date', { id: 'a', dueDate: '2026-11-26' }]);
+    const input = () => row('a').querySelector<HTMLInputElement>('input[type="date"]')!;
+    await setValue(input(), '2026-11-26');
+    expect(writes()).toEqual([]);
+    await key(input(), 'Enter');
+    expect(writes()).toEqual([['tasks_set_due_date', { id: 'a', dueDate: '2026-11-26' }]]);
+    await click(row('a').querySelector('button[aria-label^="Due date"]')!);
+    await act(async () => { input().dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
     await flush();
-    await setValue(row('a').querySelector('input[type="date"]')!, '');
+    expect(writes().length).toBe(1); // unchanged value: no save
+    await click(row('a').querySelector('button[aria-label^="Due date"]')!);
+    await setValue(input(), '');
+    await act(async () => { input().dispatchEvent(new FocusEvent('focusout', { bubbles: true })); });
+    await flush();
     expect(writes()[1]).toEqual(['tasks_set_due_date', { id: 'a', dueDate: null }]);
+  });
+
+  test('re-reads on tasks-changed', async () => {
+    const n = () => calls.filter(([c]) => c === 'tasks_queue_list').length;
+    const before = n();
+    rows.push(mk('n', {}));
+    await act(async () => { tasksChanged!(); });
+    await flush();
+    expect(n()).toBe(before + 1);
+    expect(row('n')).not.toBeNull();
+  });
+
+  test('arrow keys move between tabs', async () => {
+    await key(document.querySelector<HTMLElement>('#tab-review')!, 'ArrowRight');
+    expect(document.activeElement?.id).toBe('tab-sent');
+    expect(document.querySelector('#tab-sent')!.getAttribute('aria-selected')).toBe('true');
+    await key(document.querySelector<HTMLElement>('#tab-sent')!, 'ArrowLeft');
+    expect(document.activeElement?.id).toBe('tab-review');
   });
 
   test('Keep all mine keeps each open row of the group and focuses its first row', async () => {
@@ -224,7 +254,7 @@ describe('sending', () => {
     await setup();
     sendReport = { sent: 2, failed: 0, ambiguous: 0 };
     await click(sendBtn());
-    expect(sends()).toEqual([['notion_send', { taskIds: ['a', 'b'] }]]);
+    expect(sends()).toEqual([['notion_send', { taskIds: ['a', 'b'], resendAmbiguous: false }]]);
     expect(status()).toContain('Sent 2 to Notion');
     expect(status()).toContain('View');
   });
@@ -274,7 +304,7 @@ describe('sending', () => {
     expect(row('b').textContent).toContain('Not sent: Notion said no');
     const retry = Array.from(row('b').querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
     await click(retry);
-    expect(sends().at(-1)).toEqual(['notion_send', { taskIds: ['b'] }]);
+    expect(sends().at(-1)).toEqual(['notion_send', { taskIds: ['b'], resendAmbiguous: false }]);
   });
 
   test('a rejected send shows the text and marks nothing sent', async () => {
@@ -291,11 +321,11 @@ describe('sending', () => {
     expect(row('m').textContent).toContain('May already be in Notion. Check the database before sending again.');
     const btn = (label: string) => Array.from(row('m').querySelectorAll('button')).find((b) => b.textContent === label)!;
     await click(sendBtn());
-    expect(sends()[0][1]).toEqual({ taskIds: ['a', 'b'] });
+    expect(sends()[0][1]).toEqual({ taskIds: ['a', 'b'], resendAmbiguous: false });
     await click(btn('Open Notion database'));
     expect(calls).toContainEqual(['open_external_url', { url: 'https://www.notion.so/d1' }]);
     await click(btn('Send again'));
-    expect(sends().at(-1)).toEqual(['notion_send', { taskIds: ['m'] }]);
+    expect(sends().at(-1)).toEqual(['notion_send', { taskIds: ['m'], resendAmbiguous: true }]);
     await click(btn('Mark as sent'));
     expect(calls).toContainEqual(['tasks_mark_sent', { id: 'm' }]);
   });

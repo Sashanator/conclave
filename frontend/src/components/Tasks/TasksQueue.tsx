@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Link from 'next/link';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
@@ -15,7 +16,7 @@ import { parseDbTime } from '@/lib/meetings';
 import { taskKeyAction } from '@/lib/meeting-page';
 import type { Destination, NotionConfig, SendReport } from '@/lib/notion';
 import type { TaskRow } from '@/lib/tasks';
-import { destForKey, groupQueue, isEditingText, isToReview, pickFocus, resultLine, sendSummary, toReviewCount, type QueueGroup } from '@/lib/tasks-queue';
+import { TASKS_CHANGED_EVENT, destForKey, groupQueue, isEditingText, isToReview, pickFocus, resultLine, sendSummary, toReviewCount, type QueueGroup } from '@/lib/tasks-queue';
 
 type Tab = 'review' | 'sent' | 'removed';
 type Call = [string, Record<string, unknown>];
@@ -43,7 +44,7 @@ export function TasksQueue() {
   const [result, setResult] = useState<SendResult | null>(null);
   const sendingRef = useRef(false); // state lags a same-tick second click; the ref does not
   const root = useRef<HTMLDivElement>(null);
-  const pending = useRef<{ before: string[]; wanted: string } | null>(null);
+  const pending = useRef<{ before: string[]; wanted: string; soft?: boolean } | null>(null);
 
   const reload = useCallback(async () => {
     try {
@@ -52,7 +53,7 @@ export function TasksQueue() {
       setConfig(cfg ?? null);
       setError(null);
     } catch (e) {
-      console.error('Tasks failed to load:', e);
+      console.error('tasks_queue_list failed'); // name only: the error text can carry task content
       setError('Could not load tasks.');
     }
     setLoaded(true);
@@ -60,7 +61,11 @@ export function TasksQueue() {
 
   useEffect(() => {
     void reload();
-    invoke<{ templates: { id: string; name: string }[] }>('api_list_templates').then((r) => setTemplates(r?.templates ?? [])).catch(() => {});
+    invoke<{ templates: { id: string; name: string }[] }>('api_list_templates').then((r) => setTemplates(r?.templates ?? [])).catch(() => console.error('api_list_templates failed'));
+    let off: (() => void) | null = null;
+    let gone = false;
+    listen(TASKS_CHANGED_EVENT, () => void reload()).then((u) => { if (gone) u(); else off = u; }).catch(() => console.error('tasks-changed listen failed'));
+    return () => { gone = true; off?.(); };
   }, [reload]);
 
   const ids = () => Array.from(root.current?.querySelectorAll<HTMLElement>('[data-row-id]') ?? []).map((el) => el.dataset.rowId!);
@@ -71,7 +76,7 @@ export function TasksQueue() {
     const p = pending.current;
     if (!p) return;
     pending.current = null;
-    if (!p.wanted && document.activeElement && document.activeElement !== document.body) return; // blur-save: focus went elsewhere on purpose
+    if (p.soft && document.activeElement && document.activeElement !== document.body) return; // blur-save: focus went elsewhere on purpose
     const after = ids();
     const id = pickFocus(p.before, after, p.wanted);
     const el = id ? Array.from(root.current?.querySelectorAll<HTMLElement>('[data-row-id]') ?? []).find((r) => r.dataset.rowId === id) : null;
@@ -79,13 +84,13 @@ export function TasksQueue() {
     else root.current?.querySelector<HTMLElement>('#tab-review')?.focus();
   }, [tick, tasks]);
 
-  const run = async (calls: Call[], wanted: string) => {
+  const run = async (calls: Call[], wanted: string, soft = false) => {
     const before = ids();
-    pending.current = { before, wanted };
+    pending.current = { before, wanted, soft };
     try {
       for (const [c, a] of calls) await invoke(c, a);
     } catch (e) {
-      console.error('Task change failed:', e);
+      console.error(`${calls.map(([c]) => c).join(', ')} failed`);
       toast.error('Could not save that change.');
     }
     await reload();
@@ -93,15 +98,15 @@ export function TasksQueue() {
   };
   const act = (command: string, args: Record<string, unknown>, wanted: string) => run([[command, args]], wanted);
 
-  const sendRef = useRef<(ids: string[]) => void>(() => {});
-  const send = async (sendIds: string[]) => {
+  const sendRef = useRef<(ids: string[], resendAmbiguous?: boolean) => void>(() => {});
+  const send = async (sendIds: string[], resendAmbiguous = false) => {
     if (sendingRef.current || sendIds.length === 0) return;
     sendingRef.current = true;
     setSending(true);
     setResult(null);
     const before = ids();
     try {
-      setResult(resultLine(await invoke<SendReport>('notion_send', { taskIds: sendIds })));
+      setResult(resultLine(await invoke<SendReport>('notion_send', { taskIds: sendIds, resendAmbiguous })));
     } catch (e) {
       console.error('Send failed:', e);
       setResult({ sent: null, notSent: null, error: e instanceof Error ? e.message : String(e) });
@@ -125,12 +130,12 @@ export function TasksQueue() {
 
   const actions: RowActions = {
     busy: sending,
-    send: (t) => void send([t.id]),
+    send: (t) => void send([t.id], t.sendAmbiguous), // only a row flagged ambiguous is resent, and only by this explicit click
     markSent: (t) => void act('tasks_mark_sent', { id: t.id }, t.id),
     setReview: (t, review) => void act('tasks_set_review', { id: t.id, review }, t.id),
     setDest: (t, destId) => void act('tasks_set_dest', { id: t.id, destId }, t.id),
     setDue: (t, dueDate) => void act('tasks_set_due_date', { id: t.id, dueDate }, t.id),
-    edit: (t, text, refocus) => void (refocus ? act('tasks_edit', { id: t.id, text }, t.id) : run([['tasks_edit', { id: t.id, text }]], '')),
+    edit: (t, text, refocus) => void (refocus ? act('tasks_edit', { id: t.id, text }, t.id) : run([['tasks_edit', { id: t.id, text }]], t.id, true)),
     refocus: (id) => request(ids(), id),
     onKeyDown: (e, t) => {
       if (e.target !== e.currentTarget || isEditingText(document.activeElement)) return;
@@ -154,7 +159,7 @@ export function TasksQueue() {
 
   const keepAll = (g: QueueGroup) => {
     const mine = g.tasks.filter((t) => t.review === 'open' && t.owner === 'me');
-    void run(mine.map((t): Call => ['tasks_set_review', { id: t.id, review: 'keep' }]), g.tasks[0].id);
+    void run(mine.map((t): Call => ['tasks_set_review', { id: t.id, review: 'keep' }]), (g.tasks.find((t) => t.review !== 'drop') ?? g.tasks[0]).id);
   };
 
   const sent = tasks.filter((t) => t.review === 'sent');
@@ -184,7 +189,17 @@ export function TasksQueue() {
       id={`tab-${id}`}
       aria-selected={tab === id}
       aria-controls={`panel-${id}`}
+      tabIndex={tab === id ? 0 : -1}
       onClick={() => setTab(id)}
+      onKeyDown={(e) => {
+        const d = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (!d) return;
+        e.preventDefault();
+        const order: Tab[] = ['review', 'sent', 'removed'];
+        const next = order[(order.indexOf(id) + d + order.length) % order.length];
+        setTab(next);
+        document.getElementById(`tab-${next}`)?.focus();
+      }}
       className={`border-b-2 px-3 py-2 text-sm ${tab === id ? 'border-primary font-medium' : `border-transparent ${dim}`}`}
     >
       {label} <small>{n}</small>
@@ -210,7 +225,7 @@ export function TasksQueue() {
           {tabBtn('sent', 'Sent to Notion', sent.length)}
           {tabBtn('removed', 'Removed', removed.length)}
         </div>
-        {error && <p role="alert" className="text-sm text-red-600">{error}</p>}
+        {error && <p role="alert" className="text-sm text-destructive">{error}</p>}
 
         <div role="tabpanel" id="panel-review" aria-labelledby="tab-review" hidden={tab !== 'review'} className="space-y-4">
           {tab === 'review' && loaded && (
@@ -259,12 +274,12 @@ export function TasksQueue() {
                   {g.tasks.map((t) => {
                     const d = dests.find((x) => x.id === t.destId);
                     return (
-                      <div key={t.id} data-row-id={t.id} tabIndex={0} className="flex flex-wrap items-center gap-x-3 rounded-md border border-border px-3 py-2 text-sm">
+                      <div key={t.id} role="group" aria-label={t.text} data-row-id={t.id} tabIndex={0} className="flex flex-wrap items-center gap-x-3 rounded-md border border-border px-3 py-2 text-sm">
                         <span className="min-w-0 flex-1">{t.text}</span>
                         <span className={`text-xs ${dim}`}>{t.owner === 'me' ? 'You' : 'Unassigned'}</span>
                         {d && <span className="rounded-full border border-border px-2 text-xs">{d.name}</span>}
                         {t.sentAt && <span className="text-xs text-emerald-700 dark:text-emerald-400">Sent {format(parseDbTime(t.sentAt), 'EEE d MMM, HH:mm')}</span>}
-                        {t.notionUrl && <button type="button" className="text-xs underline" onClick={() => void invoke('open_external_url', { url: t.notionUrl })}>Open in Notion ↗</button>}
+                        {t.notionUrl && <button type="button" className="text-xs underline" onClick={() => void invoke('open_external_url', { url: t.notionUrl }).catch(() => toast.error('Could not open Notion.'))}>Open in Notion ↗</button>}
                       </div>
                     );
                   })}
@@ -280,7 +295,7 @@ export function TasksQueue() {
             <>
               {removed.length === 0 && <p className={`text-sm ${dim}`}>Nothing removed.</p>}
               {groupQueue(removed).flatMap((g) => g.tasks.map((t) => (
-                <div key={t.id} data-row-id={t.id} tabIndex={0} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
+                <div key={t.id} role="group" aria-label={t.text} data-row-id={t.id} tabIndex={0} className="flex items-center justify-between gap-3 rounded-md border border-border px-3 py-2">
                   <div className="min-w-0">
                     <div className={`text-sm ${dim}`}>{t.text}</div>
                     <div className={`text-xs ${dim}`}>{g.title} · {t.owner === 'me' ? 'You' : 'Unassigned'}{t.removedBy ? ` · removed by ${t.removedBy === 'ai' ? 'AI' : 'you'}` : ''}</div>

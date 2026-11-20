@@ -110,12 +110,12 @@ const schema: DbSchema = {
   databaseId: 'preview-database', dataSourceId: null, title: 'Tasks',
   properties: [prop('Name', 'title'), prop('Due', 'date'), prop('Notes', 'rich_text'), prop('Status', 'status', ['To do', 'Doing', 'Done']), prop('Tags', 'multi_select', ['Work', 'Home']), prop('Urgent', 'checkbox'), prop('Owner', 'people'), prop('Area', 'select', ['Job', 'Life'])],
 };
-const sendRows = (ids: string[]): SendReport => {
+const sendRows = (ids: string[], resendAmbiguous: boolean): SendReport => {
   const r: SendReport = { sent: 0, failed: 0, ambiguous: 0 };
   for (const id of ids) {
     const t = tasks.find((x) => x.id === id);
     const d = destinations.find((x) => x.id === t?.destId);
-    if (!t) continue;
+    if (!t || (t.sendAmbiguous && !resendAmbiguous)) continue; // like Rust: ambiguous rows only go on an explicit resend
     if (!d || !tokenLast4 || (d.lastStatus && BLOCKING_STATES.includes(d.lastStatus))) {
       t.sendError = d ? `${d.name} is not connected.` : 'Choose a Notion database first.';
       r.failed++;
@@ -222,7 +222,7 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
     if (c) c.destId = destId ?? null; else categoryDefaults.push({ templateKey, destId: destId ?? null });
     return null;
   },
-  notion_send: ({ taskIds }) => sendRows(taskIds ?? []),
+  notion_send: ({ taskIds, resendAmbiguous }) => sendRows(taskIds ?? [], !!resendAmbiguous),
   // Prep: a calendar meeting has one, other meetings none
   prep_for_meeting: ({ meetingId }) => (['preview-7', 'preview-9'].includes(meetingId) ? mkPrep() : null),
   prep_get: () => mkPrep(),

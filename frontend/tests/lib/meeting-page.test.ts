@@ -20,6 +20,7 @@ const task = (over: Partial<TaskRow>): TaskRow => ({
   status: 'open',
   source: 'auto',
   createdAt: '2026-11-17T10:00:00Z',
+  review: 'open', removedBy: null, destId: null, dueDate: null, notionUrl: null, sentAt: null, sendError: null, sendAmbiguous: false, templateId: null,
   ...over,
 });
 

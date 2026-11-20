@@ -26,6 +26,7 @@ const BASE: TaskRow = {
   status: 'open',
   source: 'auto',
   createdAt: '2026-10-20T10:00:00Z',
+  review: 'open', removedBy: null, destId: null, dueDate: null, notionUrl: null, sentAt: null, sendError: null, sendAmbiguous: false, templateId: null,
 };
 
 let rows: TaskRow[] = [];

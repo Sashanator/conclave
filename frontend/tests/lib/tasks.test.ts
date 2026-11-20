@@ -13,6 +13,7 @@ const row = (over: Partial<TaskRow>): TaskRow => ({
   status: 'open',
   source: 'auto',
   createdAt: 't',
+  review: 'open', removedBy: null, destId: null, dueDate: null, notionUrl: null, sentAt: null, sendError: null, sendAmbiguous: false, templateId: null,
   ...over,
 });
 

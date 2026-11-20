@@ -11,6 +11,15 @@ export type TaskRow = {
   status: 'open' | 'done' | 'dismissed';
   source: 'auto' | 'manual';
   createdAt: string;
+  review: 'open' | 'keep' | 'drop' | 'sending' | 'sent';
+  removedBy: 'ai' | 'user' | null;
+  destId: string | null;
+  dueDate: string | null;
+  notionUrl: string | null;
+  sentAt: string | null;
+  sendError: string | null;
+  sendAmbiguous: boolean;
+  templateId: string | null;
 };
 
 export type TaskGroup = {

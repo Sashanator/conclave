@@ -19,6 +19,7 @@ The first UI task that needs one adds it to `globals.css` for all three themes. 
 | `--hl` | `43 95% 55%` (alpha `--hl-a: .38`) | same | search-hit and note highlight |
 | `--live` | `142 70% 28%` | n/a | "live" text on light |
 | `--cat-1..5` | `217 91% 60%`, `160 60% 40%`, `27 87% 55%`, `262 70% 60%`, `0 0% 55%` | same | category chip hues (1 blue, 2 green, 3 orange, 4 violet, 5 grey = "No template") |
+| `--db-1..9` | see table below | see table below | Notion destination dot (1 rose, 2 cyan, 3 lime, 4 violet, 5 amber, 6 blue, 7 green, 8 orange, 9 slate); never a category |
 | `--row` | `40px` | n/a | table row height (see Density) |
 
 The mockups also use a darker `--muted-foreground` (`0 0% 40%` light, `0 0% 68%` dark) and `--card: 0 0% 6%` in dark. `globals.css` keeps `45.1%`, `63.9%` and `3.9%`; keep the existing values unless a contrast check fails.
@@ -57,10 +58,27 @@ Muted text uses `--muted-foreground`. Tables never wrap in compact density.
 
 Cells: `0 10px` padding, 1px bottom border. Hover on a row uses `--accent`. Transitions (150 ms background) only under `prefers-reduced-motion: no-preference`.
 
+### Destination colours (`--db-1..9`)
+
+| n | Light | Dark and Conclave |
+|---|---|---|
+| 1 | `340 75% 50%` | `340 75% 58%` |
+| 2 | `190 90% 32%` | `190 85% 45%` |
+| 3 | `85 65% 32%` | `85 60% 45%` |
+| 4 | `265 65% 55%` | `265 80% 72%` |
+| 5 | `35 90% 35%` | `38 90% 55%` |
+| 6 | `215 85% 45%` | `215 90% 65%` |
+| 7 | `150 65% 28%` | `150 55% 50%` |
+| 8 | `20 85% 45%` | `20 90% 62%` |
+| 9 | `215 15% 42%` | `215 15% 65%` |
+
+Each is at least 3:1 against `--background` in all three themes (`tests/lib/db-tokens.test.ts`). 1 to 3 are fixed by the spec; 4 to 9 were chosen to stay apart under deuteranopia and protanopia.
+
 ## Chips
 
 - **Category chip**: pill (`border-radius:999px`), 12px, padding `1px 8px`, 6px gap, a dot or label; background `hsl(var(--c)/.12)`, text `--foreground`, where `--c` is one of `--cat-1..5`.
 - **State chip**: 12px pill. Live is solid `hsl(var(--rec))` with white 600-weight text. Other states (Reviewed, New) use the neutral `--muted` fill with `--muted-foreground`.
+- **Destination chip / picker**: pill, 12px, an 8px dot `hsl(var(--db-n))` with a 1px `--border` ring; dashed muted border when no destination; amber border and text when the destination is not connected. `--db-*` is only for Notion destinations, never for categories (`--cat-*`).
 - **Filter chip**: pill, 12px, dashed `--border` when unset; solid border and `--foreground` text when set.
 - **Calendar badge**: the 📞 marker on rows created from a calendar event; sits inline before the title, 12px, no fill.
 

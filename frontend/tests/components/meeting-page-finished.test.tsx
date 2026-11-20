@@ -13,7 +13,8 @@ afterAll(() => {
 
 const task = (over: Partial<TaskRow>): TaskRow => ({
   id: 't1', meetingId: 'm1', meetingTitle: 'M', meetingDate: null, text: 'Send the deck', owner: 'me', due: null,
-  at: null, status: 'open', source: 'auto', createdAt: '2026-11-16T10:00:00Z', ...over,
+  at: null, status: 'open', source: 'auto', createdAt: '2026-11-16T10:00:00Z',
+  review: 'open', removedBy: null, destId: null, dueDate: null, notionUrl: null, sentAt: null, sendError: null, sendAmbiguous: false, templateId: null, ...over,
 });
 let rows: TaskRow[] = [];
 let failing = false;
@@ -25,7 +26,10 @@ mock.module('@tauri-apps/api/core', () => ({
   invoke: async (command: string, args?: Record<string, unknown>) => {
     calls.push([command, args]);
     if (command === 'meeting_cost') return { total_usd: 0.012, tokens: 18400, by_purpose: [{ purpose: 'summary', tokens: 18400, cost_usd: 0.012 }] };
-    if (command === 'tasks_list') return rows.filter((r) => r.status === args?.status);
+    if (command === 'tasks_queue_list') return rows;
+    if (command === 'notion_get_config') return { tokenLast4: null, categoryDefaults: [], destinations: [
+      { id: 'd1', name: 'Job', colour: 1, position: 0, databaseId: 'a', dataSourceId: null, mapping: { titleProp: 'Name', dueProp: null, meetingProp: null, fixed: [] }, lastStatus: null, lastMessage: null },
+      { id: 'd2', name: 'Personal', colour: 2, position: 1, databaseId: 'b', dataSourceId: null, mapping: { titleProp: 'Name', dueProp: null, meetingProp: null, fixed: [] }, lastStatus: null, lastMessage: null }] };
     if (failCommand === command && (args?.id === 't2' || args?.id === 'u1')) { await failGate; throw new Error('boom'); }
     if (failing) throw new Error('boom');
     return null;
@@ -62,21 +66,24 @@ test('opens on Summary; a time or a tab link opens its tab', () => {
   expect(openingTab(parseMeetingTarget(new URLSearchParams('id=m1&tab=prep'))?.tab, null)).toBe('prep');
 });
 
-test('an unassigned task sits under Removed with Keep; k claims it', async () => {
-  rows = [task({ id: 'u1', text: 'Run QA', owner: 'unassigned' })];
+test('an AI-removed task sits under Removed; k keeps it', async () => {
+  rows = [task({ id: 'u1', text: 'Run QA', owner: 'unassigned', review: 'drop', removedBy: 'ai' })];
   const r = await mount();
   expect(text(r)).toContain('Removed (1)');
   expect(text(r)).toContain('removed by AI');
-  await act(async () => { buttons(row(r, 'Run QA'))[0].props.onClick(); });
-  expect(calls).toContainEqual(['tasks_claim', { id: 'u1' }]);
+  await press(row(r, 'Run QA'), 'k');
+  expect(calls).toContainEqual(['tasks_set_review', { id: 'u1', review: 'keep' }]);
+  expect(text(r)).not.toContain('Removed (');
 });
 
-test('x dismisses a kept task; a failure toasts and rolls back', async () => {
+test('x removes an open task; a failure toasts and rolls back', async () => {
   rows = [task({})];
   const r = await mount();
   await press(row(r, 'Send the deck'), 'x');
-  expect(calls).toContainEqual(['tasks_set_status', { id: 't1', status: 'dismissed' }]);
+  expect(calls).toContainEqual(['tasks_set_review', { id: 't1', review: 'drop' }]);
   expect(text(r)).toContain('Removed (1)');
+  expect(text(r)).toContain('removed');
+  expect(text(r)).not.toContain('removed by AI');
 
   failing = true;
   rows = [task({ id: 't2', text: 'Other' })];
@@ -91,11 +98,11 @@ test('a failed edit rolls back only its own task', async () => {
   const r = await mount();
   let open!: () => void;
   failGate = new Promise<void>((res) => { open = res; });
-  failCommand = 'tasks_set_status';
+  failCommand = 'tasks_set_review';
   row(r, 'Other').props.onKeyDown({ key: 'x', preventDefault() {} }); // t2 is still saving when t1 is removed (no act: acts must not overlap)
   failCommand = null;
   await press(row(r, 'Send the deck'), 'x');
-  failCommand = 'tasks_set_status'; open();
+  failCommand = 'tasks_set_review'; open();
   await act(async () => { await new Promise((r) => setTimeout(r, 10)); });
   expect(errors.length).toBe(1);
   expect(text(r)).toContain('Removed (1)'); // t1 stays removed
@@ -103,14 +110,30 @@ test('a failed edit rolls back only its own task', async () => {
   expect(row(r, 'Other').findAll((n) => n.type === 'button' && plain(n) === 'Remove X').length).toBe(1);
 });
 
-test('a restore whose status step fails keeps the saved claim', async () => {
-  rows = [{ ...task({ id: 'u1', text: 'Run QA', owner: 'unassigned' }), status: 'dismissed' }];
-  failCommand = 'tasks_set_status';
+test('a kept task shows the destination picker; choosing saves it', async () => {
+  rows = [task({ review: 'keep' })];
   const r = await mount();
-  await press(row(r, 'Run QA'), 'k');
-  expect(errors.length).toBe(1);
-  expect(text(r)).toContain('removed');
-  expect(text(r)).not.toContain('removed by AI');
+  const sel = row(r, 'Send the deck').findByType('select');
+  expect(sel.props['aria-label']).toBe('Notion database for: Send the deck');
+  await act(async () => { sel.props.onChange({ target: { value: 'd2' } }); });
+  expect(calls).toContainEqual(['tasks_set_dest', { id: 't1', destId: 'd2' }]);
+  expect((row(r, 'Send the deck').findByType('select')).props.value).toBe('d2');
+});
+
+test('a sent task has no Keep or Remove; a sending one says so', async () => {
+  rows = [task({ id: 's1', text: 'Done one', review: 'sent' }), task({ id: 's2', text: 'In flight', review: 'sending' })];
+  const r = await mount();
+  expect(buttons(row(r, 'Done one'))).toHaveLength(0);
+  expect(text(r)).toContain('Sent to Notion');
+  expect(plain(row(r, 'In flight'))).toContain('Sending…');
+  await press(row(r, 'In flight'), 'x');
+  expect(calls.filter((c) => c[0] === 'tasks_set_review')).toHaveLength(0);
+});
+
+test('an open task has neither Keep nor Remove pressed', async () => {
+  rows = [task({})];
+  const r = await mount();
+  expect(buttons(row(r, 'Send the deck')).map((b) => b.props['aria-pressed'])).toEqual([false, false]);
 });
 
 test('Done reviewing marks the meeting reviewed, then reads Reviewed', async () => {
@@ -126,7 +149,7 @@ test('every task shows Keep and Remove with K and X hints', async () => {
   rows = [task({ id: 't1', text: 'One' }), task({ id: 't2', text: 'Two' })];
   const r = await mount();
   for (const t of ['One', 'Two']) expect(buttons(row(r, t)).map(plain)).toEqual(['Keep K', 'Remove X']);
-  expect(buttons(row(r, 'One'))[0].props['aria-pressed']).toBe(true);
+  expect(buttons(row(r, 'One'))[0].props['aria-pressed']).toBe(false); // open: undecided
 });
 
 test('reports the kept count', async () => {

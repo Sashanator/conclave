@@ -6,23 +6,26 @@ import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { MeetingCostLine } from '@/components/MeetingDetails/MeetingCostLine';
 import { setReviewed } from '@/lib/meetings';
+import { DestPicker } from '@/components/Tasks/DestPicker';
+import type { Destination, NotionConfig } from '@/lib/notion';
 import { splitTasks, taskKeyAction } from '@/lib/meeting-page';
 import type { TaskRow } from '@/lib/tasks';
-
-const STATUSES = ['open', 'done', 'dismissed'] as const;
 
 /** "Tasks from this meeting": kept rows on top, removed ones below with Restore. Failed edits toast and roll back. */
 export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false, onCountChange, costRefreshKey }: { meetingId: string; reviewed?: boolean; onCountChange?: (kept: number) => void; costRefreshKey?: string }) {
   const [tasks, setTasks] = useState<TaskRow[]>([]);
+  const [dests, setDests] = useState<Destination[]>([]);
   const [reviewed, setReviewedState] = useState(initialReviewed);
   const rows = useRef<(HTMLElement | null)[]>([]);
   useEffect(() => setReviewedState(initialReviewed), [initialReviewed]);
 
   useEffect(() => {
     let active = true;
-    Promise.all(STATUSES.map((status) => invoke<TaskRow[]>('tasks_list', { status })))
-      .then((lists) => { if (active) setTasks(lists.flat()); })
+    invoke<TaskRow[]>('tasks_queue_list')
+      .then((list) => { if (active) setTasks(list); })
       .catch((e) => { console.error('Could not load the tasks:', e); if (active) toast.error('Could not load the tasks.'); });
+    // No destinations is a quiet state: the pickers then say "Choose database…".
+    invoke<NotionConfig>('notion_get_config').then((c) => { if (active) setDests(c?.destinations ?? []); }).catch(() => {});
     return () => { active = false; };
   }, [meetingId]);
 
@@ -48,14 +51,10 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
     }
   }, []);
 
-  const keep = (task: TaskRow) => {
-    if (task.owner === 'me' && task.status !== 'dismissed') return Promise.resolve();
-    const steps: Step[] = [['tasks_claim', { id: task.id }, { owner: 'me' }]];
-    if (task.status === 'dismissed') steps.push(['tasks_set_status', { id: task.id, status: 'open' }, { status: 'open' }]);
-    return edit(task, steps);
-  };
+  const keep = (task: TaskRow) =>
+    ['keep', 'sending', 'sent'].includes(task.review) ? Promise.resolve() : edit(task, [['tasks_set_review', { id: task.id, review: 'keep' }, { review: 'keep', owner: 'me' }]]);
   const remove = (task: TaskRow) =>
-    task.status === 'dismissed' ? Promise.resolve() : edit(task, [['tasks_set_status', { id: task.id, status: 'dismissed' }, { status: 'dismissed' }]]);
+    ['drop', 'sending', 'sent'].includes(task.review) ? Promise.resolve() : edit(task, [['tasks_set_review', { id: task.id, review: 'drop' }, { review: 'drop', removedBy: 'user' }]]);
 
   const toggleReviewed = async () => {
     const next = !reviewed;
@@ -87,13 +86,18 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
       <div className="min-w-0">
         <div className={isRemoved ? 'text-sm text-muted-foreground' : 'text-sm'}>{task.text}</div>
         <div className="text-xs text-muted-foreground">
-          {isRemoved ? (task.owner === 'unassigned' ? 'removed by AI' : 'removed') : `You${task.due ? ` · by ${task.due}` : ''}`}
+          {isRemoved ? (task.removedBy === 'ai' ? 'removed by AI' : 'removed') : `${task.owner === 'me' ? 'You' : 'Unassigned'}${task.due ? ` · by ${task.due}` : ''}`}
         </div>
+        {task.review === 'keep' && <div className="mt-1"><DestPicker task={task} dests={dests} onPick={(destId) => edit(task, [['tasks_set_dest', { id: task.id, destId }, { destId }]])} /></div>}
+        {task.review === 'sending' && <div className="mt-1 text-xs text-muted-foreground">Sending…</div>}
+        {task.review === 'sent' && <div className="mt-1 text-xs text-muted-foreground">Sent to Notion</div>}
       </div>
-      <div className="flex shrink-0 gap-1">
-        <Button variant="ghost" size="sm" aria-pressed={!isRemoved} onClick={() => keep(task)}>Keep <kbd className="ml-1 text-xs text-muted-foreground">K</kbd></Button>
-        <Button variant="ghost" size="sm" aria-pressed={isRemoved} onClick={() => remove(task)}>Remove <kbd className="ml-1 text-xs text-muted-foreground">X</kbd></Button>
-      </div>
+      {task.review !== 'sent' && (
+        <div className="flex shrink-0 gap-1">
+          <Button variant="ghost" size="sm" aria-pressed={['keep', 'sending'].includes(task.review)} onClick={() => keep(task)}>Keep <kbd className="ml-1 text-xs text-muted-foreground">K</kbd></Button>
+          <Button variant="ghost" size="sm" aria-pressed={isRemoved} onClick={() => remove(task)}>Remove <kbd className="ml-1 text-xs text-muted-foreground">X</kbd></Button>
+        </div>
+      )}
     </li>
   );
 

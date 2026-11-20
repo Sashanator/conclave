@@ -679,6 +679,7 @@ mod migration_tests {
         for recording_only in [false, true] {
             let pool = test_pool().await;
             insert_meeting(&pool, "M").await;
+            exec(&pool, "UPDATE meetings SET started_at = '2026-10-18 09:30:00' WHERE id = 'M'").await;
             exec(
                 &pool,
                 "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, at, created_at, review, removed_by) VALUES \
@@ -693,7 +694,7 @@ mod migration_tests {
             }
             let rows: Vec<(String, Option<String>, Option<String>, Option<String>)> =
                 sqlx::query_as("SELECT id, meeting_id, meeting_title, meeting_date FROM tasks ORDER BY id").fetch_all(&pool).await.unwrap();
-            let want = |id: &str| (id.to_string(), None, Some("M".to_string()), Some("2026-10-17 12:00:00".to_string()));
+            let want = |id: &str| (id.to_string(), None, Some("M".to_string()), Some("2026-10-18 09:30:00".to_string())); // started_at wins over created_at
             assert_eq!(rows, [want("k"), want("s")]);
         }
     }

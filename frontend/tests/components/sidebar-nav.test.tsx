@@ -9,9 +9,11 @@ const originals = {
   imp: { ...await import('../../src/contexts/ImportDialogContext') },
   feed: { ...await import('../../src/components/Feed/FeedBell') },
   confirm: { ...await import('../../src/lib/confirm') },
+  event: { ...await import('@tauri-apps/api/event') },
 };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
+  mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('next/navigation', () => originals.navigation);
   mock.module('../../src/contexts/RecordingStateContext', () => originals.rec);
   mock.module('../../src/components/Sidebar/SidebarProvider', () => originals.provider);
@@ -25,8 +27,18 @@ const openImportDialog = mock(() => {});
 const invoke = mock(async (cmd: string, _a?: unknown): Promise<unknown> => {
   if (cmd === 'plugin:app|version') return '1.3.0';
   if (cmd === 'api_route_recording_start') return { meetingId: 'm9', title: 'T' };
+  if (cmd === 'tasks_queue_list') return queue;
   return null;
 });
+let queue: unknown = null;
+let tasksChanged: (() => void) | null = null;
+mock.module('@tauri-apps/api/event', () => ({
+  ...originals.event,
+  listen: async (event: string, handler: () => void) => {
+    if (event === 'tasks-changed') tasksChanged = handler;
+    return () => {};
+  },
+}));
 let collapsed = false;
 const toggleCollapsed = mock(() => {});
 let rec: Record<string, unknown> = {};
@@ -59,6 +71,7 @@ beforeEach(() => {
   rec = { isRecording: false, liveMeetingId: null, activeDuration: null };
   confirmAction.mockClear(); push.mockClear(); invoke.mockClear(); openImportDialog.mockClear();
   sessionStorage.clear(); localStorage.clear();
+  queue = null; tasksChanged = null;
 });
 
 describe('Sidebar nav', () => {
@@ -204,6 +217,16 @@ describe('Sidebar nav', () => {
     expect(cls).toContain('bg-[hsl(var(--rec))]');
     expect(cls).toContain('text-white');
     expect(cls).not.toContain('bg-primary');
+  });
+
+  test('Tasks badge counts the To review tasks and refreshes on tasks-changed', async () => {
+    queue = [{ review: 'open' }, { review: 'keep' }, { review: 'sent' }, { review: 'drop' }];
+    const r = await render();
+    expect(buttons(r).map((b) => b.props['aria-label'])).toContain('Tasks, 2 to review');
+    queue = [];
+    await act(async () => { tasksChanged!(); await new Promise((res) => setTimeout(res, 0)); });
+    expect(buttons(r).map((b) => b.props['aria-label'])).toContain('Tasks');
+    expect(buttons(r).map((b) => b.props['aria-label'])).not.toContain('Tasks, 2 to review');
   });
 
   test('collapsed recording shows the clock in the rail', async () => {

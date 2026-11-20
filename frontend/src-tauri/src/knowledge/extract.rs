@@ -329,6 +329,8 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
                     // A failed save is held back by run_one, so the next pass does not pick it up at once.
                     if run_one(&pool, &id).await.is_err() {
                         tokio::time::sleep(Duration::from_secs(5)).await;
+                    } else {
+                        crate::knowledge::tasks::tasks_changed(&app);
                     }
                 }
                 // Woken by enqueue; the timeout re-checks a meeting that was busy when last looked at.
@@ -562,13 +564,16 @@ async fn own_lines(pool: &SqlitePool, meeting_id: &str) -> Result<Vec<String>, s
 
 #[tauri::command]
 pub async fn extraction_retry(
+    app: AppHandle,
     state: State<'_, AppState>,
     meeting_id: String,
 ) -> Result<(), String> {
     let pool = state.db_manager.pool();
     // Queued first, so a retry cut short by an app close is picked up again at the next start.
     enqueue(pool, &meeting_id).await;
-    run_one(pool, &meeting_id).await
+    run_one(pool, &meeting_id).await?;
+    crate::knowledge::tasks::tasks_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]

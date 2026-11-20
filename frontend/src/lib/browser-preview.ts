@@ -3,6 +3,8 @@
 // folds this whole file away). Commands not listed here resolve null and warn once; add data here as screens need it.
 import { mockIPC } from '@tauri-apps/api/mocks';
 import type { MeetingRow } from './meetings';
+import { BLOCKING_STATES, type CategoryDefault, type DbSchema, type Destination, type DestStatus, type SendReport } from './notion';
+import type { TaskRow } from './tasks';
 import { BUILTIN_VIEW_DEFAULTS } from './meeting-views';
 
 const meetings = [
@@ -72,20 +74,54 @@ const meetingRows = (): MeetingRow[] => {
 
 
 // ---- Redesign screens: tasks, prep, briefs, Ask, Copilot, settings, stats, Dictate, Practice, What's new ----
-type PreviewTask = { id: string; meetingId: string | null; meetingTitle: string | null; meetingDate: string | null; text: string; owner: 'me' | 'unassigned'; due: string | null; at: number | null; status: 'open' | 'done' | 'dismissed'; source: 'auto' | 'manual'; createdAt: string };
-const task = (id: string, text: string, owner: PreviewTask['owner'], status: PreviewTask['status'], at: number | null, due: string | null = null): PreviewTask => ({
-  id, meetingId: 'preview-1', meetingTitle: 'Weekly product sync', meetingDate: '2026-11-10T09:00:00Z', text, owner, due, at, status, source: 'auto', createdAt: '2026-11-10T09:46:00Z',
+const row = (id: string, text: string, over: Partial<TaskRow> = {}): TaskRow => ({
+  id, meetingId: 'preview-1', meetingTitle: 'Weekly product sync', meetingDate: '2026-11-10T09:00:00Z', text, owner: 'me', due: null, at: null, status: 'open', source: 'auto', createdAt: '2026-11-10T09:46:00Z',
+  review: 'open', removedBy: null, destId: null, dueDate: null, notionUrl: null, sentAt: null, sendError: null, sendAmbiguous: false, templateId: 'standard_meeting', ...over,
 });
-const tasks: PreviewTask[] = [
-  task('task-1', 'Test the audio device switch on the Windows machine', 'me', 'open', 24, '2026-11-12'),
-  task('task-2', 'Move the redesign review to Thursday', 'unassigned', 'open', 36),
-  task('task-3', 'Ask the vendor about the invoice', 'unassigned', 'dismissed', 12),
-  { ...task('task-4', 'Buy a Windows test licence', 'me', 'open', null), meetingId: null, meetingTitle: null, meetingDate: null, source: 'manual' },
+const SENT = { review: 'sent' as const, notionUrl: 'https://www.notion.so/preview', sentAt: '2026-11-16T12:04:00Z' };
+const tasks: TaskRow[] = [
+  row('task-1', 'Test the audio device switch on the Windows machine', { destId: 'd-job', dueDate: '2026-11-26', at: 24 }),
+  row('task-2', 'Send the updated price list to the vendor', { destId: 'd-job', at: 36 }),
+  row('task-3', 'Book the dentist before the trip', { destId: 'd-personal', at: 48 }),
+  row('task-4', 'Ask the vendor about the invoice', { owner: 'unassigned', status: 'dismissed', review: 'drop', removedBy: 'ai', at: 12 }),
+  row('task-5', 'Share the release notes with the team', { ...SENT, destId: 'd-job', at: 60 }),
+  row('task-6', 'Update the roadmap page', { ...SENT, destId: 'd-job', at: 70 }),
+  row('task-7', 'Send the interview feedback to HR', { meetingId: 'preview-5', meetingTitle: 'Candidate interview', meetingDate: '2026-11-17T10:00:00Z', templateId: 'interview', review: 'keep', destId: 'd-job' }),
+  row('task-8', 'Schedule the second interview round', { meetingId: 'preview-5', meetingTitle: 'Candidate interview', meetingDate: '2026-11-17T10:00:00Z', templateId: 'interview', review: 'keep', destId: 'd-job', sendAmbiguous: true }),
+  row('task-9', 'Reply to the recruiter', { meetingId: 'preview-5', meetingTitle: 'Candidate interview', meetingDate: '2026-11-17T10:00:00Z', templateId: 'interview', review: 'keep', destId: 'd-job', sendError: 'Notion did not answer in time.' }),
+  row('task-10', 'Call Max back about the contract', { meetingId: null, meetingTitle: 'Call with Max', meetingDate: '2026-11-09T19:30:00Z', templateId: null }),
 ];
-const updateTask = (id: string, patch: Partial<PreviewTask>) => {
+const updateTask = (id: string, patch: Partial<TaskRow>) => {
   const t = tasks.find((x) => x.id === id);
-  if (t) Object.assign(t, patch);
-  return t ?? null;
+  if (!t) throw new Error('task not found');
+  Object.assign(t, patch);
+  return t;
+};
+// ---- Notion fakes ----
+const NOT_SHARED = "Personal tasks isn't shared with Conclave, or was deleted. In Notion: database ••• → Connections → add Conclave";
+const mapping = { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status' as const, value: 'To do' }] };
+const mkDest = (id: string, name: string, colour: number, position: number, lastStatus: Destination['lastStatus'] = null, lastMessage: string | null = null): Destination =>
+  ({ id, name, colour, position, databaseId: `${id}-database`, dataSourceId: null, mapping, lastStatus, lastMessage });
+const destinations: Destination[] = [mkDest('d-job', 'Job tasks', 1, 0), mkDest('d-personal', 'Personal tasks', 2, 1, 'not_shared', NOT_SHARED), mkDest('d-german', 'German homework', 3, 2)];
+let tokenLast4: string | null = '7Qx2';
+const categoryDefaults: CategoryDefault[] = [{ templateKey: 'standard_meeting', destId: 'd-job' }, { templateKey: 'interview', destId: 'd-job' }, { templateKey: '', destId: null }];
+const prop = (name: string, kind: string, options: string[] = []) => ({ id: name.toLowerCase(), name, kind, options });
+const schema: DbSchema = {
+  databaseId: 'preview-database', dataSourceId: null, title: 'Tasks',
+  properties: [prop('Name', 'title'), prop('Due', 'date'), prop('Notes', 'rich_text'), prop('Status', 'status', ['To do', 'Doing', 'Done']), prop('Tags', 'multi_select', ['Work', 'Home']), prop('Urgent', 'checkbox'), prop('Owner', 'people'), prop('Area', 'select', ['Job', 'Life'])],
+};
+const sendRows = (ids: string[]): SendReport => {
+  const r: SendReport = { sent: 0, failed: 0, ambiguous: 0 };
+  for (const id of ids) {
+    const t = tasks.find((x) => x.id === id);
+    const d = destinations.find((x) => x.id === t?.destId);
+    if (!t) continue;
+    if (!d || !tokenLast4 || (d.lastStatus && BLOCKING_STATES.includes(d.lastStatus))) {
+      t.sendError = d ? `${d.name} is not connected.` : 'Choose a Notion database first.';
+      r.failed++;
+    } else Object.assign(t, { review: 'sent', sentAt: new Date().toISOString(), notionUrl: 'https://www.notion.so/preview', sendError: null, sendAmbiguous: false }), r.sent++;
+  }
+  return r;
 };
 
 const prepItems = [
@@ -141,13 +177,52 @@ const extraHandlers: Record<string, (args: any) => unknown> = {
   costs_get_prices: () => [{ provider: 'claude', model: 'claude-sonnet-4-5', input: 3, output: 15, cache_read: 0.3, cache_write: 3.75, built_in: true }],
   meeting_cost: () => ({ total_usd: 0.042, tokens: 18400, by_purpose: [{ purpose: 'summary', tokens: 15200, cost_usd: 0.035 }, { purpose: 'extraction', tokens: 3200, cost_usd: 0.007 }] }),
   people_list: () => [],
-  // Tasks: status filter, claim, status change, add, edit, delete work on the in-memory list
-  tasks_list: ({ status }) => tasks.filter((t) => t.status === status),
-  tasks_claim: ({ id }) => updateTask(id, { owner: 'me' }),
-  tasks_set_status: ({ id, status }) => updateTask(id, { status }),
-  tasks_add: ({ text }) => { const t = { ...task(`task-${tasks.length + 1}`, text, 'me', 'open', null), meetingId: null, meetingTitle: null, meetingDate: null, source: 'manual' as const }; tasks.push(t); return t; },
-  tasks_edit: ({ id, text }) => updateTask(id, { text }),
-  tasks_delete: ({ id }) => { const i = tasks.findIndex((t) => t.id === id); if (i >= 0) tasks.splice(i, 1); return null; },
+  // Review queue and Notion: everything works on the in-memory lists above
+  tasks_queue_list: () => tasks,
+  tasks_set_review: ({ id, review }) => {
+    if (['sent', 'sending'].includes(tasks.find((x) => x.id === id)?.review ?? '')) throw new Error('task not found or already sent');
+    const patch = { open: { status: 'open', removedBy: null }, keep: { status: 'open', removedBy: null }, drop: { status: 'dismissed', removedBy: 'user' } }[review as 'open'];
+    if (!patch) throw new Error('unknown review state');
+    updateTask(id, { ...patch, review, owner: 'me' } as Partial<TaskRow>);
+    return null;
+  },
+  tasks_set_dest: ({ id, destId }) => { if (destId && !destinations.some((d) => d.id === destId)) throw new Error('unknown destination'); updateTask(id, { destId: destId ?? null }); return null; },
+  tasks_set_due_date: ({ id, dueDate }) => { updateTask(id, { dueDate: dueDate ?? null }); return null; },
+  tasks_mark_sent: ({ id }) => { updateTask(id, { review: 'sent', sendAmbiguous: false, sentAt: new Date().toISOString() }); return null; },
+  tasks_edit: ({ id, text }) => { updateTask(id, { text }); return null; },
+  tasks_set_status: ({ id, status }) => { updateTask(id, { status }); return null; },
+  notion_get_config: () => ({ tokenLast4, destinations, categoryDefaults }),
+  notion_set_token: ({ token }) => { tokenLast4 = String(token).slice(-4); return null; },
+  notion_remove_token: () => { tokenLast4 = null; return null; },
+  notion_test: () => {
+    const out: DestStatus[] = [{ destId: '', state: tokenLast4 ? 'connected' : 'token_missing', message: null }];
+    for (const d of destinations) {
+      d.lastStatus = d.id === 'd-personal' ? 'not_shared' : 'connected';
+      d.lastMessage = d.id === 'd-personal' ? NOT_SHARED : null;
+      out.push({ destId: d.id, state: d.lastStatus, message: d.lastMessage });
+    }
+    return out;
+  },
+  notion_read_columns: () => schema,
+  notion_save_destination: ({ dest }) => {
+    const saved: Destination = { ...dest, id: dest.id || `d-${destinations.length + 1}` };
+    const i = destinations.findIndex((d) => d.id === saved.id);
+    if (i >= 0) destinations[i] = saved; else destinations.push(saved);
+    return saved;
+  },
+  notion_delete_destination: ({ id }) => {
+    const i = destinations.findIndex((d) => d.id === id);
+    if (i >= 0) destinations.splice(i, 1);
+    tasks.forEach((t) => { if (t.destId === id) t.destId = null; });
+    categoryDefaults.forEach((c) => { if (c.destId === id) c.destId = null; });
+    return null;
+  },
+  notion_set_category_default: ({ templateKey, destId }) => {
+    const c = categoryDefaults.find((x) => x.templateKey === templateKey);
+    if (c) c.destId = destId ?? null; else categoryDefaults.push({ templateKey, destId: destId ?? null });
+    return null;
+  },
+  notion_send: ({ taskIds }) => sendRows(taskIds ?? []),
   // Prep: a calendar meeting has one, other meetings none
   prep_for_meeting: ({ meetingId }) => (['preview-7', 'preview-9'].includes(meetingId) ? mkPrep() : null),
   prep_get: () => mkPrep(),

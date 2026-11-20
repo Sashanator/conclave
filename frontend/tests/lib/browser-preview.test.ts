@@ -2,9 +2,17 @@ import { describe, expect, test } from 'bun:test';
 import { previewHandlers as h } from '../../src/lib/browser-preview';
 
 describe('browser preview mocks', () => {
-  test('preview-1 has three tasks: me, unassigned, dismissed', () => {
-    const all = ['open', 'done', 'dismissed'].flatMap((status) => h.tasks_list({ status }) as any[]).filter((t) => t.meetingId === 'preview-1');
-    expect(all.map((t) => `${t.owner}/${t.status}`).sort()).toEqual(['me/open', 'unassigned/dismissed', 'unassigned/open']);
+  test('the queue seed covers every review state', () => {
+    const rows = h.tasks_queue_list({}) as any[];
+    expect(new Set(rows.map((t) => t.review))).toEqual(new Set(['open', 'keep', 'drop', 'sent']));
+    expect(rows.some((t) => t.sendAmbiguous)).toBe(true);
+    expect(rows.some((t) => t.meetingId === null)).toBe(true);
+  });
+  test('send fails the unshared destination and sends the rest', () => {
+    const rows = h.tasks_queue_list({}) as any[];
+    const open = rows.filter((t) => t.review === 'open' && t.destId);
+    for (const t of open) h.tasks_set_review({ id: t.id, review: 'keep' });
+    expect(h.notion_send({ taskIds: open.map((t) => t.id) })).toEqual({ sent: open.length - 1, failed: 1, ambiguous: 0 });
   });
   test('an empty calls marker is rejected', () => {
     expect(() => h.knowledge_save_settings({ input: { calendar_marker: '' } })).toThrow('The calls marker must be 1–16 characters');

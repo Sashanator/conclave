@@ -28,7 +28,7 @@ test('settingsHref', () => expect(settingsHref('models')).toBe('/settings?tab=mo
 test('groups and labels', () => {
   expect(SETTINGS_GROUPS.map((g) => g.label)).toEqual(['Capture', 'AI', 'You', 'App']);
   const panes = SETTINGS_GROUPS.flatMap((g) => g.panes);
-  expect(panes.map((p) => p.label)).toEqual(['Recording & devices', 'Transcription & vocabulary', 'Speakers', 'Models & keys', 'Summaries', 'Copilot', 'Templates', 'Names & calendar', 'Appearance & app']);
+  expect(panes.map((p) => p.label)).toEqual(['Recording & devices', 'Transcription & vocabulary', 'Speakers', 'Models & keys', 'Summaries', 'Copilot', 'Templates', 'Names & calendar', 'Appearance & app', 'Notion']);
   expect(new Set(panes.map((p) => p.id)).size).toBe(panes.length);
 });
 

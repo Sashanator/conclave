@@ -8,7 +8,7 @@ const originals = {
   frame: { ...await import('../../src/components/PageFrame/PageFrame') },
   config: { ...await import('../../src/contexts/ConfigContext') },
 };
-const stubs = ['TranscriptSettings', 'RecordingSettings', 'UpdatesSettings', 'PreferenceSettings', 'SummaryModelSettings', 'CopilotSettings', 'KnowledgeSettings', 'TemplateSettings', 'TemplateAssistSettings', 'SpeakerSettings', 'Settings/ModelsKeysPane', 'Settings/SummariesPane'];
+const stubs = ['TranscriptSettings', 'RecordingSettings', 'UpdatesSettings', 'PreferenceSettings', 'SummaryModelSettings', 'CopilotSettings', 'KnowledgeSettings', 'TemplateSettings', 'TemplateAssistSettings', 'SpeakerSettings', 'Settings/ModelsKeysPane', 'Settings/SummariesPane', 'Settings/NotionSettings'];
 const stubOrig: Record<string, any> = {};
 for (const n of stubs) stubOrig[n] = { ...(await import(`../../src/components/${n}`)) };
 afterAll(() => {
@@ -48,6 +48,13 @@ test('old tab id maps to its pane', async () => {
   expect(text(r)).toContain('stub:KnowledgeSettings');
   tab = 'costs';
   expect((await render()).root.findByType('h1').children).toEqual(['Models & keys']);
+});
+
+test('tab=notion renders the Notion pane', async () => {
+  tab = 'notion';
+  const r = await render();
+  expect(r.root.findByType('h1').children).toEqual(['Notion']);
+  expect(text(r)).toContain('stub:NotionSettings');
 });
 
 test('no Back, no tabs, no Beta; nav shows groups with aria-current', async () => {

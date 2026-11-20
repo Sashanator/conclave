@@ -67,6 +67,7 @@ mod secrets;
 mod backup;
 mod recording;
 mod updates;
+mod notion;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};

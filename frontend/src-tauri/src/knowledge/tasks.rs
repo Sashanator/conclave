@@ -418,6 +418,7 @@ mod tests {
             text: text.to_string(),
             owner: "me".to_string(),
             due: None,
+            due_date: None,
             at: None,
         }
     }

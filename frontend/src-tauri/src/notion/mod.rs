@@ -88,3 +88,304 @@ pub struct SendReport {
 
 /// States of a destination that stop sending to it.
 pub(crate) const BLOCKING_STATES: [&str; 5] = ["not_shared", "not_found", "token_missing", "token_rejected", "mapping_broken"];
+
+pub(crate) const MAX_DESTINATIONS: usize = 9;
+
+const DEST_COLS: &str = "id, name, colour, position, database_id, data_source_id, mapping_json, last_status, last_message";
+
+type DestRow = (String, String, i64, i64, String, Option<String>, String, Option<String>, Option<String>);
+
+fn dest_from_row(r: DestRow) -> anyhow::Result<Destination> {
+    Ok(Destination {
+        id: r.0,
+        name: r.1,
+        colour: r.2 as u8,
+        position: r.3,
+        database_id: r.4,
+        data_source_id: r.5,
+        mapping: serde_json::from_str(&r.6)?,
+        last_status: r.7,
+        last_message: r.8,
+    })
+}
+
+pub(crate) async fn list_destinations(pool: &sqlx::SqlitePool) -> anyhow::Result<Vec<Destination>> {
+    let rows: Vec<DestRow> =
+        sqlx::query_as(&format!("SELECT {DEST_COLS} FROM notion_destinations ORDER BY position")).fetch_all(pool).await?;
+    rows.into_iter().map(dest_from_row).collect()
+}
+
+/// R4 value shape per kind.
+fn fixed_value_ok(f: &FixedValue) -> bool {
+    match f.kind.as_str() {
+        "select" | "status" => f.value.is_string(),
+        "multi_select" => f.value.as_array().is_some_and(|a| a.iter().all(|v| v.is_string())),
+        "checkbox" => f.value.is_boolean(),
+        _ => false,
+    }
+}
+
+fn validate(d: &Destination) -> Result<(String, String, String), String> {
+    let name = d.name.trim().to_string();
+    if name.is_empty() || name.chars().count() > 60 {
+        return Err("Give the database a name.".into());
+    }
+    if !(1..=9).contains(&d.colour) {
+        return Err("Pick a colour.".into());
+    }
+    let database_id = mapping::parse_database_id(&d.database_id)?;
+    let data_source_id = d
+        .data_source_id
+        .as_deref()
+        .and_then(mapping::parse_uuid)
+        .ok_or("Read the database's columns first.")?;
+    if d.mapping.title_prop.trim().is_empty() {
+        return Err("Choose the task text column.".into());
+    }
+    if let Some(f) = d.mapping.fixed.iter().find(|f| !fixed_value_ok(f)) {
+        return Err(format!("\u{201c}{}\u{201d} has a value Conclave can't send.", f.prop));
+    }
+    Ok((name, database_id, data_source_id))
+}
+
+fn db_err(e: sqlx::Error) -> String {
+    format!("Could not save: {e}")
+}
+
+/// Saves a destination (empty id = new). Status is never taken from the input: a saved mapping is untested again.
+pub(crate) async fn save_destination(pool: &sqlx::SqlitePool, dest: Destination) -> Result<Destination, String> {
+    let (name, database_id, data_source_id) = validate(&dest)?;
+    let mapping_json = serde_json::to_string(&dest.mapping).map_err(|e| e.to_string())?;
+    let id = if dest.id.is_empty() {
+        let id = uuid::Uuid::new_v4().to_string();
+        // One statement: the cap check and the insert cannot interleave with another save.
+        let r = sqlx::query(
+            "INSERT INTO notion_destinations (id, name, colour, position, database_id, data_source_id, mapping_json, created_at)
+             SELECT ?1, ?2, ?3, COALESCE(MAX(position),0)+1, ?4, ?5, ?6, ?7 FROM notion_destinations
+             HAVING COUNT(*) < ?8",
+        )
+        .bind(&id)
+        .bind(&name)
+        .bind(dest.colour as i64)
+        .bind(&database_id)
+        .bind(&data_source_id)
+        .bind(&mapping_json)
+        .bind(crate::knowledge::tasks::stamp())
+        .bind(MAX_DESTINATIONS as i64)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+        if r.rows_affected() == 0 {
+            return Err(format!("Conclave supports up to {MAX_DESTINATIONS} Notion databases."));
+        }
+        id
+    } else {
+        let r = sqlx::query(
+            "UPDATE notion_destinations SET name=?2, colour=?3, database_id=?4, data_source_id=?5, mapping_json=?6,
+             last_status=NULL, last_message=NULL WHERE id=?1",
+        )
+        .bind(&dest.id)
+        .bind(&name)
+        .bind(dest.colour as i64)
+        .bind(&database_id)
+        .bind(&data_source_id)
+        .bind(&mapping_json)
+        .execute(pool)
+        .await
+        .map_err(db_err)?;
+        if r.rows_affected() == 0 {
+            return Err("That Notion database is no longer in Settings.".into());
+        }
+        dest.id.clone()
+    };
+    let row: DestRow = sqlx::query_as(&format!("SELECT {DEST_COLS} FROM notion_destinations WHERE id = ?"))
+        .bind(&id)
+        .fetch_one(pool)
+        .await
+        .map_err(db_err)?;
+    dest_from_row(row).map_err(|e| e.to_string())
+}
+
+pub(crate) async fn delete_destination(pool: &sqlx::SqlitePool, id: &str) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    sqlx::query("DELETE FROM notion_destinations WHERE id = ?").bind(id).execute(&mut *tx).await.map_err(db_err)?;
+    sqlx::query("UPDATE tasks SET dest_id = NULL WHERE dest_id = ? AND review IN ('open','keep')")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    sqlx::query("UPDATE notion_category_defaults SET dest_id = NULL WHERE dest_id = ?")
+        .bind(id)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    tx.commit().await.map_err(db_err)
+}
+
+pub(crate) async fn list_category_defaults(pool: &sqlx::SqlitePool) -> anyhow::Result<Vec<CategoryDefault>> {
+    let rows: Vec<(String, Option<String>)> =
+        sqlx::query_as("SELECT template_key, dest_id FROM notion_category_defaults ORDER BY template_key").fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|(template_key, dest_id)| CategoryDefault { template_key, dest_id }).collect())
+}
+
+/// Sets the default for a category ('' = no template); a `Some` also fills its undecided open/keep tasks.
+pub(crate) async fn set_category_default(pool: &sqlx::SqlitePool, template_key: &str, dest_id: Option<&str>) -> Result<(), String> {
+    let mut tx = pool.begin().await.map_err(db_err)?;
+    if let Some(d) = dest_id {
+        let found: Option<(String,)> =
+            sqlx::query_as("SELECT id FROM notion_destinations WHERE id = ?").bind(d).fetch_optional(&mut *tx).await.map_err(db_err)?;
+        if found.is_none() {
+            return Err("That Notion database is no longer in Settings.".into());
+        }
+    }
+    sqlx::query(
+        "INSERT INTO notion_category_defaults (template_key, dest_id) VALUES (?1, ?2)
+         ON CONFLICT(template_key) DO UPDATE SET dest_id = excluded.dest_id",
+    )
+    .bind(template_key)
+    .bind(dest_id)
+    .execute(&mut *tx)
+    .await
+    .map_err(db_err)?;
+    if let Some(d) = dest_id {
+        sqlx::query(
+            "UPDATE tasks SET dest_id = ?1 WHERE dest_id IS NULL AND review IN ('open','keep')
+             AND meeting_id IN (SELECT id FROM meetings WHERE COALESCE(template_id,'') = ?2)",
+        )
+        .bind(d)
+        .bind(template_key)
+        .execute(&mut *tx)
+        .await
+        .map_err(db_err)?;
+    }
+    tx.commit().await.map_err(db_err)
+}
+
+/// Persists the last Test/send outcome of a destination (R1).
+pub(crate) async fn set_dest_status(pool: &sqlx::SqlitePool, dest_id: &str, state: &str, message: Option<&str>) -> anyhow::Result<()> {
+    sqlx::query("UPDATE notion_destinations SET last_status = ?, last_message = ? WHERE id = ?")
+        .bind(state)
+        .bind(message)
+        .bind(dest_id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::database::repositories::test_pool;
+
+    const DS: &str = "0123456789abcdef0123456789abcdef";
+    const DB: &str = "fedcba9876543210fedcba9876543210";
+
+    fn dest(id: &str, name: &str) -> Destination {
+        Destination {
+            id: id.into(),
+            name: name.into(),
+            colour: 1,
+            position: 0,
+            database_id: DB.into(),
+            data_source_id: Some(DS.into()),
+            mapping: Mapping { title_prop: "Name".into(), due_prop: None, meeting_prop: None, fixed: vec![] },
+            last_status: None,
+            last_message: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn save_inserts_normalises_and_updates() {
+        let pool = test_pool().await;
+        let a = save_destination(&pool, dest("", "  Work ")).await.unwrap();
+        let b = save_destination(&pool, dest("", "Personal")).await.unwrap();
+        assert_eq!(uuid::Uuid::parse_str(&a.id).is_ok(), true);
+        assert_eq!((a.name.as_str(), a.position, b.position), ("Work", 1, 2));
+        assert_eq!(a.database_id, "fedcba98-7654-3210-fedc-ba9876543210");
+        assert_eq!(a.data_source_id.as_deref(), Some("01234567-89ab-cdef-0123-456789abcdef"));
+        let mut e = a.clone();
+        e.name = "Office".into();
+        let e = save_destination(&pool, e).await.unwrap();
+        assert_eq!((e.name.as_str(), e.position), ("Office", 1));
+        let names: Vec<_> = list_destinations(&pool).await.unwrap().into_iter().map(|d| d.name).collect();
+        assert_eq!(names, ["Office", "Personal"]);
+        assert_eq!(
+            save_destination(&pool, dest("nope", "X")).await.unwrap_err(),
+            "That Notion database is no longer in Settings."
+        );
+    }
+
+    #[tokio::test]
+    async fn save_resets_status_and_ignores_incoming_status() {
+        let pool = test_pool().await;
+        let a = save_destination(&pool, dest("", "Work")).await.unwrap();
+        set_dest_status(&pool, &a.id, "mapping_broken", Some("x")).await.unwrap();
+        let l = &list_destinations(&pool).await.unwrap()[0];
+        assert_eq!((l.last_status.as_deref(), l.last_message.as_deref()), (Some("mapping_broken"), Some("x")));
+        let mut e = a.clone();
+        e.last_status = Some("connected".into());
+        let e = save_destination(&pool, e).await.unwrap();
+        assert_eq!((e.last_status, e.last_message), (None, None));
+    }
+
+    #[tokio::test]
+    async fn save_refuses_bad_input_and_a_tenth() {
+        let pool = test_pool().await;
+        let mut d = dest("", "Work");
+        d.colour = 10;
+        assert_eq!(save_destination(&pool, d).await.unwrap_err(), "Pick a colour.");
+        assert_eq!(save_destination(&pool, dest("", "  ")).await.unwrap_err(), "Give the database a name.");
+        let mut d = dest("", "Work");
+        d.data_source_id = None;
+        assert_eq!(save_destination(&pool, d).await.unwrap_err(), "Read the database's columns first.");
+        let mut d = dest("", "Work");
+        d.mapping.fixed = vec![FixedValue { prop: "Done".into(), kind: "checkbox".into(), value: "yes".into() }];
+        assert!(save_destination(&pool, d).await.unwrap_err().contains("has a value Conclave can't send."));
+        for i in 0..9 {
+            save_destination(&pool, dest("", &format!("D{i}"))).await.unwrap();
+        }
+        assert_eq!(
+            save_destination(&pool, dest("", "Tenth")).await.unwrap_err(),
+            "Conclave supports up to 9 Notion databases."
+        );
+        assert_eq!(list_destinations(&pool).await.unwrap().len(), 9);
+    }
+
+    #[tokio::test]
+    async fn category_default_fills_undecided_tasks_and_delete_clears_references() {
+        let pool = test_pool().await;
+        for (m, t) in [("m1", Some("standup")), ("m2", None)] {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at, template_id) VALUES (?, 'T', 't', 't', ?)")
+                .bind(m)
+                .bind(t)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        for (id, review, m) in [("t1", "open", "m1"), ("t2", "keep", "m1"), ("t3", "sent", "m1"), ("t4", "open", "m2")] {
+            sqlx::query("INSERT INTO tasks (id, meeting_id, text, owner, status, source, created_at, review) VALUES (?, ?, 'x', 'me', 'open', 'auto', 't', ?)")
+                .bind(id)
+                .bind(m)
+                .bind(review)
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
+        let d = save_destination(&pool, dest("", "Work")).await.unwrap();
+        assert!(set_category_default(&pool, "standup", Some("nope")).await.is_err());
+        set_category_default(&pool, "standup", Some(&d.id)).await.unwrap();
+        let dests = || async {
+            sqlx::query_as::<_, (String, Option<String>)>("SELECT id, dest_id FROM tasks ORDER BY id").fetch_all(&pool).await.unwrap()
+        };
+        let want = Some(d.id.clone());
+        assert_eq!(dests().await, [("t1".into(), want.clone()), ("t2".into(), want), ("t3".into(), None), ("t4".into(), None)]);
+        assert_eq!(
+            list_category_defaults(&pool).await.unwrap(),
+            [CategoryDefault { template_key: "standup".into(), dest_id: Some(d.id.clone()) }]
+        );
+        delete_destination(&pool, &d.id).await.unwrap();
+        assert!(dests().await.iter().all(|(_, x)| x.is_none()));
+        assert_eq!(list_category_defaults(&pool).await.unwrap()[0].dest_id, None);
+        assert!(list_destinations(&pool).await.unwrap().is_empty());
+    }
+}

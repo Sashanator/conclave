@@ -360,8 +360,12 @@ impl MeetingsRepository {
 pub(crate) const DISMISS_KEEP_DAYS: i64 = 30;
 
 /// What both deletes remove: the recording's data. Tasks survive with the meeting link cleared iff they are
-/// not dismissed and are mine or edited; the rest go. Notes, prep, usage and the row are the caller's call.
+/// not dismissed and are mine or edited, or are kept, being sent or sent to Notion; the rest go. Notes, prep, usage and the row are the caller's call.
 async fn delete_recording_data(tx: &mut SqliteConnection, meeting_id: &str) -> Result<(), SqlxError> {
+    // Survivors keep their meeting's title and date so they still send with context (spec §5.1).
+    let copy = format!("UPDATE tasks SET meeting_title = m.title, meeting_date = {d} FROM meetings m \
+        WHERE m.id = tasks.meeting_id AND tasks.meeting_id = ?", d = meeting_date_sql("m"));
+    sqlx::query(&copy).bind(meeting_id).execute(&mut *tx).await?;
     // Explicit, not only the FK cascade: these tables have no FK or the FK is not enforced everywhere.
     for sql in [
         "DELETE FROM transcript_chunks WHERE meeting_id = ?",
@@ -369,7 +373,7 @@ async fn delete_recording_data(tx: &mut SqliteConnection, meeting_id: &str) -> R
         "DELETE FROM meeting_speakers WHERE meeting_id = ?",
         "DELETE FROM speaker_jobs WHERE meeting_id = ?",
         "UPDATE voiceprints SET source_meeting_id = NULL WHERE source_meeting_id = ?",
-        "UPDATE tasks SET meeting_id = NULL, at = NULL WHERE meeting_id = ? AND status <> 'dismissed' AND (owner = 'me' OR edited = 1)",
+        "UPDATE tasks SET meeting_id = NULL, at = NULL WHERE meeting_id = ? AND ((status <> 'dismissed' AND (owner = 'me' OR edited = 1)) OR review IN ('keep', 'sending', 'sent'))",
         "DELETE FROM tasks WHERE meeting_id = ?",
         "DELETE FROM meeting_extracts WHERE meeting_id = ?",
         "DELETE FROM transcripts WHERE meeting_id = ?",
@@ -667,6 +671,30 @@ mod migration_tests {
             assert_eq!(ids(&pool, "SELECT id FROM tasks WHERE meeting_id IS NULL AND at IS NULL ORDER BY id").await, ["t1", "t2", "t3", "t4", "te"]);
             assert_eq!(ids(&pool, "SELECT id FROM tasks WHERE meeting_id = 'N' AND at = 8.0").await, ["t5"]);
             assert_eq!(ids(&pool, "SELECT meeting_id FROM meeting_extracts").await, ["N"]);
+        }
+    }
+
+    #[tokio::test]
+    async fn decided_tasks_survive_with_meeting_copy() {
+        for recording_only in [false, true] {
+            let pool = test_pool().await;
+            insert_meeting(&pool, "M").await;
+            exec(
+                &pool,
+                "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, at, created_at, review, removed_by) VALUES \
+                 ('k', 'M', 'k', 'me', 'open', 'auto', 1, 1.0, 't', 'keep', NULL), ('s', 'M', 's', 'unassigned', 'open', 'auto', 0, 2.0, 't', 'sent', NULL), \
+                 ('u', 'M', 'u', 'me', 'dismissed', 'auto', 1, 3.0, 't', 'drop', 'user'), ('a', 'M', 'a', 'unassigned', 'open', 'auto', 0, 4.0, 't', 'drop', 'ai')",
+            )
+            .await;
+            if recording_only {
+                assert!(MeetingsRepository::delete_recording(&pool, "M").await.unwrap());
+            } else {
+                assert!(MeetingsRepository::delete_meeting(&pool, "M").await.unwrap());
+            }
+            let rows: Vec<(String, Option<String>, Option<String>, Option<String>)> =
+                sqlx::query_as("SELECT id, meeting_id, meeting_title, meeting_date FROM tasks ORDER BY id").fetch_all(&pool).await.unwrap();
+            let want = |id: &str| (id.to_string(), None, Some("M".to_string()), Some("2026-10-17 12:00:00".to_string()));
+            assert_eq!(rows, [want("k"), want("s")]);
         }
     }
 

@@ -418,6 +418,7 @@ mod tests {
             text: text.to_string(),
             owner: "me".to_string(),
             due: None,
+            due_date: None,
             at: None,
         }
     }
@@ -817,5 +818,72 @@ mod meeting_date_tests {
         let rows = list(&pool, "open").await.unwrap();
         assert_eq!(rows.iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["t2", "t1"]);
         assert_eq!(rows[0].meeting_date.as_deref(), Some("2026-11-09T10:00:00.000+00:00"));
+    }
+}
+
+#[cfg(test)]
+mod notion_migration_tests {
+    use sqlx::migrate::Migrator;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use sqlx::SqlitePool;
+    use std::path::Path;
+
+    const NOTION_VERSION: i64 = 20261120000001;
+
+    async fn exec(pool: &SqlitePool, sql: &str) {
+        sqlx::query(sql).execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn tasks_notion_migration_on_previous_schema() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        let mut m = Migrator::new(Path::new("./migrations")).await.unwrap();
+        let all = m.migrations.clone();
+        m.migrations = all.iter().filter(|x| x.version < NOTION_VERSION).cloned().collect::<Vec<_>>().into();
+        m.run(&pool).await.unwrap();
+
+        for (id, reviewed) in [("R", 1), ("U", 0), ("Z", 0), ("Y", 0), ("F", 0)] {
+            exec(&pool, &format!("INSERT INTO meetings (id,title,created_at,updated_at,reviewed) VALUES ('{id}','T','2026-11-01T10:00:00+00:00','2026-11-01T10:00:00+00:00',{reviewed})")).await;
+        }
+        for (mid, status) in [("Z", "done"), ("Y", "done"), ("F", "failed")] {
+            exec(&pool, &format!("INSERT INTO meeting_extracts (meeting_id, decisions_json, requests_json, status, extracted_at) VALUES ('{mid}','[]','[]','{status}','c')")).await;
+        }
+        let tasks = [
+            ("a", "U", "me", "open", "auto", 0), ("b", "R", "me", "open", "auto", 0),
+            ("c", "U", "me", "done", "auto", 0), ("d", "U", "me", "dismissed", "auto", 1),
+            ("e", "", "me", "open", "auto", 0), ("f", "", "me", "open", "manual", 0),
+            ("g", "U", "unassigned", "open", "auto", 0), ("h", "R", "unassigned", "open", "auto", 0),
+            ("i", "U", "unassigned", "done", "auto", 0), ("j", "Y", "unassigned", "open", "auto", 0),
+        ];
+        for (id, mid, owner, status, source, edited) in tasks {
+            let mid = if mid.is_empty() { "NULL".to_string() } else { format!("'{mid}'") };
+            exec(&pool, &format!("INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) VALUES ('{id}', {mid}, 'x', '{owner}', '{status}', '{source}', {edited}, 'c')")).await;
+        }
+        m.migrations = all;
+        m.run(&pool).await.unwrap();
+
+        let rows: Vec<(String, String, Option<String>, String, Option<String>, i64)> =
+            sqlx::query_as("SELECT id, review, removed_by, status, dest_id, send_ambiguous FROM tasks ORDER BY id")
+                .fetch_all(&pool).await.unwrap();
+        let exp = |id: &str, review: &str, by: Option<&str>, status: &str| {
+            (id.to_string(), review.to_string(), by.map(String::from), status.to_string(), None, 0i64)
+        };
+        let expected = vec![
+            exp("a", "open", None, "open"), exp("b", "drop", None, "open"), exp("c", "drop", None, "done"),
+            exp("d", "drop", None, "dismissed"), exp("e", "open", None, "open"), exp("f", "drop", None, "open"),
+            exp("g", "drop", Some("ai"), "open"), exp("h", "drop", Some("ai"), "open"),
+            exp("i", "drop", None, "done"), exp("j", "drop", Some("ai"), "open"),
+        ];
+        assert_eq!(rows, expected);
+
+        let reviewed: Vec<(String, i64)> = sqlx::query_as("SELECT id, reviewed FROM meetings ORDER BY id").fetch_all(&pool).await.unwrap();
+        let want = [("F", 0), ("R", 1), ("U", 0), ("Y", 1), ("Z", 1)].map(|(i, r)| (i.to_string(), r));
+        assert_eq!(reviewed, want);
+
+        for t in ["notion_destinations", "notion_category_defaults"] {
+            let (n,): (i64,) = sqlx::query_as(&format!("SELECT COUNT(*) FROM {t}")).fetch_one(&pool).await.unwrap();
+            assert_eq!(n, 0);
+        }
+        sqlx::query("SELECT last_status, last_message FROM notion_destinations").fetch_all(&pool).await.unwrap();
     }
 }

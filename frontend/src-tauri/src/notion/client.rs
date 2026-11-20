@@ -25,6 +25,8 @@ pub(crate) enum CallError {
     Offline,
     /// Timeout or a connection lost after sending, or an unreadable 2xx: the write may have happened.
     NoAnswer,
+    /// A stored id that is not a UUID: a local problem, nothing was sent.
+    BadId,
 }
 
 impl CallError {
@@ -32,7 +34,7 @@ impl CallError {
         match self {
             CallError::NoAnswer => true,
             CallError::Http { status, .. } => *status >= 500,
-            CallError::Offline => false,
+            CallError::Offline | CallError::BadId => false,
         }
     }
 
@@ -43,6 +45,7 @@ impl CallError {
             // names `body.properties...`. Match the path, not the bare word "parent" (a property may be so named).
             CallError::Http { status: 400, message, .. } if message.contains("body.parent") => "not_found",
             CallError::Http { status: 400, .. } => "mapping_broken",
+            CallError::BadId => "not_found",
             CallError::Http { status: 401, .. } => "token_rejected",
             CallError::Http { status: 403 | 404, .. } => "not_shared",
             _ => "offline",
@@ -58,6 +61,7 @@ impl CallError {
             CallError::Http { status, .. } if *status >= 500 => format!("Notion had a problem (HTTP {status})."),
             CallError::Http { status, message, .. } if message.is_empty() => format!("{what}: Notion refused it (HTTP {status})."),
             CallError::Http { message, .. } => format!("{what}: Notion refused it: {message}"),
+            CallError::BadId => format!("{what}: the stored database id is invalid. Re-add it in Settings → Notion."),
             CallError::Offline => "Notion could not be reached. Check your internet connection.".into(),
             CallError::NoAnswer => "Notion did not answer in time.".into(),
         }
@@ -68,7 +72,7 @@ impl CallError {
 fn valid_id(id: &str) -> Result<String, CallError> {
     super::mapping::parse_uuid(id)
         .filter(|u| u == id)
-        .ok_or(CallError::Http { status: 400, code: "invalid_id".into(), message: "not a Notion id".into() })
+        .ok_or(CallError::BadId)
 }
 
 impl NotionClient {

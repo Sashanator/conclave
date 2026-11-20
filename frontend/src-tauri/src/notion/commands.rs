@@ -141,7 +141,11 @@ pub async fn notion_set_token(state: State<'_, AppState>, token: String) -> Resu
     crate::secrets::store()
         .set(crate::secrets::NOTION_TOKEN, &t)
         .map_err(|e| format!("Couldn't save the Notion token: {e}"))?;
-    clear_token_states(state.db_manager.pool()).await.map_err(|e| e.to_string())
+    // The token is stored; a failed state reset only leaves stale statuses until the next Test.
+    if let Err(e) = clear_token_states(state.db_manager.pool()).await {
+        log::warn!("notion: could not clear token states after saving a token: {e}");
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -324,6 +328,17 @@ mod tests {
         let s = test_all(&pool, Some(&dead)).await.unwrap();
         assert_eq!(s[1].state, "offline");
         assert_eq!(list_destinations(&pool).await.unwrap()[0].last_status.as_deref(), Some("not_found"));
+    }
+
+    #[tokio::test]
+    async fn a_malformed_stored_id_is_a_local_problem_not_a_notion_refusal() {
+        let pool = test_pool().await;
+        let d = add(&pool, "Job tasks", None).await;
+        sqlx::query("UPDATE notion_destinations SET database_id = 'junk' WHERE id = ?").bind(&d.id).execute(&pool).await.unwrap();
+        let f = serve(vec![reply(200, "", "{}")]).await;
+        let s = test_all(&pool, Some(&client(&f.base))).await.unwrap();
+        assert_eq!(s[1].message.as_deref(), Some("Job tasks: the stored database id is invalid. Re-add it in Settings → Notion."));
+        assert_eq!(f.requests.lock().unwrap().len(), 1);
     }
 
     #[tokio::test]

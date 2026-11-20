@@ -12,6 +12,7 @@ pub(crate) mod migrate;
 pub const GITHUB_UPDATE_TOKEN: &str = "githubUpdateToken";
 pub const CALENDAR_URL: &str = "calendarUrl";
 pub const CUSTOM_OPENAI_API_KEY: &str = "customOpenAIConfig.apiKey";
+pub const NOTION_TOKEN: &str = "notionToken";
 /// Credential Manager blob limit is 2560 bytes; we count UTF-16 bytes.
 pub const MAX_VALUE_BYTES: usize = 2560;
 

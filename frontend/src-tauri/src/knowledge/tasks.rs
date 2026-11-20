@@ -24,6 +24,15 @@ pub struct TaskRow {
     pub status: String,
     pub source: String,
     pub created_at: String,
+    pub review: String,
+    pub removed_by: Option<String>,
+    pub dest_id: Option<String>,
+    pub due_date: Option<String>,
+    pub notion_url: Option<String>,
+    pub sent_at: Option<String>,
+    pub send_error: Option<String>,
+    pub send_ambiguous: bool,
+    pub template_id: Option<String>,
 }
 
 /// Lowercase, trimmed, with runs of whitespace collapsed: the key for "the same task".
@@ -60,7 +69,11 @@ pub(crate) async fn apply_extraction(
     if has_summary.is_none() {
         return Ok(false);
     }
-    sqlx::query("DELETE FROM tasks WHERE meeting_id = ? AND source = 'auto' AND status = 'open' AND edited = 0")
+    // Only untouched AI output goes: a task the user kept, removed, sent or edited stays (R7).
+    sqlx::query(
+        "DELETE FROM tasks WHERE meeting_id = ? AND source = 'auto' AND status = 'open' AND edited = 0 \
+         AND (review = 'open' OR (review = 'drop' AND removed_by = 'ai'))",
+    )
         .bind(meeting_id)
         .execute(&mut *tx)
         .await?;
@@ -75,6 +88,7 @@ pub(crate) async fn apply_extraction(
         .iter()
         .flat_map(|(text, origin)| std::iter::once(normalise(text)).chain(origin.clone()))
         .collect();
+    let dest = default_dest_for_meeting(&mut *tx, meeting_id).await?;
     let now = stamp();
     for task in &ex.tasks {
         let key = normalise(&task.text);
@@ -82,9 +96,11 @@ pub(crate) async fn apply_extraction(
             continue;
         }
         // Guarded: a meeting deleted mid-run gets no task.
+        let unassigned = task.owner == "unassigned";
         sqlx::query(
-            "INSERT INTO tasks (id, meeting_id, text, owner, due, at, status, source, edited, created_at, origin_norm) \
-             SELECT ?, ?, ?, ?, ?, ?, 'open', 'auto', 0, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?)",
+            "INSERT INTO tasks (id, meeting_id, text, owner, due, at, status, source, edited, created_at, origin_norm, \
+             review, removed_by, dest_id, due_date) \
+             SELECT ?, ?, ?, ?, ?, ?, 'open', 'auto', 0, ?, ?, ?, ?, ?, ? WHERE EXISTS (SELECT 1 FROM meetings WHERE id = ?)",
         )
         .bind(Uuid::new_v4().to_string())
         .bind(meeting_id)
@@ -94,10 +110,23 @@ pub(crate) async fn apply_extraction(
         .bind(task.at)
         .bind(&now)
         .bind(&key)
+        .bind(if unassigned { "drop" } else { "open" })
+        .bind(unassigned.then_some("ai"))
+        .bind(&dest)
+        .bind(&task.due_date)
         .bind(meeting_id)
         .execute(&mut *tx)
         .await?;
     }
+    // Nothing left to review: the meeting counts as reviewed (spec 5.7). Never cleared.
+    sqlx::query(
+        "UPDATE meetings SET reviewed = 1 WHERE id = ? \
+         AND NOT EXISTS (SELECT 1 FROM tasks WHERE meeting_id = ? AND review = 'open')",
+    )
+    .bind(meeting_id)
+    .bind(meeting_id)
+    .execute(&mut *tx)
+    .await?;
     if let Some(gist) = &ex.gist {
         sqlx::query("UPDATE meetings SET gist = ? WHERE id = ?")
             .bind(gist)
@@ -120,6 +149,22 @@ pub(crate) async fn apply_extraction(
     }
     tx.commit().await?;
     Ok(true)
+}
+
+/// The destination the meeting's category (template) defaults to; None for "Ask me", no default, or a deleted destination.
+pub(crate) async fn default_dest_for_meeting<'c>(
+    exec: impl sqlx::SqliteExecutor<'c>,
+    meeting_id: &str,
+) -> Result<Option<String>, sqlx::Error> {
+    sqlx::query_scalar(
+        "SELECT d.dest_id FROM meetings m \
+         JOIN notion_category_defaults d ON d.template_key = COALESCE(m.template_id, '') \
+         JOIN notion_destinations n ON n.id = d.dest_id WHERE m.id = ?",
+    )
+    .bind(meeting_id)
+    .fetch_optional(exec)
+    .await
+    .map(Option::flatten)
 }
 
 /// Sets an extraction's status and returns the rows written. `lists` replaces the decisions and requests JSON; None
@@ -183,6 +228,19 @@ fn found(rows: u64) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// The shared SELECT for `TaskRow`; callers append WHERE/ORDER. The meeting's title and date fall back to the copies
+/// kept on the task once its meeting link is cleared.
+pub(crate) fn select_sql() -> String {
+    let d = crate::database::repositories::meeting::meeting_date_sql("m");
+    format!(
+        "SELECT t.id, t.meeting_id, COALESCE(m.title, t.meeting_title) AS meeting_title, \
+         COALESCE({d}, t.meeting_date) AS meeting_date, t.text, t.owner, t.due, t.at, t.status, t.source, \
+         t.created_at, t.review, t.removed_by, t.dest_id, t.due_date, t.notion_url, t.sent_at, t.send_error, \
+         t.send_ambiguous, m.template_id \
+         FROM tasks t LEFT JOIN meetings m ON m.id = t.meeting_id"
+    )
+}
+
 /// Open tasks (meeting date desc, then extraction order, manual last), done tasks (latest done first) or dismissed ones (newest first).
 pub(crate) async fn list(pool: &SqlitePool, status: &str) -> anyhow::Result<Vec<TaskRow>> {
     let d = crate::database::repositories::meeting::meeting_date_sql("m");
@@ -193,12 +251,7 @@ pub(crate) async fn list(pool: &SqlitePool, status: &str) -> anyhow::Result<Vec<
         "dismissed" => "t.rowid DESC",
         _ => anyhow::bail!("unknown task list"),
     };
-    let sql = format!(
-        "SELECT t.id, t.meeting_id, m.title AS meeting_title, {d} AS meeting_date, t.text, t.owner, \
-         t.due, t.at, t.status, t.source, t.created_at \
-         FROM tasks t LEFT JOIN meetings m ON m.id = t.meeting_id \
-         WHERE t.status = ? ORDER BY {order}"
-    );
+    let sql = format!("{} WHERE t.status = ? ORDER BY {order}", select_sql());
     Ok(sqlx::query_as(&sql).bind(status).fetch_all(pool).await?)
 }
 
@@ -252,6 +305,15 @@ pub(crate) async fn add(pool: &SqlitePool, text: &str) -> anyhow::Result<TaskRow
         status: "open".to_string(),
         source: "manual".to_string(),
         created_at: stamp(),
+        review: "open".to_string(),
+        removed_by: None,
+        dest_id: None,
+        due_date: None,
+        notion_url: None,
+        sent_at: None,
+        send_error: None,
+        send_ambiguous: false,
+        template_id: None,
     };
     sqlx::query(
         "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) \
@@ -515,6 +577,85 @@ mod tests {
             .await
             .unwrap();
         assert_eq!((tasks, extracts), (0, 0));
+    }
+
+    async fn add_dest(pool: &SqlitePool, id: &str, template_key: &str, dest: Option<&str>) {
+        sqlx::query("INSERT OR IGNORE INTO notion_destinations (id, name, colour, position, database_id, mapping_json, created_at) VALUES (?, ?, 1, 0, 'db', '{}', 't')")
+            .bind(id).bind(id).execute(pool).await.unwrap();
+        sqlx::query("INSERT INTO notion_category_defaults (template_key, dest_id) VALUES (?, ?)")
+            .bind(template_key).bind(dest).execute(pool).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn category_default_destination() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        insert_meeting(&pool, "S").await;
+        sqlx::query("UPDATE meetings SET template_id = 'standup' WHERE id = 'S'").execute(&pool).await.unwrap();
+        assert_eq!(default_dest_for_meeting(&pool, "M").await.unwrap(), None);
+        add_dest(&pool, "job", "", Some("job")).await;
+        assert_eq!(default_dest_for_meeting(&pool, "M").await.unwrap().as_deref(), Some("job"));
+        add_dest(&pool, "job", "standup", None).await;
+        assert_eq!(default_dest_for_meeting(&pool, "S").await.unwrap(), None);
+        sqlx::query("DELETE FROM notion_destinations").execute(&pool).await.unwrap();
+        assert_eq!(default_dest_for_meeting(&pool, "M").await.unwrap(), None);
+    }
+
+    #[tokio::test]
+    async fn new_tasks_get_review_state_and_default_destination() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        add_dest(&pool, "job", "", Some("job")).await;
+        let mut theirs = task("Theirs");
+        theirs.owner = "unassigned".into();
+        theirs.due_date = Some("2026-11-26".into());
+        apply_extraction(&pool, "M", &extraction(vec![task("Mine"), theirs]), &stamp()).await.unwrap();
+        let rows: Vec<(String, String, Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+            "SELECT text, review, removed_by, dest_id, due_date FROM tasks ORDER BY rowid",
+        ).fetch_all(&pool).await.unwrap();
+        let s = |x: &str| Some(x.to_string());
+        assert_eq!(rows, vec![
+            ("Mine".into(), "open".into(), None, s("job"), None),
+            ("Theirs".into(), "drop".into(), s("ai"), s("job"), s("2026-11-26")),
+        ]);
+    }
+
+    #[tokio::test]
+    async fn empty_extraction_marks_meeting_reviewed() {
+        let pool = test_pool().await;
+        for m in ["E", "T", "O", "P"] {
+            insert_meeting(&pool, m).await;
+        }
+        sqlx::query("UPDATE meetings SET reviewed = 1 WHERE id = 'P'").execute(&pool).await.unwrap();
+        let mut theirs = task("Theirs");
+        theirs.owner = "unassigned".into();
+        for (m, tasks) in [("E", vec![]), ("T", vec![theirs]), ("O", vec![task("Mine")]), ("P", vec![task("Mine")])] {
+            assert!(apply_extraction(&pool, m, &extraction(tasks), &stamp()).await.unwrap());
+        }
+        let rows: Vec<(String, i64)> = sqlx::query_as("SELECT id, reviewed FROM meetings ORDER BY id").fetch_all(&pool).await.unwrap();
+        let r: Vec<(&str, i64)> = rows.iter().map(|r| (r.0.as_str(), r.1)).collect();
+        assert_eq!(r, vec![("E", 1), ("O", 0), ("P", 1), ("T", 1)]);
+    }
+
+    #[tokio::test]
+    async fn reextract_replaces_only_untouched_ai_output() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        for (id, text) in [("k", "K"), ("x", "X"), ("s", "S"), ("o", "O"), ("a", "A")] {
+            insert_task(&pool, id, Some("M"), text, "open", "auto", 0).await;
+        }
+        for (id, review, by) in [("k", "keep", None), ("x", "drop", Some("user")), ("s", "sent", None), ("a", "drop", Some("ai"))] {
+            sqlx::query("UPDATE tasks SET review = ?, removed_by = ? WHERE id = ?")
+                .bind(review).bind(by).bind(id).execute(&pool).await.unwrap();
+        }
+        let ex = extraction(vec![task("K"), task("X"), task("S"), task("N")]);
+        assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
+        let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT text, review, id FROM tasks ORDER BY text")
+            .fetch_all(&pool).await.unwrap();
+        let r: Vec<(&str, &str)> = rows.iter().map(|r| (r.0.as_str(), r.1.as_str())).collect();
+        assert_eq!(r, vec![("K", "keep"), ("N", "open"), ("S", "sent"), ("X", "drop")]);
+        let ids: Vec<&str> = rows.iter().filter(|r| r.0 != "N").map(|r| r.2.as_str()).collect();
+        assert_eq!(ids, vec!["k", "s", "x"]);
     }
 
     async fn id_of(pool: &SqlitePool, text: &str) -> String {

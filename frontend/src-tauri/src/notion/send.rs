@@ -6,7 +6,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use sqlx::SqlitePool;
 
-use super::client::NotionClient;
+use super::client::{CallError, NotionClient};
 use super::mapping::{page_body, SendTask};
 use super::{list_destinations, set_dest_status, Destination, SendReport, BLOCKING_STATES};
 use crate::database::repositories::meeting::meeting_date_sql;
@@ -44,7 +44,9 @@ async fn mark(pool: &SqlitePool, dests: &mut HashMap<String, Destination>, id: &
 }
 
 /// `task_ids` None: every kept task with a destination, except unsure ones. Some: exactly those, re-checked.
-pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Option<Vec<String>>) -> Result<SendReport, String> {
+/// Unsure rows (`send_ambiguous`) are skipped unless `resend_ambiguous`, even when listed: only the UI's "Send again" sets it.
+/// After a final 429 or an offline error the run stops and the rest keep that error (no burst of calls).
+pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Option<Vec<String>>, resend_ambiguous: bool) -> Result<SendReport, String> {
     if SENDING.swap(true, Ordering::SeqCst) {
         return Err("A send is already running".into());
     }
@@ -70,7 +72,29 @@ pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Opt
         meeting_date_sql("m")
     );
     let mut report = SendReport::default();
+    let mut stopped: Option<String> = None;
     for id in ids {
+        if let Some(msg) = &stopped {
+            let r = sqlx::query("UPDATE tasks SET send_error = ? WHERE id = ? AND review = 'keep' AND send_ambiguous = 0")
+                .bind(msg)
+                .bind(&id)
+                .execute(pool)
+                .await;
+            if r.is_ok_and(|r| r.rows_affected() == 1) {
+                report.failed += 1;
+            }
+            continue;
+        }
+        if !resend_ambiguous {
+            let unsure: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM tasks WHERE id = ? AND review = 'keep' AND send_ambiguous = 1")
+                .bind(&id)
+                .fetch_one(pool)
+                .await
+                .map_err(|e| format!("Could not read the tasks: {e}"))?;
+            if unsure == 1 {
+                continue;
+            }
+        }
         let row: Option<TaskRow> = sqlx::query_as(&sql)
             .bind(&id)
             .fetch_optional(pool)
@@ -114,6 +138,9 @@ pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Opt
                 .bind(&id)
                 .execute(pool)
                 .await;
+                if r.as_ref().is_ok_and(|r| r.rows_affected() == 0) {
+                    log::warn!("notion: task {id} was sent but its row changed meanwhile");
+                }
                 mark(pool, &mut dests, &dest.id, "connected", None).await;
                 r
             }
@@ -141,6 +168,9 @@ pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Opt
                     }
                 } else if BLOCKING_STATES.contains(&e.state()) {
                     mark(pool, &mut dests, &dest.id, e.state(), Some(&msg)).await;
+                }
+                if matches!(e, CallError::Offline | CallError::Http { status: 429, .. }) {
+                    stopped = Some(msg.clone());
                 }
                 r
             }
@@ -239,7 +269,7 @@ mod tests {
         task(&pool, "t2", "keep", 0).await;
         task(&pool, "t3", "open", 0).await;
         let f = serve(vec![ok("p1"), ok("p2")]).await;
-        let r = send(&pool, &client(&f), None).await.unwrap();
+        let r = send(&pool, &client(&f), None, false).await.unwrap();
         assert_eq!((r.sent, r.failed, r.ambiguous), (2, 0, 0));
         assert_eq!(row(&pool, "t1").await, ("sent".into(), Some("https://www.notion.so/p1".into()), None, false));
         assert_eq!(row(&pool, "t2").await.1.as_deref(), Some("https://www.notion.so/p2"));
@@ -256,7 +286,7 @@ mod tests {
         task(&pool, "t1", "keep", 0).await;
         let f = serve(vec![Reply::Hang]).await;
         let c = Arc::new(client(&f));
-        let h = { let (p, c) = (pool.clone(), c.clone()); tokio::spawn(async move { send(&p, &c, None).await }) };
+        let h = { let (p, c) = (pool.clone(), c.clone()); tokio::spawn(async move { send(&p, &c, None, false).await }) };
         tokio::time::sleep(Duration::from_millis(200)).await;
         assert_eq!(row(&pool, "t1").await.0, "sending");
         let r = h.await.unwrap().unwrap();
@@ -272,7 +302,7 @@ mod tests {
         let pool = setup().await;
         task(&pool, "t1", "keep", 0).await;
         let f = serve(vec![reply(400, "", r#"{"code":"validation_error","message":"Due is not a property that exists. ntn_SECRET123"}"#)]).await;
-        let r = send(&pool, &client(&f), None).await.unwrap();
+        let r = send(&pool, &client(&f), None, false).await.unwrap();
         assert_eq!((r.sent, r.failed, r.ambiguous), (0, 1, 0));
         let (rev, _, err, amb) = row(&pool, "t1").await;
         assert_eq!((rev.as_str(), amb), ("keep", false));
@@ -286,20 +316,20 @@ mod tests {
         let pool = setup().await;
         task(&pool, "t1", "keep", 0).await;
         let f = serve(vec![reply(503, "", "{}")]).await;
-        let r = send(&pool, &client(&f), None).await.unwrap();
+        let r = send(&pool, &client(&f), None, false).await.unwrap();
         assert_eq!(r.ambiguous, 1);
         assert!(row(&pool, "t1").await.3);
     }
 
     #[tokio::test]
-    async fn ambiguous_rows_are_sent_only_when_named() {
+    async fn ambiguous_rows_are_sent_only_when_named_and_resent() {
         let _l = SEND_TEST_LOCK.lock().await;
         let pool = setup().await;
         task(&pool, "t1", "keep", 1).await;
         let f = serve(vec![ok("p1")]).await;
-        assert_eq!(send(&pool, &client(&f), None).await.unwrap(), SendReport::default());
+        assert_eq!(send(&pool, &client(&f), None, false).await.unwrap(), SendReport::default());
         assert_eq!(reqs(&f), 0);
-        let r = send(&pool, &client(&f), Some(vec!["t1".into()])).await.unwrap();
+        let r = send(&pool, &client(&f), Some(vec!["t1".into()]), true).await.unwrap();
         assert_eq!(r.sent, 1);
         assert!(!row(&pool, "t1").await.3);
     }
@@ -314,11 +344,55 @@ mod tests {
         task_on(&pool, "t3", "keep", 0, Some("d2")).await;
         let f = serve(vec![]).await;
         let ids = ["t1", "t2", "t3", "nope"].map(String::from).to_vec();
-        let r = send(&pool, &client(&f), Some(ids)).await.unwrap();
+        let r = send(&pool, &client(&f), Some(ids), false).await.unwrap();
         assert_eq!((r.sent, r.failed, r.ambiguous), (0, 4, 0));
         assert_eq!(reqs(&f), 0);
         assert_eq!(row(&pool, "t2").await.2.as_deref(), Some("Choose a Notion database first."));
         assert!(row(&pool, "t3").await.2.unwrap().starts_with("Personal tasks"));
+    }
+
+    #[tokio::test]
+    async fn unsure_rows_are_skipped_unless_resend_is_set() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        task(&pool, "t1", "keep", 1).await;
+        let f = serve(vec![ok("p1")]).await;
+        let ids = || Some(vec!["t1".to_string()]);
+        let r = send(&pool, &client(&f), ids(), false).await.unwrap();
+        assert_eq!((r.sent, r.failed, reqs(&f)), (0, 0, 0));
+        assert_eq!(row(&pool, "t1").await.0, "keep");
+        let r = send(&pool, &client(&f), ids(), true).await.unwrap();
+        assert_eq!((r.sent, reqs(&f)), (1, 1));
+        assert_eq!(row(&pool, "t1").await.0, "sent");
+    }
+
+    #[tokio::test]
+    async fn final_429_stops_the_run_and_marks_the_rest() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        for t in ["t1", "t2", "t3"] {
+            task(&pool, t, "keep", 0).await;
+        }
+        let f = serve((0..4).map(|_| reply(429, "Retry-After: 0\r\n", r#"{"code":"rate_limited"}"#)).collect()).await;
+        let r = send(&pool, &client(&f), None, false).await.unwrap();
+        assert_eq!((r.sent, r.failed, reqs(&f)), (0, 3, 4));
+        for t in ["t1", "t2", "t3"] {
+            let (rev, _, err, amb) = row(&pool, t).await;
+            assert_eq!((rev.as_str(), amb), ("keep", false));
+            assert!(err.unwrap().contains("slow down"));
+        }
+    }
+
+    #[tokio::test]
+    async fn offline_stops_the_run() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        task(&pool, "t1", "keep", 0).await;
+        task(&pool, "t2", "keep", 0).await;
+        let dead = NotionClient::with_base("http://127.0.0.1:1", "t", Duration::from_millis(200));
+        let r = send(&pool, &dead, None, false).await.unwrap();
+        assert_eq!((r.sent, r.failed), (0, 2));
+        assert!(row(&pool, "t2").await.2.unwrap().contains("could not be reached"));
     }
 
     #[tokio::test]
@@ -329,7 +403,7 @@ mod tests {
             task(&pool, t, "keep", 0).await;
         }
         let f = serve(vec![reply(400, "", r#"{"code":"validation_error","message":"Due is not a property that exists."}"#)]).await;
-        let r = send(&pool, &client(&f), None).await.unwrap();
+        let r = send(&pool, &client(&f), None, false).await.unwrap();
         assert_eq!((r.sent, r.failed, r.ambiguous), (0, 3, 0));
         assert_eq!(reqs(&f), 1);
         assert_eq!(status(&pool, "d1").await.as_deref(), Some("mapping_broken"));
@@ -347,7 +421,7 @@ mod tests {
         task(&pool, "t1", "keep", 0).await;
         task(&pool, "t2", "keep", 0).await;
         let f = serve(vec![reply(401, "", r#"{"code":"unauthorized","message":"bad"}"#)]).await;
-        let r = send(&pool, &client(&f), None).await.unwrap();
+        let r = send(&pool, &client(&f), None, false).await.unwrap();
         assert_eq!((r.sent, r.failed), (0, 2));
         assert_eq!(reqs(&f), 1);
         assert_eq!((status(&pool, "d1").await.as_deref(), status(&pool, "d2").await.as_deref()), (Some("token_rejected"), Some("token_rejected")));
@@ -361,7 +435,7 @@ mod tests {
         sqlx::query("CREATE TRIGGER t BEFORE UPDATE OF review ON tasks WHEN NEW.review = 'sent' BEGIN SELECT RAISE(ABORT, 'disk'); END")
             .execute(&pool).await.unwrap();
         let f = serve(vec![ok("p1")]).await;
-        assert_eq!(send(&pool, &client(&f), None).await.unwrap_err(), NOT_SAVED);
+        assert_eq!(send(&pool, &client(&f), None, false).await.unwrap_err(), NOT_SAVED);
         assert_eq!(row(&pool, "t1").await.0, "sending");
         sqlx::query("DROP TRIGGER t").execute(&pool).await.unwrap();
         assert_eq!(recover_sending(&pool).await.unwrap(), 1);
@@ -375,11 +449,11 @@ mod tests {
         task(&pool, "t1", "keep", 0).await;
         let f = serve(vec![Reply::Hang, ok("p1")]).await;
         let c = Arc::new(client(&f));
-        let h = { let (p, c) = (pool.clone(), c.clone()); tokio::spawn(async move { send(&p, &c, None).await }) };
+        let h = { let (p, c) = (pool.clone(), c.clone()); tokio::spawn(async move { send(&p, &c, None, false).await }) };
         tokio::time::sleep(Duration::from_millis(200)).await;
-        assert_eq!(send(&pool, &c, None).await.unwrap_err(), "A send is already running");
+        assert_eq!(send(&pool, &c, None, false).await.unwrap_err(), "A send is already running");
         h.await.unwrap().unwrap();
-        assert!(send(&pool, &c, None).await.is_ok());
+        assert!(send(&pool, &c, None, false).await.is_ok());
     }
 
     #[tokio::test]

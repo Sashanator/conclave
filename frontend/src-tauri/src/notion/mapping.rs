@@ -90,6 +90,7 @@ fn kind_label(kind: &str) -> &str {
 /// Problems with a saved mapping against the live schema, by property name. Empty means fine.
 pub(crate) fn check_mapping(m: &Mapping, s: &DbSchema) -> Vec<String> {
     let mut out = Vec::new();
+    let mut invalid = Vec::new();
     let mut check = |prop: &str, kind: &str, values: Vec<&str>| {
         let Some(p) = s.properties.iter().find(|p| p.name == prop) else {
             out.push(format!("“{prop}” is missing"));
@@ -115,11 +116,16 @@ pub(crate) fn check_mapping(m: &Mapping, s: &DbSchema) -> Vec<String> {
     for f in &m.fixed {
         let values = match (f.kind.as_str(), &f.value) {
             ("select" | "status", Value::String(v)) => vec![v.as_str()],
-            ("multi_select", Value::Array(a)) => a.iter().filter_map(Value::as_str).collect(),
-            _ => vec![],
+            ("multi_select", Value::Array(a)) if a.iter().all(Value::is_string) => a.iter().filter_map(Value::as_str).collect(),
+            ("checkbox", Value::Bool(_)) => vec![],
+            _ => {
+                invalid.push(format!("“{}” has an invalid value", f.prop));
+                continue;
+            }
         };
         check(&f.prop, &f.kind, values);
     }
+    out.extend(invalid);
     out
 }
 
@@ -145,7 +151,8 @@ where
 }
 
 fn cut(s: &str) -> String {
-    s.chars().take(2000).collect()
+    // Notion counts UTF-16 units like JS `.length`.
+    s.chars().scan(0, |n, c| { *n += c.len_utf16(); (*n <= 2000).then_some(c) }).collect()
 }
 
 fn text_run(s: &str) -> Value {
@@ -292,6 +299,20 @@ mod tests {
         );
     }
 
+    #[test]
+    fn check_mapping_reports_values_of_the_wrong_type() {
+        let (db, ds) = schema_json();
+        let s = schema_from(DASHED, &db, &ds);
+        let mut m = mapping();
+        m.fixed[0].value = json!(true);
+        m.fixed[1].value = json!([1]);
+        m.fixed[2].kind = "relation".into();
+        assert_eq!(
+            check_mapping(&m, &s),
+            ["“Status” has an invalid value", "“Tags” has an invalid value", "“Urgent” has an invalid value"]
+        );
+    }
+
     fn task() -> SendTask {
         SendTask {
             id: "1".into(),
@@ -341,6 +362,10 @@ mod tests {
         t.text = "я".repeat(2500);
         let b = page_body("ds-1", &mapping(), &t);
         assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"].as_str().unwrap().chars().count(), 2000);
+        // Notion counts UTF-16 units: an emoji is 2, and is never split.
+        t.text = "😀".repeat(1500);
+        let b = page_body("ds-1", &mapping(), &t);
+        assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"].as_str().unwrap().chars().count(), 1000);
     }
 
     #[test]

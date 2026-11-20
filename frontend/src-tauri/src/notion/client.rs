@@ -64,6 +64,13 @@ impl CallError {
     }
 }
 
+/// Only a strict UUID may reach a URL path, so an id can't redirect the call to another endpoint.
+fn valid_id(id: &str) -> Result<String, CallError> {
+    super::mapping::parse_uuid(id)
+        .filter(|u| u == id)
+        .ok_or(CallError::Http { status: 400, code: "invalid_id".into(), message: "not a Notion id".into() })
+}
+
 impl NotionClient {
     pub fn new(token: String) -> Self {
         let http = reqwest::Client::builder()
@@ -91,10 +98,12 @@ impl NotionClient {
     }
 
     pub async fn database(&self, id: &str) -> Result<Value, CallError> {
+        let id = valid_id(id)?;
         self.call(reqwest::Method::GET, &format!("/databases/{id}"), None).await
     }
 
     pub async fn data_source(&self, id: &str) -> Result<Value, CallError> {
+        let id = valid_id(id)?;
         self.call(reqwest::Method::GET, &format!("/data_sources/{id}"), None).await
     }
 
@@ -130,14 +139,19 @@ impl NotionClient {
                 tokio::time::sleep(Duration::from_secs(secs)).await;
                 continue;
             }
-            // A body lost mid-read after a 2xx header is ambiguous; on an error status it does not matter.
-            let text = resp.text().await.map_err(|_| CallError::NoAnswer)?;
+            let ok = (200..300).contains(&status);
+            // An unreadable 2xx body is ambiguous (the write may have happened); a cut-off error body still has its status.
+            let text = match resp.text().await {
+                Ok(t) => t,
+                Err(_) if ok => return Err(CallError::NoAnswer),
+                Err(_) => String::new(),
+            };
             let json: Option<Value> = serde_json::from_str(&text).ok();
-            if (200..300).contains(&status) {
+            if ok {
                 return json.ok_or(CallError::NoAnswer);
             }
             let field = |k: &str| json.as_ref().and_then(|j| j.get(k)).and_then(Value::as_str).unwrap_or("").to_string();
-            let message: String = field("message").replace(&self.token, "[token]").chars().take(300).collect();
+            let message: String = if self.token.is_empty() { field("message") } else { field("message").replace(&self.token, "[token]") }.chars().take(300).collect();
             return Err(CallError::Http { status, code: field("code"), message });
         }
     }
@@ -284,6 +298,34 @@ mod tests {
         let e = client(&f).me().await.unwrap_err();
         assert!(matches!(e, CallError::Http { status: 429, .. }) && !e.is_ambiguous());
         assert_eq!(f.requests.lock().unwrap().len(), 4);
+    }
+
+    #[tokio::test]
+    async fn cut_off_error_body_keeps_its_status_but_cut_off_ok_is_ambiguous() {
+        let cut = |status| Reply::Http(format!("HTTP/1.1 {status} X\r\nContent-Length: 100\r\nConnection: close\r\n\r\n{{\"cod"));
+        let f = serve(vec![cut(401)]).await;
+        let e = client(&f).me().await.unwrap_err();
+        assert_eq!((e.state(), e.is_ambiguous()), ("token_rejected", false));
+        let f = serve(vec![cut(200)]).await;
+        assert!(client(&f).me().await.unwrap_err().is_ambiguous());
+    }
+
+    #[tokio::test]
+    async fn empty_token_does_not_garble_messages() {
+        let f = serve(vec![reply(400, "", r#"{"code":"validation_error","message":"abc"}"#)]).await;
+        let e = NotionClient::with_base(&f.base, "", T).me().await.unwrap_err();
+        assert!(e.message("X").ends_with("abc"));
+    }
+
+    #[tokio::test]
+    async fn ids_must_be_strict_uuids_and_never_reach_the_network() {
+        let f = serve(vec![]).await;
+        for bad in ["../users/me", "abc?x=1", "0123456789abcdef0123456789abcdef", ""] {
+            let e = client(&f).database(bad).await.unwrap_err();
+            assert!(!e.is_ambiguous(), "{bad}");
+            assert!(client(&f).data_source(bad).await.is_err());
+        }
+        assert!(f.requests.lock().unwrap().is_empty());
     }
 
     #[tokio::test]

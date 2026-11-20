@@ -128,7 +128,7 @@ export function NotionSettings() {
             <span className="text-sm">Token saved ••••{cfg!.tokenLast4}</span>
             <Button size="sm" variant="outline" onClick={testToken} disabled={busy}>Test</Button>
             <Button size="sm" variant="outline" onClick={removeToken} disabled={busy}>Remove</Button>
-            {tokenLine && <span role="status" className={`text-sm ${tokenLine === 'Works' ? 'text-green-700 dark:text-green-400' : 'text-amber-700 dark:text-amber-400'}`}>{tokenLine}</span>}
+            {tokenLine && <span role="status" className={`text-sm ${tokenLine === 'Works' ? 'text-emerald-700 dark:text-emerald-400' : 'text-amber-700 dark:text-amber-400'}`}>{tokenLine}</span>}
           </div>
         ) : (
           <div className="flex flex-wrap items-center gap-2">
@@ -156,7 +156,7 @@ export function NotionSettings() {
                   <tr key={d.id} className="border-t border-border align-top">
                     <td className="py-2 pr-3"><span className="inline-flex items-center gap-2"><Dot colour={d.colour} />{d.name}</span></td>
                     <td className="py-2 pr-3"><button type="button" className="underline" aria-label={`Open ${d.name} in Notion`} onClick={() => openDb(d)}>Open ↗</button></td>
-                    <td className={`py-2 pr-3 ${d.lastStatus === 'connected' ? 'text-green-700 dark:text-green-400' : d.lastStatus ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
+                    <td className={`py-2 pr-3 ${d.lastStatus === 'connected' ? 'text-emerald-700 dark:text-emerald-400' : d.lastStatus ? 'text-amber-700 dark:text-amber-400' : 'text-muted-foreground'}`}>
                       {d.lastStatus ? DEST_STATE_LABEL[d.lastStatus] : 'Not tested'}
                       {d.lastStatus && d.lastStatus !== 'connected' && d.lastMessage ? `: ${d.lastMessage}` : ''}
                     </td>

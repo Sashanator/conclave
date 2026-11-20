@@ -1,0 +1,314 @@
+<!DOCTYPE html>
+<html lang="en" class="dark theme-conclave">
+<head>
+<meta charset="utf-8">
+<title>Conclave: Tasks review queue v5</title>
+<link href="https://fonts.googleapis.com/css2?family=Source+Sans+3:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+/* Tokens from frontend/src/app/globals.css + DESIGN.md */
+:root{--background:0 0% 100%;--foreground:0 0% 3.9%;--card:0 0% 100%;--primary:0 0% 9%;--primary-foreground:0 0% 98%;--muted:0 0% 96.1%;--muted-foreground:0 0% 40%;--accent:0 0% 96.1%;--border:0 0% 89.8%;--ring:0 0% 3.9%;--rec:0 72% 42%;--ok:160 70% 26%;--warn:32 95% 30%;
+  --db-job:340 75% 50%;--db-personal:190 90% 32%;--db-german:85 65% 32%;--cat-1:217 91% 60%;--cat-2:160 60% 40%;--cat-3:27 87% 55%;--cat-4:262 70% 60%;--cat-5:0 0% 55%}
+.dark{--db-job:340 75% 58%;--db-personal:190 85% 45%;--db-german:85 60% 45%;--background:0 0% 3.9%;--foreground:0 0% 98%;--card:0 0% 6%;--primary:0 0% 98%;--primary-foreground:0 0% 9%;--muted:0 0% 14.9%;--muted-foreground:0 0% 68%;--accent:0 0% 14.9%;--border:0 0% 14.9%;--ring:0 0% 83.1%;--rec:0 74% 66%;--ok:160 60% 55%;--warn:38 95% 62%}
+.theme-conclave{--background:235 45% 9%;--foreground:40 30% 94%;--card:235 40% 12%;--primary:43 90% 58%;--primary-foreground:235 45% 9%;--muted:235 30% 18%;--muted-foreground:230 20% 74%;--accent:235 30% 18%;--border:235 30% 22%;--ring:43 90% 58%}
+*{box-sizing:border-box}
+body{margin:0;font-family:"Source Sans 3",system-ui,sans-serif;font-size:14px;color:hsl(var(--foreground));background:hsl(var(--background))}
+button,input,select{font:inherit;color:inherit}
+button{cursor:pointer}
+p,.help{text-wrap:pretty}
+:focus-visible{outline:2px solid hsl(var(--ring));outline-offset:2px}
+[hidden]{display:none!important}
+.picker{display:flex;gap:16px;align-items:center;flex-wrap:wrap;padding:10px 16px;background:#f4f4f5;color:#18181b;border-bottom:1px solid #ddd;font-size:13px}
+.picker .seg{display:inline-flex;border:1px solid #ccc;border-radius:6px;overflow:hidden}
+.picker .seg button{border:0;background:#fff;color:#18181b;padding:4px 10px}.picker .seg button[aria-pressed=true]{background:#18181b;color:#fff}
+.app{display:grid;grid-template-columns:208px 1fr;height:calc(100vh - 49px);min-height:560px}
+nav{border-right:1px solid hsl(var(--border));padding:14px 10px;display:flex;flex-direction:column;gap:2px;background:hsl(var(--card))}
+.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:16px;padding:4px 8px 14px}
+.brand i{width:18px;height:18px;border-radius:5px;background:hsl(var(--primary))}
+.nav-item{text-align:left;border:0;background:none;padding:7px 10px;border-radius:6px;color:hsl(var(--muted-foreground));display:flex;align-items:center}
+.nav-item:hover{background:hsl(var(--accent));color:hsl(var(--foreground))}
+.nav-item[aria-current=page]{background:hsl(var(--accent));color:hsl(var(--foreground));font-weight:600}
+.nav-item .n{margin-left:auto;font-size:12px;background:hsl(var(--primary));color:hsl(var(--primary-foreground));border-radius:999px;padding:0 7px;font-weight:700}
+.nav-sep{flex:1}
+main{display:flex;flex-direction:column;min-height:0;overflow:hidden}
+.scroll{flex:1;overflow:auto;padding:24px 32px 32px}
+h1{font-size:22px;font-weight:600;margin:0 0 4px}
+.sub{color:hsl(var(--muted-foreground));margin:0 0 16px}
+.tabs{display:flex;gap:4px;border-bottom:1px solid hsl(var(--border));margin-bottom:16px}
+.tab{border:0;background:none;padding:8px 12px;color:hsl(var(--muted-foreground));border-bottom:2px solid transparent;margin-bottom:-1px}
+.tab[aria-selected=true]{color:hsl(var(--foreground));border-bottom-color:hsl(var(--primary));font-weight:600}
+.tab small{font-size:12px;margin-left:4px}
+.hint{display:flex;gap:14px;flex-wrap:wrap;font-size:12px;color:hsl(var(--muted-foreground));margin:-6px 0 14px}
+kbd{font-family:inherit;font-size:11px;border:1px solid hsl(var(--border));border-radius:4px;padding:0 4px}
+.group{border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--card));margin-bottom:14px;overflow:hidden;max-width:980px}
+.gh{display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid hsl(var(--border));flex-wrap:wrap}
+.gh a{font-weight:600;color:inherit;text-decoration:none}.gh a:hover{text-decoration:underline}
+.gh .d{color:hsl(var(--muted-foreground));font-size:12px}
+.chip{display:inline-flex;align-items:center;gap:5px;font-size:12px;border-radius:999px;padding:1px 8px;border:1px solid hsl(var(--border))}
+.chip i{width:7px;height:7px;border-radius:50%}
+.gh .sp{flex:1}
+.lbtn{border:1px solid hsl(var(--border));background:none;border-radius:6px;padding:3px 10px;font-size:12px}
+.lbtn:hover{background:hsl(var(--accent))}
+.task{display:grid;grid-template-columns:auto 1fr auto;gap:4px 12px;align-items:center;padding:9px 14px;border-bottom:1px solid hsl(var(--border))}
+.task:focus-within,.task:focus{background:hsl(var(--accent))}
+.t{line-height:1.4}
+.task.kept .t::before{content:"✓ ";color:hsl(var(--ok));font-weight:700}
+.task.dropped .t{text-decoration:line-through;color:hsl(var(--muted-foreground))}
+.who{font-size:12px;color:hsl(var(--muted-foreground));margin-top:2px}
+.kx{display:flex;gap:4px}
+.ib{width:32px;height:32px;border-radius:6px;border:1px solid hsl(var(--border));background:none;display:grid;place-items:center;font-weight:700;color:hsl(var(--muted-foreground))}
+.ib:hover{color:hsl(var(--foreground));background:hsl(var(--accent))}
+.ib.keep[aria-pressed=true]{background:hsl(var(--ok)/.16);border-color:hsl(var(--ok));color:hsl(var(--ok))}
+.ib.drop[aria-pressed=true]{background:hsl(var(--rec)/.14);border-color:hsl(var(--rec));color:hsl(var(--rec))}
+/* destination: Notion mark, not the category colour */
+.dest{position:relative;display:inline-block}
+.dest select{appearance:none;border:1px solid hsl(var(--border));border-radius:999px;background:hsl(var(--background));padding:3px 26px 3px 24px;font-size:12px;min-width:170px}
+.dest::before{content:"";position:absolute;left:10px;top:50%;width:8px;height:8px;margin-top:-4px;border-radius:50%;background:var(--dc,transparent);box-shadow:0 0 0 1px hsl(var(--border));pointer-events:none}
+.dest::after{content:"▾";position:absolute;right:10px;top:50%;transform:translateY(-50%);font-size:11px;color:hsl(var(--muted-foreground));pointer-events:none}
+.dest.none select{border-style:dashed;border-color:hsl(var(--muted-foreground)/.5);color:hsl(var(--muted-foreground));padding-left:12px}
+.dest.none::before{display:none}
+.dest.bad select{border-color:hsl(var(--warn));color:hsl(var(--warn))}
+
+.rowmsg{grid-column:2/4;font-size:12px;color:hsl(var(--warn))}
+.rowmsg.err{color:hsl(var(--rec))}
+.rowmsg button{border:0;background:none;padding:0;color:inherit;text-decoration:underline;font-size:12px}
+.gnote{padding:8px 14px;font-size:12px;color:hsl(var(--muted-foreground))}
+.linkb{border:0;background:none;padding:0;text-decoration:underline;font-size:12px;color:inherit}
+.t[contenteditable]:focus{outline:2px dashed hsl(var(--ring));outline-offset:2px;border-radius:3px}
+.empty{border:1px dashed hsl(var(--border));border-radius:10px;padding:32px;text-align:center;color:hsl(var(--muted-foreground));max-width:980px}
+.empty b{display:block;color:hsl(var(--foreground));font-size:16px;margin-bottom:4px}
+.sendbar{border-top:1px solid hsl(var(--border));background:hsl(var(--card));display:flex;align-items:center;gap:16px;flex-wrap:wrap;padding:12px 32px}
+.sum{display:flex;gap:12px;flex-wrap:wrap;color:hsl(var(--muted-foreground));font-size:13px}
+.sum b{color:hsl(var(--foreground))}
+.sum .w{color:hsl(var(--warn))}
+.btn{border:0;border-radius:8px;height:36px;padding:0 16px;font-weight:700;background:hsl(var(--primary));color:hsl(var(--primary-foreground));white-space:nowrap}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.sendbar .sp{flex:1}
+.status{font-size:12px;display:flex;gap:8px;align-items:center;white-space:nowrap}
+.ok{color:hsl(var(--ok));font-weight:600}
+.err{color:hsl(var(--rec));font-weight:600}
+.status a,.status .linkb{color:inherit}
+.sent .task{grid-template-columns:1fr auto auto}
+.dchip{display:inline-flex;align-items:center;gap:6px;font-size:12px;border:1px solid hsl(var(--border));border-radius:999px;padding:2px 10px 2px 8px}
+.dchip::before{content:"";width:8px;height:8px;border-radius:50%;background:var(--dc);box-shadow:0 0 0 1px hsl(var(--border))}
+/* settings */
+.card{border:1px solid hsl(var(--border));border-radius:10px;background:hsl(var(--card));padding:16px 18px;max-width:760px;margin-bottom:16px}
+.card h2{font-size:16px;margin:0 0 4px}
+.card p{margin:0 0 12px;color:hsl(var(--muted-foreground));line-height:1.45}
+.row{display:grid;grid-template-columns:180px 1fr auto;gap:12px;align-items:center;padding:10px 0;border-top:1px solid hsl(var(--border))}
+.row label{font-weight:600}
+.in{height:34px;border:1px solid hsl(var(--border));border-radius:8px;background:hsl(var(--background));padding:0 10px;width:100%}
+.help{font-size:12px;color:hsl(var(--muted-foreground));grid-column:2/4;margin-top:-6px}
+table{border-collapse:collapse;width:100%}
+th,td{text-align:left;padding:8px 6px;border-top:1px solid hsl(var(--border))}
+th{font-size:12px;color:hsl(var(--muted-foreground));font-weight:600}
+td select{border:1px solid hsl(var(--border));border-radius:6px;background:hsl(var(--background));padding:3px 8px}
+</style>
+</head>
+<body>
+<div class="picker" role="group" aria-label="Mockup controls">
+  <b>Mockup controls:</b>
+  <span>Screen <span class="seg" id="view">
+    <button aria-pressed="true" data-v="review">1 · To review</button><button aria-pressed="false" data-v="sent">2 · Sent</button><button aria-pressed="false" data-v="removed">3 · Removed</button><button aria-pressed="false" data-v="settings">4 · Settings → Notion</button></span></span>
+  <span>Theme <span class="seg" id="theme">
+    <button aria-pressed="true" data-v="dark theme-conclave">Conclave</button><button aria-pressed="false" data-v="dark">Dark</button><button aria-pressed="false" data-v="">Light</button></span></span>
+  <button id="reset" style="border:1px solid #ccc;background:#fff;border-radius:6px;padding:3px 10px">Reset demo</button>
+</div>
+
+<div class="app">
+  <nav aria-label="Main">
+    <div class="brand"><i aria-hidden="true"></i>Conclave</div>
+    <button class="nav-item">● Record new meeting</button>
+    <button class="nav-item">Meetings</button>
+    <button class="nav-item" id="navtasks" aria-current="page">Tasks <span class="n" id="badge"></span></button>
+    <button class="nav-item">Digests</button>
+    <button class="nav-item">Dictate</button>
+    <button class="nav-item">Practice</button>
+    <button class="nav-item">Stats</button>
+    <div class="nav-sep"></div>
+    <button class="nav-item">Import audio</button>
+    <button class="nav-item" id="navset">Settings</button>
+  </nav>
+
+  <main>
+    <div class="scroll" id="tasks">
+      <h1>Tasks</h1>
+      <p class="sub">Tasks the AI found in your meetings. Keep the ones you want, then send them to Notion.</p>
+      <div class="tabs" role="tablist" aria-label="Task lists">
+        <button class="tab" role="tab" id="t-review" aria-controls="p-review" data-t="review" aria-selected="true">To review <small id="c-review"></small></button>
+        <button class="tab" role="tab" id="t-sent" aria-controls="p-sent" data-t="sent" aria-selected="false">Sent to Notion <small id="c-sent"></small></button>
+        <button class="tab" role="tab" id="t-removed" aria-controls="p-removed" data-t="removed" aria-selected="false">Removed <small id="c-removed"></small></button>
+      </div>
+      <div id="p-review" role="tabpanel" aria-labelledby="t-review">
+        <div class="hint"><span><kbd>K</kbd> keep</span><span><kbd>X</kbd> remove</span><span><kbd>1</kbd> Job · <kbd>2</kbd> Personal · <kbd>3</kbd> German homework</span><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> send</span><span>Click a task's text to edit it</span></div>
+        <div id="review"></div>
+      </div>
+      <div id="p-sent" class="sent" role="tabpanel" aria-labelledby="t-sent" hidden>
+        <div id="sentlist"></div>
+        <p class="sub" style="font-size:12px">Conclave doesn't follow tasks once they are in Notion. Tick them off there.</p>
+      </div>
+      <div id="p-removed" role="tabpanel" aria-labelledby="t-removed" hidden>
+        <div id="removedlist"></div>
+        <p class="sub" style="font-size:12px">Removed tasks are never sent. They are deleted with their meeting's recording.</p>
+      </div>
+    </div>
+
+    <div class="scroll" id="settings" hidden>
+      <h1>Settings</h1>
+      <p class="sub">App › Notion</p>
+      <div class="card">
+        <h2>Notion</h2>
+        <p>Conclave creates tasks in your Notion databases only when you click Send. The token is kept in Windows Credential Manager.</p>
+        <div class="row"><label for="tok">Integration token</label><input class="in" id="tok" value="ntn_••••••••••••••••7Qx2" readonly><span style="display:flex;gap:6px"><button class="lbtn" id="test">Test</button><button class="lbtn">Remove</button></span>
+          <div class="help">Create an internal integration in Notion's settings, then share each database below with it (database ••• → Connections).</div></div>
+        <table aria-label="Notion databases">
+          <thead><tr><th>Name in Conclave</th><th>Notion database</th><th>Status</th></tr></thead>
+          <tbody id="dbrows"></tbody>
+        </table>
+        <p style="margin-top:10px;font-size:12px">Which properties each database gets (status, due date, link to the meeting…) is set per database. To be defined.</p>
+      </div>
+      <div class="card">
+        <h2>Default database per meeting category</h2>
+        <p>A new task starts with this destination. You can change it on each task before sending.</p>
+        <table aria-label="Default database per category">
+          <thead><tr><th>Meeting category</th><th>Send tasks to</th></tr></thead>
+          <tbody>
+            <tr><td><span class="chip"><i style="background:hsl(var(--cat-1))"></i>Team sync</span></td><td><span class="dest"><select class="defsel" aria-label="Team sync default"><option selected>Job tasks</option><option>Personal tasks</option><option>German homework</option><option>Ask me</option></select></span></td></tr>
+            <tr><td><span class="chip"><i style="background:hsl(var(--cat-4))"></i>Interview</span></td><td><span class="dest"><select class="defsel" aria-label="Interview default"><option selected>Job tasks</option><option>Personal tasks</option><option>German homework</option><option>Ask me</option></select></span></td></tr>
+            <tr><td><span class="chip"><i style="background:hsl(var(--cat-3))"></i>German lesson</span></td><td><span class="dest"><select class="defsel" aria-label="German lesson default"><option>Job tasks</option><option>Personal tasks</option><option selected>German homework</option><option>Ask me</option></select></span></td></tr>
+            <tr><td><span class="chip"><i style="background:hsl(var(--cat-5))"></i>No template</span></td><td><span class="dest"><select class="defsel" aria-label="No template default"><option>Job tasks</option><option>Personal tasks</option><option>German homework</option><option selected>Ask me</option></select></span></td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="sendbar" id="sendbar">
+      <div class="sum" id="sum"></div>
+      <span class="sp"></span>
+      <span class="status" id="sendstatus" role="status" aria-live="polite"></span>
+      <button class="btn" id="send">Send to Notion</button>
+    </div>
+  </main>
+</div>
+
+<script>
+const DBS={job:'Job tasks',personal:'Personal tasks',german:'German homework'};
+const KEYS=['job','personal','german'];
+let shared, M, sent, view='review', sending=false, clearT;
+function seed(){
+  shared={job:true,personal:false,german:true};
+  M=[
+   {title:'Weekly sync with the platform team',date:'Thu 19 Nov · 10:00',cat:'Team sync',c:1,tasks:[
+     {text:'Test the audio device switch on Windows',who:'You · by Thu 26 Nov',mine:1,dest:'job'},
+     {text:'Send the device-switch results to the lead',who:'You · no due date',mine:1,dest:'job'},
+     {text:'Book the dentist before the trip',who:'You · said at 41:12',mine:1,dest:'personal'},
+     {text:'Run installer QA',who:'Sam, not you',state:'drop',by:'AI',dest:'job'}]},
+   {title:'Deutschstunde mit Anna',date:'Wed 18 Nov · 18:00',cat:'German lesson',c:3,tasks:[
+     {text:'Write 10 sentences with the Konjunktiv II',who:'You · by Wed 25 Nov',mine:1,dest:'german'},
+     {text:'Read chapter 4 of „Der Vorleser" and note new words',who:'You · by Wed 25 Nov',mine:1,dest:'german'}]},
+   {title:'Call with Max',date:'Tue 17 Nov · 19:30',cat:'No template',c:5,tasks:[
+     {text:'Pick a date for the Munich weekend',who:'Unassigned · AI isn\'t sure it\'s yours',dest:null},
+     {text:'Max sends the flat contract',who:'Max, not you',state:'drop',by:'AI',dest:null}]}];
+  M.forEach(m=>m.tasks.forEach(t=>{t.state=t.state||'open';t.m=m}));
+  sent=[{text:'Review the updater error messages',who:'You · by Fri 20 Nov',dest:'job',when:'Mon 16 Nov, 12:04',m:{title:'Sprint planning',date:'Mon 16 Nov · 11:00',cat:'Team sync',c:1}},
+        {text:'Draft the Q1 roadmap paragraph on speaker ID',who:'You · no due date',dest:'job',when:'Mon 16 Nov, 12:04',m:{title:'Sprint planning',date:'Mon 16 Nov · 11:00',cat:'Team sync',c:1}}];
+  M.forEach(m=>m.showDropped=false);
+}
+const esc=s=>s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const all=()=>M.flatMap(m=>m.tasks);
+const sendable=t=>t.state==='keep'&&t.dest&&shared[t.dest];
+function gh(m,extra=''){return `<div class="gh"><a href="#">${esc(m.title)}</a><span class="d">${m.date}</span><span class="chip"><i style="background:hsl(var(--cat-${m.c}))"></i>${m.cat}</span><span class="sp"></span>${extra}</div>`}
+function destSel(t,i){const cls=!t.dest?'none':(!shared[t.dest]?'bad':'');
+  return `<span class="dest ${cls}" style="--dc:${t.dest?`hsl(var(--db-${t.dest}))`:'transparent'}"><select data-i="${i}" aria-label="Notion database for: ${esc(t.text)}">${t.dest?'':'<option selected value="">Choose database…</option>'}${KEYS.map(k=>`<option value="${k}" ${t.dest===k?'selected':''}>${DBS[k]}</option>`).join('')}</select></span>`}
+function row(t,i){const st=t.state;
+  let msg='';
+  if(st!=='drop'&&t.dest&&!shared[t.dest])msg=`<div class="rowmsg">${DBS[t.dest]} isn't shared with Conclave yet, so this task waits. <button data-go="settings">Fix in Settings</button></div>`;
+  if(t.err)msg=`<div class="rowmsg err">Not sent: ${t.err} <button data-retry="${i}">Retry</button></div>`;
+  return `<div class="task ${st==='keep'?'kept':''} ${st==='drop'?'dropped':''}" tabindex="0" role="group" aria-label="${esc(t.text)}${st==='keep'?', kept':st==='drop'?', removed':''}" data-i="${i}">
+   <div class="kx"><button class="ib keep" aria-pressed="${st==='keep'}" aria-label="Keep: ${esc(t.text)}" data-a="keep" data-i="${i}">✓</button><button class="ib drop" aria-pressed="${st==='drop'}" aria-label="Remove: ${esc(t.text)}" data-a="drop" data-i="${i}">✕</button></div>
+   <div><div class="t" contenteditable="plaintext-only" spellcheck="false" data-i="${i}">${esc(t.text)}</div><div class="who">${esc(t.who)}${st==='drop'&&t.by?' · removed by '+t.by:''}</div></div>
+   ${st==='drop'?'<span></span>':destSel(t,i)}${msg}</div>`}
+function render(){
+  const T=all();
+  // To review
+  let h='';
+  M.forEach(m=>{const live=m.tasks.filter(t=>t.state!=='drop'&&t.state!=='sent');const dropped=m.tasks.filter(t=>t.state==='drop');
+    if(!live.length)return;
+    const mine=live.some(t=>t.mine&&t.state==='open');
+    h+=`<div class="group">${gh(m,mine?`<button class="lbtn" data-keepmine="${M.indexOf(m)}">Keep all mine</button>`:'')}`;
+    live.forEach(t=>h+=row(t,T.indexOf(t)));
+    if(dropped.length){h+=m.showDropped?dropped.map(t=>row(t,T.indexOf(t))).join(''):'';
+      h+=`<div class="gnote" style="border-top:1px solid hsl(var(--border))">${dropped.length} removed${dropped.some(t=>t.by)?' (AI thinks they aren\'t yours)':''} · <button class="linkb" data-show="${M.indexOf(m)}">${m.showDropped?'Hide':'Show'}</button></div>`}
+    h+='</div>'});
+  document.getElementById('review').innerHTML=h||`<div class="empty"><b>All reviewed</b>New tasks appear here after each meeting is summarized.</div>`;
+  // Sent
+  const byM={};sent.forEach(s=>{(byM[s.m.title]=byM[s.m.title]||{m:s.m,l:[]}).l.push(s)});
+  document.getElementById('sentlist').innerHTML=Object.values(byM).map(g=>`<div class="group">${gh(g.m)}${g.l.map(s=>`<div class="task"><div><div class="t">${esc(s.text)}</div><div class="who">${esc(s.who)}</div></div><span class="dchip" style="--dc:hsl(var(--db-${s.dest}))">${DBS[s.dest]}</span><div class="status"><span class="ok">Sent ${s.when}</span><a href="#">Open in Notion ↗</a></div></div>`).join('')}</div>`).join('');
+  // Removed
+  const dr=T.filter(t=>t.state==='drop');
+  document.getElementById('removedlist').innerHTML=dr.length?`<div class="group">${dr.map(t=>`<div class="task"><button class="lbtn" data-restore="${T.indexOf(t)}">Restore</button><div><div class="t">${esc(t.text)}</div><div class="who">${esc(t.m.title)} · ${esc(t.who)}${t.by?' · removed by '+t.by:' · removed by you'}</div></div><span></span></div>`).join('')}</div>`:`<div class="empty">Nothing removed.</div>`;
+  // counts
+  const open=T.filter(t=>t.state==='open').length, kept=T.filter(t=>t.state==='keep'&&!t.inflight), ok=kept.filter(sendable), noDb=kept.filter(t=>!t.dest), waiting=kept.filter(t=>t.dest&&!shared[t.dest]);
+  const toReview=open+kept.length;
+  document.getElementById('c-review').textContent=toReview||'';document.getElementById('c-sent').textContent=sent.length;document.getElementById('c-removed').textContent=dr.length;
+  const b=document.getElementById('badge');b.textContent=toReview||'';b.hidden=!toReview;b.setAttribute('aria-label',toReview+' to review');
+  const by={};ok.forEach(t=>by[t.dest]=(by[t.dest]||0)+1);
+  document.getElementById('sum').innerHTML=`<span><b>${kept.length}</b> kept</span>`+Object.entries(by).map(([k,n])=>`<span>${DBS[k]} <b>${n}</b></span>`).join('')+(noDb.length?`<span class="w">${noDb.length} need a database</span>`:'')+(waiting.length?`<span class="w">${waiting.length} waiting for ${[...new Set(waiting.map(t=>DBS[t.dest]))].join(', ')}</span>`:'')+`<span>${open} not decided</span>`;
+  const s=document.getElementById('send');s.disabled=sending||!ok.length;s.textContent=sending?'Sending…':ok.length?`Send ${ok.length} to Notion`:'Nothing to send';
+  document.getElementById('sendbar').hidden=view!=='review';
+}
+function focusRow(i){document.querySelector(`.task[data-i="${i}"]`)?.focus()}
+function setState(i,a,advance){const T=all();const t=T[i];t.state=t.state===a&&!advance?'open':a;if(a==='drop')t.by=null;
+  const vis=[...document.querySelectorAll('#review .task')].map(x=>+x.dataset.i);const next=vis[vis.indexOf(i)+1];render();
+  if(advance&&next!=null)focusRow(next);else focusRow(i)}
+document.addEventListener('click',e=>{const x=e.target.closest('button');if(!x)return;const T=all();const sel=['keepmine','show','restore','a'].map(k=>x.dataset[k]!=null?`[data-${k}="${x.dataset[k]}"]`+(k==='a'?`[data-i="${x.dataset.i}"]`:''):'').join('');const grp=x.closest('.group');const gi=grp?[...grp.parentNode.children].indexOf(grp):-1;const pane=x.closest('[role=tabpanel]');
+  queueMicrotask(()=>{if(document.activeElement&&document.activeElement!==document.body)return;const again=sel&&document.querySelector(sel);if(again){again.focus();return}const g=pane&&pane.querySelectorAll('.group')[Math.max(0,gi)];(g&&(g.querySelector('.task,.lbtn,a'))||document.getElementById('t-review')).focus()});
+  if(x.dataset.a)setState(+x.dataset.i,x.dataset.a,false);
+  else if(x.dataset.keepmine)M[+x.dataset.keepmine].tasks.forEach(t=>{if(t.mine&&t.state==='open')t.state='keep'}),render();
+  else if(x.dataset.show)M[+x.dataset.show].showDropped=!M[+x.dataset.show].showDropped,render();
+  else if(x.dataset.restore)T[+x.dataset.restore].state='open',render();
+  else if(x.dataset.go)go('settings');
+  else if(x.dataset.retry)send(T[+x.dataset.retry]);
+  else if(x.id==='send')send();
+  else if(x.id==='test'){shared.personal=true;render();renderDb()}
+  else if(x.id==='reset'){window._failedOnce=false;seed();render();renderDb();document.getElementById('sendstatus').textContent=''}});
+document.addEventListener('change',e=>{if(e.target.matches('select[data-i]')){const t=all()[+e.target.dataset.i];t.dest=e.target.value||null;render();focusRow(+e.target.dataset.i)}});
+document.addEventListener('input',e=>{if(e.target.matches('.t[data-i]'))all()[+e.target.dataset.i].text=e.target.textContent});
+document.addEventListener('keydown',e=>{
+  if(e.ctrlKey&&e.key==='Enter'&&view==='review'&&!e.target.isContentEditable){e.preventDefault();send();return}
+  const r=e.target.closest&&e.target.closest('#review .task');if(!r||e.target!==r)return;const i=+r.dataset.i;
+  const vis=[...document.querySelectorAll('#review .task')];const k=vis.indexOf(r);
+  if(e.key==='k'||e.key==='K')setState(i,'keep',true);
+  else if(e.key==='x'||e.key==='X')setState(i,'drop',true);
+  else if(['1','2','3'].includes(e.key)&&all()[i].state!=='drop'){all()[i].dest=KEYS[+e.key-1];render();focusRow(i)}
+  else if(e.key==='ArrowDown'){vis[k+1]?.focus();e.preventDefault()}else if(e.key==='ArrowUp'){vis[k-1]?.focus();e.preventDefault()}});
+function send(only){if(sending)return;const ok=only?[only]:all().filter(sendable);if(!ok.length)return;
+  const st=document.getElementById('sendstatus');sending=true;clearTimeout(clearT);ok.forEach(t=>{t.inflight=true;t.err=null});render();st.textContent='';
+  setTimeout(()=>{let done=0,failed=0;
+    ok.forEach(t=>{t.inflight=false;
+      // demo: the first German homework send times out once
+      if(!only&&t.dest==='german'&&!window._failedOnce){window._failedOnce=true;t.err='Notion didn\'t answer in time.';failed++;return}
+      t.state='sent';done++;sent.unshift({text:t.text,who:t.who,dest:t.dest,when:'just now',m:t.m})});
+    sending=false;render();
+    st.innerHTML=(done?`<span class="ok">Sent ${done} to Notion</span>`:'')+(failed?`<span class="err">${failed} not sent, see To review</span>`:'')+(done?`<button class="linkb" onclick="tab('sent')">View</button>`:'');
+    clearT=setTimeout(()=>{st.textContent=''},8000);
+    const f=document.querySelector('#review .task')||document.getElementById('t-review');f.focus()},700)}
+function renderDb(){document.getElementById('dbrows').innerHTML=[['job','Work › Tasks'],['personal','Home › To-dos'],['german','Deutsch › Hausaufgaben']].map(([k,n])=>`<tr><td><span class="dchip" style="--dc:hsl(var(--db-${k}))">${DBS[k]}</span></td><td>${n}</td><td class="status">${shared[k]?'<span class="ok">Connected</span>':'<span class="err">Not shared with Conclave</span>'}</td></tr>`).join('')}
+function seg(id,fn){document.querySelectorAll('#'+id+' button').forEach(b=>b.addEventListener('click',()=>{document.querySelectorAll('#'+id+' button').forEach(x=>x.setAttribute('aria-pressed',x===b));fn(b.dataset.v)}))}
+seg('theme',v=>document.documentElement.className=v);
+function setCur(el,on){on?el.setAttribute('aria-current','page'):el.removeAttribute('aria-current')}
+function go(v){const s=v==='settings';document.getElementById('tasks').hidden=s;document.getElementById('settings').hidden=!s;
+  setCur(document.getElementById('navtasks'),!s);setCur(document.getElementById('navset'),s);
+  document.querySelectorAll('#view button').forEach(x=>x.setAttribute('aria-pressed',x.dataset.v===v));
+  if(s){view='settings';render()}else tab(v)}
+function tab(t){view=t;document.querySelectorAll('.tab').forEach(x=>x.setAttribute('aria-selected',x.dataset.t===t));['review','sent','removed'].forEach(p=>document.getElementById('p-'+p).hidden=p!==t);
+  document.querySelectorAll('#view button').forEach(x=>x.setAttribute('aria-pressed',x.dataset.v===t));render()}
+seg('view',go);
+document.querySelectorAll('.tab').forEach(x=>x.addEventListener('click',()=>tab(x.dataset.t)));
+document.getElementById('navtasks').addEventListener('click',()=>go('review'));document.getElementById('navset').addEventListener('click',()=>go('settings'));
+seed();render();renderDb();
+const NAME2KEY={'Job tasks':'job','Personal tasks':'personal','German homework':'german'};
+function paintDef(sel){const k=NAME2KEY[sel.value];const d=sel.parentNode;d.classList.toggle('none',!k);d.style.setProperty('--dc',k?`hsl(var(--db-${k}))`:'transparent')}
+document.querySelectorAll('.defsel').forEach(sel=>{paintDef(sel);sel.addEventListener('change',()=>paintDef(sel))});
+</script>
+</body>
+</html>

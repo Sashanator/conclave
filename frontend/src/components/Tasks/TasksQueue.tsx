@@ -108,12 +108,12 @@ export function TasksQueue() {
     try {
       setResult(resultLine(await invoke<SendReport>('notion_send', { taskIds: sendIds, resendAmbiguous })));
     } catch (e) {
-      console.error('Send failed:', e);
+      console.error('notion_send failed');
       setResult({ sent: null, notSent: null, error: e instanceof Error ? e.message : String(e) });
     } finally {
+      await reload(); // stay blocked until sendableIds are fresh, or a second click could resend
       sendingRef.current = false;
       setSending(false);
-      await reload();
       request(before, before[0] ?? '');
     }
   };

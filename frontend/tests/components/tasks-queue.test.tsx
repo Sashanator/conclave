@@ -25,10 +25,11 @@ let failNext = false;
 let sendReport: any = { sent: 1, failed: 0, ambiguous: 0 };
 let sendGate: Promise<void> | null = null;
 let sendError: Error | null = null;
+let listGate: Promise<void> | null = null;
 const calls: [string, any][] = [];
 const invoke = mock(async (cmd: string, args?: any): Promise<unknown> => {
   calls.push([cmd, args]);
-  if (cmd === 'tasks_queue_list') return structuredClone(rows);
+  if (cmd === 'tasks_queue_list') { if (listGate) await listGate; return structuredClone(rows); }
   if (cmd === 'notion_get_config') return { tokenLast4: 'abcd', destinations: [dest('d1', 0), dest('d2', 1)], categoryDefaults: [] };
   if (cmd === 'api_list_templates') return { templates: [] };
   if (cmd === 'open_external_url') return null;
@@ -85,6 +86,7 @@ beforeEach(async () => {
   failNext = false;
   sendReport = { sent: 1, failed: 0, ambiguous: 0 };
   sendGate = null;
+  listGate = null;
   sendError = null;
   rows = [
     mk('a', {}), mk('b', {}),
@@ -271,6 +273,20 @@ describe('sending', () => {
     release();
     await flush();
     expect(sends().length).toBe(1);
+  });
+
+  test('stays blocked until the post-send reload finishes', async () => {
+    await setup();
+    let release!: () => void;
+    await click(sendBtn());
+    sendReport = { sent: 2, failed: 0, ambiguous: 0 };
+    listGate = new Promise((r) => { release = r; });
+    await click(sendBtn()); // second send: its reload now hangs
+    await click(sendBtn());
+    await ctrlEnter(row('a'));
+    expect(sends().length).toBe(2);
+    release();
+    await flush();
   });
 
   test('same-tick double click sends once', async () => {

@@ -20,7 +20,7 @@ export function SendBar(p: { summary: SendSummary; sending: boolean; result: Sen
       </div>
       <div className="flex flex-wrap items-center gap-3">
         <span role="status" aria-live="polite" className="text-xs">
-          {r?.error && <span className="text-red-600 dark:text-red-400">{r.error}</span>}
+          {r?.error && <span className="text-destructive">{r.error}</span>}
           {r?.sent && <span className="text-emerald-700 dark:text-emerald-400">{r.sent} <button type="button" className="underline" onClick={p.onView}>View</button></span>}
           {r?.notSent && <span className={`${amber} ${r.sent ? 'ml-2' : ''}`}>{r.notSent}</span>}
         </span>

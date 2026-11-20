@@ -7,6 +7,7 @@ import { Input } from '@/components/ui/input';
 import { DestPicker } from '@/components/Tasks/DestPicker';
 import { notionDbUrl } from '@/lib/notion';
 import { invoke } from '@tauri-apps/api/core';
+import { toast } from 'sonner';
 import { destOf, dueLabel, sendCheck, waitingText, type DestLookup } from '@/lib/tasks-queue';
 import type { TaskRow } from '@/lib/tasks';
 
@@ -111,12 +112,12 @@ export function ReviewRow({ task, lookup, actions }: { task: TaskRow; lookup: De
             {task.sendAmbiguous ? (
               <span className="flex flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
                 May already be in Notion. Check the database before sending again.
-                {dest && <button type="button" className="underline" onClick={() => void invoke('open_external_url', { url: notionDbUrl(dest.databaseId) })}>Open Notion database</button>}
+                {dest && <button type="button" className="underline" onClick={() => void invoke('open_external_url', { url: notionDbUrl(dest.databaseId) }).catch(() => toast.error('Could not open Notion.'))}>Open Notion database</button>}
                 <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.markSent(task)}>Mark as sent</button>
                 <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.send(task)}>Send again</button>
               </span>
             ) : task.sendError ? (
-              <span className="flex flex-wrap items-center gap-2 text-xs text-red-600 dark:text-red-400">
+              <span className="flex flex-wrap items-center gap-2 text-xs text-destructive">
                 Not sent: {task.sendError}
                 <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.send(task)}>Retry</button>
               </span>

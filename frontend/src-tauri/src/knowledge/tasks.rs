@@ -283,73 +283,6 @@ pub(crate) async fn edit(pool: &SqlitePool, id: &str, text: &str) -> anyhow::Res
     found_unsent(rows, "task not found or already sent")
 }
 
-pub(crate) async fn claim(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
-    let rows = sqlx::query("UPDATE tasks SET owner = 'me', edited = 1 WHERE id = ?")
-        .bind(id)
-        .execute(pool)
-        .await?
-        .rows_affected();
-    found(rows)
-}
-
-pub(crate) async fn add(pool: &SqlitePool, text: &str) -> anyhow::Result<TaskRow> {
-    let row = TaskRow {
-        id: Uuid::new_v4().to_string(),
-        meeting_id: None,
-        meeting_title: None,
-        meeting_date: None,
-        text: checked_text(text)?,
-        owner: "me".to_string(),
-        due: None,
-        at: None,
-        status: "open".to_string(),
-        source: "manual".to_string(),
-        created_at: stamp(),
-        review: "open".to_string(),
-        removed_by: None,
-        dest_id: None,
-        due_date: None,
-        notion_url: None,
-        sent_at: None,
-        send_error: None,
-        send_ambiguous: false,
-        template_id: None,
-    };
-    sqlx::query(
-        "INSERT INTO tasks (id, meeting_id, text, owner, status, source, edited, created_at) \
-         VALUES (?, NULL, ?, ?, ?, ?, 0, ?)",
-    )
-    .bind(&row.id)
-    .bind(&row.text)
-    .bind(&row.owner)
-    .bind(&row.status)
-    .bind(&row.source)
-    .bind(&row.created_at)
-    .execute(pool)
-    .await?;
-    Ok(row)
-}
-
-/// An auto task is dismissed, not deleted, so re-extraction does not bring it back. A manual task is deleted.
-pub(crate) async fn remove(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
-    let dismissed = sqlx::query(&format!(
-        "UPDATE tasks SET status = 'dismissed', edited = 1 WHERE id = ? AND source = 'auto' AND {EDITABLE}"
-    ))
-    .bind(id)
-    .execute(pool)
-    .await?
-    .rows_affected();
-    if dismissed > 0 {
-        return Ok(());
-    }
-    let deleted = sqlx::query(&format!("DELETE FROM tasks WHERE id = ? AND source = 'manual' AND {EDITABLE}"))
-        .bind(id)
-        .execute(pool)
-        .await?
-        .rows_affected();
-    found_unsent(deleted, "task not found or already sent")
-}
-
 /// The event the Tasks screen and the sidebar badge listen for (R10).
 pub(crate) const TASKS_CHANGED: &str = "tasks-changed";
 
@@ -433,16 +366,6 @@ pub(crate) async fn mark_sent(pool: &SqlitePool, id: &str) -> anyhow::Result<()>
 }
 
 #[tauri::command]
-pub async fn tasks_list(
-    state: State<'_, AppState>,
-    status: String,
-) -> Result<Vec<TaskRow>, String> {
-    list(state.db_manager.pool(), &status)
-        .await
-        .map_err(|e| e.to_string())
-}
-
-#[tauri::command]
 pub async fn tasks_set_status(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
@@ -464,45 +387,6 @@ pub async fn tasks_edit(
     text: String,
 ) -> Result<(), String> {
     edit(state.db_manager.pool(), &id, &text)
-        .await
-        .map_err(|e| e.to_string())?;
-    tasks_changed(&app);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn tasks_claim(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
-    claim(state.db_manager.pool(), &id)
-        .await
-        .map_err(|e| e.to_string())?;
-    tasks_changed(&app);
-    Ok(())
-}
-
-#[tauri::command]
-pub async fn tasks_add(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    text: String,
-) -> Result<TaskRow, String> {
-    let row = add(state.db_manager.pool(), &text)
-        .await
-        .map_err(|e| e.to_string())?;
-    tasks_changed(&app);
-    Ok(row)
-}
-
-#[tauri::command]
-pub async fn tasks_delete(
-    app: tauri::AppHandle,
-    state: State<'_, AppState>,
-    id: String,
-) -> Result<(), String> {
-    remove(state.db_manager.pool(), &id)
         .await
         .map_err(|e| e.to_string())?;
     tasks_changed(&app);
@@ -864,7 +748,7 @@ mod tests {
             .await
             .unwrap();
         insert_task(&pool, "d", Some("new"), "done one", "done", "auto", 0).await;
-        add(&pool, "manual").await.unwrap();
+        insert_task(&pool, "m", None, "manual", "open", "manual", 0).await;
 
         let open = list(&pool, "open").await.unwrap();
         assert_eq!(
@@ -876,53 +760,8 @@ mod tests {
         assert_eq!(texts(&list(&pool, "dismissed").await.unwrap()), vec!["removed one"]);
     }
 
-    /// Every status the UI asks `tasks_list` for must be accepted (the meeting page once asked for "dismissed" and the
-    /// backend refused). Read from the TSX sources, so a new status there fails here, and a renamed constant fails loudly.
     #[tokio::test]
-    async fn list_accepts_every_status_the_frontend_requests() {
-        let quoted = |src: &str, marker: &str| -> Vec<String> {
-            let line = src.lines().find(|l| l.contains(marker)).unwrap_or_else(|| panic!("`{marker}` not found"));
-            line.split('\'').skip(1).step_by(2).map(str::to_string).collect()
-        };
-        let panel = quoted(include_str!("../../../src/components/MeetingPage/MeetingTasksPanel.tsx"), "const STATUSES =");
-        let list_tab = quoted(include_str!("../../../src/components/Tasks/TaskList.tsx"), "type Status =");
-        assert!(panel.iter().any(|s| s == "dismissed"), "panel statuses: {panel:?}");
-        assert!(!list_tab.is_empty(), "TaskList statuses not found");
-        let mut statuses = panel;
-        statuses.extend(list_tab);
-        statuses.sort();
-        statuses.dedup();
-        let pool = test_pool().await;
-        for s in &statuses {
-            insert_task(&pool, &format!("id-{s}"), None, &format!("task {s}"), s, "auto", 0).await;
-        }
-        for s in &statuses {
-            let rows = list(&pool, s).await.unwrap_or_else(|e| panic!("list({s}) failed: {e}"));
-            assert_eq!(texts(&rows), vec![format!("task {s}").as_str()]);
-        }
-    }
-
-    #[tokio::test]
-    async fn delete_auto_dismisses_delete_manual_removes() {
-        let pool = test_pool().await;
-        insert_meeting(&pool, "M").await;
-        insert_task(&pool, "a", Some("M"), "auto", "open", "auto", 0).await;
-        let manual = add(&pool, "mine").await.unwrap();
-
-        remove(&pool, "a").await.unwrap();
-        remove(&pool, &manual.id).await.unwrap();
-
-        let rows: Vec<(String, String)> =
-            sqlx::query_as("SELECT id, status FROM tasks ORDER BY id")
-                .fetch_all(&pool)
-                .await
-                .unwrap();
-        assert_eq!(rows, vec![("a".to_string(), "dismissed".to_string())]);
-        assert!(remove(&pool, "missing").await.is_err());
-    }
-
-    #[tokio::test]
-    async fn edit_and_claim_mark_edited() {
+    async fn edit_marks_edited() {
         let pool = test_pool().await;
         insert_meeting(&pool, "M").await;
         insert_task(&pool, "a", Some("M"), "A", "open", "auto", 0).await;
@@ -933,7 +772,6 @@ mod tests {
             .unwrap();
 
         edit(&pool, "a", "  A edited  ").await.unwrap();
-        claim(&pool, "b").await.unwrap();
 
         let rows: Vec<(String, String, String, i64)> =
             sqlx::query_as("SELECT id, text, owner, edited FROM tasks ORDER BY id")
@@ -949,21 +787,19 @@ mod tests {
                     "unassigned".to_string(),
                     1
                 ),
-                ("b".to_string(), "B".to_string(), "me".to_string(), 1),
+                ("b".to_string(), "B".to_string(), "unassigned".to_string(), 0),
             ]
         );
         assert!(edit(&pool, "missing", "x").await.is_err());
-        assert!(claim(&pool, "missing").await.is_err());
     }
 
     #[tokio::test]
-    async fn edit_and_remove_refuse_sending_and_sent_rows() {
+    async fn edit_refuses_sending_and_sent_rows() {
         let pool = test_pool().await;
         for (id, source, review) in [("a", "auto", "sending"), ("b", "manual", "sent")] {
             insert_task(&pool, id, None, "T", "open", source, 0).await;
             set_col(&pool, id, &format!("review = '{review}'")).await;
             assert!(edit(&pool, id, "new").await.is_err());
-            assert!(remove(&pool, id).await.is_err());
         }
         let rows: Vec<(String, String, String)> =
             sqlx::query_as("SELECT id, text, status FROM tasks ORDER BY id").fetch_all(&pool).await.unwrap();
@@ -1022,19 +858,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn add_validates_length() {
+    async fn edit_validates_length() {
         let pool = test_pool().await;
-        assert!(add(&pool, "   ").await.is_err());
-        assert!(add(&pool, &"x".repeat(MAX_TASK_CHARS + 1)).await.is_err());
+        insert_task(&pool, "a", None, "T", "open", "manual", 0).await;
+        assert!(edit(&pool, "a", "   ").await.is_err());
+        assert!(edit(&pool, "a", &"x".repeat(MAX_TASK_CHARS + 1)).await.is_err());
         // 500 Cyrillic letters are 1000 bytes: the limit counts chars.
         let longest = "я".repeat(MAX_TASK_CHARS);
-        assert_eq!(add(&pool, &longest).await.unwrap().text, longest);
-
-        let row = add(&pool, "  Купить молоко  ").await.unwrap();
-        assert_eq!(row.text, "Купить молоко");
-        assert_eq!(row.source, "manual");
-        assert_eq!(row.meeting_id, None);
-        assert_eq!(row.status, "open");
+        edit(&pool, "a", &longest).await.unwrap();
+        edit(&pool, "a", "  Купить молоко  ").await.unwrap();
+        let (text,): (String,) = sqlx::query_as("SELECT text FROM tasks WHERE id = 'a'").fetch_one(&pool).await.unwrap();
+        assert_eq!(text, "Купить молоко");
     }
 
     #[tokio::test]
@@ -1054,7 +888,7 @@ mod tests {
             id_of(&pool, "B").await,
             id_of(&pool, "C").await,
         );
-        remove(&pool, &a).await.unwrap();
+        set_status(&pool, &a, "dismissed").await.unwrap();
         edit(&pool, &b, "B edited").await.unwrap();
         set_status(&pool, &c, "done").await.unwrap();
 

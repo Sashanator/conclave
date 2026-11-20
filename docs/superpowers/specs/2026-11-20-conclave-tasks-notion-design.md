@@ -88,7 +88,7 @@ New Settings pane "Notion" in the App group (`frontend/src/lib/settings-panes.ts
   - Meeting (title and date as text) → any `rich_text` property (optional).
   - Fixed values: for each `select`, `status`, `multi_select` or `checkbox` property the user may set a fixed value (e.g. Status = "To do"); options come from Notion.
   - Other property types are not settable in v1 (listed as "not used").
-  The mapping is stored in the app settings (not a secret). If a mapped property disappears or changes type in Notion, Test and Send report it by name.
+  The mapping is stored in the database table `notion_destinations` (not a secret). If a mapped property disappears or changes type in Notion, Test and Send report it by name.
 - **Default database per meeting category**: one picker per template plus "No template", each "Ask me" or a destination.
 
 Destination colours are their own tokens, distinct from the category hues `--cat-1..5`. Mockup values for the first three (light / dark-and-Conclave): rose `340 75% 50%` / `340 75% 58%`, cyan `190 90% 32%` / `190 85% 45%`, lime `85 65% 32%` / `85 60% 45%` (each ≥3:1 against the background, distinguishable under deuteranopia/protanopia, checked 2026-11-20). Further colours are the builder's choice under the same checks; add them to `globals.css` and `DESIGN.md`.

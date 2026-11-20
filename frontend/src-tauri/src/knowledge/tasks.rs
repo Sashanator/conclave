@@ -7,7 +7,7 @@ use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::collections::HashSet;
-use tauri::State;
+use tauri::{Emitter, State};
 use uuid::Uuid;
 
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq, sqlx::FromRow)]
@@ -350,6 +350,88 @@ pub(crate) async fn remove(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
     found(deleted)
 }
 
+/// The event the Tasks screen and the sidebar badge listen for (R10).
+pub(crate) const TASKS_CHANGED: &str = "tasks-changed";
+
+pub(crate) fn tasks_changed<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Err(e) = app.emit(TASKS_CHANGED, ()) {
+        log::warn!("knowledge: could not emit {TASKS_CHANGED}: {e}");
+    }
+}
+
+/// Every task with its meeting context, newest meeting first, for the review queue.
+pub(crate) async fn queue_list(pool: &SqlitePool) -> anyhow::Result<Vec<TaskRow>> {
+    let d = crate::database::repositories::meeting::meeting_date_sql("m");
+    let sql = format!(
+        "{} ORDER BY julianday(COALESCE({d}, t.meeting_date)) DESC, t.created_at, t.rowid",
+        select_sql()
+    );
+    Ok(sqlx::query_as(&sql).fetch_all(pool).await?)
+}
+
+/// Queue writes touch only rows that are not being sent or sent: the send engine owns those (spec 5.1).
+const EDITABLE: &str = "review IN ('open', 'keep', 'drop')";
+
+fn found_unsent(rows: u64, what: &str) -> anyhow::Result<()> {
+    anyhow::ensure!(rows > 0, "{what}");
+    Ok(())
+}
+
+pub(crate) async fn set_review(pool: &SqlitePool, id: &str, review: &str) -> anyhow::Result<()> {
+    let set = match review {
+        "keep" => "review = 'keep', owner = 'me', edited = 1, status = 'open', removed_by = NULL",
+        "drop" => "review = 'drop', removed_by = 'user', status = 'dismissed', edited = 1",
+        "open" => "review = 'open', status = 'open', removed_by = NULL",
+        _ => anyhow::bail!("unknown review state"),
+    };
+    let rows = sqlx::query(&format!("UPDATE tasks SET {set} WHERE id = ? AND {EDITABLE}"))
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    found_unsent(rows, "task not found or already sent")
+}
+
+pub(crate) async fn set_dest(pool: &SqlitePool, id: &str, dest_id: Option<&str>) -> anyhow::Result<()> {
+    let rows = sqlx::query(&format!(
+        "UPDATE tasks SET dest_id = ?1 WHERE id = ?2 AND {EDITABLE} \
+         AND (?1 IS NULL OR EXISTS (SELECT 1 FROM notion_destinations WHERE id = ?1))"
+    ))
+    .bind(dest_id)
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    found_unsent(rows, "task not found, already sent, or unknown database")
+}
+
+pub(crate) async fn set_due_date(pool: &SqlitePool, id: &str, due_date: Option<&str>) -> anyhow::Result<()> {
+    if let Some(d) = due_date {
+        anyhow::ensure!(crate::knowledge::extract::iso_date(d).is_some(), "due date must be YYYY-MM-DD");
+    }
+    let rows = sqlx::query(&format!("UPDATE tasks SET due_date = ?, edited = 1 WHERE id = ? AND {EDITABLE}"))
+        .bind(due_date)
+        .bind(id)
+        .execute(pool)
+        .await?
+        .rows_affected();
+    found_unsent(rows, "task not found or already sent")
+}
+
+/// The user confirms a task whose send was cut off is already in Notion.
+pub(crate) async fn mark_sent(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
+    let rows = sqlx::query(
+        "UPDATE tasks SET review = 'sent', send_ambiguous = 0, send_error = NULL, sent_at = ? \
+         WHERE id = ? AND send_ambiguous = 1 AND review <> 'sending'",
+    )
+    .bind(stamp())
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    found_unsent(rows, "only a task that may already be in Notion can be marked sent")
+}
+
 #[tauri::command]
 pub async fn tasks_list(
     state: State<'_, AppState>,
@@ -362,43 +444,129 @@ pub async fn tasks_list(
 
 #[tauri::command]
 pub async fn tasks_set_status(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     status: String,
 ) -> Result<(), String> {
     set_status(state.db_manager.pool(), &id, &status)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
 pub async fn tasks_edit(
+    app: tauri::AppHandle,
     state: State<'_, AppState>,
     id: String,
     text: String,
 ) -> Result<(), String> {
     edit(state.db_manager.pool(), &id, &text)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn tasks_claim(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn tasks_claim(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
     claim(state.db_manager.pool(), &id)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn tasks_add(state: State<'_, AppState>, text: String) -> Result<TaskRow, String> {
-    add(state.db_manager.pool(), &text)
+pub async fn tasks_add(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    text: String,
+) -> Result<TaskRow, String> {
+    let row = add(state.db_manager.pool(), &text)
         .await
-        .map_err(|e| e.to_string())
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(row)
 }
 
 #[tauri::command]
-pub async fn tasks_delete(state: State<'_, AppState>, id: String) -> Result<(), String> {
+pub async fn tasks_delete(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
     remove(state.db_manager.pool(), &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tasks_set_review(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    review: String,
+) -> Result<(), String> {
+    set_review(state.db_manager.pool(), &id, &review)
+        .await
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tasks_set_dest(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    dest_id: Option<String>,
+) -> Result<(), String> {
+    set_dest(state.db_manager.pool(), &id, dest_id.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tasks_set_due_date(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+    due_date: Option<String>,
+) -> Result<(), String> {
+    set_due_date(state.db_manager.pool(), &id, due_date.as_deref())
+        .await
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tasks_mark_sent(
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+    id: String,
+) -> Result<(), String> {
+    mark_sent(state.db_manager.pool(), &id)
+        .await
+        .map_err(|e| e.to_string())?;
+    tasks_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn tasks_queue_list(state: State<'_, AppState>) -> Result<Vec<TaskRow>, String> {
+    queue_list(state.db_manager.pool())
         .await
         .map_err(|e| e.to_string())
 }
@@ -932,6 +1100,122 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(rows, vec![(x, "open".to_string())]);
+    }
+
+    async fn row_state(pool: &SqlitePool, id: &str) -> (String, String, String, i64, Option<String>) {
+        sqlx::query_as("SELECT review, status, owner, edited, removed_by FROM tasks WHERE id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await
+            .unwrap()
+    }
+
+    async fn set_col(pool: &SqlitePool, id: &str, sql: &str) {
+        sqlx::query(&format!("UPDATE tasks SET {sql} WHERE id = ?")).bind(id).execute(pool).await.unwrap();
+    }
+
+    async fn insert_dest(pool: &SqlitePool, id: &str) {
+        sqlx::query("INSERT INTO notion_destinations (id, name, colour, position, database_id, mapping_json, created_at) VALUES (?, ?, 1, 0, 'db', '{}', 't')")
+            .bind(id)
+            .bind(id)
+            .execute(pool)
+            .await
+            .unwrap();
+    }
+
+    fn st(s: &str, owner: &str, edited: i64, by: Option<&str>) -> (String, String, String, i64, Option<String>) {
+        let (review, status) = match s {
+            "keep" => ("keep", "open"),
+            "drop" => ("drop", "dismissed"),
+            _ => ("open", "open"),
+        };
+        (review.into(), status.into(), owner.into(), edited, by.map(Into::into))
+    }
+
+    #[tokio::test]
+    async fn keep_remove_restore() {
+        let pool = test_pool().await;
+        insert_task(&pool, "a", None, "T", "dismissed", "auto", 0).await;
+        set_col(&pool, "a", "owner = 'unassigned', review = 'drop', removed_by = 'ai'").await;
+        set_review(&pool, "a", "keep").await.unwrap();
+        assert_eq!(row_state(&pool, "a").await, st("keep", "me", 1, None));
+        set_review(&pool, "a", "drop").await.unwrap();
+        assert_eq!(row_state(&pool, "a").await, st("drop", "me", 1, Some("user")));
+        set_review(&pool, "a", "open").await.unwrap();
+        assert_eq!(row_state(&pool, "a").await, st("open", "me", 1, None));
+        assert!(set_review(&pool, "a", "sent").await.is_err());
+        assert!(set_review(&pool, "a", "sending").await.is_err());
+        // The send engine owns sending and sent rows: no queue command may touch them.
+        insert_dest(&pool, "job").await;
+        for state in ["sending", "sent"] {
+            set_col(&pool, "a", &format!("review = '{state}', dest_id = NULL")).await;
+            assert!(set_review(&pool, "a", "keep").await.is_err());
+            assert!(set_review(&pool, "a", "drop").await.is_err());
+            assert!(set_dest(&pool, "a", None).await.is_err());
+            assert!(set_dest(&pool, "a", Some("job")).await.is_err());
+            assert!(set_due_date(&pool, "a", None).await.is_err());
+            assert!(set_due_date(&pool, "a", Some("2026-11-26")).await.is_err());
+            let (r, d): (String, Option<String>) = sqlx::query_as("SELECT review, dest_id FROM tasks WHERE id = 'a'")
+                .fetch_one(&pool).await.unwrap();
+            assert_eq!((r.as_str(), d), (state, None));
+        }
+        assert!(set_review(&pool, "missing", "keep").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn destination_and_due_date() {
+        let pool = test_pool().await;
+        insert_task(&pool, "a", None, "T", "open", "auto", 0).await;
+        insert_dest(&pool, "job").await;
+        set_dest(&pool, "a", Some("job")).await.unwrap();
+        assert!(set_dest(&pool, "a", Some("nope")).await.is_err());
+        let (d,): (Option<String>,) = sqlx::query_as("SELECT dest_id FROM tasks WHERE id = 'a'").fetch_one(&pool).await.unwrap();
+        assert_eq!(d.as_deref(), Some("job"));
+        set_due_date(&pool, "a", Some("2026-11-26")).await.unwrap();
+        assert!(set_due_date(&pool, "a", Some("2026-02-30")).await.is_err());
+        let (due, edited): (Option<String>, i64) = sqlx::query_as("SELECT due_date, edited FROM tasks WHERE id = 'a'").fetch_one(&pool).await.unwrap();
+        assert_eq!((due.as_deref(), edited), (Some("2026-11-26"), 1));
+        set_dest(&pool, "a", None).await.unwrap();
+        set_due_date(&pool, "a", None).await.unwrap();
+        let (d, due): (Option<String>, Option<String>) = sqlx::query_as("SELECT dest_id, due_date FROM tasks WHERE id = 'a'").fetch_one(&pool).await.unwrap();
+        assert_eq!((d, due), (None, None));
+    }
+
+    #[tokio::test]
+    async fn mark_sent_only_for_ambiguous_rows() {
+        let pool = test_pool().await;
+        insert_task(&pool, "a", None, "A", "open", "auto", 0).await;
+        insert_task(&pool, "b", None, "B", "open", "auto", 0).await;
+        insert_task(&pool, "c", None, "C", "open", "auto", 0).await;
+        set_col(&pool, "a", "review = 'keep', send_ambiguous = 1, send_error = 'x'").await;
+        set_col(&pool, "b", "review = 'keep'").await;
+        set_col(&pool, "c", "review = 'sending', send_ambiguous = 1").await;
+        mark_sent(&pool, "a").await.unwrap();
+        let (r, amb, err, at): (String, i64, Option<String>, Option<String>) =
+            sqlx::query_as("SELECT review, send_ambiguous, send_error, sent_at FROM tasks WHERE id = 'a'").fetch_one(&pool).await.unwrap();
+        assert_eq!((r.as_str(), amb, err), ("sent", 0, None));
+        assert!(at.is_some());
+        assert!(mark_sent(&pool, "b").await.is_err());
+        assert!(mark_sent(&pool, "c").await.is_err());
+        assert_eq!(row_state(&pool, "b").await.0, "keep");
+        assert_eq!(row_state(&pool, "c").await.0, "sending");
+    }
+
+    #[tokio::test]
+    async fn queue_lists_every_task_with_meeting_context() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        sqlx::query("UPDATE meetings SET template_id = 'standup' WHERE id = 'M'").execute(&pool).await.unwrap();
+        insert_task(&pool, "a", Some("M"), "A", "dismissed", "auto", 0).await;
+        insert_task(&pool, "b", None, "B", "open", "auto", 0).await;
+        sqlx::query("UPDATE tasks SET meeting_title = 'Gone', meeting_date = '2026-01-01', send_ambiguous = 1 WHERE id = 'b'")
+            .execute(&pool).await.unwrap();
+        let got: Vec<_> = queue_list(&pool).await.unwrap().into_iter()
+            .map(|t| (t.id, t.meeting_title, t.template_id, t.status, t.send_ambiguous)).collect();
+        assert_eq!(got, vec![
+            ("b".into(), Some("Gone".into()), None, "open".into(), true),
+            ("a".into(), Some("M".into()), Some("standup".into()), "dismissed".into(), false),
+        ]);
     }
 }
 

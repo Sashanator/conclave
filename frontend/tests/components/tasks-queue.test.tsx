@@ -1,0 +1,177 @@
+import { afterAll, beforeEach, describe, expect, mock, test } from 'bun:test';
+import { createRoot } from 'react-dom/client';
+import { act } from 'react-dom/test-utils';
+import type { TaskRow } from '../../src/lib/tasks';
+
+const originals = { core: { ...(await import('@tauri-apps/api/core')) }, sonner: { ...(await import('sonner')) } };
+afterAll(() => {
+  mock.module('@tauri-apps/api/core', () => originals.core);
+  mock.module('sonner', () => originals.sonner);
+});
+
+const mk = (id: string, over: Partial<TaskRow>): TaskRow => ({
+  id, meetingId: 'm2', meetingTitle: 'M2', meetingDate: '2026-11-18 10:00:00+00:00', text: `Task ${id}`, owner: 'me', due: null, at: null,
+  status: 'open', source: 'auto', createdAt: 't', review: 'open', removedBy: null, destId: null, dueDate: null, notionUrl: null, sentAt: null,
+  sendError: null, sendAmbiguous: false, templateId: null, ...over,
+});
+const dest = (id: string, position: number) => ({
+  id, name: `Dest ${id}`, colour: position + 1, position, databaseId: id, dataSourceId: null,
+  mapping: { titleProp: 'Name', dueProp: null, meetingProp: null, fixed: [] }, lastStatus: 'connected', lastMessage: null,
+});
+
+let rows: TaskRow[] = [];
+let failNext = false;
+const calls: [string, any][] = [];
+const invoke = mock(async (cmd: string, args?: any): Promise<unknown> => {
+  calls.push([cmd, args]);
+  if (cmd === 'tasks_queue_list') return structuredClone(rows);
+  if (cmd === 'notion_get_config') return { tokenLast4: 'abcd', destinations: [dest('d1', 0), dest('d2', 1)], categoryDefaults: [] };
+  if (cmd === 'api_list_templates') return { templates: [] };
+  if (cmd === 'open_external_url') return null;
+  if (failNext) { failNext = false; throw new Error('boom'); }
+  const r = rows.find((x) => x.id === args.id)!;
+  if (cmd === 'tasks_set_review') { r.review = args.review; r.removedBy = args.review === 'drop' ? 'user' : null; }
+  if (cmd === 'tasks_set_dest') r.destId = args.destId;
+  if (cmd === 'tasks_edit') r.text = args.text;
+  if (cmd === 'tasks_set_due_date') r.dueDate = args.dueDate;
+  return null;
+});
+const toast = Object.assign(mock(() => {}), { error: mock((_: string) => {}), dismiss: mock(() => {}) });
+mock.module('@tauri-apps/api/core', () => ({ invoke }));
+mock.module('sonner', () => ({ toast }));
+mock.module('next/link', () => ({ default: ({ href, children, ...p }: any) => <a href={href} {...p}>{children}</a> }));
+
+const { TasksQueue } = await import('../../src/components/Tasks/TasksQueue');
+
+const flush = () => act(async () => { await new Promise((r) => setTimeout(r, 0)); });
+const writes = () => calls.filter(([c]) => c.startsWith('tasks_') && c !== 'tasks_queue_list');
+const row = (id: string) => document.querySelector<HTMLElement>(`[data-row-id="${id}"]`)!;
+const key = async (el: HTMLElement, k: string) => { await act(async () => { el.dispatchEvent(new KeyboardEvent('keydown', { key: k, bubbles: true, cancelable: true })); }); await flush(); };
+const click = async (el: Element) => { await act(async () => { (el as HTMLElement).click(); }); await flush(); };
+const setValue = async (el: HTMLInputElement, v: string) => {
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(el, v);
+    el.dispatchEvent(new Event('input', { bubbles: true }));
+    el.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+};
+const text = () => document.body.textContent ?? '';
+
+let root: ReturnType<typeof createRoot>;
+async function mount() {
+  const host = document.createElement('div');
+  document.body.appendChild(host);
+  root = createRoot(host);
+  await act(async () => { root.render(<TasksQueue />); });
+  await flush();
+}
+
+beforeEach(async () => {
+  document.body.innerHTML = '';
+  calls.length = 0;
+  failNext = false;
+  rows = [
+    mk('a', {}), mk('b', {}),
+    mk('c', { meetingId: 'm1', meetingTitle: 'M1', meetingDate: '2026-11-10 10:00:00+00:00' }),
+    mk('z', { meetingId: 'm1', meetingTitle: 'M1', meetingDate: '2026-11-10 10:00:00+00:00', review: 'drop', removedBy: 'ai', owner: 'unassigned' }),
+    mk('d', { meetingId: null, meetingTitle: 'Gone', meetingDate: '2026-11-01 10:00:00+00:00' }),
+    mk('s', { review: 'sent', notionUrl: 'https://www.notion.so/p1', sentAt: '2026-11-19 09:30:00+00:00', destId: 'd1' }),
+  ];
+  await mount();
+});
+
+describe('tasks queue', () => {
+  test('tabs and groups', () => {
+    expect(document.querySelector('#tab-review')!.textContent).toContain('4');
+    expect(Array.from(document.querySelectorAll('section')).map((s) => s.getAttribute('aria-label'))).toEqual(['M2', 'M1', 'Deleted meeting: Gone']);
+    expect(text()).toContain("1 removed (AI thinks they aren't yours) · Show");
+  });
+
+  test('K keeps and advances; X folds and advances; X on the last row goes back', async () => {
+    row('a').focus();
+    await key(row('a'), 'K');
+    expect(writes()[0]).toEqual(['tasks_set_review', { id: 'a', review: 'keep' }]);
+    expect(document.activeElement).toBe(row('b'));
+    await key(row('b'), 'X');
+    expect(document.activeElement).toBe(row('c'));
+    expect(row('b')).toBeNull();
+    row('d').focus();
+    await key(row('d'), 'x');
+    expect(document.activeElement).toBe(row('c'));
+  });
+
+  test('clicking Keep on a kept row reopens it and focus stays', async () => {
+    await key(row('a'), 'k');
+    const btn = row('a').querySelector<HTMLElement>('button[aria-label="Keep: Task a"]')!;
+    btn.focus();
+    await click(btn);
+    expect(writes().at(-1)).toEqual(['tasks_set_review', { id: 'a', review: 'open' }]);
+    expect(row('a').contains(document.activeElement)).toBe(true);
+  });
+
+  test('1-9 pick a destination and focus stays; typing in the text input is ignored', async () => {
+    row('a').focus();
+    await key(row('a'), '2');
+    expect(writes()[0]).toEqual(['tasks_set_dest', { id: 'a', destId: 'd2' }]);
+    expect(document.activeElement).toBe(row('a'));
+    await click(row('a').querySelector('button.block')!);
+    const input = row('a').querySelector<HTMLInputElement>('input')!;
+    const n = writes().length;
+    await key(input, 'k');
+    await key(input, '1');
+    expect(writes().length).toBe(n);
+  });
+
+  test('Enter saves the edited text; Escape cancels and refocuses the row', async () => {
+    await click(row('a').querySelector('button.block')!);
+    await setValue(row('a').querySelector('input')!, 'New text');
+    await key(row('a').querySelector('input')!, 'Enter');
+    expect(writes()[0]).toEqual(['tasks_edit', { id: 'a', text: 'New text' }]);
+    expect(document.activeElement).toBe(row('a'));
+    await click(row('b').querySelector('button.block')!);
+    await key(row('b').querySelector('input')!, 'Escape');
+    expect(writes().length).toBe(1);
+    expect(document.activeElement).toBe(row('b'));
+  });
+
+  test('due date set then cleared', async () => {
+    await click(row('a').querySelector('button[aria-label^="Due date"]')!);
+    await setValue(row('a').querySelector('input[type="date"]')!, '2026-11-26');
+    expect(writes()[0]).toEqual(['tasks_set_due_date', { id: 'a', dueDate: '2026-11-26' }]);
+    await flush();
+    await setValue(row('a').querySelector('input[type="date"]')!, '');
+    expect(writes()[1]).toEqual(['tasks_set_due_date', { id: 'a', dueDate: null }]);
+  });
+
+  test('Keep all mine keeps each open row of the group and focuses its first row', async () => {
+    await click(document.querySelector('section[aria-label="M2"] button')!.parentElement!.querySelector('button:last-child')!);
+    expect(writes().map(([c, a]) => [c, a.id, a.review])).toEqual([['tasks_set_review', 'a', 'keep'], ['tasks_set_review', 'b', 'keep']]);
+    expect(document.activeElement).toBe(row('a'));
+  });
+
+  test('a failed change toasts and focus is not lost to the page', async () => {
+    row('a').focus();
+    failNext = true;
+    await key(row('a'), 'K');
+    expect(toast.error).toHaveBeenCalledWith('Could not save that change.');
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  test('Removed tab: Restore; Sent tab: Open in Notion', async () => {
+    await click(document.querySelector('#tab-removed')!);
+    expect(text()).toContain('M1 · Unassigned · removed by AI');
+    await click(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Restore')!);
+    expect(writes()[0]).toEqual(['tasks_set_review', { id: 'z', review: 'open' }]);
+    expect(document.activeElement).not.toBe(document.body);
+    await click(document.querySelector('#tab-sent')!);
+    await click(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Open in Notion ↗')!);
+    expect(calls.at(-1)).toEqual(['open_external_url', { url: 'https://www.notion.so/p1' }]);
+  });
+
+  test('empty queue reads All reviewed', async () => {
+    document.body.innerHTML = '';
+    rows = [];
+    await mount();
+    expect(text()).toContain('All reviewed');
+  });
+});

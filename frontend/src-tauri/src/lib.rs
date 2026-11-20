@@ -797,6 +797,8 @@ pub fn run() {
             }
             // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
             tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
+            // A Notion send cut off by a crash or quit may or may not have reached Notion: mark it, never resend it.
+            tauri::async_runtime::block_on(notion::send::recover_at_startup(_app.handle()));
             // Moves plain-text secrets into Credential Manager and compacts the DB; runs before any background starter holds a reader.
             tauri::async_runtime::block_on(secrets::migrate::run_at_startup(_app.handle()));
             // Dictate that was on comes back only now: its model load needs the database.

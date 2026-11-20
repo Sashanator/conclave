@@ -1,5 +1,6 @@
 pub mod client;
 pub mod mapping;
+pub mod send;
 
 use serde::{Deserialize, Serialize};
 

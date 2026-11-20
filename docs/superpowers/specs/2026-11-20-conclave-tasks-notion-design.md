@@ -122,6 +122,8 @@ Properties as mapped. Page body: one paragraph "From *<meeting title>*, <meeting
 
 `components/MeetingPage/MeetingTasksPanel.tsx` switches to the `review` state: Keep/Remove write the same commands as the Tasks page, and kept tasks show their destination chip (picker included). "Done reviewing" keeps today's meaning (marks the meeting reviewed). Sending happens only on the Tasks page.
 
+**Nothing to review → reviewed automatically** (user, 2026-11-20). When task extraction for a meeting finishes successfully and leaves no task of that meeting in `review='open'` (the AI found no tasks, or only tasks it removed as not the user's), Conclave sets `meetings.reviewed = 1` itself, so the user never clicks "Done reviewing" on an empty panel. It only ever sets the flag, never clears it; a failed or pending extraction does not count. The upgrade migration applies the same rule once to existing meetings whose extraction is `done`. If the user later removes every task by hand, "Done reviewing" stays a click (that was a decision, not an empty meeting).
+
 ## 6. Testing
 
 - Rust unit tests with a fake Notion HTTP server: mapping → request body for each property type; 200, 400 (property missing), 401, 403/404 (not shared), 429 with Retry-After, timeout → ambiguous; `sending` rows at start become "may already be in Notion"; concurrent Send is refused; token never appears in errors or logs.

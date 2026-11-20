@@ -70,7 +70,7 @@ Three worktrees. Cargo and every frontend build/test share `/workspace/.superpow
 a open NULL open | b drop NULL open | c drop NULL done | d drop NULL dismissed | e open NULL open
 f drop NULL open | g drop ai open   | h drop ai open   | i drop NULL done        (dest_id NULL, send_ambiguous 0 everywhere)
 ```
-and both new tables are empty; `SELECT last_status, last_message FROM notion_destinations` prepares (columns exist). Bind expected rows with an explicit `Vec<(String, String, Option<String>, String, Option<String>, i64)>` (inference cannot pick the element type).
+Also assert the §5.7 rule: meetings `Z` (reviewed=0, `meeting_extracts` status `done`, no tasks) and `Y` (reviewed=0, extract `done`, only task `j Y unassigned open auto 0`) become reviewed=1; `F` (reviewed=0, extract `failed`, no tasks) and `U` (has open task `a`) stay 0. Add `j` to the expected rows as `j drop ai open`. And both new tables are empty; `SELECT last_status, last_message FROM notion_destinations` prepares (columns exist). Bind expected rows with an explicit `Vec<(String, String, Option<String>, String, Option<String>, i64)>` (inference cannot pick the element type).
 
 - [ ] **Step 2: Run** — Rust gate, filter `notion_migration_tests`. Expected: FAIL `no such column: review`.
 
@@ -104,6 +104,12 @@ UPDATE tasks SET
     WHEN status = 'open' AND EXISTS (SELECT 1 FROM meetings m WHERE m.id = tasks.meeting_id AND m.reviewed = 0) THEN 'open'
     ELSE 'drop' END,
   removed_by = CASE WHEN status = 'open' AND owner = 'unassigned' THEN 'ai' END;
+
+-- Nothing left to review → reviewed (spec §5.7), once for existing meetings with a finished extraction.
+UPDATE meetings SET reviewed = 1
+  WHERE reviewed = 0
+    AND EXISTS (SELECT 1 FROM meeting_extracts x WHERE x.meeting_id = meetings.id AND x.status = 'done')
+    AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.meeting_id = meetings.id AND t.review = 'open');
 ```
 
 - [ ] **Step 4: Run** the filter, then the Rust gate with no filter (`knowledge::` and `database::` stay green). Expected: PASS.
@@ -160,9 +166,10 @@ fn due_date_must_be_a_real_calendar_date() {
 - [ ] **Step 1: Write the failing tests** (helper `add_dest(pool, id, template_key, dest: Option<&str>)` inserts a destination row if missing and a default row):
   - `category_default_destination`: meeting `M` (no template) → None; after `add_dest("job", "", Some("job"))` → `Some("job")`; meeting `S` with `template_id='standup'` and `add_dest("job","standup",None)` → None ("Ask me"); after `DELETE FROM notion_destinations` → `M` gives None.
   - `new_tasks_get_review_state_and_default_destination`: extraction `[task("Mine"), unassigned "Theirs" with due_date "2026-11-26"]` → rows `(Mine, open, NULL, job, NULL)`, `(Theirs, drop, ai, job, 2026-11-26)`.
+  - `empty_extraction_marks_meeting_reviewed` (spec §5.7): meeting `E` (reviewed=0) extracted with `[]` → `reviewed = 1`; meeting `T` extracted with only an unassigned task → `reviewed = 1`; meeting `O` extracted with `[task("Mine")]` → `reviewed = 0`; meeting `P` already reviewed=1, extracted with `[task("Mine")]` → stays 1 (never cleared).
   - `reextract_replaces_only_untouched_ai_output` (R7): rows of `M`, all `status='open', source='auto', edited=0`: `k` keep, `x` drop/`removed_by='user'`, `s` sent, `o` open, `a` drop/`removed_by='ai'` (texts K, X, S, O, A). Extract `[K, X, S, N]`. Assert texts = `[K keep, N open, S sent, X drop]` (O and A replaced/gone) and ids of K, S, X unchanged (`k`, `s`, `x`).
 - [ ] **Step 2: Run** — filter `knowledge::tasks`. Expected: compile FAIL.
-- [ ] **Step 3: Implement.** The DELETE at :63 becomes (R7): `DELETE FROM tasks WHERE meeting_id = ? AND source = 'auto' AND status = 'open' AND edited = 0 AND (review = 'open' OR (review = 'drop' AND removed_by = 'ai'))`. Then `let dest = default_dest_for_meeting(&mut *tx, meeting_id).await?;`; the INSERT also writes `review` (`drop` when `task.owner == "unassigned"`, else `open`), `removed_by` (`ai` for unassigned), `dest_id` = `dest`, `due_date`. The `kept`/`seen` query stays (decided rows are never duplicated). `list` = `select_sql()` + `WHERE t.status = ? ORDER BY` (order unchanged); `add` fills `review: "open"`, `send_ambiguous: false`, the rest None.
+- [ ] **Step 3: Implement.** The DELETE at :63 becomes (R7): `DELETE FROM tasks WHERE meeting_id = ? AND source = 'auto' AND status = 'open' AND edited = 0 AND (review = 'open' OR (review = 'drop' AND removed_by = 'ai'))`. Then `let dest = default_dest_for_meeting(&mut *tx, meeting_id).await?;`; the INSERT also writes `review` (`drop` when `task.owner == "unassigned"`, else `open`), `removed_by` (`ai` for unassigned), `dest_id` = `dest`, `due_date`. The `kept`/`seen` query stays (decided rows are never duplicated). Last, in the same transaction (spec §5.7): `UPDATE meetings SET reviewed = 1 WHERE id = ? AND NOT EXISTS (SELECT 1 FROM tasks WHERE meeting_id = ? AND review = 'open')`. `apply_extraction` runs only for a successful extraction; check that a failed one never reaches it. `list` = `select_sql()` + `WHERE t.status = ? ORDER BY` (order unchanged); `add` fills `review: "open"`, `send_ambiguous: false`, the rest None.
 - [ ] **Step 4: Run** — filter `knowledge::`. Expected: PASS (incl. `reextract_keeps_user_touched_tasks`, briefs tests reading `tasks::list`).
 - [ ] **Step 5: Commit** — `feat(tasks): review state and category destination on extraction; re-extraction keeps decided rows`
 

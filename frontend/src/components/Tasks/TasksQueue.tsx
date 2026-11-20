@@ -7,14 +7,15 @@ import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { ReviewRow, type RowActions } from '@/components/Tasks/ReviewRow';
+import { SendBar, type SendResult } from '@/components/Tasks/SendBar';
 import { formatRowDate } from '@/lib/dates';
 import { rememberOrigin } from '@/lib/back-nav';
 import { meetingHref } from '@/lib/meeting-target';
 import { parseDbTime } from '@/lib/meetings';
 import { taskKeyAction } from '@/lib/meeting-page';
-import type { Destination, NotionConfig } from '@/lib/notion';
+import type { Destination, NotionConfig, SendReport } from '@/lib/notion';
 import type { TaskRow } from '@/lib/tasks';
-import { destForKey, groupQueue, isEditingText, isToReview, pickFocus, toReviewCount, type QueueGroup } from '@/lib/tasks-queue';
+import { destForKey, groupQueue, isEditingText, isToReview, pickFocus, resultLine, sendSummary, toReviewCount, type QueueGroup } from '@/lib/tasks-queue';
 
 type Tab = 'review' | 'sent' | 'removed';
 type Call = [string, Record<string, unknown>];
@@ -38,6 +39,9 @@ export function TasksQueue() {
   const [tab, setTab] = useState<Tab>('review');
   const [shown, setShown] = useState<Set<string>>(new Set());
   const [tick, setTick] = useState(0);
+  const [sending, setSending] = useState(false);
+  const [result, setResult] = useState<SendResult | null>(null);
+  const sendingRef = useRef(false); // state lags a same-tick second click; the ref does not
   const root = useRef<HTMLDivElement>(null);
   const pending = useRef<{ before: string[]; wanted: string } | null>(null);
 
@@ -89,11 +93,40 @@ export function TasksQueue() {
   };
   const act = (command: string, args: Record<string, unknown>, wanted: string) => run([[command, args]], wanted);
 
+  const sendRef = useRef<(ids: string[]) => void>(() => {});
+  const send = async (sendIds: string[]) => {
+    if (sendingRef.current || sendIds.length === 0) return;
+    sendingRef.current = true;
+    setSending(true);
+    setResult(null);
+    const before = ids();
+    try {
+      setResult(resultLine(await invoke<SendReport>('notion_send', { taskIds: sendIds })));
+    } catch (e) {
+      console.error('Send failed:', e);
+      setResult({ sent: null, notSent: null, error: e instanceof Error ? e.message : String(e) });
+    } finally {
+      sendingRef.current = false;
+      setSending(false);
+      await reload();
+      request(before, before[0] ?? '');
+    }
+  };
+  sendRef.current = send;
+  useEffect(() => {
+    if (!result) return;
+    const t = setTimeout(() => setResult(null), 8000);
+    return () => clearTimeout(t);
+  }, [result]);
+
   const dests: Destination[] = config?.destinations ?? [];
   const lookup = { dests, tokenSet: !!config?.tokenLast4 };
   const sortedDests = [...dests].sort((a, b) => a.position - b.position);
 
   const actions: RowActions = {
+    busy: sending,
+    send: (t) => void send([t.id]),
+    markSent: (t) => void act('tasks_mark_sent', { id: t.id }, t.id),
     setReview: (t, review) => void act('tasks_set_review', { id: t.id, review }, t.id),
     setDest: (t, destId) => void act('tasks_set_dest', { id: t.id, destId }, t.id),
     setDue: (t, dueDate) => void act('tasks_set_due_date', { id: t.id, dueDate }, t.id),
@@ -125,6 +158,20 @@ export function TasksQueue() {
   };
 
   const sent = tasks.filter((t) => t.review === 'sent');
+  const summary = sendSummary(tasks, lookup);
+  const sumRef = useRef(summary);
+  sumRef.current = summary;
+  useEffect(() => {
+    if (tab !== 'review') return;
+    const h = (e: KeyboardEvent) => {
+      if (!(e.ctrlKey && e.key === 'Enter') || isEditingText(e.target as Element | null)) return;
+      e.preventDefault();
+      sendRef.current(sumRef.current.sendableIds);
+    };
+    window.addEventListener('keydown', h);
+    return () => window.removeEventListener('keydown', h);
+  }, [tab]);
+
   const removed = tasks.filter((t) => t.review === 'drop');
   const nReview = toReviewCount(tasks);
   const reviewGroups = groupQueue(tasks.filter((t) => t.review !== 'sent')).filter((g) => g.tasks.some(isToReview));
@@ -246,7 +293,7 @@ export function TasksQueue() {
           )}
         </div>
       </div>
-      {/* send bar: Task 26 */}
+      {tab === 'review' && loaded && <SendBar summary={summary} sending={sending} result={result} onSend={() => void send(summary.sendableIds)} onView={() => setTab('sent')} />}
     </>
   );
 }

@@ -5,10 +5,15 @@ import Link from 'next/link';
 import { Check, X } from 'lucide-react';
 import { Input } from '@/components/ui/input';
 import { DestPicker } from '@/components/Tasks/DestPicker';
-import { dueLabel, sendCheck, waitingText, type DestLookup } from '@/lib/tasks-queue';
+import { notionDbUrl } from '@/lib/notion';
+import { invoke } from '@tauri-apps/api/core';
+import { destOf, dueLabel, sendCheck, waitingText, type DestLookup } from '@/lib/tasks-queue';
 import type { TaskRow } from '@/lib/tasks';
 
 export type RowActions = {
+  busy: boolean;
+  send(task: TaskRow): void;
+  markSent(task: TaskRow): void;
   setReview(task: TaskRow, review: 'open' | 'keep' | 'drop'): void;
   setDest(task: TaskRow, destId: string | null): void;
   setDue(task: TaskRow, dueDate: string | null): void;
@@ -39,6 +44,7 @@ export function ReviewRow({ task, lookup, actions }: { task: TaskRow; lookup: De
   const closeDue = () => { setDueOpen(false); actions.refocus(task.id); };
 
   const check = drop ? null : sendCheck({ ...task, review: 'keep' }, lookup);
+  const dest = destOf(task, lookup.dests);
   const waiting = check?.kind === 'waiting' ? check : null;
   const label = `${task.text}${kept ? ', kept' : drop ? ', removed' : ''}`;
   const who = task.owner === 'me' ? 'You' : "Unassigned · AI isn't sure it's yours";
@@ -98,7 +104,19 @@ export function ReviewRow({ task, lookup, actions }: { task: TaskRow; lookup: De
         {!drop && !sending && (
           <div className="flex flex-wrap items-center gap-2">
             <DestPicker task={task} dests={lookup.dests} onPick={(destId) => actions.setDest(task, destId)} />
-            {waiting && (
+            {task.sendAmbiguous ? (
+              <span className="flex flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
+                May already be in Notion. Check the database before sending again.
+                {dest && <button type="button" className="underline" onClick={() => void invoke('open_external_url', { url: notionDbUrl(dest.databaseId) })}>Open Notion database</button>}
+                <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.markSent(task)}>Mark as sent</button>
+                <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.send(task)}>Send again</button>
+              </span>
+            ) : task.sendError ? (
+              <span className="flex flex-wrap items-center gap-2 text-xs text-red-600 dark:text-red-400">
+                Not sent: {task.sendError}
+                <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.send(task)}>Retry</button>
+              </span>
+            ) : waiting && (
               <span className="text-xs text-amber-700 dark:text-amber-400">
                 {waitingText(waiting.dest.name, waiting.state)} <Link href="/settings?tab=notion" className="underline">Fix in Settings</Link>
               </span>

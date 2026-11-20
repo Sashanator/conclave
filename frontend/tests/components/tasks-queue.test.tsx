@@ -21,6 +21,9 @@ const dest = (id: string, position: number) => ({
 
 let rows: TaskRow[] = [];
 let failNext = false;
+let sendReport: any = { sent: 1, failed: 0, ambiguous: 0 };
+let sendGate: Promise<void> | null = null;
+let sendError: Error | null = null;
 const calls: [string, any][] = [];
 const invoke = mock(async (cmd: string, args?: any): Promise<unknown> => {
   calls.push([cmd, args]);
@@ -28,6 +31,12 @@ const invoke = mock(async (cmd: string, args?: any): Promise<unknown> => {
   if (cmd === 'notion_get_config') return { tokenLast4: 'abcd', destinations: [dest('d1', 0), dest('d2', 1)], categoryDefaults: [] };
   if (cmd === 'api_list_templates') return { templates: [] };
   if (cmd === 'open_external_url') return null;
+  if (cmd === 'notion_send') {
+    if (sendGate) await sendGate;
+    if (sendError) throw sendError;
+    return sendReport;
+  }
+  if (cmd === 'tasks_mark_sent') { const r = rows.find((x) => x.id === args.id)!; r.review = 'sent'; r.sendAmbiguous = false; return null; }
   if (failNext) { failNext = false; throw new Error('boom'); }
   const r = rows.find((x) => x.id === args.id)!;
   if (cmd === 'tasks_set_review') { r.review = args.review; r.removedBy = args.review === 'drop' ? 'user' : null; }
@@ -59,6 +68,7 @@ const text = () => document.body.textContent ?? '';
 
 let root: ReturnType<typeof createRoot>;
 async function mount() {
+  if (root) await act(async () => { root.unmount(); }); // window listeners must not pile up across mounts
   const host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -70,6 +80,9 @@ beforeEach(async () => {
   document.body.innerHTML = '';
   calls.length = 0;
   failNext = false;
+  sendReport = { sent: 1, failed: 0, ambiguous: 0 };
+  sendGate = null;
+  sendError = null;
   rows = [
     mk('a', {}), mk('b', {}),
     mk('c', { meetingId: 'm1', meetingTitle: 'M1', meetingDate: '2026-11-10 10:00:00+00:00' }),
@@ -173,5 +186,127 @@ describe('tasks queue', () => {
     rows = [];
     await mount();
     expect(text()).toContain('All reviewed');
+  });
+});
+
+describe('sending', () => {
+  const sends = () => calls.filter(([c]) => c === 'notion_send');
+  const sendBtn = () => Array.from(document.querySelectorAll('button')).find((b) => /^(Send \d+ to Notion|Sending…|Nothing to send)$/.test(b.textContent!))!;
+  const status = () => document.querySelector('[role="status"]')!.textContent!;
+  const ctrlEnter = async (el: Element) => { await act(async () => { el.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true, cancelable: true })); }); await flush(); };
+  const setup = async (extra: TaskRow[] = []) => {
+    rows = [
+      mk('a', { review: 'keep', destId: 'd1' }), mk('b', { review: 'keep', destId: 'd1' }),
+      ...extra,
+    ];
+    document.body.innerHTML = '';
+    await mount();
+  };
+
+  test('bar counts', async () => {
+    rows = [
+      mk('a', { review: 'keep', destId: 'd1' }), mk('b', { review: 'keep' }), mk('c', { review: 'keep', destId: 'd2' }), mk('e', {}),
+    ];
+    const orig = invoke.getMockImplementation()!;
+    invoke.mockImplementation(async (cmd: string, args?: any) => cmd === 'notion_get_config'
+      ? { tokenLast4: 'abcd', destinations: [dest('d1', 0), { ...dest('d2', 1), name: 'Personal tasks', lastStatus: 'not_shared' }], categoryDefaults: [] }
+      : orig(cmd, args));
+    document.body.innerHTML = '';
+    await mount();
+    invoke.mockImplementation(orig);
+    expect(text()).toContain('3 kept');
+    expect(text()).toContain('1 need a database');
+    expect(text()).toContain('1 waiting for Personal tasks');
+    expect(text()).toContain('1 not decided');
+  });
+
+  test('send uses explicit ids and reports', async () => {
+    await setup();
+    sendReport = { sent: 2, failed: 0, ambiguous: 0 };
+    await click(sendBtn());
+    expect(sends()).toEqual([['notion_send', { taskIds: ['a', 'b'] }]]);
+    expect(status()).toContain('Sent 2 to Notion');
+    expect(status()).toContain('View');
+  });
+
+  test('in flight: disabled, no second send by click or Ctrl+Enter', async () => {
+    await setup();
+    let release!: () => void;
+    sendGate = new Promise((r) => { release = r; });
+    await click(sendBtn());
+    expect(sendBtn().textContent).toBe('Sending…');
+    expect((sendBtn() as HTMLButtonElement).disabled).toBe(true);
+    await click(sendBtn());
+    await ctrlEnter(row('a'));
+    release();
+    await flush();
+    expect(sends().length).toBe(1);
+  });
+
+  test('same-tick double click sends once', async () => {
+    await setup();
+    sendGate = new Promise(() => {});
+    await act(async () => { sendBtn().click(); sendBtn().click(); });
+    expect(sends().length).toBe(1);
+  });
+
+  test('nothing to send is disabled; Ctrl+Enter from a row sends, from the text input does not', async () => {
+    rows = [mk('a', {})];
+    document.body.innerHTML = '';
+    await mount();
+    expect(sendBtn().textContent).toBe('Nothing to send');
+    expect((sendBtn() as HTMLButtonElement).disabled).toBe(true);
+    await setup();
+    row('a').querySelector<HTMLElement>('button.block')!.click();
+    await flush();
+    await ctrlEnter(document.querySelector('input[aria-label^="Edit task"]')!);
+    expect(sends().length).toBe(0);
+    await ctrlEnter(row('b'));
+    expect(sends().length).toBe(1);
+  });
+
+  test('failed report shows the line; Retry sends that one row', async () => {
+    await setup();
+    sendReport = { sent: 1, failed: 1, ambiguous: 0 };
+    rows[1].sendError = 'Notion said no';
+    await click(sendBtn());
+    expect(status()).toContain('1 not sent, see To review');
+    expect(row('b').textContent).toContain('Not sent: Notion said no');
+    const retry = Array.from(row('b').querySelectorAll('button')).find((b) => b.textContent === 'Retry')!;
+    await click(retry);
+    expect(sends().at(-1)).toEqual(['notion_send', { taskIds: ['b'] }]);
+  });
+
+  test('a rejected send shows the text and marks nothing sent', async () => {
+    await setup();
+    sendError = new Error('A send is already running');
+    await click(sendBtn());
+    expect(status()).toContain('A send is already running');
+    expect(text()).not.toContain('Sent 1');
+    expect(document.querySelectorAll('[data-row-id]').length).toBe(2);
+  });
+
+  test('ambiguous row: open database, mark as sent, send again; never in the bulk send', async () => {
+    await setup([mk('m', { review: 'keep', destId: 'd1', sendAmbiguous: true })]);
+    expect(row('m').textContent).toContain('May already be in Notion. Check the database before sending again.');
+    const btn = (label: string) => Array.from(row('m').querySelectorAll('button')).find((b) => b.textContent === label)!;
+    await click(sendBtn());
+    expect(sends()[0][1]).toEqual({ taskIds: ['a', 'b'] });
+    await click(btn('Open Notion database'));
+    expect(calls).toContainEqual(['open_external_url', { url: 'https://www.notion.so/d1' }]);
+    await click(btn('Send again'));
+    expect(sends().at(-1)).toEqual(['notion_send', { taskIds: ['m'] }]);
+    await click(btn('Mark as sent'));
+    expect(calls).toContainEqual(['tasks_mark_sent', { id: 'm' }]);
+  });
+
+  test('bar only on To review; focus lands on a row after a send', async () => {
+    await setup();
+    await click(sendBtn());
+    expect(document.activeElement === document.querySelector('#tab-review') || !!document.activeElement?.closest('[data-row-id]')).toBe(true);
+    await click(document.querySelector('#tab-sent')!);
+    expect(sendBtn()).toBeUndefined();
+    await click(document.querySelector('#tab-removed')!);
+    expect(sendBtn()).toBeUndefined();
   });
 });

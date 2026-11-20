@@ -158,6 +158,15 @@ fn db_err(e: sqlx::Error) -> String {
 pub(crate) async fn save_destination(pool: &sqlx::SqlitePool, dest: Destination) -> Result<Destination, String> {
     let (name, database_id, data_source_id) = validate(&dest)?;
     let mapping_json = serde_json::to_string(&dest.mapping).map_err(|e| e.to_string())?;
+    let dup: Option<(String,)> = sqlx::query_as("SELECT id FROM notion_destinations WHERE database_id = ? AND id != ?")
+        .bind(&database_id)
+        .bind(&dest.id)
+        .fetch_optional(pool)
+        .await
+        .map_err(db_err)?;
+    if dup.is_some() {
+        return Err("That Notion database is already in Settings.".into());
+    }
     let id = if dest.id.is_empty() {
         let id = uuid::Uuid::new_v4().to_string();
         // One statement: the cap check and the insert cannot interleave with another save.
@@ -211,7 +220,7 @@ pub(crate) async fn save_destination(pool: &sqlx::SqlitePool, dest: Destination)
 pub(crate) async fn delete_destination(pool: &sqlx::SqlitePool, id: &str) -> Result<(), String> {
     let mut tx = pool.begin().await.map_err(db_err)?;
     sqlx::query("DELETE FROM notion_destinations WHERE id = ?").bind(id).execute(&mut *tx).await.map_err(db_err)?;
-    sqlx::query("UPDATE tasks SET dest_id = NULL WHERE dest_id = ? AND review IN ('open','keep')")
+    sqlx::query("UPDATE tasks SET dest_id = NULL WHERE dest_id = ? AND review IN ('open','keep','drop')")
         .bind(id)
         .execute(&mut *tx)
         .await
@@ -296,11 +305,42 @@ mod tests {
         }
     }
 
+    fn dest_on(name: &str, n: u32) -> Destination {
+        Destination { database_id: format!("{n:032x}"), ..dest("", name) }
+    }
+
+    #[tokio::test]
+    async fn delete_clears_dest_on_removed_tasks_too() {
+        let pool = test_pool().await;
+        let d = save_destination(&pool, dest("", "Work")).await.unwrap();
+        sqlx::query("INSERT INTO tasks (id, meeting_id, text, owner, status, source, created_at, review, dest_id) VALUES ('t', NULL, 'x', 'me', 'dismissed', 'auto', 't', 'drop', ?)")
+            .bind(&d.id)
+            .execute(&pool)
+            .await
+            .unwrap();
+        delete_destination(&pool, &d.id).await.unwrap();
+        let (x,): (Option<String>,) = sqlx::query_as("SELECT dest_id FROM tasks WHERE id = 't'").fetch_one(&pool).await.unwrap();
+        assert_eq!(x, None);
+    }
+
+    #[tokio::test]
+    async fn save_refuses_a_database_already_listed() {
+        let pool = test_pool().await;
+        let a = save_destination(&pool, dest("", "Work")).await.unwrap();
+        assert_eq!(save_destination(&pool, dest("", "Again")).await.unwrap_err(), "That Notion database is already in Settings.");
+        let b = save_destination(&pool, dest_on("Other", 7)).await.unwrap();
+        let mut e = dest(&b.id, "Other");
+        assert!(save_destination(&pool, e.clone()).await.is_err());
+        e.database_id = format!("{:032x}", 8);
+        save_destination(&pool, e).await.unwrap();
+        save_destination(&pool, dest(&a.id, "Work2")).await.unwrap();
+    }
+
     #[tokio::test]
     async fn save_inserts_normalises_and_updates() {
         let pool = test_pool().await;
         let a = save_destination(&pool, dest("", "  Work ")).await.unwrap();
-        let b = save_destination(&pool, dest("", "Personal")).await.unwrap();
+        let b = save_destination(&pool, dest_on("Personal", 1)).await.unwrap();
         assert_eq!(uuid::Uuid::parse_str(&a.id).is_ok(), true);
         assert_eq!((a.name.as_str(), a.position, b.position), ("Work", 1, 2));
         assert_eq!(a.database_id, "fedcba98-7654-3210-fedc-ba9876543210");
@@ -312,7 +352,7 @@ mod tests {
         let names: Vec<_> = list_destinations(&pool).await.unwrap().into_iter().map(|d| d.name).collect();
         assert_eq!(names, ["Office", "Personal"]);
         assert_eq!(
-            save_destination(&pool, dest("nope", "X")).await.unwrap_err(),
+            save_destination(&pool, Destination { id: "nope".into(), ..dest_on("X", 55) }).await.unwrap_err(),
             "That Notion database is no longer in Settings."
         );
     }
@@ -344,10 +384,10 @@ mod tests {
         d.mapping.fixed = vec![FixedValue { prop: "Done".into(), kind: "checkbox".into(), value: "yes".into() }];
         assert!(save_destination(&pool, d).await.unwrap_err().contains("has a value Conclave can't send."));
         for i in 0..9 {
-            save_destination(&pool, dest("", &format!("D{i}"))).await.unwrap();
+            save_destination(&pool, dest_on(&format!("D{i}"), i + 1)).await.unwrap();
         }
         assert_eq!(
-            save_destination(&pool, dest("", "Tenth")).await.unwrap_err(),
+            save_destination(&pool, dest_on("Tenth", 99)).await.unwrap_err(),
             "Conclave supports up to 9 Notion databases."
         );
         assert_eq!(list_destinations(&pool).await.unwrap().len(), 9);

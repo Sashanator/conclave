@@ -228,7 +228,7 @@ mod tests {
             name: name.into(),
             colour: 1,
             position: 0,
-            database_id: DB.into(),
+            database_id: if name == "Job tasks" { DB.into() } else { name.bytes().map(|b| format!("{b:02x}")).collect::<String>() + &"0".repeat(32 - name.len() * 2) },
             data_source_id: Some(DS.into()),
             mapping,
             last_status: None,

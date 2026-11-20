@@ -312,9 +312,9 @@ fn found_unsent(rows: u64, what: &str) -> anyhow::Result<()> {
 
 pub(crate) async fn set_review(pool: &SqlitePool, id: &str, review: &str) -> anyhow::Result<()> {
     let set = match review {
-        "keep" => "review = 'keep', owner = 'me', edited = 1, status = 'open', removed_by = NULL",
+        "keep" => "review = 'keep', owner = 'me', edited = 1, status = CASE WHEN status = 'dismissed' THEN 'open' ELSE status END, removed_by = NULL",
         "drop" => "review = 'drop', removed_by = 'user', status = 'dismissed', edited = 1",
-        "open" => "review = 'open', status = 'open', removed_by = NULL",
+        "open" => "review = 'open', status = 'open', removed_by = NULL, edited = 1",
         _ => anyhow::bail!("unknown review state"),
     };
     let rows = sqlx::query(&format!("UPDATE tasks SET {set} WHERE id = ? AND {EDITABLE}"))
@@ -339,11 +339,12 @@ pub(crate) async fn set_dest(pool: &SqlitePool, id: &str, dest_id: Option<&str>)
 }
 
 pub(crate) async fn set_due_date(pool: &SqlitePool, id: &str, due_date: Option<&str>) -> anyhow::Result<()> {
-    if let Some(d) = due_date {
-        anyhow::ensure!(crate::knowledge::extract::iso_date(d).is_some(), "due date must be YYYY-MM-DD");
-    }
+    let due_date = match due_date {
+        Some(d) => Some(crate::knowledge::extract::iso_date(d).ok_or_else(|| anyhow::anyhow!("due date must be YYYY-MM-DD"))?),
+        None => None,
+    };
     let rows = sqlx::query(&format!("UPDATE tasks SET due_date = ?, edited = 1 WHERE id = ? AND {EDITABLE}"))
-        .bind(due_date)
+        .bind(due_date.as_deref())
         .bind(id)
         .execute(pool)
         .await?
@@ -1021,6 +1022,30 @@ mod tests {
             assert_eq!((r.as_str(), d), (state, None));
         }
         assert!(set_review(&pool, "missing", "keep").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn restore_marks_edited_and_keep_does_not_reopen_done() {
+        let pool = test_pool().await;
+        insert_task(&pool, "a", None, "T", "dismissed", "auto", 0).await;
+        set_col(&pool, "a", "review = 'drop', removed_by = 'ai'").await;
+        set_review(&pool, "a", "open").await.unwrap();
+        assert_eq!(row_state(&pool, "a").await.3, 1);
+        set_col(&pool, "a", "status = 'done'").await;
+        set_review(&pool, "a", "keep").await.unwrap();
+        assert_eq!(row_state(&pool, "a").await.1, "done");
+        set_col(&pool, "a", "status = 'dismissed', review = 'drop'").await;
+        set_review(&pool, "a", "keep").await.unwrap();
+        assert_eq!(row_state(&pool, "a").await.1, "open");
+    }
+
+    #[tokio::test]
+    async fn due_date_is_stored_normalised() {
+        let pool = test_pool().await;
+        insert_task(&pool, "a", None, "T", "open", "auto", 0).await;
+        set_due_date(&pool, "a", Some(" 2026-11-20 ")).await.unwrap();
+        let (due,): (Option<String>,) = sqlx::query_as("SELECT due_date FROM tasks WHERE id = 'a'").fetch_one(&pool).await.unwrap();
+        assert_eq!(due.as_deref(), Some("2026-11-20"));
     }
 
     #[tokio::test]

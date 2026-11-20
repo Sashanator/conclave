@@ -793,7 +793,7 @@ pub async fn api_delete_api_key<R: Runtime>(
 
 #[tauri::command]
 pub async fn api_delete_meeting<R: Runtime>(
-    _app: AppHandle<R>,
+    app: AppHandle<R>,
     state: tauri::State<'_, AppState>,
     meeting_id: String,
     auth_token: Option<String>,
@@ -811,6 +811,7 @@ pub async fn api_delete_meeting<R: Runtime>(
     match crate::audio::meeting_folder::delete_meeting_and_folder(pool, &meeting_id, &base, &crate::audio::meeting_folder::recycle).await {
         Ok(Some(folder_warning)) => {
             log_info!("Successfully deleted meeting {}", meeting_id);
+            crate::knowledge::tasks::tasks_changed(&app); // the delete clears or removes task rows (R10)
             Ok(serde_json::json!({
                 "status": "success",
                 "message": "Meeting deleted successfully",

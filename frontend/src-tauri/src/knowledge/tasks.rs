@@ -274,13 +274,13 @@ pub(crate) async fn set_status(pool: &SqlitePool, id: &str, status: &str) -> any
 
 pub(crate) async fn edit(pool: &SqlitePool, id: &str, text: &str) -> anyhow::Result<()> {
     let text = checked_text(text)?;
-    let rows = sqlx::query("UPDATE tasks SET text = ?, edited = 1 WHERE id = ?")
+    let rows = sqlx::query(&format!("UPDATE tasks SET text = ?, edited = 1 WHERE id = ? AND {EDITABLE}"))
         .bind(text)
         .bind(id)
         .execute(pool)
         .await?
         .rows_affected();
-    found(rows)
+    found_unsent(rows, "task not found or already sent")
 }
 
 pub(crate) async fn claim(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
@@ -332,9 +332,9 @@ pub(crate) async fn add(pool: &SqlitePool, text: &str) -> anyhow::Result<TaskRow
 
 /// An auto task is dismissed, not deleted, so re-extraction does not bring it back. A manual task is deleted.
 pub(crate) async fn remove(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
-    let dismissed = sqlx::query(
-        "UPDATE tasks SET status = 'dismissed', edited = 1 WHERE id = ? AND source = 'auto'",
-    )
+    let dismissed = sqlx::query(&format!(
+        "UPDATE tasks SET status = 'dismissed', edited = 1 WHERE id = ? AND source = 'auto' AND {EDITABLE}"
+    ))
     .bind(id)
     .execute(pool)
     .await?
@@ -342,12 +342,12 @@ pub(crate) async fn remove(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
     if dismissed > 0 {
         return Ok(());
     }
-    let deleted = sqlx::query("DELETE FROM tasks WHERE id = ? AND source = 'manual'")
+    let deleted = sqlx::query(&format!("DELETE FROM tasks WHERE id = ? AND source = 'manual' AND {EDITABLE}"))
         .bind(id)
         .execute(pool)
         .await?
         .rows_affected();
-    found(deleted)
+    found_unsent(deleted, "task not found or already sent")
 }
 
 /// The event the Tasks screen and the sidebar badge listen for (R10).
@@ -394,7 +394,7 @@ pub(crate) async fn set_review(pool: &SqlitePool, id: &str, review: &str) -> any
 
 pub(crate) async fn set_dest(pool: &SqlitePool, id: &str, dest_id: Option<&str>) -> anyhow::Result<()> {
     let rows = sqlx::query(&format!(
-        "UPDATE tasks SET dest_id = ?1 WHERE id = ?2 AND {EDITABLE} \
+        "UPDATE tasks SET dest_id = ?1, edited = 1 WHERE id = ?2 AND {EDITABLE} \
          AND (?1 IS NULL OR EXISTS (SELECT 1 FROM notion_destinations WHERE id = ?1))"
     ))
     .bind(dest_id)
@@ -422,7 +422,7 @@ pub(crate) async fn set_due_date(pool: &SqlitePool, id: &str, due_date: Option<&
 pub(crate) async fn mark_sent(pool: &SqlitePool, id: &str) -> anyhow::Result<()> {
     let rows = sqlx::query(
         "UPDATE tasks SET review = 'sent', send_ambiguous = 0, send_error = NULL, sent_at = ? \
-         WHERE id = ? AND send_ambiguous = 1 AND review <> 'sending'",
+         WHERE id = ? AND send_ambiguous = 1 AND review = 'keep'",
     )
     .bind(stamp())
     .bind(id)
@@ -809,21 +809,21 @@ mod tests {
     async fn reextract_replaces_only_untouched_ai_output() {
         let pool = test_pool().await;
         insert_meeting(&pool, "M").await;
-        for (id, text) in [("k", "K"), ("x", "X"), ("s", "S"), ("o", "O"), ("a", "A")] {
+        for (id, text) in [("k", "K"), ("x", "X"), ("s", "S"), ("o", "O"), ("a", "A"), ("g", "G"), ("r", "R")] {
             insert_task(&pool, id, Some("M"), text, "open", "auto", 0).await;
         }
-        for (id, review, by) in [("k", "keep", None), ("x", "drop", Some("user")), ("s", "sent", None), ("a", "drop", Some("ai"))] {
+        for (id, review, by) in [("k", "keep", None), ("x", "drop", Some("user")), ("s", "sent", None), ("a", "drop", Some("ai")), ("g", "sending", None), ("r", "drop", None)] {
             sqlx::query("UPDATE tasks SET review = ?, removed_by = ? WHERE id = ?")
                 .bind(review).bind(by).bind(id).execute(&pool).await.unwrap();
         }
-        let ex = extraction(vec![task("K"), task("X"), task("S"), task("N")]);
+        let ex = extraction(vec![task("K"), task("X"), task("S"), task("G"), task("R"), task("N")]);
         assert!(apply_extraction(&pool, "M", &ex, &stamp()).await.unwrap());
         let rows: Vec<(String, String, String)> = sqlx::query_as("SELECT text, review, id FROM tasks ORDER BY text")
             .fetch_all(&pool).await.unwrap();
         let r: Vec<(&str, &str)> = rows.iter().map(|r| (r.0.as_str(), r.1.as_str())).collect();
-        assert_eq!(r, vec![("K", "keep"), ("N", "open"), ("S", "sent"), ("X", "drop")]);
+        assert_eq!(r, vec![("G", "sending"), ("K", "keep"), ("N", "open"), ("R", "drop"), ("S", "sent"), ("X", "drop")]);
         let ids: Vec<&str> = rows.iter().filter(|r| r.0 != "N").map(|r| r.2.as_str()).collect();
-        assert_eq!(ids, vec!["k", "s", "x"]);
+        assert_eq!(ids, vec!["g", "k", "r", "s", "x"]);
     }
 
     async fn id_of(pool: &SqlitePool, text: &str) -> String {
@@ -954,6 +954,33 @@ mod tests {
         );
         assert!(edit(&pool, "missing", "x").await.is_err());
         assert!(claim(&pool, "missing").await.is_err());
+    }
+
+    #[tokio::test]
+    async fn edit_and_remove_refuse_sending_and_sent_rows() {
+        let pool = test_pool().await;
+        for (id, source, review) in [("a", "auto", "sending"), ("b", "manual", "sent")] {
+            insert_task(&pool, id, None, "T", "open", source, 0).await;
+            set_col(&pool, id, &format!("review = '{review}'")).await;
+            assert!(edit(&pool, id, "new").await.is_err());
+            assert!(remove(&pool, id).await.is_err());
+        }
+        let rows: Vec<(String, String, String)> =
+            sqlx::query_as("SELECT id, text, status FROM tasks ORDER BY id").fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, vec![("a".into(), "T".into(), "open".into()), ("b".into(), "T".into(), "open".into())]);
+    }
+
+    #[tokio::test]
+    async fn chosen_destination_survives_reextraction() {
+        let pool = test_pool().await;
+        insert_meeting(&pool, "M").await;
+        sqlx::query("INSERT INTO notion_destinations (id, name, colour, position, database_id, mapping_json, created_at) VALUES ('d', 'D', 1, 0, 'db', '{}', 't')")
+            .execute(&pool).await.unwrap();
+        insert_task(&pool, "a", Some("M"), "A", "open", "auto", 0).await;
+        set_dest(&pool, "a", Some("d")).await.unwrap();
+        assert!(apply_extraction(&pool, "M", &extraction(vec![task("A")]), &stamp()).await.unwrap());
+        let rows: Vec<(String, Option<String>)> = sqlx::query_as("SELECT id, dest_id FROM tasks").fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, vec![("a".to_string(), Some("d".to_string()))]);
     }
 
     #[tokio::test]
@@ -1197,7 +1224,9 @@ mod tests {
         assert!(at.is_some());
         assert!(mark_sent(&pool, "b").await.is_err());
         assert!(mark_sent(&pool, "c").await.is_err());
-        assert_eq!(row_state(&pool, "b").await.0, "keep");
+        set_col(&pool, "b", "review = 'drop', send_ambiguous = 1").await;
+        assert!(mark_sent(&pool, "b").await.is_err());
+        assert_eq!(row_state(&pool, "b").await.0, "drop");
         assert_eq!(row_state(&pool, "c").await.0, "sending");
     }
 

@@ -11,27 +11,13 @@ export type TaskKeyEvent = {
   shiftKey?: boolean;
 };
 
-/**
- * Splits tasks for a specific meeting into kept vs removed:
- * - this meeting only (ignores tasks belonging to other meetings or unattached tasks)
- * - removed = owner 'unassigned' or status 'dismissed'
- * - kept = all other tasks for this meeting
- */
+/** This meeting's tasks by review state: removed = `drop`, kept = every other review (open, keep, sending, sent). */
 export function splitTasks(
   tasks: TaskRow[],
   meetingId: string
 ): { kept: TaskRow[]; removed: TaskRow[] } {
-  const kept: TaskRow[] = [];
-  const removed: TaskRow[] = [];
-  for (const task of tasks) {
-    if (task.meetingId !== meetingId) continue;
-    if (task.owner === 'unassigned' || task.status === 'dismissed') {
-      removed.push(task);
-    } else {
-      kept.push(task);
-    }
-  }
-  return { kept, removed };
+  const mine = tasks.filter((t) => t.meetingId === meetingId);
+  return { kept: mine.filter((t) => t.review !== 'drop'), removed: mine.filter((t) => t.review === 'drop') };
 }
 
 /**

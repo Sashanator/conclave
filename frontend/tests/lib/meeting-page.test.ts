@@ -25,63 +25,29 @@ const task = (over: Partial<TaskRow>): TaskRow => ({
 });
 
 describe('splitTasks', () => {
-  test('returns empty kept and removed for empty task list', () => {
+  test('empty list', () => {
     expect(splitTasks([], 'm1')).toEqual({ kept: [], removed: [] });
   });
 
-  test('filters tasks for the specified meeting only', () => {
-    const tasks = [
-      task({ id: '1', meetingId: 'm1', owner: 'me', status: 'open' }),
-      task({ id: '2', meetingId: 'm2', owner: 'me', status: 'open' }),
-      task({ id: '3', meetingId: null, owner: 'me', status: 'open' }),
-    ];
+  test('ignores other meetings and unattached tasks', () => {
+    const tasks = [task({ id: '1' }), task({ id: '2', meetingId: 'm2' }), task({ id: '3', meetingId: null })];
     const { kept, removed } = splitTasks(tasks, 'm1');
     expect(kept.map((t) => t.id)).toEqual(['1']);
     expect(removed).toEqual([]);
   });
 
-  test('puts owned open/done tasks in kept', () => {
+  test('drop is removed whatever the owner; every other review is kept', () => {
     const tasks = [
-      task({ id: '1', meetingId: 'm1', owner: 'me', status: 'open' }),
-      task({ id: '2', meetingId: 'm1', owner: 'me', status: 'done' }),
+      task({ id: 'a', review: 'drop', owner: 'me', removedBy: 'user' }),
+      task({ id: 'b', review: 'drop', owner: 'unassigned', removedBy: 'ai' }),
+      task({ id: 'c', review: 'open', owner: 'unassigned' }),
+      task({ id: 'd', review: 'keep' }),
+      task({ id: 'e', review: 'sending' }),
+      task({ id: 'f', review: 'sent' }),
     ];
     const { kept, removed } = splitTasks(tasks, 'm1');
-    expect(kept.map((t) => t.id)).toEqual(['1', '2']);
-    expect(removed).toEqual([]);
-  });
-
-  test('puts unassigned tasks in removed (removed by AI)', () => {
-    const tasks = [
-      task({ id: '1', meetingId: 'm1', owner: 'unassigned', status: 'open' }),
-      task({ id: '2', meetingId: 'm1', owner: 'unassigned', status: 'done' }),
-    ];
-    const { kept, removed } = splitTasks(tasks, 'm1');
-    expect(kept).toEqual([]);
-    expect(removed.map((t) => t.id)).toEqual(['1', '2']);
-  });
-
-  test('puts dismissed tasks in removed', () => {
-    const tasks = [
-      task({ id: '1', meetingId: 'm1', owner: 'me', status: 'dismissed' }),
-      task({ id: '2', meetingId: 'm1', owner: 'unassigned', status: 'dismissed' }),
-    ];
-    const { kept, removed } = splitTasks(tasks, 'm1');
-    expect(kept).toEqual([]);
-    expect(removed.map((t) => t.id)).toEqual(['1', '2']);
-  });
-
-  test('preserves task order within kept and removed collections', () => {
-    const tasks = [
-      task({ id: '1', meetingId: 'm1', owner: 'me', status: 'open' }),
-      task({ id: '2', meetingId: 'm1', owner: 'unassigned', status: 'open' }),
-      task({ id: '3', meetingId: 'm1', owner: 'me', status: 'done' }),
-      task({ id: '4', meetingId: 'm1', owner: 'me', status: 'dismissed' }),
-      task({ id: '5', meetingId: 'm2', owner: 'me', status: 'open' }),
-      task({ id: '6', meetingId: 'm1', owner: 'unassigned', status: 'dismissed' }),
-    ];
-    const { kept, removed } = splitTasks(tasks, 'm1');
-    expect(kept.map((t) => t.id)).toEqual(['1', '3']);
-    expect(removed.map((t) => t.id)).toEqual(['2', '4', '6']);
+    expect(removed.map((t) => t.id)).toEqual(['a', 'b']);
+    expect(kept.map((t) => t.id)).toEqual(['c', 'd', 'e', 'f']);
   });
 });
 

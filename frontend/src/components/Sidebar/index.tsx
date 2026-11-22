@@ -4,7 +4,11 @@ import React, { useEffect, useState } from 'react';
 import { Circle, Mic, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, Upload } from 'lucide-react';
 import { useRouter, usePathname } from 'next/navigation';
 import { getVersion } from '@tauri-apps/api/app';
+import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { useSidebar } from './SidebarProvider';
+import type { TaskRow } from '@/lib/tasks';
+import { TASKS_CHANGED_EVENT, toReviewCount } from '@/lib/tasks-queue';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useImportDialog } from '@/contexts/ImportDialogContext';
@@ -30,6 +34,7 @@ const Sidebar: React.FC = () => {
   const { openImportDialog } = useImportDialog();
   const [version, setVersion] = useState<string | null>(null);
   const [seen, setSeen] = useState<string | null>(null);
+  const [toReview, setToReview] = useState(0);
 
   useEffect(() => {
     getVersion().then(setVersion).catch(console.error);
@@ -37,6 +42,24 @@ const Sidebar: React.FC = () => {
     const reread = () => setSeen(readSeen());
     window.addEventListener('whats-new-seen', reread);
     return () => window.removeEventListener('whats-new-seen', reread);
+  }, []);
+
+  // Keep the Tasks badge fresh: on mount and each page change, and whenever Rust reports a task write.
+  const refreshToReview = async () => {
+    try {
+      setToReview(toReviewCount((await invoke<TaskRow[]>('tasks_queue_list')) ?? []));
+    } catch {
+      console.error('tasks_queue_list failed'); // name only: the error text can carry task content
+    }
+  };
+  useEffect(() => { void refreshToReview(); }, [pathname]);
+  useEffect(() => {
+    let alive = true;
+    let unlisten: (() => void) | undefined;
+    listen(TASKS_CHANGED_EVENT, () => { void refreshToReview(); })
+      .then((fn) => { if (alive) unlisten = fn; else fn(); })
+      .catch(console.error);
+    return () => { alive = false; unlisten?.(); };
   }, []);
 
   const startRecording = async () => {
@@ -53,13 +76,13 @@ const Sidebar: React.FC = () => {
   // One row for every entry; collapsed shows the icon only, with a tooltip and the same aria-label.
   const row = (
     label: string, icon: React.ReactNode, onClick: () => void,
-    opts: { active?: boolean; disabled?: boolean; accent?: boolean; rec?: boolean; dot?: boolean; hint?: string } = {},
+    opts: { active?: boolean; disabled?: boolean; accent?: boolean; rec?: boolean; dot?: boolean; hint?: string; count?: number } = {},
   ) => {
     const btn = (
       <button
         onClick={onClick}
         disabled={opts.disabled}
-        aria-label={!collapsed && opts.hint ? `${label} ${opts.hint}` : label}
+        aria-label={(opts.count ?? 0) > 0 ? `${label}, ${opts.count} to review` : !collapsed && opts.hint ? `${label} ${opts.hint}` : label}
         aria-current={opts.active ? 'page' : undefined}
         className={`relative flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium transition-colors disabled:opacity-60 ${collapsed ? 'justify-center' : 'w-full'} ${
           opts.rec ? 'bg-[hsl(var(--rec))] text-white hover:brightness-110' : opts.accent ? 'bg-primary text-primary-foreground hover:bg-primary/90' : opts.active ? 'bg-muted text-foreground' : 'text-muted-foreground hover:bg-accent hover:text-accent-foreground'
@@ -68,6 +91,10 @@ const Sidebar: React.FC = () => {
         {icon}
         {!collapsed && <span className="truncate">{label}</span>}{!collapsed && opts.hint && " "}
         {!collapsed && opts.hint && <kbd className="ml-auto text-[11px] text-muted-foreground">{opts.hint}</kbd>}
+        {(opts.count ?? 0) > 0 && !collapsed && (
+          <span aria-hidden="true" className="ml-auto rounded-full bg-primary px-[7px] text-xs font-bold text-primary-foreground">{opts.count}</span>
+        )}
+        {(opts.count ?? 0) > 0 && collapsed && <span aria-hidden="true" className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[hsl(var(--rec))]" />}
         {opts.dot && (
           <>
             <span aria-hidden="true" className="absolute right-2 top-2 h-2 w-2 rounded-full bg-[hsl(var(--rec))]" />
@@ -105,7 +132,10 @@ const Sidebar: React.FC = () => {
           )}
           <div className="h-2" />
           {NAV_MAIN.map((item) =>
-            row(item.label, <item.icon className="w-5 h-5 shrink-0" />, () => go(item.href), { active: isNavActive(pathname, item) }),
+            row(item.label, <item.icon className="w-5 h-5 shrink-0" />, () => go(item.href), {
+              active: isNavActive(pathname, item),
+              count: item.href === '/tasks' ? toReview : undefined,
+            }),
           )}
 
           <div className="mt-auto flex flex-col gap-1 border-t border-border pt-2">

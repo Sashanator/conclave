@@ -16,6 +16,7 @@ import { KnowledgeSettings } from '@/components/KnowledgeSettings';
 import { TemplateSettings } from '@/components/TemplateSettings';
 import { TemplateAssistSettings } from '@/components/TemplateAssistSettings';
 import { confirmLeave } from '@/lib/unsaved-guard';
+import { NotionSettings } from '@/components/Settings/NotionSettings';
 import { SpeakerSettings } from '@/components/SpeakerSettings';
 import { MODEL_DEFAULTS } from '@/constants/modelDefaults';
 import { useConfig } from '@/contexts/ConfigContext';
@@ -83,6 +84,7 @@ function SettingsContent() {
     case 'copilot': body = <CopilotSettings part="answer" />; break;
     case 'templates': body = <div className="space-y-6"><TemplateAssistSettings /><TemplateSettings /></div>; break;
     case 'names': body = <><KnowledgeSettings /><CopilotSettings part="alert-words" /></>; break;
+    case 'notion': body = <NotionSettings />; break;
     case 'app': body = <div className="space-y-6"><PreferenceSettings /><UpdatesSettings /></div>; break;
   }
 

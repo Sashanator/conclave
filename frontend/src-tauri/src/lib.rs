@@ -67,6 +67,7 @@ mod secrets;
 mod backup;
 mod recording;
 mod updates;
+mod notion;
 
 use audio::{list_audio_devices, AudioDevice, trigger_audio_permission};
 use log::{error as log_error, info as log_info};
@@ -796,6 +797,8 @@ pub fn run() {
             }
             // A summary left pending by a crash or quit would show "pending" forever. Nothing resumes it.
             tauri::async_runtime::block_on(database::setup::fail_interrupted_summaries(_app.handle()));
+            // A Notion send cut off by a crash or quit may or may not have reached Notion: mark it, never resend it.
+            tauri::async_runtime::block_on(notion::send::recover_at_startup(_app.handle()));
             // Moves plain-text secrets into Credential Manager and compacts the DB; runs before any background starter holds a reader.
             tauri::async_runtime::block_on(secrets::migrate::run_at_startup(_app.handle()));
             // Dictate that was on comes back only now: its model load needs the database.
@@ -1103,12 +1106,22 @@ pub fn run() {
             knowledge::feed::feed_mark_all_read,
             knowledge::extract::extraction_retry,
             knowledge::extract::extraction_status,
-            knowledge::tasks::tasks_list,
             knowledge::tasks::tasks_set_status,
             knowledge::tasks::tasks_edit,
-            knowledge::tasks::tasks_claim,
-            knowledge::tasks::tasks_add,
-            knowledge::tasks::tasks_delete,
+            knowledge::tasks::tasks_queue_list,
+            knowledge::tasks::tasks_set_review,
+            knowledge::tasks::tasks_set_dest,
+            knowledge::tasks::tasks_set_due_date,
+            knowledge::tasks::tasks_mark_sent,
+            notion::commands::notion_get_config,
+            notion::commands::notion_set_token,
+            notion::commands::notion_remove_token,
+            notion::commands::notion_test,
+            notion::commands::notion_read_columns,
+            notion::commands::notion_save_destination,
+            notion::commands::notion_delete_destination,
+            notion::commands::notion_set_category_default,
+            notion::commands::notion_send,
             knowledge::calendar::calendar_connect,
             knowledge::calendar::calendar_disconnect,
             knowledge::calendar::calendar_status,

@@ -24,6 +24,7 @@ Source: the Step 1 grep over `frontend/src` and `frontend/src-tauri/src`, plus t
 | Same LLM hosts as the rows above (the Knowledge model's provider) | `src-tauri/src/knowledge/ask.rs` (`ask`, `complete` `:259`) | Ask: sends the question, the chat so far and retrieved excerpts of the user's meetings to the Knowledge model, only when the user asks | Allowed (user-configured) |
 | Same LLM hosts as the rows above (the template assistant model, else the summary model) | src-tauri/src/summary/template_assist.rs (api_template_draft, api_template_revise, complete) | Template assistant: sends the user's description or change request, the current template and, from a meeting, its summary, edits and optionally transcript; only when the user presses Generate | Allowed (user-configured) |
 | The user's calendar host (the iCal "secret address" the user pastes; https only) | `src-tauri/src/knowledge/calendar.rs` (`get_body`, `fetch`; `CALENDAR_REFRESH_MINS` in `knowledge/mod.rs`) | GET of the user's calendar feed: once on connect, then every 30 min while running, only while connected. The URL is never logged or put in an error; only the status shows the host | Allowed (user-configured; no Meetily-owned host) |
+| api.notion.com | src-tauri/src/notion/client.rs (NOTION_API; me, database, data_source, create_page), called from notion/commands.rs and notion/send.rs | Tasks → Notion: token test, reading a database's columns, creating one page per kept task (task text, due date, meeting title and date, mapped fixed values); only on the user's click (Test, Read columns, Send, Retry), with the user's own integration token from Credential Manager | Allowed (user-configured) |
 | localhost:11434 (Ollama, default; the user can set another endpoint) | `src-tauri/src/ollama/metadata.rs:145`; `src-tauri/src/ollama/ollama.rs:163,282,441`; `src-tauri/src/summary/llm_client.rs:317`; `src/components/ModelSettingsModal.tsx:1149,1203` | Local Ollama: tags, pull, delete, show, chat | Allowed (localhost Ollama) |
 | localhost:11434 test fixtures | `src-tauri/src/summary/service.rs:798-990` (inside `mod tests`, from `:689`) | Cache-key test values, not requests | Not a call |
 | ollama.com | `src/components/ModelSettingsModal.tsx:739,1236` (`open_external_url`, opens the user's browser) | "Download Ollama" link | Allowed (Ollama download page; user-initiated, see Reported to user) |
@@ -53,6 +54,7 @@ These are the request sites, with the base URL each one builds from.
 |---|---|---|
 | `src-tauri/src/summary/llm_client.rs:303-345` (`api_url` match), POST at `:398` and `:457` | Fixed provider URLs, or Ollama `{host}/v1/chat/completions` (`:319`), or custom `{endpoint}/chat/completions` (`:327`) | Allowed (user-configured) |
 | `src-tauri/src/summary/service.rs:546` (`Client::new`) | Passed to `generate_meeting_summary` (llm_client) | Allowed (as above) |
+| `src-tauri/src/notion/client.rs` (`NotionClient::new`, `Client::builder`; redirects off) | `https://api.notion.com/v1` + `/users/me`, `/databases/{id}`, `/data_sources/{id}`, `/pages` | Allowed (user's own Notion token, user-initiated sends; see Hosts) |
 | `src-tauri/src/dictate/cleanup.rs` (Dictate cleanup; `summary/llm_target.rs` `complete` → `summary/llm_client.rs` `generate_summary`) | The same URLs as the summary rows above: the user's configured summary provider, or the cleanup model if one is set (the built-in local AI sidecar is not used) | Allowed (user-configured; no new hosts) |
 | `src-tauri/src/ollama/ollama.rs:162,281,440` (`Client::new`) with `{base_url}/api/tags` (`:164`), `/api/pull` (`:283`), `/api/delete` (`:442`) | Ollama endpoint (default localhost:11434) | Allowed (localhost Ollama) |
 | `src-tauri/src/ollama/metadata.rs:144` (`Client::new`), `{base_url}/api/show` (`:146`) | Ollama endpoint | Allowed (localhost Ollama) |
@@ -71,7 +73,7 @@ Dictate sends only the transcribed text to the LLM, never audio, and only when a
 
 Token usage (for Costs and Stats) is read from the `usage` object of replies the app already receives. OpenRouter is asked to include usage in its reply (`summary/llm_client.rs:96`, same host), and Speaking Practice reads usage from its Claude stream (`practice/claude.rs`, same host). These add no host.
 
-Test-only clients (`reqwest::Client::new()` at `llm_client.rs:698,784,860`, `whisper_engine.rs:1601,1641,1796`, `parakeet_engine.rs:1341`) talk only to local mock servers in `mod tests`.
+Test-only clients (`reqwest::Client::new()` at `llm_client.rs:698,784,860`, `whisper_engine.rs:1601,1641,1796`, `parakeet_engine.rs:1341`, `notion/client.rs` `fake`) talk only to local mock servers in `mod tests`.
 
 No `fetch(` calls reach the network in `frontend/src` (the only match is `refetch`).
 

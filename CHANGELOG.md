@@ -1,5 +1,11 @@
 # Conclave changelog
 
+## v2.2.0 — 2026-11-22
+- **Tasks review queue.** The Tasks page lists the tasks found in your meetings, grouped by meeting. Keep or remove each one (K / X), fix its text or due date, and pick its Notion database (1–9).
+- **Send to Notion.** One click (or Ctrl Enter) creates the kept tasks in your Notion databases: Job tasks, Personal tasks, German homework or any you add. A task is never sent twice; if Notion's answer is lost, it says "May already be in Notion" and waits for you.
+- **Settings → Notion.** Paste your Notion token (kept in Windows Credential Manager), add databases by link, choose which columns get the task, owner, due date and meeting, and set a default database per meeting category.
+- The meeting page uses the same Keep / Remove, the Tasks menu shows how many tasks wait for review, and deleting a meeting keeps the tasks you kept or sent.
+
 ## v2.1.1 — 2026-11-19
 - **The summary no longer waits forever.** If speaker identification stops making progress for 10 minutes, it gives up and the automatic summary is made without speaker names.
 - **Better logs for troubleshooting.** The log now names the app version, shows speaker identification, automatic summary and practice report steps, and drops the repeated settings and speech lines. Logs stay on your PC.

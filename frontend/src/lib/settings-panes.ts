@@ -1,16 +1,16 @@
-export type SettingsPane = 'recording' | 'transcription' | 'speakers' | 'models' | 'summaries' | 'copilot' | 'templates' | 'names' | 'app';
+export type SettingsPane = 'recording' | 'transcription' | 'speakers' | 'models' | 'summaries' | 'copilot' | 'templates' | 'names' | 'app' | 'notion';
 
 export const SETTINGS_GROUPS: { label: 'Capture' | 'AI' | 'You' | 'App'; panes: { id: SettingsPane; label: string }[] }[] = [
   { label: 'Capture', panes: [{ id: 'recording', label: 'Recording & devices' }, { id: 'transcription', label: 'Transcription & vocabulary' }, { id: 'speakers', label: 'Speakers' }] },
   { label: 'AI', panes: [{ id: 'models', label: 'Models & keys' }, { id: 'summaries', label: 'Summaries' }, { id: 'copilot', label: 'Copilot' }, { id: 'templates', label: 'Templates' }] },
   { label: 'You', panes: [{ id: 'names', label: 'Names & calendar' }] },
-  { label: 'App', panes: [{ id: 'app', label: 'Appearance & app' }] },
+  { label: 'App', panes: [{ id: 'app', label: 'Appearance & app' }, { id: 'notion', label: 'Notion' }] },
 ];
 
 // Old tab ids (and every pane id) -> pane, keyed lowercase.
 const TAB_ALIASES: Record<string, SettingsPane> = {
   recording: 'recording', transcription: 'transcription', speakers: 'speakers', models: 'models', summaries: 'summaries',
-  copilot: 'copilot', templates: 'templates', names: 'names', app: 'app',
+  copilot: 'copilot', templates: 'templates', names: 'names', app: 'app', notion: 'notion',
   general: 'app', transcriptionmodels: 'transcription', beta: 'transcription', summarymodels: 'summaries', summary: 'summaries',
   knowledge: 'names', costs: 'models',
 };
@@ -37,6 +37,7 @@ export const SETTINGS_INDEX: { pane: SettingsPane; label: string; helper?: strin
   ...idx('templates', ['Templates', 'Include the transcript by default']),
   ...idx('names', ['My names', 'Extract my tasks after each summary', 'Weekly digest', 'Alert me when someone says', 'My calls marker', 'Calendar']),
   ...idx('app', ['Theme', 'Data storage locations', 'Updates', 'Check for updates on start', 'GitHub token', 'Backups']),
+  ...idx('notion', ['Integration token', 'Notion databases', 'Default database per meeting category']),
 ];
 
 export function searchSettings(q: string): { pane: SettingsPane; label: string }[] {

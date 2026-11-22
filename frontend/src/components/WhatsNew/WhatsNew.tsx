@@ -43,7 +43,7 @@ export function WhatsNew({ changelog }: { changelog: string }) {
     invoke(command).catch((e) => toast.error(`Could not open the ${what}: ${e}`));
 
   return (
-    <PageFrame variant="reading" title="What's new">
+    <PageFrame variant="dashboard" title="What's new">
       {versionUnknown && <p className="mb-4 text-sm text-muted-foreground">Version unknown</p>}
       {releases.map((r) => (
         <article key={r.version} className="mb-6" aria-current={r.version === version ? 'true' : undefined}>

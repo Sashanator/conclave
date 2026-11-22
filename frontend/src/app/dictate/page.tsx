@@ -83,13 +83,20 @@ export default function DictatePage() {
   return (
     <PageFrame variant="form" title="Dictate">
       {settings ? (
-        <div className="space-y-6">
+        <div className="max-w-[720px] space-y-6">
           <DictateGeneral settings={settings} status={status} commit={commit} />
           <ModeList settings={settings} commit={commit} />
           <DictionaryEditor settings={settings} commit={commit} />
         </div>
       ) : (
-        <p className="text-muted-foreground">Loading…</p>
+        <div role="status" aria-label="Loading Dictate" className="max-w-[720px] animate-pulse space-y-6">
+          {[5, 4, 3].map((rows) => (
+            <div key={rows} className="space-y-4 rounded-lg border border-border bg-card p-6">
+              <div className="h-5 w-32 rounded bg-muted" />
+              {Array.from({ length: rows }, (_, i) => <div key={i} className="h-8 rounded bg-muted" />)}
+            </div>
+          ))}
+        </div>
       )}
     </PageFrame>
   );

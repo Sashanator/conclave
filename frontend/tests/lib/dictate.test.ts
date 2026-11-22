@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import {
-  addWord, hotkeyFromParts, hotkeyProblem, hotkeyToParts, newModeId, withHotkey, type DictateSettings,
+  addWord, keyFromCode, wordProblem, hotkeyFromParts, hotkeyProblem, hotkeyToParts, newModeId, withHotkey, type DictateSettings,
 } from '../../src/lib/dictate';
 
 const base: DictateSettings = {
@@ -106,5 +106,31 @@ describe('newModeId', () => {
     const id = newModeId('x'.repeat(80), ['x'.repeat(40)]);
     expect(id.length).toBeLessThanOrEqual(40);
     expect(id).not.toBe('x'.repeat(40));
+  });
+});
+
+describe('keyFromCode', () => {
+  test('maps the keys the backend accepts and nothing else', () => {
+    expect(keyFromCode('KeyP')).toBe('P');
+    expect(keyFromCode('Digit7')).toBe('7');
+    expect(keyFromCode('F12')).toBe('F12');
+    expect(keyFromCode('F24')).toBe('F24');
+    expect(keyFromCode('Space')).toBe('Space');
+    // Latin letters follow the layout (QWERTZ), other layouts fall back to the physical key
+    expect(keyFromCode('KeyY', 'z')).toBe('Z');
+    expect(keyFromCode('KeyZ', 'Y')).toBe('Y');
+    expect(keyFromCode('KeyP', 'з')).toBe('P');
+    expect(keyFromCode('Digit1', '1')).toBe('1');
+    for (const code of ['F25', 'F0', 'Numpad1', 'Tab', 'Enter', 'ArrowUp', 'Minus']) expect(keyFromCode(code)).toBeNull();
+  });
+});
+
+describe('wordProblem', () => {
+  test('names why a word is rejected', () => {
+    expect(wordProblem(['Tauri'], 'tauri')).toContain('already in the dictionary');
+    expect(wordProblem([], 'x'.repeat(65))).toContain('at most 64');
+    expect(wordProblem(Array.from({ length: 200 }, (_, i) => `w${i}`), 'new')).toContain('full');
+    expect(wordProblem([], '  ')).toBeNull();
+    expect(wordProblem([], 'fine')).toBeNull();
   });
 });

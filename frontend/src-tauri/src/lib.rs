@@ -692,6 +692,11 @@ pub fn run() {
             // Before anything reads or migrates user data: a pre-upgrade backup, or the user's Continue/Quit.
             backup::run_at_startup(_app.handle());
 
+            // Built here, not by tauri.conf.json: the backup dialog above pumps messages, and a window that
+            // already exists would run commands before AppState is managed.
+            let main_cfg = _app.config().app.windows[0].clone();
+            tauri::WebviewWindowBuilder::from_config(_app.handle(), &main_cfg)?.build()?;
+
             // Initialize system tray
             if let Err(e) = tray::create_tray(_app.handle()) {
                 log::error!("Failed to create system tray: {}", e);

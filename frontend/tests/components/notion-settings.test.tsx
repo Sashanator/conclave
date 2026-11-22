@@ -134,6 +134,17 @@ test('editing: a changed link needs Read columns; Read columns keeps the saved c
     { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'Done' }] });
 });
 
+test('a link changed after Read columns needs Read columns again; Save does not save the old database', async () => {
+  await render();
+  await act(async () => { r.root.findByProps({ 'aria-label': 'Edit d-job' }).props.onClick(); });
+  await click('Read columns');
+  await typeIn('Notion database link', 'https://www.notion.so/abc');
+  expect(text(r.root)).toContain('Press Read columns to use the new link.');
+  expect(btn('Save').props.disabled).toBe(true);
+  await act(async () => { await btn('Save').props.onClick(); });
+  expect(calls.filter((c) => c[0] === 'notion_save_destination')).toHaveLength(0);
+});
+
 test('Save is disabled while saving, so a double click creates one database', async () => {
   await render();
   await click('Add database');

@@ -35,8 +35,16 @@ export function NotionSettings() {
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false); // state lags a same-tick second click
   const addRef = useRef<HTMLButtonElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
   const focusAdd = useRef(false); // set by Delete/Save/Cancel: their button is gone after the next render
-  useEffect(() => { if (focusAdd.current) { focusAdd.current = false; addRef.current?.focus(); } });
+  const [focusReq, setFocusReq] = useState(0); // bumped after each reload, so the check sees the new destination count
+  useEffect(() => {
+    if (!focusAdd.current) return;
+    focusAdd.current = false;
+    // Add is disabled at the destination cap: focus a row's Edit button instead
+    if (addRef.current && !addRef.current.disabled) addRef.current.focus();
+    else rootRef.current?.querySelector<HTMLButtonElement>('button[aria-label^="Edit "]')?.focus();
+  }, [focusReq]);
 
   const reload = useCallback(async () => {
     try { setCfg(await invoke<NotionConfig>('notion_get_config')); setLoadErr(null); } catch (e) { setLoadErr(String(e)); }
@@ -108,7 +116,7 @@ export function NotionSettings() {
     return { titleProp: c.title.name, dueProp: f.due || null, meetingProp: f.meeting || null, fixed };
   };
   const saveForm = async () => {
-    if (!form || savingRef.current) return;
+    if (!form || savingRef.current || linkChanged) return; // a changed link needs Read columns first
     const m = mappingOf(form);
     const base = form.old;
     if (!base && !m) return;
@@ -117,12 +125,12 @@ export function NotionSettings() {
       : { id: form.id, name: form.name.trim(), colour: form.colour, position: form.position, databaseId: form.schema!.databaseId, dataSourceId: form.schema!.dataSourceId, mapping: m!, lastStatus: null, lastMessage: null };
     savingRef.current = true;
     setSaving(true);
-    try { await invoke('notion_save_destination', { dest }); focusAdd.current = true; setForm(null); await reload(); }
+    try { await invoke('notion_save_destination', { dest }); focusAdd.current = true; setForm(null); await reload(); setFocusReq((n) => n + 1); }
     catch (e) { setFormErr(String(e)); } finally { savingRef.current = false; setSaving(false); }
   };
   const del = async (d: Destination) => {
     if (!(await confirmAction({ title: `Delete ${d.name}?`, body: 'Tasks waiting for it will need a database again.', confirmLabel: 'Delete', destructive: true }))) return;
-    try { await invoke('notion_delete_destination', { id: d.id }); setTableErr(null); focusAdd.current = true; await reload(); }
+    try { await invoke('notion_delete_destination', { id: d.id }); setTableErr(null); focusAdd.current = true; await reload(); setFocusReq((n) => n + 1); }
     catch (e) { setTableErr(String(e)); }
   };
   const openDb = (d: Destination) => invoke('open_external_url', { url: notionDbUrl(d.databaseId) }).catch((e) => setTableErr(String(e)));
@@ -138,7 +146,7 @@ export function NotionSettings() {
   const hasToken = cfg?.tokenLast4 != null;
 
   return (
-    <div>
+    <div ref={rootRef}>
       <p className="py-2 text-sm text-muted-foreground">Conclave creates tasks in your Notion databases only when you click Send. The token is kept in Windows Credential Manager.</p>
       {loadErr && <Alert msg={loadErr} />}
 
@@ -198,7 +206,7 @@ export function NotionSettings() {
           <div role="group" aria-label={form.old ? `Edit ${form.old.name}` : 'Add database'} className="mt-3 space-y-3 rounded-md border border-border p-3">
             <label className={field}>Name<Input value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} className="w-72" /></label>
             <div className="flex flex-wrap items-end gap-2">
-              <label className={field}>Notion database link<Input value={form.link} onChange={(e) => setForm({ ...form, link: e.target.value })} className="w-96 max-w-full" /></label>
+              <label className={field}>Notion database link<Input value={form.link} onChange={(e) => setForm({ ...form, link: e.target.value, schema: null })} className="w-96 max-w-full" /></label>
               <Button size="sm" variant="outline" onClick={readColumns} disabled={!form.link.trim()}>Read columns</Button>
             </div>
             {form.old && !form.schema && <p className="text-sm text-muted-foreground">{linkChanged ? 'Press Read columns to use the new link.' : 'Mapping kept. Press Read columns to change it.'}</p>}
@@ -233,7 +241,7 @@ export function NotionSettings() {
             <Alert msg={formErr} />
             <div className="flex gap-2">
               <Button size="sm" onClick={saveForm} disabled={!canSave}>Save</Button>
-              <Button size="sm" variant="outline" onClick={() => { focusAdd.current = true; setForm(null); }}>Cancel</Button>
+              <Button size="sm" variant="outline" onClick={() => { focusAdd.current = true; setForm(null); setFocusReq((n) => n + 1); }}>Cancel</Button>
             </div>
           </div>
         )}

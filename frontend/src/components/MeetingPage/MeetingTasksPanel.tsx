@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { listen } from '@tauri-apps/api/event';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { MeetingCostLine } from '@/components/MeetingDetails/MeetingCostLine';
@@ -10,6 +11,7 @@ import { DestPicker } from '@/components/Tasks/DestPicker';
 import type { Destination, NotionConfig } from '@/lib/notion';
 import { splitTasks, taskKeyAction } from '@/lib/meeting-page';
 import type { TaskRow } from '@/lib/tasks';
+import { TASKS_CHANGED_EVENT } from '@/lib/tasks-queue';
 
 /** "Tasks from this meeting": kept rows on top, removed ones below with Restore. Failed edits toast and roll back. */
 export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false, onCountChange, costRefreshKey }: { meetingId: string; reviewed?: boolean; onCountChange?: (kept: number) => void; costRefreshKey?: string }) {
@@ -21,12 +23,15 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
 
   useEffect(() => {
     let active = true;
-    invoke<TaskRow[]>('tasks_queue_list')
+    const load = () => invoke<TaskRow[]>('tasks_queue_list')
       .then((list) => { if (active) setTasks(list); })
-      .catch((e) => { console.error('Could not load the tasks:', e); if (active) toast.error('Could not load the tasks.'); });
+      .catch(() => { console.error('tasks_queue_list failed'); if (active) toast.error('Could not load the tasks.'); }); // command name only: the error text can carry task content
+    void load();
+    let off: (() => void) | null = null;
+    listen(TASKS_CHANGED_EVENT, () => void load()).then((u) => { if (active) off = u; else u(); }).catch(() => console.error('tasks-changed listen failed'));
     // No destinations is a quiet state: the pickers then say "Choose database…".
     invoke<NotionConfig>('notion_get_config').then((c) => { if (active) setDests(c?.destinations ?? []); }).catch(() => {});
-    return () => { active = false; };
+    return () => { active = false; off?.(); };
   }, [meetingId]);
 
   const { kept, removed } = splitTasks(tasks, meetingId);
@@ -41,8 +46,8 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
     let saved: Partial<TaskRow> = {};
     try {
       for (const [command, args, patch] of steps) { await invoke(command, args); saved = { ...saved, ...patch }; }
-    } catch (e) {
-      console.error('Task change failed:', e);
+    } catch {
+      console.error(`${steps.map((x) => x[0]).join(', ')} failed`);
       // Only the fields this edit changed and did not save: a later edit to the same task stays.
       const undo: Record<string, unknown> = {};
       for (const [, , patch] of steps) for (const k of Object.keys(patch)) if (!(k in saved)) undo[k] = task[k as keyof TaskRow];
@@ -59,8 +64,8 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
   const toggleReviewed = async () => {
     const next = !reviewed;
     setReviewedState(next);
-    try { await setReviewed(meetingId, next); } catch (e) {
-      console.error('Could not save the review state:', e);
+    try { await setReviewed(meetingId, next); } catch {
+      console.error('set_reviewed failed');
       setReviewedState(!next);
       toast.error('Could not save the review state.');
     }
@@ -103,7 +108,7 @@ export function MeetingTasksPanel({ meetingId, reviewed: initialReviewed = false
 
   return (
     <aside aria-label="Tasks from this meeting" className="space-y-3 p-3">
-      <h2 className="text-base font-semibold">Tasks from this meeting <small aria-live="polite" className="text-muted-foreground">{kept.length} kept</small></h2>
+      <h2 className="text-base font-semibold">Tasks from this meeting <small aria-live="polite" className="text-muted-foreground">{all.filter((t) => ['keep', 'sending', 'sent'].includes(t.review)).length} kept</small></h2>
       <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
         <span>Keyboard: <kbd>K</kbd> keep · <kbd>X</kbd> remove · <kbd>↑↓</kbd> move</span>
       </div>

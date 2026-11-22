@@ -5,10 +5,12 @@ import type { TaskRow } from '../../src/lib/tasks';
 const originals = {
   core: { ...await import('@tauri-apps/api/core') },
   sonner: { ...await import('sonner') },
+  event: { ...await import('@tauri-apps/api/event') },
 };
 afterAll(() => {
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('sonner', () => originals.sonner);
+  mock.module('@tauri-apps/api/event', () => originals.event);
 });
 
 const task = (over: Partial<TaskRow>): TaskRow => ({
@@ -35,6 +37,8 @@ mock.module('@tauri-apps/api/core', () => ({
     return null;
   },
 }));
+let tasksChanged: (() => void) | null = null;
+mock.module('@tauri-apps/api/event', () => ({ listen: async (_n: string, h: () => void) => { tasksChanged = h; return () => { tasksChanged = null; }; } }));
 mock.module('sonner', () => ({ toast: { error: (m: string) => errors.push(m), success() {}, warning() {}, info() {} } }));
 
 const { MeetingTasksPanel } = await import('../../src/components/MeetingPage/MeetingTasksPanel');
@@ -163,4 +167,14 @@ test('shows the LLM cost line', async () => {
   rows = [];
   const r = await mount();
   expect(text(r)).toContain('LLM cost: $0.01');
+});
+
+test('the "kept" label counts only kept rows; tasks-changed reloads the panel', async () => {
+  rows = [task({ id: 'o1', review: 'open' }), task({ id: 'k1', text: 'Kept one', review: 'keep' })];
+  const r = await mount();
+  expect(text(r)).toContain('1 kept');
+  rows = [...rows, task({ id: 'n1', text: 'Fresh task', review: 'keep' })];
+  await act(async () => { tasksChanged?.(); });
+  expect(text(r)).toContain('Fresh task');
+  expect(text(r)).toContain('2 kept');
 });

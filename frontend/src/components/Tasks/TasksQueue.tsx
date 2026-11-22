@@ -81,7 +81,7 @@ export function TasksQueue() {
     const id = pickFocus(p.before, after, p.wanted);
     const el = id ? Array.from(root.current?.querySelectorAll<HTMLElement>('[data-row-id]') ?? []).find((r) => r.dataset.rowId === id) : null;
     if (el) { if (!el.contains(document.activeElement)) el.focus(); }
-    else root.current?.querySelector<HTMLElement>('#tab-review')?.focus();
+    else root.current?.querySelector<HTMLElement>(`#tab-${tab}`)?.focus();
   }, [tick, tasks]);
 
   const run = async (calls: Call[], wanted: string, soft = false) => {
@@ -99,8 +99,9 @@ export function TasksQueue() {
   const act = (command: string, args: Record<string, unknown>, wanted: string) => run([[command, args]], wanted);
 
   const sendRef = useRef<(ids: string[], resendAmbiguous?: boolean) => void>(() => {});
-  const send = async (sendIds: string[], resendAmbiguous = false) => {
+  const send = async (sendIds: string[], resendAmbiguous = false, rowId?: string) => {
     if (sendingRef.current || sendIds.length === 0) return;
+    const wanted = rowId ?? (document.activeElement as HTMLElement | null)?.closest<HTMLElement>('[data-row-id]')?.dataset.rowId;
     sendingRef.current = true;
     setSending(true);
     setResult(null);
@@ -114,7 +115,7 @@ export function TasksQueue() {
       await reload(); // stay blocked until sendableIds are fresh, or a second click could resend
       sendingRef.current = false;
       setSending(false);
-      request(before, before[0] ?? '');
+      request(before, wanted ?? before[0] ?? '');
     }
   };
   sendRef.current = send;
@@ -130,11 +131,11 @@ export function TasksQueue() {
 
   const actions: RowActions = {
     busy: sending,
-    send: (t) => void send([t.id], t.sendAmbiguous), // only a row flagged ambiguous is resent, and only by this explicit click
+    send: (t) => void send([t.id], t.sendAmbiguous, t.id), // only a row flagged ambiguous is resent, and only by this explicit click
     markSent: (t) => void act('tasks_mark_sent', { id: t.id }, t.id),
     setReview: (t, review) => void act('tasks_set_review', { id: t.id, review }, t.id),
     setDest: (t, destId) => void act('tasks_set_dest', { id: t.id, destId }, t.id),
-    setDue: (t, dueDate) => void act('tasks_set_due_date', { id: t.id, dueDate }, t.id),
+    setDue: (t, dueDate, soft) => void run([['tasks_set_due_date', { id: t.id, dueDate }]], t.id, soft), // blur save is soft: focus went elsewhere on purpose
     edit: (t, text, refocus) => void (refocus ? act('tasks_edit', { id: t.id, text }, t.id) : run([['tasks_edit', { id: t.id, text }]], t.id, true)),
     refocus: (id) => request(ids(), id),
     onKeyDown: (e, t) => {

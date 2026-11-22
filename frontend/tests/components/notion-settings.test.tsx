@@ -119,3 +119,28 @@ test('Delete confirms first', async () => {
   await act(async () => { await del().props.onClick(); });
   expect(calls.filter((c) => c[0] === 'notion_delete_destination')).toEqual([['notion_delete_destination', { id: 'd-job' }]]);
 });
+
+test('editing: a changed link needs Read columns; Read columns keeps the saved column choices', async () => {
+  cfg.destinations = [dest('d-job', 0, { mapping: { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'Done' }] } })];
+  await render();
+  await act(async () => { r.root.findByProps({ 'aria-label': 'Edit d-job' }).props.onClick(); });
+  expect(btn('Save').props.disabled).toBe(false);
+  await typeIn('Notion database link', 'https://www.notion.so/abc');
+  expect(btn('Save').props.disabled).toBe(true);
+  expect(text(r.root)).toContain('Press Read columns to use the new link.');
+  await click('Read columns');
+  await click('Save');
+  expect(calls.find((c) => c[0] === 'notion_save_destination')![1].dest.mapping).toEqual(
+    { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'Done' }] });
+});
+
+test('Save is disabled while saving, so a double click creates one database', async () => {
+  await render();
+  await click('Add database');
+  await typeIn('Name', 'Job tasks');
+  await typeIn('Notion database link', 'https://www.notion.so/abc');
+  await click('Read columns');
+  const save = btn('Save').props.onClick;
+  await act(async () => { await Promise.all([save(), save()]); });
+  expect(calls.filter((c) => c[0] === 'notion_save_destination').length).toBe(1);
+});

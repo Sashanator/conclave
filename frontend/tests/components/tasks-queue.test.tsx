@@ -170,6 +170,41 @@ describe('tasks queue', () => {
     expect(writes()[1]).toEqual(['tasks_set_due_date', { id: 'a', dueDate: null }]);
   });
 
+  test('saving a due date on blur does not pull focus back from where the user went', async () => {
+    await click(row('a').querySelector('button[aria-label^="Due date"]')!);
+    const input = row('a').querySelector<HTMLInputElement>('input[type="date"]')!;
+    input.focus();
+    await setValue(input, '2026-11-26');
+    const other = row('b').querySelector<HTMLElement>('button.block')!;
+    await act(async () => { other.focus(); });
+    await flush();
+    expect(writes()).toEqual([['tasks_set_due_date', { id: 'a', dueDate: '2026-11-26' }]]);
+    expect(document.activeElement).toBe(other);
+    await click(other);
+    expect(row('b').querySelector('input')).not.toBeNull();
+    expect(document.activeElement).toBe(row('b').querySelector('input'));
+  });
+
+  test('restoring the last removed task keeps focus in the Removed tab', async () => {
+    rows = [mk('r', { review: 'drop', removedBy: 'user' })];
+    document.body.innerHTML = '';
+    await mount();
+    await click(document.querySelector('#tab-removed')!);
+    await click(Array.from(document.querySelectorAll('button')).find((b) => b.textContent === 'Restore')!);
+    expect(document.activeElement?.id).toBe('tab-removed');
+  });
+
+  test('Retry and Send again only on kept rows', async () => {
+    rows = [mk('f', { review: 'open', sendError: 'boom', destId: 'd1' }), mk('g', { review: 'open', sendAmbiguous: true, destId: 'd1' })];
+    document.body.innerHTML = '';
+    await mount();
+    const labels = Array.from(document.querySelectorAll('button')).map((b) => b.textContent);
+    expect(labels).not.toContain('Retry');
+    expect(labels).not.toContain('Send again');
+    expect(labels).not.toContain('Mark as sent');
+    expect(text()).toContain('Not sent: boom');
+  });
+
   test('re-reads on tasks-changed', async () => {
     const n = () => calls.filter(([c]) => c === 'tasks_queue_list').length;
     const before = n();
@@ -344,6 +379,14 @@ describe('sending', () => {
     expect(sends().at(-1)).toEqual(['notion_send', { taskIds: ['m'], resendAmbiguous: true }]);
     await click(btn('Mark as sent'));
     expect(calls).toContainEqual(['tasks_mark_sent', { id: 'm' }]);
+  });
+
+  test('after a send, focus stays on the row the user was on', async () => {
+    await setup([mk('e', {}), mk('f', {})]);
+    row('f').focus();
+    await ctrlEnter(row('f'));
+    expect(sends().length).toBe(1);
+    expect(document.activeElement).toBe(row('f'));
   });
 
   test('bar only on To review; focus lands on a row after a send', async () => {

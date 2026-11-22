@@ -72,7 +72,7 @@ Cells: `0 10px` padding, 1px bottom border. Hover on a row uses `--accent`. Tran
 | 8 | `20 85% 45%` | `20 90% 62%` |
 | 9 | `215 15% 42%` | `215 15% 65%` |
 
-Each is at least 3:1 against `--background` in all three themes (`tests/lib/db-tokens.test.ts`). 1 to 3 are fixed by the spec; 4 to 9 were chosen to stay apart under deuteranopia and protanopia.
+Each is at least 3:1 against `--background` in all three themes (`tests/lib/db-tokens.test.ts`). 1 to 3 are fixed by the spec; 4 to 9 are distinct in normal vision; under deuteranopia and protanopia some pairs are close. Colour is a secondary cue: a destination's name is always shown next to its dot.
 
 ## Chips
 

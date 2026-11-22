@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -32,6 +32,11 @@ export function NotionSettings() {
   const [formErr, setFormErr] = useState<string | null>(null);
   const [tableErr, setTableErr] = useState<string | null>(null);
   const [defaultsErr, setDefaultsErr] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false); // state lags a same-tick second click
+  const addRef = useRef<HTMLButtonElement>(null);
+  const focusAdd = useRef(false); // set by Delete/Save/Cancel: their button is gone after the next render
+  useEffect(() => { if (focusAdd.current) { focusAdd.current = false; addRef.current?.focus(); } });
 
   const reload = useCallback(async () => {
     try { setCfg(await invoke<NotionConfig>('notion_get_config')); setLoadErr(null); } catch (e) { setLoadErr(String(e)); }
@@ -72,7 +77,20 @@ export function NotionSettings() {
     if (!form) return;
     try {
       const schema = await invoke<DbSchema>('notion_read_columns', { link: form.link.trim() });
-      setForm({ ...form, schema, due: '', meeting: '', fixed: {}, name: form.name || schema.title });
+      // Keep the saved column choices whose columns still exist.
+      const c = mappingChoices(schema);
+      const m = form.old?.mapping;
+      const fixed: Record<string, string> = {};
+      for (const f of m?.fixed ?? []) {
+        const p = c.fixed.find((x) => x.name === f.prop);
+        const v = Array.isArray(f.value) ? f.value[0] : String(f.value);
+        if (p && (p.kind === 'checkbox' || p.options.includes(v))) fixed[f.prop] = v;
+      }
+      setForm({
+        ...form, schema, fixed, name: form.name || schema.title,
+        due: c.dates.some((p) => p.name === m?.dueProp) ? m!.dueProp! : '',
+        meeting: c.texts.some((p) => p.name === m?.meetingProp) ? m!.meetingProp! : '',
+      });
       setFormErr(null);
     } catch (e) { setFormErr(String(e)); }
   };
@@ -90,19 +108,21 @@ export function NotionSettings() {
     return { titleProp: c.title.name, dueProp: f.due || null, meetingProp: f.meeting || null, fixed };
   };
   const saveForm = async () => {
-    if (!form) return;
+    if (!form || savingRef.current) return;
     const m = mappingOf(form);
     const base = form.old;
     if (!base && !m) return;
     const dest: Destination = base && !m
       ? { ...base, name: form.name.trim() }
       : { id: form.id, name: form.name.trim(), colour: form.colour, position: form.position, databaseId: form.schema!.databaseId, dataSourceId: form.schema!.dataSourceId, mapping: m!, lastStatus: null, lastMessage: null };
-    try { await invoke('notion_save_destination', { dest }); setForm(null); await reload(); }
-    catch (e) { setFormErr(String(e)); }
+    savingRef.current = true;
+    setSaving(true);
+    try { await invoke('notion_save_destination', { dest }); focusAdd.current = true; setForm(null); await reload(); }
+    catch (e) { setFormErr(String(e)); } finally { savingRef.current = false; setSaving(false); }
   };
   const del = async (d: Destination) => {
     if (!(await confirmAction({ title: `Delete ${d.name}?`, body: 'Tasks waiting for it will need a database again.', confirmLabel: 'Delete', destructive: true }))) return;
-    try { await invoke('notion_delete_destination', { id: d.id }); setTableErr(null); await reload(); }
+    try { await invoke('notion_delete_destination', { id: d.id }); setTableErr(null); focusAdd.current = true; await reload(); }
     catch (e) { setTableErr(String(e)); }
   };
   const openDb = (d: Destination) => invoke('open_external_url', { url: notionDbUrl(d.databaseId) }).catch((e) => setTableErr(String(e)));
@@ -112,7 +132,8 @@ export function NotionSettings() {
   };
 
   const choices = form?.schema ? mappingChoices(form.schema) : null;
-  const canSave = !!form && form.name.trim() !== '' && (form.old ? true : !!mappingOf(form));
+  const linkChanged = !!form?.old && !form.schema && form.link.trim() !== notionDbUrl(form.old.databaseId);
+  const canSave = !!form && !saving && !linkChanged && form.name.trim() !== '' && (form.old ? true : !!mappingOf(form));
   const field = 'flex flex-col gap-1 text-sm';
   const hasToken = cfg?.tokenLast4 != null;
 
@@ -171,7 +192,7 @@ export function NotionSettings() {
           </div>
         )}
         <Alert msg={tableErr} />
-        {!form && <Button size="sm" variant="outline" onClick={() => openForm(null)} disabled={dests.length >= MAX_DESTINATIONS}>Add database</Button>}
+        {!form && <Button ref={addRef} size="sm" variant="outline" onClick={() => openForm(null)} disabled={dests.length >= MAX_DESTINATIONS}>Add database</Button>}
 
         {form && (
           <div role="group" aria-label={form.old ? `Edit ${form.old.name}` : 'Add database'} className="mt-3 space-y-3 rounded-md border border-border p-3">
@@ -180,7 +201,7 @@ export function NotionSettings() {
               <label className={field}>Notion database link<Input value={form.link} onChange={(e) => setForm({ ...form, link: e.target.value })} className="w-96 max-w-full" /></label>
               <Button size="sm" variant="outline" onClick={readColumns} disabled={!form.link.trim()}>Read columns</Button>
             </div>
-            {form.old && !form.schema && <p className="text-sm text-muted-foreground">Mapping kept. Press Read columns to change it.</p>}
+            {form.old && !form.schema && <p className="text-sm text-muted-foreground">{linkChanged ? 'Press Read columns to use the new link.' : 'Mapping kept. Press Read columns to change it.'}</p>}
             {choices && (
               <div className="space-y-3">
                 <p className="text-sm">Task text → {choices.title ? choices.title.name : 'no title column found'}</p>
@@ -212,7 +233,7 @@ export function NotionSettings() {
             <Alert msg={formErr} />
             <div className="flex gap-2">
               <Button size="sm" onClick={saveForm} disabled={!canSave}>Save</Button>
-              <Button size="sm" variant="outline" onClick={() => setForm(null)}>Cancel</Button>
+              <Button size="sm" variant="outline" onClick={() => { focusAdd.current = true; setForm(null); }}>Cancel</Button>
             </div>
           </div>
         )}

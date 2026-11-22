@@ -17,7 +17,7 @@ export type RowActions = {
   markSent(task: TaskRow): void;
   setReview(task: TaskRow, review: 'open' | 'keep' | 'drop'): void;
   setDest(task: TaskRow, destId: string | null): void;
-  setDue(task: TaskRow, dueDate: string | null): void;
+  setDue(task: TaskRow, dueDate: string | null, soft?: boolean): void;
   edit(task: TaskRow, text: string, refocus: boolean): void;
   onKeyDown(e: React.KeyboardEvent<HTMLElement>, task: TaskRow): void;
   refocus(id: string): void;
@@ -43,7 +43,7 @@ export function ReviewRow({ task, lookup, actions }: { task: TaskRow; lookup: De
     else if (refocus) actions.refocus(task.id);
   };
   const dueRef = useRef(false); // true while the date input may still save on blur
-  const saveDue = (v: string) => { if ((v || null) !== task.dueDate) actions.setDue(task, v || null); }; // on blur/Enter only: typing a year fires many changes
+  const saveDue = (v: string, soft = false) => { if ((v || null) !== task.dueDate) actions.setDue(task, v || null, soft); }; // on blur/Enter only: typing a year fires many changes
   const closeDue = () => { setDueOpen(false); actions.refocus(task.id); };
 
   const check = drop ? null : sendCheck({ ...task, review: 'keep' }, lookup);
@@ -93,7 +93,7 @@ export function ReviewRow({ task, lookup, actions }: { task: TaskRow; lookup: De
               autoFocus
               aria-label={`Due date for: ${task.text}`}
               defaultValue={task.dueDate ?? ''}
-              onBlur={(e) => { if (dueRef.current) saveDue(e.currentTarget.value); dueRef.current = false; setDueOpen(false); }}
+              onBlur={(e) => { if (dueRef.current) saveDue(e.currentTarget.value, true); dueRef.current = false; setDueOpen(false); }}
               onKeyDown={(e) => {
                 if (e.key === 'Escape') { e.preventDefault(); e.stopPropagation(); dueRef.current = false; closeDue(); }
                 else if (e.key === 'Enter') { e.preventDefault(); saveDue(e.currentTarget.value); dueRef.current = false; closeDue(); }
@@ -113,13 +113,15 @@ export function ReviewRow({ task, lookup, actions }: { task: TaskRow; lookup: De
               <span className="flex flex-wrap items-center gap-2 text-xs text-amber-700 dark:text-amber-400">
                 May already be in Notion. Check the database before sending again.
                 {dest && <button type="button" className="underline" onClick={() => void invoke('open_external_url', { url: notionDbUrl(dest.databaseId) }).catch(() => toast.error('Could not open Notion.'))}>Open Notion database</button>}
-                <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.markSent(task)}>Mark as sent</button>
-                <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.send(task)}>Send again</button>
+                {task.review === 'keep' && <>
+                  <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.markSent(task)}>Mark as sent</button>
+                  <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.send(task)}>Send again</button>
+                </>}
               </span>
             ) : task.sendError ? (
               <span className="flex flex-wrap items-center gap-2 text-xs text-destructive">
                 Not sent: {task.sendError}
-                <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.send(task)}>Retry</button>
+                {task.review === 'keep' && <button type="button" disabled={actions.busy} className="underline disabled:opacity-50" onClick={() => actions.send(task)}>Retry</button>}
               </span>
             ) : waiting && (
               <span className="text-xs text-amber-700 dark:text-amber-400">

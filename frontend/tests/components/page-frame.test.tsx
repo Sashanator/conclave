@@ -46,14 +46,26 @@ describe('PageFrame', () => {
   test('reading is bounded and its columns scroll separately', () => {
     const r = render('reading', { rail: <b id="rail">r</b> });
     expect(cls(r.findAll((n) => typeof n.type === 'string')[0])).not.toContain('overflow-y-auto');
-    const grid = cls(first(r, '@[1280px]/frame:grid-cols-[minmax(0,80ch)_minmax(360px,560px)]'));
+    const grid = cls(first(r, '@[1280px]/frame:grid-cols-[var(--reading-cols)]'));
     expect(grid).toContain('gap-10');
     expect(grid).toContain('min-h-0');
     const text = cls(r.findByProps({ id: 'kid' }).parent!);
-    for (const c of ['max-w-[80ch]', 'min-h-0', 'overflow-y-auto']) expect(text).toContain(c);
+    for (const c of ['min-h-0', 'overflow-y-auto']) expect(text).toContain(c);
+    expect(text).not.toContain('max-w-[80ch]');
     const rail = r.findByProps({ id: 'rail' }).parent!;
     expect(cls(rail)).toContain('overflow-y-auto');
     expect(rail.parent!.children.indexOf(rail)).toBeGreaterThan(rail.parent!.children.indexOf(r.findByProps({ id: 'kid' }).parent!));
+  });
+
+  test('a rail gets a resize separator on the frame breakpoint; no rail, none and the 80ch cap stays', () => {
+    const withRail = render('reading', { rail: <b>r</b> });
+    const sep = withRail.findAll((n) => typeof n.type === 'string' && n.props.role === 'separator');
+    expect(sep).toHaveLength(1);
+    expect(cls(sep[0])).toContain('@[1280px]/frame:flex');
+    expect(cls(sep[0])).not.toContain('md:flex');
+    const bare = render('reading');
+    expect(bare.findAll((n) => typeof n.type === 'string' && n.props.role === 'separator')).toHaveLength(0);
+    expect(cls(bare.findByProps({ id: 'kid' }).parent!)).toContain('max-w-[80ch]');
   });
 
   test('reading with subnav: list | text | rail', () => {
@@ -63,7 +75,7 @@ describe('PageFrame', () => {
     const row = wrap.parent!;
     expect(cls(row)).toContain('@[1280px]/frame:flex-row');
     expect(row.children[0]).toBe(wrap);
-    expect(cls(row.children[1] as ReactTestInstance)).toContain('grid-cols-[minmax(0,80ch)');
+    expect(cls(row.children[1] as ReactTestInstance)).toContain('grid-cols-[var(--reading-cols)]');
   });
 
   test('list with subnav keeps the full width', () => {
@@ -102,6 +114,6 @@ describe('PageFrame', () => {
   test('container-query classes are written literally so Tailwind generates them', () => {
     const src = require('fs').readFileSync(require('path').join(import.meta.dir, '../../src/components/PageFrame/PageFrame.tsx'), 'utf8');
     expect(src).not.toContain('${wide}');
-    for (const c of ['@[1280px]/frame:grid-cols-[minmax(0,80ch)_minmax(360px,560px)]', '@[1280px]/frame:grid-rows-1', '@[1280px]/frame:flex-row', '@[1280px]/frame:max-h-none', '@[1280px]/frame:w-[300px]']) expect(src).toContain(c);
+    for (const c of ['@[1280px]/frame:grid-cols-[minmax(0,80ch)_minmax(360px,560px)]', '@[1280px]/frame:grid-cols-[var(--reading-cols)]', '@[1280px]/frame:grid-rows-1', '@[1280px]/frame:flex-row', '@[1280px]/frame:max-h-none', '@[1280px]/frame:w-[300px]']) expect(src).toContain(c);
   });
 });

@@ -67,11 +67,11 @@ export function useSplitRatio({ storageKey, defaultRatio, min, max, offset = 0, 
   };
 }
 
-export function SplitHandle(props: Record<string, unknown>) {
+export function SplitHandle({ className = 'hidden md:flex', ...props }: Record<string, unknown> & { className?: string }) {
   return (
     <div
       {...props}
-      className="group relative z-10 hidden w-2 flex-shrink-0 cursor-col-resize items-stretch justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset md:flex"
+      className={`group relative z-10 hidden w-2 flex-shrink-0 cursor-col-resize items-stretch justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-inset ${className}`}
     >
       <div className="h-full w-px bg-border transition-[width,background-color] duration-150 ease-out group-hover:w-1 group-hover:bg-blue-400 group-active:w-1 group-active:bg-blue-500" />
     </div>

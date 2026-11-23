@@ -36,7 +36,9 @@ afterEach(async () => {
 
 async function mount() {
   await act(async () => {
-    renderer = create(<DictatePill />);
+    renderer = create(<DictatePill />, {
+      createNodeMock: () => ({ offsetHeight: 50, scrollHeight: 44, clientHeight: 44 }),
+    });
   });
 }
 
@@ -57,7 +59,7 @@ function classNames(r: ReactTestRenderer): string[] {
   return found;
 }
 
-const view = (state: PillView['state'], elapsed_ms = 0): PillView => ({ state, elapsed_ms, level: 0.4, mode: 'cleaned-up' });
+const view = (state: PillView['state'], elapsed_ms = 0): PillView => ({ state, elapsed_ms, level: 0.4, mode: 'cleaned-up', style: 'panel' });
 
 describe('dictate pill page', () => {
   test('the pill carries the dark palette in both themes', async () => {
@@ -87,5 +89,57 @@ describe('dictate pill page', () => {
     snapshot = view('loading-model');
     await mount();
     expect(JSON.stringify(renderer!.toJSON())).toContain('Loading model…');
+  });
+
+  test('panel shows committed and grey volatile text, capped at three lines, and resizes', async () => {
+    await mount();
+    await emit({ ...view('listening'), committed: 'Hello there', volatile: 'how are' });
+    const names = classNames(renderer!);
+    expect(names.some((c) => c.includes('text-foreground'))).toBe(true);
+    expect(names.some((c) => c.includes('text-muted-foreground'))).toBe(true);
+    expect(names.some((c) => c.includes('max-h-[66px]') && c.includes('text-[15px]'))).toBe(true);
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain('aria-live');
+    expect(invoke).toHaveBeenCalledWith('dictate_pill_resize', { width: 480, height: 66 });
+  });
+
+  test('panel shrinks back when the text is gone', async () => {
+    await mount();
+    await emit({ ...view('listening'), committed: 'Hi' });
+    await emit({ ...view('listening'), committed: '', volatile: '' });
+    expect(invoke).toHaveBeenLastCalledWith('dictate_pill_resize', { width: 360, height: 56 });
+  });
+
+  test('one-line style keeps one nowrap text line with the timer and hands-free controls', async () => {
+    invoke.mockClear();
+    await mount();
+    await emit({ ...view('hands-free', 3000), style: 'line', committed: 'Hello' });
+    const names = classNames(renderer!);
+    expect(names.some((c) => c.includes('w-[544px]') && c.includes('h-10'))).toBe(true);
+    expect(names.some((c) => c.includes('whitespace-nowrap') && c.includes('justify-end'))).toBe(true);
+    const json = JSON.stringify(renderer!.toJSON());
+    expect(json).toContain('0:03');
+    expect(json).toContain('"aria-label":"Stop"');
+    expect(invoke.mock.calls.some((c) => c[0] === 'dictate_pill_resize')).toBe(false);
+  });
+
+  test('Conclave theme adds the Conclave palette', async () => {
+    document.documentElement.classList.add('theme-conclave');
+    try {
+      await mount();
+      await emit(view('listening'));
+      const card = classNames(renderer!).find((c) => c.includes('bg-background'));
+      expect(card).toContain('theme-conclave');
+    } finally {
+      document.documentElement.classList.remove('theme-conclave');
+    }
+  });
+
+  test('text survives a state event without text', async () => {
+    await mount();
+    await emit({ ...view('listening'), committed: 'Kept' });
+    await emit(view('transcribing'));
+    const json = JSON.stringify(renderer!.toJSON());
+    expect(json).toContain('Kept');
+    expect(json).toContain('Transcribing…');
   });
 });

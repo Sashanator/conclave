@@ -1,9 +1,9 @@
 import { describe, expect, test } from 'bun:test';
 
-import { pillLabel, pillTone, showsControls } from '../../src/lib/dictatePill';
+import { hasText, liveLabel, mergeView, pillLabel, pillTone, showsControls } from '../../src/lib/dictatePill';
 import type { PillState, PillView } from '../../src/lib/dictatePill';
 
-const view = (state: PillState, elapsed_ms = 0): PillView => ({ state, elapsed_ms, level: 0, mode: 'cleaned-up' });
+const view = (state: PillState, elapsed_ms = 0): PillView => ({ state, elapsed_ms, level: 0, mode: 'cleaned-up', style: 'panel' });
 
 describe('dictate pill copy', () => {
   test('labels', () => {
@@ -35,4 +35,17 @@ describe('dictate pill copy', () => {
     expect(pillTone('hands-free')).toBe('live');
     expect(pillTone('transcribing')).toBe('busy');
   });
+});
+
+test('merge keeps text the new view leaves out', () => {
+  const a = { ...view('listening'), committed: 'Hello', volatile: 'wor' };
+  expect(mergeView(a, view('transcribing'))).toMatchObject({ state: 'transcribing', committed: 'Hello', volatile: 'wor' });
+  expect(mergeView(a, { ...view('listening'), volatile: '' }).volatile).toBe('');
+  expect(hasText(view('listening'))).toBe(false);
+  expect(hasText({ ...view('listening'), volatile: ' x' })).toBe(true);
+});
+test('live label shows the timer once text exists', () => {
+  expect(liveLabel({ ...view('listening', 5000), committed: 'Hi' })).toBe('0:05');
+  expect(liveLabel(view('listening', 5000))).toBe('Listening');
+  expect(liveLabel({ ...view('transcribing'), committed: 'Hi' })).toBe('Transcribing…');
 });

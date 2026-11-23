@@ -75,13 +75,13 @@ describe('PageFrame', () => {
     const row = wrap.parent!;
     expect(cls(row)).toContain('@[1280px]/frame:flex-row');
     expect(row.children[0]).toBe(wrap);
-    expect(cls(row.children[1] as ReactTestInstance)).toContain('grid-cols-[var(--reading-cols)]');
+    expect(cls(row.children[2] as ReactTestInstance)).toContain('grid-cols-[var(--reading-cols)]');
   });
 
   test('list with subnav keeps the full width', () => {
     const r = render('list', { subnav: <b id="sub">s</b> });
     const wrap = r.findByProps({ id: 'sub' }).parent!;
-    expect(cls(wrap)).toContain('w-[220px]');
+    expect((wrap.props.style as { width: number }).width).toBe(220);
     expect(cls(wrap.parent!)).toContain('min-h-0');
     expect(cls(wrap.parent!)).toContain('flex-1');
     expect(wrap.parent!.children[0]).toBe(wrap);
@@ -91,9 +91,9 @@ describe('PageFrame', () => {
   test('form with subnav caps only the form column', () => {
     const r = render('form', { subnav: <b id="sub">s</b> });
     const wrap = r.findByProps({ id: 'sub' }).parent!;
-    expect(cls(wrap)).toContain('w-[220px]');
+    expect((wrap.props.style as { width: number }).width).toBe(220);
     expect(cls(wrap)).not.toContain('max-w-[880px]');
-    expect(cls(wrap.parent!)).toContain('flex gap-8');
+    expect(cls(wrap.parent!)).toContain('flex gap-3');
     expect(wrap.parent!.children[0]).toBe(wrap);
     expect(cls(r.findByProps({ id: 'kid' }).parent!)).toContain('max-w-[880px]');
   });
@@ -114,6 +114,6 @@ describe('PageFrame', () => {
   test('container-query classes are written literally so Tailwind generates them', () => {
     const src = require('fs').readFileSync(require('path').join(import.meta.dir, '../../src/components/PageFrame/PageFrame.tsx'), 'utf8');
     expect(src).not.toContain('${wide}');
-    for (const c of ['@[1280px]/frame:grid-cols-[minmax(0,80ch)_minmax(360px,560px)]', '@[1280px]/frame:grid-cols-[var(--reading-cols)]', '@[1280px]/frame:grid-rows-1', '@[1280px]/frame:flex-row', '@[1280px]/frame:max-h-none', '@[1280px]/frame:w-[300px]']) expect(src).toContain(c);
+    for (const c of ['@[1280px]/frame:grid-cols-[minmax(0,80ch)_minmax(360px,560px)]', '@[1280px]/frame:grid-cols-[var(--reading-cols)]', '@[1280px]/frame:grid-rows-1', '@[1280px]/frame:flex-row', '@[1280px]/frame:max-h-none', '@[1280px]/frame:w-[var(--subnav-w)]']) expect(src).toContain(c);
   });
 });

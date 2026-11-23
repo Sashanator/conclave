@@ -15,7 +15,8 @@ export type PageFrameProps = {
 // Left-aligned frame (the shell supplies the left padding); list and reading are height-bounded, dashboard and form scroll as a page.
 export function PageFrame({ variant, title, breadcrumb, actions, rail, subnav, children }: PageFrameProps): JSX.Element {
   // One split shared by every reading page with a rail, so the meeting page and Digests remember the same width.
-  const split = useSplitRatio({ storageKey: 'conclave.reading.mainRatio', defaultRatio: 0.6, min: 0.35, max: 0.8, label: 'summary and side panel' });
+  const split = useSplitRatio({ storageKey: 'conclave.reading.mainRatio', defaultRatio: 0.6, min: 0.35, max: 0.8, label: 'summary and side panel', gutter: 32 });
+  const nav = useSplitRatio({ storageKey: 'conclave.subnav.width', defaultRatio: variant === 'reading' ? 300 : 220, min: 160, max: 520, label: 'navigation', px: 'start', offset: 16 });
   const bounded = variant === 'list' || variant === 'reading';
 
   const header = (
@@ -60,18 +61,21 @@ export function PageFrame({ variant, title, breadcrumb, actions, rail, subnav, c
 
   if (subnav && variant !== 'dashboard') {
     const row = {
-      form: 'flex gap-8',
-      list: 'flex min-h-0 flex-1 gap-8',
-      reading: 'flex min-h-0 flex-1 flex-col gap-8 @[1280px]/frame:flex-row',
+      form: 'flex gap-3',
+      list: 'flex min-h-0 flex-1 gap-3',
+      reading: 'flex min-h-0 flex-1 flex-col gap-8 @[1280px]/frame:flex-row @[1280px]/frame:gap-3',
     }[variant];
-    const nav = {
-      form: 'w-[220px] shrink-0',
-      list: 'w-[220px] shrink-0 overflow-y-auto',
-      reading: 'max-h-48 shrink-0 overflow-y-auto @[1280px]/frame:max-h-none @[1280px]/frame:w-[300px]',
+    const navCls = {
+      form: 'shrink-0',
+      list: 'shrink-0 overflow-y-auto',
+      reading: 'max-h-48 shrink-0 overflow-y-auto @[1280px]/frame:max-h-none @[1280px]/frame:w-[var(--subnav-w)]',
     }[variant];
+    // Reading stacks the nav above the body when narrow, so its handle only shows side by side.
+    const stacked = variant === 'reading';
     body = (
-      <div className={row}>
-        <div className={nav}>{subnav}</div>
+      <div ref={nav.containerRef} {...nav.containerHandlers} className={row} style={{ '--subnav-w': `${nav.ratio}px` } as React.CSSProperties}>
+        <div className={navCls} style={stacked ? undefined : { width: nav.ratio }}>{subnav}</div>
+        <SplitHandle {...nav.separatorProps} className={stacked ? 'hidden @[1280px]/frame:flex' : 'hidden md:flex'} />
         {variant === 'form' ? <div className="min-w-0 flex-1">{body}</div> : body}
       </div>
     );

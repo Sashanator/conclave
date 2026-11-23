@@ -8,6 +8,7 @@ import { CopilotPane } from '@/components/Copilot/CopilotPane';
 import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { AskChat } from '@/components/Ask/AskChat';
 import { annotationsLocked } from '@/lib/meeting-notes';
+import { SplitHandle, useSplitRatio } from '@/hooks/useSplitRatio';
 import { useAiSidebar } from './AiSidebarProvider';
 
 function LiveBody() {
@@ -17,9 +18,11 @@ function LiveBody() {
 /** Right-hand AI panel shell; Ask and Copilot render into `children`. */
 export function AiSidebar({ children }: { children?: ReactNode }) {
   const { kind, open, scope } = useAiSidebar();
+  const split = useSplitRatio({ storageKey: 'conclave.aiSidebar.width', defaultRatio: 360, min: 280, max: 720, label: 'AI sidebar', px: 'end' });
   if (!kind || !open || kind === 'meeting') return null; // the meeting page shows Ask in MeetingRail
   return (
-    <aside aria-label="AI sidebar" data-esc-layer={kind === 'table' ? '' : undefined} className="flex h-screen w-[360px] shrink-0 flex-col border-l border-border bg-background">
+    <aside ref={split.containerRef} {...split.containerHandlers} style={{ width: split.ratio }} aria-label="AI sidebar" data-esc-layer={kind === 'table' ? '' : undefined} className="relative flex h-screen shrink-0 flex-col border-l border-border bg-background">
+      <div className="absolute inset-y-0 -left-1 z-10 flex"><SplitHandle {...split.separatorProps} /></div>
       {kind === 'live' ? <LiveBody /> : scope ? <AskChat key={kind} scope={scope} allowAll={kind === 'table'} /> : children}
     </aside>
   );

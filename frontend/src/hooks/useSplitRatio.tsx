@@ -10,13 +10,19 @@ interface SplitOptions {
   /** Subtracted from the pointer position, for a second splitter in the same container. */
   offset?: number;
   label: string;
+  /** Fixed px for the handle and gaps that sit between the two panes, so the handle centres on the pointer (ratio mode). */
+  gutter?: number;
+  /** Px mode: `ratio` is a width in px (min/max/default in px). `end` measures from the container's right edge. */
+  px?: 'start' | 'end';
 }
 
-export function useSplitRatio({ storageKey, defaultRatio, min, max, offset = 0, label }: SplitOptions) {
+export function useSplitRatio({ storageKey, defaultRatio, min, max, offset = 0, label, gutter = 0, px }: SplitOptions) {
   // Mutable so two splitters can share one container (Task 10).
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [ratio, setRatio] = useState(defaultRatio);
   const dragging = useRef(false);
+  const [isDragging, setIsDragging] = useState(false);
+  const step = px ? 16 : 0.05;
   const clamp = useCallback((v: number) => Math.min(max, Math.max(min, v)), [min, max]);
 
   useEffect(() => { setRatio(readStoredRatio(storageKey, defaultRatio, min, max)); }, [storageKey, defaultRatio, min, max]);
@@ -24,41 +30,48 @@ export function useSplitRatio({ storageKey, defaultRatio, min, max, offset = 0, 
   const onPointerDown = useCallback((e: React.PointerEvent) => {
     e.preventDefault();
     dragging.current = true;
+    setIsDragging(true);
     e.currentTarget.setPointerCapture(e.pointerId);
   }, []);
   const onPointerMove = useCallback((e: React.PointerEvent) => {
     if (!dragging.current || !containerRef.current) return;
     const rect = containerRef.current.getBoundingClientRect();
-    setRatio(clamp((e.clientX - rect.left) / rect.width - offset));
-  }, [clamp, offset]);
+    if (px) setRatio(clamp(Math.round(px === 'end' ? rect.right - e.clientX - offset : e.clientX - rect.left - offset)));
+    else setRatio(clamp((e.clientX - rect.left - gutter / 2) / (rect.width - gutter) - offset));
+  }, [clamp, offset, gutter, px]);
   const onPointerUp = useCallback(() => {
     if (!dragging.current) return;
     dragging.current = false;
+    setIsDragging(false);
     setRatio((current) => { writeStoredRatio(storageKey, current); return current; });
   }, [storageKey]);
   const onKeyDown = useCallback((e: React.KeyboardEvent) => {
+    const grow = px === 'end' ? 'ArrowLeft' : 'ArrowRight';
+    const shrink = px === 'end' ? 'ArrowRight' : 'ArrowLeft';
     const next =
-      e.key === 'ArrowLeft' ? clamp(ratio - 0.05) :
-      e.key === 'ArrowRight' ? clamp(ratio + 0.05) :
+      e.key === shrink ? clamp(ratio - step) :
+      e.key === grow ? clamp(ratio + step) :
       e.key === 'Home' ? min :
       e.key === 'End' ? max : null;
     if (next === null) return;
     e.preventDefault();
     setRatio(next);
     writeStoredRatio(storageKey, next);
-  }, [ratio, clamp, min, max, storageKey]);
+  }, [ratio, clamp, min, max, storageKey, px, step]);
 
+  const pct = (v: number) => (px ? Math.round(v) : Math.round(v * 100));
   return {
     ratio,
+    dragging: isDragging,
     containerRef,
     containerHandlers: { onPointerMove, onPointerUp, onPointerCancel: onPointerUp },
     separatorProps: {
       role: 'separator' as const,
       'aria-orientation': 'vertical' as const,
-      'aria-valuenow': Math.round(ratio * 100),
-      'aria-valuemin': Math.round(min * 100),
-      'aria-valuemax': Math.round(max * 100),
-      'aria-valuetext': `${label} ${Math.round(ratio * 100)} percent`,
+      'aria-valuenow': pct(ratio),
+      'aria-valuemin': pct(min),
+      'aria-valuemax': pct(max),
+      'aria-valuetext': `${label} ${pct(ratio)} ${px ? 'pixels' : 'percent'}`,
       'aria-label': `Resize ${label}`,
       tabIndex: 0,
       onPointerDown,

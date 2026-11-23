@@ -1088,6 +1088,7 @@ pub fn run() {
             dictate::session::dictate_pill_action,
             dictate::session::dictate_status,
             dictate::pill::dictate_pill_view,
+            dictate::pill::dictate_pill_resize,
             // Copilot commands
             copilot::settings::copilot_get_settings,
             copilot::settings::copilot_save_settings,

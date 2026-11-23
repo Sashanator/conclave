@@ -20,7 +20,7 @@ use super::capture::{CapturedAudio, MicCapture};
 use super::cleanup::{self, ModeSpec};
 use super::mute::MuteGuard;
 use super::pill::{self, PillState, PillView};
-use super::settings::{self, DictateSettings};
+use super::settings::{self, DictateSettings, LiveTextStyle};
 use super::{
     engine_is_whisper, ensure_model, whisper_engine, COPIED_SHOW_MS, EPOCH, HOLD_THRESHOLD_MS, HOOK,
     MAX_DICTATION_SECS, MIN_SPEECH_SECS, PASTED_FADE_MS, RESTORE_DELAY_MS,
@@ -382,6 +382,7 @@ struct Exec {
     started: Option<Instant>,
     /// Dictate's epoch when the current capture began.
     epoch: u64,
+    style: LiveTextStyle,
 }
 
 impl Exec {
@@ -389,6 +390,7 @@ impl Exec {
         match effect {
             Effect::BeginCapture(target) => {
                 self.mode = resolve_mode_id(&target, &settings::current().default_mode);
+                self.style = settings::current().live_text_style;
                 self.started = Some(Instant::now());
                 self.epoch = EPOCH.load(Ordering::SeqCst);
                 self.pill_state = None;
@@ -416,7 +418,7 @@ impl Exec {
             }
             Effect::MuteOn => self.muted = Some(MuteGuard::new()),
             Effect::MuteOff => self.muted = None,
-            Effect::ShowPill => pill::show(app, foreground_monitor_point()),
+            Effect::ShowPill => pill::show(app, foreground_monitor_point(), self.style),
             Effect::PillState(state) => {
                 self.pill_state = Some(state);
                 set_pill(app, state, &self.mode);
@@ -444,10 +446,9 @@ impl Exec {
             return;
         }
         let view = PillView {
-            state,
             elapsed_ms: self.started.map_or(0, |t| t.elapsed().as_millis() as u64),
             level: with_live_mic(|m| m.level()).unwrap_or(0.0),
-            mode: self.mode.clone(),
+            ..PillView::new(state, &self.mode)
         };
         pill::update(app, &view);
     }
@@ -473,12 +474,7 @@ fn resolve_mode_id(target: &Target, default_mode: &str) -> String {
 fn set_pill<R: Runtime>(app: &AppHandle<R>, state: PillState, mode: &str) {
     pill::update(
         app,
-        &PillView {
-            state,
-            elapsed_ms: 0,
-            level: 0.0,
-            mode: mode.to_string(),
-        },
+        &PillView::new(state, mode),
     );
     match state {
         PillState::Pasted | PillState::PastedAsSpoken => pill::hide_after(app, PASTED_FADE_MS),

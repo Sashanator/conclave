@@ -97,7 +97,7 @@ describe('dictate pill page', () => {
     const names = classNames(renderer!);
     expect(names.some((c) => c.includes('text-foreground'))).toBe(true);
     expect(names.some((c) => c.includes('text-muted-foreground'))).toBe(true);
-    expect(names.some((c) => c.includes('max-h-[66px]') && c.includes('text-[15px]'))).toBe(true);
+    expect(names.some((c) => c.includes('max-h-[78px]') && c.includes('text-[15px]'))).toBe(true);
     expect(JSON.stringify(renderer!.toJSON())).not.toContain('aria-live');
     expect(invoke).toHaveBeenCalledWith('dictate_pill_resize', { width: 480, height: 66 });
   });

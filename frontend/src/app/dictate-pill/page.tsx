@@ -106,7 +106,7 @@ export default function DictatePill() {
         {panel && (
           <div
             ref={textRef}
-            className={`flex max-h-[66px] w-full flex-col justify-end overflow-hidden px-4 pt-3 text-left text-[15px] font-normal leading-[22px] ${
+            className={`flex max-h-[78px] w-full flex-col justify-end overflow-hidden px-4 pt-3 text-left text-[15px] font-normal leading-[22px] ${
               clipped ? '[mask-image:linear-gradient(to_bottom,transparent,black_22px)]' : ''
             }`}
           >

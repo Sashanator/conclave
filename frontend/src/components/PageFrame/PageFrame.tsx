@@ -91,7 +91,7 @@ export function PageFrame({ variant, title, breadcrumb, actions, rail, subnav, c
   }
   return (
     <div className="h-full overflow-y-auto">
-      <div className={cn('@container/frame min-w-0 py-8 pr-8', variant === 'dashboard' && 'max-w-[1600px]')}>
+      <div className={'@container/frame min-w-0 py-8 pr-8'}>
         {header}
         {body}
       </div>

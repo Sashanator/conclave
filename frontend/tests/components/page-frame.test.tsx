@@ -98,9 +98,9 @@ describe('PageFrame', () => {
     expect(cls(r.findByProps({ id: 'kid' }).parent!)).toContain('max-w-[880px]');
   });
 
-  test('dashboard caps at 1600 and imposes no grid', () => {
+  test('dashboard has no width cap and imposes no grid', () => {
     const r = render('dashboard', { subnav: <b>s</b> });
-    expect(withClass(r, 'max-w-[1600px]').length).toBeGreaterThan(0);
+    expect(withClass(r, 'max-w-[1600px]')).toHaveLength(0);
     const parent = cls(r.findByProps({ id: 'kid' }).parent!);
     expect(parent).not.toMatch(/\bgrid\b|grid-cols-/);
     expect(withClass(r, 'w-[220px]')).toHaveLength(0);

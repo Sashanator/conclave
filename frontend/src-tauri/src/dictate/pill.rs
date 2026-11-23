@@ -212,10 +212,8 @@ pub fn update<R: Runtime>(app: &AppHandle<R>, view: &PillView) {
     st.seq += 1;
     let mut view = view.clone();
     view.style = st.style;
-    // A tick or state change that carries no text keeps the text already shown.
     if let Some(old) = &st.view {
-        view.committed = view.committed.or_else(|| old.committed.clone());
-        view.volatile = view.volatile.or_else(|| old.volatile.clone());
+        keep_text(&mut view, old);
     }
     st.view = Some(view.clone());
     if let Some(label) = &st.label {
@@ -223,6 +221,18 @@ pub fn update<R: Runtime>(app: &AppHandle<R>, view: &PillView) {
             log::warn!("Dictate pill: cannot send state: {e}");
         }
     }
+}
+
+/// A tick or state change that carries no text keeps the text already shown, except in the states that end
+/// without a transcript (nothing heard, errors), where old words would be stale.
+fn keep_text(view: &mut PillView, old: &PillView) {
+    if matches!(view.state, PillState::NothingHeard | PillState::NoMicrophone) {
+        view.committed = Some(String::new());
+        view.volatile = Some(String::new());
+        return;
+    }
+    view.committed = view.committed.take().or_else(|| old.committed.clone());
+    view.volatile = view.volatile.take().or_else(|| old.volatile.clone());
 }
 
 /// Closes the pill after `ms`, unless another call (show, update, close or hide_after) came first.
@@ -249,13 +259,16 @@ pub fn dictate_pill_view() -> Option<PillView> {
 }
 
 /// The page sizes the window to its text. The bottom edge stays put and the window is re-centred, so it grows
-/// upward. The line style keeps its fixed width.
+/// upward. The line style is one fixed window and ignores this.
 #[tauri::command]
 pub fn dictate_pill_resize<R: Runtime>(app: AppHandle<R>, width: f64, height: f64) {
-    let (label, style) = {
+    let label = {
         let st = state();
+        if st.style == LiveTextStyle::Line {
+            return;
+        }
         match &st.label {
-            Some(l) => (l.clone(), st.style),
+            Some(l) => l.clone(),
             None => return,
         }
     };
@@ -268,10 +281,7 @@ pub fn dictate_pill_resize<R: Runtime>(app: AppHandle<R>, width: f64, height: f6
         log::warn!("Dictate pill: cannot read the window geometry to resize");
         return;
     };
-    let w = match style {
-        LiveTextStyle::Line => LINE_WIDTH,
-        LiveTextStyle::Panel => panel_width(width),
-    };
+    let w = panel_width(width);
     let h = panel_height(height);
     let centre = (pos.x as f64 + size.width as f64 / 2.0) / scale;
     let bottom = (pos.y as f64 + size.height as f64) / scale;
@@ -365,6 +375,22 @@ mod tests {
         assert_eq!(panel_width(360.0), 360.0);
         assert_eq!(panel_width(480.0), 480.0);
         assert_eq!(panel_width(9999.0), 480.0);
+    }
+
+    #[test]
+    fn stale_text_is_cleared_when_nothing_was_heard() {
+        let mut old = PillView::new(PillState::Transcribing, "m");
+        old.committed = Some("hello".into());
+        old.volatile = Some("wor".into());
+        let mut v = PillView::new(PillState::NothingHeard, "m");
+        keep_text(&mut v, &old);
+        assert_eq!((v.committed.as_deref(), v.volatile.as_deref()), (Some(""), Some("")));
+        let mut v = PillView::new(PillState::NoMicrophone, "m");
+        keep_text(&mut v, &old);
+        assert_eq!(v.committed.as_deref(), Some(""));
+        let mut v = PillView::new(PillState::Pasted, "m");
+        keep_text(&mut v, &old);
+        assert_eq!((v.committed.as_deref(), v.volatile.as_deref()), (Some("hello"), Some("wor")));
     }
 
     #[test]

@@ -638,11 +638,15 @@ async fn full_decode(samples: &[f32], rate: u32) -> Option<(String, f32)> {
         (a16, secs)
     })
     .await
+    .map_err(|_| warn!("dictate: audio preparation task failed"))
     .ok()?;
     if matches!(check_speech(secs), SpeechCheck::NothingHeard) {
         return Some((String::new(), secs));
     }
-    let engine = whisper_engine()?;
+    let Some(engine) = whisper_engine() else {
+        warn!("dictate: no Whisper engine for the full decode");
+        return None;
+    };
     // Fresh per dictation: a language kept from an earlier one made Whisper write English speech in Russian.
     let mut policy = LanguagePolicy::new(get_allowed_languages_internal());
     let outcome = engine.transcribe_audio_with_confidence(a16, Some("auto".to_string()), Some(&mut policy), None).await;
@@ -680,6 +684,22 @@ async fn process<R: Runtime>(
         nothing_heard(&app, &mode_id, epoch);
         return;
     }
+    let all = Arc::new(audio.samples);
+    let outcome = match live {
+        Some(h) => {
+            set_pill(&app, PillState::Transcribing, &mode_id);
+            usable(h.finish(all.clone()).await)
+        }
+        None => None,
+    };
+    // An accidental press never loads the model: a live outcome already says how much speech there was.
+    if let Some(o) = &outcome {
+        if matches!(check_speech(o.speech_secs), SpeechCheck::NothingHeard) {
+            info!("dictate: nothing heard ({:.1} s of speech)", o.speech_secs);
+            nothing_heard(&app, &mode_id, epoch);
+            return;
+        }
+    }
     let loaded = match whisper_engine() {
         Some(engine) => engine.is_model_loaded().await,
         None => false,
@@ -693,12 +713,7 @@ async fn process<R: Runtime>(
         return;
     }
     set_pill(&app, PillState::Transcribing, &mode_id);
-    let all = Arc::new(audio.samples);
-    let outcome = match live {
-        Some(h) => h.finish(all.clone()).await,
-        None => None,
-    };
-    let (text, secs) = match usable(outcome) {
+    let (text, secs) = match outcome {
         Some(o) => {
             info!("dictate: language {}", o.language.as_deref().unwrap_or("undecided"));
             (o.transcript, o.speech_secs)

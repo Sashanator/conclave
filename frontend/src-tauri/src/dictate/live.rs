@@ -49,6 +49,7 @@ pub struct LiveCore {
     last_preview_now: Option<u64>,
     last_preview_total: usize,
     speech_secs: f32,
+    counted_ms: f64, // speech up to here is in `speech_secs`: a forced cut and the VAD segment over it count once
     finishing: bool,
     cancelled: bool,
     failed: bool,
@@ -82,6 +83,7 @@ impl LiveCore {
             last_preview_now: None,
             last_preview_total: 0,
             speech_secs: 0.0,
+            counted_ms: 0.0,
             finishing: false,
             cancelled: false,
             failed: false,
@@ -109,7 +111,8 @@ impl LiveCore {
                 let w = &self.buf[ws - self.committed_to..ws + win - self.committed_to];
                 let at = ws + quietest_frame_centre(w, self.rate as usize * SPLIT_FRAME_MS / 1000);
                 let secs = (at - self.cut) as f32 / self.rate as f32;
-                self.speech_secs += secs;
+                let ms = |s: usize| (s + self.removed) as f64 * 1000.0 / self.rate as f64;
+                self.count_speech(ms(self.cut), ms(at));
                 self.close_range(at, secs);
             }
         } else {
@@ -129,11 +132,16 @@ impl LiveCore {
         }
     }
 
+    fn count_speech(&mut self, start_ms: f64, end_ms: f64) {
+        self.speech_secs += ((end_ms - start_ms.max(self.counted_ms)).max(0.0) / 1000.0) as f32;
+        self.counted_ms = self.counted_ms.max(end_ms);
+    }
+
     pub fn on_vad_segment(&mut self, start_ms: f64, end_ms: f64) {
         if self.cancelled || self.finishing {
             return;
         }
-        self.speech_secs += ((end_ms - start_ms).max(0.0) / 1000.0) as f32;
+        self.count_speech(start_ms, end_ms);
         let idx = |ms: f64| ((ms * self.rate as f64 / 1000.0) as usize).saturating_sub(self.removed).min(self.total);
         let (s, e) = (idx(start_ms), idx(end_ms));
         self.vad_end = self.vad_end.max(e);
@@ -456,6 +464,15 @@ mod tests {
         c.finish();
         let Some(Job::Commit { samples, .. }) = c.next_job(0, false, true) else { panic!() };
         assert_eq!(samples.len(), 120_000);
+    }
+
+    #[test]
+    fn forced_cut_and_the_vad_segment_over_it_count_speech_once() {
+        let mut c = LiveCore::new(R);
+        speech(&mut c, 25.0); // forces a cut inside the 25 s
+        assert!(c.cut > 0);
+        c.on_vad_segment(0.0, 25_000.0);
+        assert!((c.speech_secs() - 25.0).abs() < 0.1, "got {}", c.speech_secs());
     }
 
     #[test]

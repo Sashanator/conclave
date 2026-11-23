@@ -122,6 +122,20 @@ describe('dictate pill page', () => {
     expect(invoke.mock.calls.some((c) => c[0] === 'dictate_pill_resize')).toBe(false);
   });
 
+  test('one-line card keeps its full width without text, so no transparent strip eats clicks', async () => {
+    await mount();
+    await emit({ ...view('listening'), style: 'line' });
+    expect(classNames(renderer!).some((c) => c.includes('w-[544px]') && c.includes('shrink-0'))).toBe(true);
+  });
+
+  test('pill has a main landmark and a heading', async () => {
+    await mount();
+    await emit(view('listening'));
+    const json = JSON.stringify(renderer!.toJSON());
+    expect(json).toContain('"type":"main"');
+    expect(json).toContain('Dictation');
+  });
+
   test('Conclave theme adds the Conclave palette', async () => {
     document.documentElement.classList.add('theme-conclave');
     try {

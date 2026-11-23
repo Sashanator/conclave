@@ -30,6 +30,7 @@ export default function DictatePill() {
   const [conclave] = useState(() => document.documentElement.classList.contains('theme-conclave'));
   const cardRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
+  const paraRef = useRef<HTMLParagraphElement>(null);
   const sentSize = useRef('360x56');
 
   useEffect(() => {
@@ -69,13 +70,14 @@ export default function DictatePill() {
 
   const text = !!view && hasText(view);
   const panel = text && view.style === 'panel';
-  const line = text && view.style === 'line';
+  const line = view?.style === 'line'; // the card fills its 560 window with or without text
   const body = `${view?.committed ?? ''}${view?.volatile ?? ''}`;
 
   // The Panel window opens at 360x56: grow it to the measured card while text shows, shrink back when it is gone.
   useLayoutEffect(() => {
     if (!view || view.style === 'line') return;
-    if (panel && textRef.current) setClipped(textRef.current.scrollHeight > textRef.current.clientHeight);
+    // Under justify-end the overflow goes above the box, so scrollHeight never shows it: compare the text with the box.
+    if (panel && textRef.current && paraRef.current) setClipped(paraRef.current.offsetHeight > textRef.current.clientHeight - 12);
     const size = panel && cardRef.current ? { width: 480, height: cardRef.current.offsetHeight + 16 } : { width: 360, height: 56 };
     const key = `${size.width}x${size.height}`;
     if (key === sentSize.current) return;
@@ -88,11 +90,12 @@ export default function DictatePill() {
   const level = Math.min(1, Math.max(0, view.level));
 
   return (
-    <div className={`flex h-screen w-screen select-none justify-center ${panel ? 'items-end pb-2' : 'items-center'}`}>
+    <main className={`flex h-screen w-screen select-none justify-center ${panel ? 'items-end pb-2' : 'items-center'}`}>
+      <h1 className="sr-only">Dictation</h1>
       {/* `dark` forces the dark palette on this element, so the pill is dark in both themes. */}
       <div
         ref={cardRef}
-        className={`dark${conclave ? ' theme-conclave' : ''} flex items-center bg-background text-foreground shadow-lg ${
+        className={`dark${conclave ? ' theme-conclave' : ''} flex shrink-0 items-center bg-background text-foreground shadow-lg ${
           panel
             ? 'w-[464px] flex-col rounded-2xl text-sm font-medium'
             : line
@@ -107,7 +110,7 @@ export default function DictatePill() {
               clipped ? '[mask-image:linear-gradient(to_bottom,transparent,black_22px)]' : ''
             }`}
           >
-            <p>{liveText(view)}</p>
+            <p ref={paraRef}>{liveText(view)}</p>
           </div>
         )}
         <div className={panel ? 'flex h-10 w-full items-center gap-2.5 px-4' : 'contents'}>
@@ -149,6 +152,6 @@ export default function DictatePill() {
         )}
         </div>
       </div>
-    </div>
+    </main>
   );
 }

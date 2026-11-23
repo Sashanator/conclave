@@ -23,18 +23,15 @@ pub fn may_migrate(data_dir: &Path, templates: Option<&Path>, current: &str, ask
 }
 
 /// Windows: native Continue/Quit box. Close/Escape, or a dialog that can't open, means Quit.
-/// `parent` (the main window, which exists before setup runs) owns the box so it can't hide behind it.
+/// No parent window: the main window is only built after this runs (see lib.rs setup).
 #[cfg(windows)]
-fn ask_owned<R: tauri::Runtime>(message: &str, parent: Option<&tauri::WebviewWindow<R>>) -> bool {
+fn ask_owned(message: &str) -> bool {
     use rfd::{MessageButtons, MessageDialog, MessageDialogResult, MessageLevel};
-    let mut dialog = MessageDialog::new()
+    let dialog = MessageDialog::new()
         .set_level(MessageLevel::Warning)
         .set_title("Conclave")
         .set_description(message)
         .set_buttons(MessageButtons::OkCancelCustom("Continue".into(), "Quit".into()));
-    if let Some(p) = parent {
-        dialog = dialog.set_parent(p);
-    }
     match dialog.show() {
         MessageDialogResult::Custom(s) => s == "Continue",
         MessageDialogResult::Cancel => {
@@ -66,9 +63,7 @@ pub fn run_at_startup<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
     };
     let templates = crate::summary::templates::templates_dir();
     #[cfg(windows)]
-    let main_window = app.get_webview_window("main");
-    #[cfg(windows)]
-    let ask = |m: &str| ask_owned(m, main_window.as_ref());
+    let ask = ask_owned;
     #[cfg(not(windows))]
     let ask = ask_continue_without_backup;
     if !may_migrate(&data_dir, templates.as_deref(), env!("CARGO_PKG_VERSION"), ask) {

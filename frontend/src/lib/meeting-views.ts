@@ -126,6 +126,9 @@ export function viewReducer(c: ViewConfig, a: ViewAction): ViewConfig {
   }
 }
 
+/** A calendar event with no recording (future or never recorded); hidden when "Show calendar events I didn't record" is off. */
+export const isUnrecordedCalendarRow = (r: MeetingRow): boolean => r.calendarUid !== null && r.startedAt === null && !r.hasTranscript;
+
 /** Monday 00:00 (included) to next Monday 00:00 (excluded). */
 export function weekRange(now: Date): { from: Date; to: Date } {
   const from = startOfWeek(now, { weekStartsOn: 1 });

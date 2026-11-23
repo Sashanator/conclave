@@ -157,7 +157,7 @@ const practiceDetail = (id: string) => ({
     : practiceReport,
   report_error: null, audio_path: null, recurring: null,
 });
-const dictateSettings = { enabled: true, preferred_mic_device: null, main_hotkey: 'Ctrl+Alt+D', default_mode: 'cleaned-up', cleanup_provider: null, cleanup_model: null, builtin_hotkeys: {}, modes: [], dictionary: ['Conclave'] };
+const dictateSettings = { enabled: true, preferred_mic_device: null, main_hotkey: 'Ctrl+Win', default_mode: 'cleaned-up', cleanup_provider: null, cleanup_model: null, builtin_hotkeys: { 'as-spoken': 'Ctrl+Win+S' }, modes: [{ id: 'prompt-for-claude', name: 'Prompt for Claude', instructions: 'Rewrite it as a clear prompt.', examples: [], hotkey: 'Ctrl+Win+P' }, { id: 'email', name: 'Email', instructions: 'Make it an email.', examples: [], hotkey: null }], dictionary: ['Conclave', 'Whisper', 'Tauri'] };
 const knowledge = { provider: null, model: null, my_names: ['Sam'], extract_enabled: true, digest_enabled: true, calendar_marker: '📞' };
 
 const extraHandlers: Record<string, (args: any) => unknown> = {

@@ -22,6 +22,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { MeetingMetadata, StoredTranscript } from '@/services/indexedDBService';
 import { cn, DESTRUCTIVE_OUTLINE } from '@/lib/utils';
 import { confirmAction } from '@/lib/confirm';
+import { SplitHandle, useSplitRatio } from '@/hooks/useSplitRatio';
 
 interface TranscriptRecoveryProps {
   isOpen: boolean;
@@ -40,6 +41,7 @@ export function TranscriptRecovery({
   onDelete,
   onLoadPreview,
 }: TranscriptRecoveryProps) {
+  const split = useSplitRatio({ storageKey: 'conclave.recovery.listWidth', defaultRatio: 280, min: 200, max: 480, label: 'meeting list', px: 'start', offset: 36 });
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [previewTranscripts, setPreviewTranscripts] = useState<StoredTranscript[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);
@@ -125,9 +127,9 @@ export function TranscriptRecovery({
           </DialogDescription>
         </DialogHeader>
 
-        <div className="flex-1 flex gap-4 px-6 pb-6 overflow-hidden">
+        <div ref={split.containerRef} {...split.containerHandlers} className="flex-1 flex gap-2 px-6 pb-6 overflow-hidden">
           {/* Meeting List */}
-          <div className="w-1/3 flex flex-col">
+          <div style={{ width: split.ratio }} className="flex-shrink-0 flex flex-col">
             <h3 className="text-sm font-medium mb-2">Interrupted Meetings</h3>
             <ScrollArea className="flex-1 border rounded-lg">
               <div className="p-2 space-y-2">
@@ -170,8 +172,10 @@ export function TranscriptRecovery({
             </ScrollArea>
           </div>
 
+          <SplitHandle {...split.separatorProps} />
+
           {/* Preview Panel */}
-          <div className="flex-1 flex flex-col">
+          <div className="flex-1 min-w-0 flex flex-col">
             <h3 className="text-sm font-medium mb-2">Preview</h3>
             <div className="flex-1 border rounded-lg overflow-hidden flex flex-col">
               {selectedMeeting ? (

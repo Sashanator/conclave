@@ -137,6 +137,21 @@ mod tests {
     }
 
     #[test]
+    fn fresh_policy_does_not_inherit_previous_language() {
+        let allowed: Vec<String> = vec!["ru".into(), "en".into()];
+        let mut first = LanguagePolicy::new(allowed.clone());
+        assert_eq!(first.choose(&[0.015, 0.791], 7.9), "en");
+        assert_eq!(first.current(), Some("en"));
+        // A new dictation builds a new policy: nothing carried over, short audio needs detection,
+        // and an unclear choice falls back to the best allowed language for this audio.
+        let mut second = LanguagePolicy::new(allowed);
+        assert_eq!(second.current(), None);
+        assert_eq!(second.decide_without_detection(0.9), None);
+        assert_eq!(second.choose(&[0.35, 0.30], 5.0), "ru");
+        assert_eq!(second.current(), None);
+    }
+
+    #[test]
     fn pad_to_min_duration_centres_short_audio() {
         let (padded, _) = pad_to_min_duration(vec![1.0; 12_800]);
         assert_eq!(padded.len(), 17_600);

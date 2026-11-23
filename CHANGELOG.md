@@ -1,5 +1,14 @@
 # Conclave changelog
 
+## v2.3.0 — 2026-11-23
+- **Resize every panel.** Drag the edge between the sidebar, lists, the meeting text, the side panel and the Ask/Copilot panel to the width you like; each width is remembered. Stats, Practice and What's new use the whole window.
+- **Hide calendar events you didn't record.** A new switch in Settings → Appearance & app removes upcoming and missed calendar events from the Meetings table. Search still finds them.
+- **Dictate page reworked.** Press the shortcut you want to record it (the Win key works too), pick a mode from chips and make any mode the default.
+- **Dictation stays in your language.** Each dictation detects its language fresh, so English no longer comes out in Russian.
+- **Ask about a meeting answers better.** Asking within one meeting or a few now always uses their summaries.
+- Changing a meeting's category no longer pops up a regenerate offer; a note on the summary lets you regenerate when you want. Digests show full meeting names in the side panel, and What's new uses the full width.
+- **Fix.** Conclave no longer fails with "state not managed" when the pre-upgrade backup asks a question at start.
+
 ## v2.2.0 — 2026-11-22
 - **Tasks review queue.** The Tasks page lists the tasks found in your meetings, grouped by meeting. Keep or remove each one (K / X), fix its text or due date, and pick its Notion database (1–9).
 - **Send to Notion.** One click (or Ctrl Enter) creates the kept tasks in your Notion databases: Job tasks, Personal tasks, German homework or any you add. A task is never sent twice; if Notion's answer is lost, it says "May already be in Notion" and waits for you.

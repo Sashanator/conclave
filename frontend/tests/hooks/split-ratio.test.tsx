@@ -59,3 +59,47 @@ describe('useSplitRatio offset', () => {
     expect(split.ratio).toBeCloseTo(0.2);
   });
 });
+
+describe('useSplitRatio gutter and px mode', () => {
+  const drag = (x: number, rect: object) => {
+    split.containerRef.current = { getBoundingClientRect: () => rect } as unknown as HTMLDivElement;
+    act(() => { split.separatorProps.onPointerDown({ preventDefault: () => {}, currentTarget: { setPointerCapture: () => {} }, pointerId: 1 } as never); });
+    act(() => { split.containerHandlers.onPointerMove({ clientX: x } as never); });
+    act(() => { split.containerHandlers.onPointerUp(); });
+  };
+  let opts: Record<string, unknown> = {};
+  function PxView() {
+    split = useSplitRatio({ storageKey: 'test.px', defaultRatio: 200, min: 100, max: 400, label: 'test', ...opts } as never);
+    return null;
+  }
+
+  test('a gutter keeps the handle centred on the pointer', () => {
+    opts = {};
+    act(() => { create(<View />); });
+    // Re-render with a gutter of 32: pointer at the handle centre of a 0.4 split of (1032 - 32) wide.
+    function G() { split = useSplitRatio({ storageKey: 'test.g', defaultRatio: 0.3, min: 0.2, max: 0.5, label: 't', gutter: 32 }); return null; }
+    act(() => { create(<G />); });
+    drag(400 + 16, { left: 0, width: 1032, right: 1032 });
+    expect(split.ratio).toBeCloseTo(0.4);
+  });
+
+  test('px mode from the start edge subtracts the offset and clamps', () => {
+    opts = { px: 'start', offset: 16 };
+    act(() => { create(<PxView />); });
+    drag(316, { left: 0, width: 1000, right: 1000 });
+    expect(split.ratio).toBe(300);
+    expect(localStorage.getItem('test.px')).toBe('300');
+    drag(900, { left: 0, width: 1000, right: 1000 });
+    expect(split.ratio).toBe(400);
+  });
+
+  test('px mode from the end edge measures from the right, and arrows are mirrored', () => {
+    opts = { px: 'end' };
+    act(() => { create(<PxView />); });
+    drag(700, { left: 0, width: 1000, right: 1000 });
+    expect(split.ratio).toBe(300);
+    key('ArrowLeft');
+    expect(split.ratio).toBe(316);
+    expect(split.separatorProps['aria-valuetext']).toBe('test 316 pixels');
+  });
+});

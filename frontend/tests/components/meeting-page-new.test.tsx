@@ -72,6 +72,14 @@ test('a new meeting shows Start, the audio line, languages and prep material', a
   for (const gone of ['Test Mic', 'Auto Detect may produce']) expect(t).not.toContain(gone);
 });
 
+test('the form and prep columns have a keyboard-resizable handle', async () => {
+  const r = await mountNew();
+  const sep = r.root.findByProps({ role: 'separator' });
+  expect(sep.props['aria-valuenow']).toBe(50);
+  await act(async () => { sep.props.onKeyDown({ key: 'ArrowRight', preventDefault() {} }); });
+  expect(r.root.findByProps({ role: 'separator' }).props['aria-valuenow']).toBe(55);
+});
+
 test('Start recording comes before the audio line, languages and prep', async () => {
   const t = text(await mountNew());
   const at = (x: string) => t.indexOf(x);

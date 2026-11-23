@@ -69,10 +69,12 @@ export function useDigest(id: string | null): { state: DigestState; digest: Dige
 const CHIP = 'inline-block max-w-[28ch] truncate rounded border px-2 py-0.5 align-middle text-xs';
 const CHIP_LINK = `${CHIP} border-primary/35 bg-primary/10 text-foreground hover:bg-primary/20`;
 
-export function MeetingChip({ meeting, from }: { meeting: { id: string; title: string }; from: Origin }) {
-  if (!meeting.id) return <span title={meeting.title} className={`${CHIP} border-border text-muted-foreground`}>{meeting.title}</span>;
+/** `fill` lets the chip grow to its container (the rail); the default stays compact for inline use. */
+export function MeetingChip({ meeting, from, fill }: { meeting: { id: string; title: string }; from: Origin; fill?: boolean }) {
+  const wide = fill ? ' !block !max-w-full' : '';
+  if (!meeting.id) return <span title={meeting.title} className={`${CHIP} border-border text-muted-foreground${wide}`}>{meeting.title}</span>;
   return (
-    <Link href={meetingHref({ id: meeting.id })} title={meeting.title} onClick={() => rememberOrigin(from)} className={CHIP_LINK}>
+    <Link href={meetingHref({ id: meeting.id })} title={meeting.title} onClick={() => rememberOrigin(from)} className={CHIP_LINK + wide}>
       {meeting.title}
     </Link>
   );

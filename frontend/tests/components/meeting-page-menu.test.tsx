@@ -127,10 +127,9 @@ test('a folder warning is shown and the delete still completes', async () => {
   await m.close();
 });
 
-test('category change on a finished meeting offers Regenerate, never regenerates by itself', async () => {
-  let regenerated = null as string | null;
+test('category change on a finished meeting only saves it: no summary run, no toast to regenerate', async () => {
   let changed = null as MeetingRow | null;
-  const m = await mount({ finished: true, onChange: (r) => { changed = r; }, onRegenerateSummary: (id) => { regenerated = id; } });
+  const m = await mount({ finished: true, onChange: (r) => { changed = r; } });
   const select = m.host.querySelector('select[aria-label="Category"]') as HTMLSelectElement;
   await act(async () => {
     const setter = Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, 'value')!.set!;
@@ -140,11 +139,7 @@ test('category change on a finished meeting offers Regenerate, never regenerates
   expect(calls.find(([c]) => c === 'api_set_meeting_template')?.[1]).toEqual({ meetingId: 'm1', templateId: 'one' });
   expect(calls.some(([c]) => c === 'api_process_transcript')).toBe(false);
   expect(changed!.templateId).toBe('one');
-  const toast = toasts.find(([, , o]) => JSON.stringify(o ?? {}).includes('Regenerate summary with 1:1'));
-  expect(toast).toBeTruthy();
-  expect(regenerated).toBeNull();
-  await act(async () => { (toast![2] as { action: { onClick: () => void } }).action.onClick(); });
-  expect(regenerated).toBe('one');
+  expect(toasts.length).toBe(0);
   await m.close();
 });
 

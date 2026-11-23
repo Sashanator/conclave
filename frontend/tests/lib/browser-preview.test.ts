@@ -25,7 +25,7 @@ describe('browser preview mocks', () => {
   });
   test('saving a provider key answers null, dictate settings exist', () => {
     expect(h.api_save_provider_key({ provider: 'openai', apiKey: 'k' })).toBeNull();
-    expect((h.dictate_get_settings({}) as any).dictionary).toEqual(['Conclave']);
+    expect((h.dictate_get_settings({}) as any).dictionary).toContain('Conclave');
   });
   test('preview-new has no times and preview-1 has the 📝 template', () => {
     const rows = h.api_list_meeting_rows({}) as any[];

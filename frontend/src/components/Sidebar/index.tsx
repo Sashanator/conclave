@@ -7,6 +7,7 @@ import { getVersion } from '@tauri-apps/api/app';
 import { invoke } from '@tauri-apps/api/core';
 import { listen } from '@tauri-apps/api/event';
 import { useSidebar } from './SidebarProvider';
+import { SplitHandle, useSplitRatio } from '@/hooks/useSplitRatio';
 import type { TaskRow } from '@/lib/tasks';
 import { TASKS_CHANGED_EVENT, toReviewCount } from '@/lib/tasks-queue';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -30,6 +31,9 @@ const Sidebar: React.FC = () => {
     if (await confirmLeave()) router.push(href);
   };
   const { collapsed, toggleCollapsed } = useSidebar();
+  const split = useSplitRatio({ storageKey: 'conclave.sidebar.width', defaultRatio: 256, min: 200, max: 400, label: 'sidebar', px: 'start' });
+  // MainContent reads this to keep its left margin equal to the sidebar.
+  useEffect(() => { document.documentElement.style.setProperty('--sidebar-w', `${split.ratio}px`); }, [split.ratio]);
   const { isRecording, liveMeetingId, activeDuration } = useRecordingState();
   const { openImportDialog } = useImportDialog();
   const [version, setVersion] = useState<string | null>(null);
@@ -113,11 +117,12 @@ const Sidebar: React.FC = () => {
   };
 
   return (
-    <div className="fixed top-0 left-0 h-screen z-40">
+    <div ref={split.containerRef} {...split.containerHandlers} className="fixed top-0 left-0 h-screen z-40">
       <TooltipProvider>
         <nav
           aria-label="Main"
-          className={`h-screen bg-background border-r shadow-sm flex flex-col gap-1 overflow-y-auto p-2 pt-6 transition-all duration-300 ${collapsed ? 'w-16' : 'w-64'}`}
+          className={`h-screen bg-background border-r shadow-sm flex flex-col gap-1 overflow-y-auto p-2 pt-6 ${split.dragging ? '' : 'transition-all duration-300'} ${collapsed ? 'w-16' : ''}`}
+          style={collapsed ? undefined : { width: split.ratio }}
         >
           {row(
             recordLabel(isRecording, activeDuration),
@@ -150,6 +155,7 @@ const Sidebar: React.FC = () => {
             {row(collapsed ? 'Expand sidebar' : 'Collapse sidebar', collapsed ? <PanelLeftOpen className="w-5 h-5 shrink-0" /> : <PanelLeftClose className="w-5 h-5 shrink-0" />, toggleCollapsed, { hint: 'Ctrl B' })}
           </div>
         </nav>
+        {!collapsed && <div className="absolute inset-y-0 -right-1 flex"><SplitHandle {...split.separatorProps} /></div>}
       </TooltipProvider>
     </div>
   );

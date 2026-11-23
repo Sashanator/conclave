@@ -50,6 +50,8 @@ const mk = (id: string, p: Partial<MeetingRow> = {}): MeetingRow => ({
   calendarStart: null, calendarEnd: null, calendarCancelledAt: null, hasTranscript: false, hasSummary: false, prepPoints: 0, hasPrep: false, ...p,
 });
 const soon = new Date(Date.now() + 3600_000).toISOString();
+const future = '2026-11-18T13:00:00.000Z'; // after the pinned 16/17 Nov clocks
+const pinnedRows = () => fixture.map((r) => (r.calendarStart === soon ? { ...r, calendarStart: future } : r));
 const fixture = [
   mk('done1', { hasTranscript: true, hasSummary: true, startedAt: '2026-11-16 10:00:00+00:00' }),
   mk('done2', { hasTranscript: true, hasSummary: true, reviewed: true, startedAt: '2026-11-15 10:00:00+00:00' }),
@@ -446,6 +448,7 @@ describe('meetings table', () => {
     beforeEach(async () => { // the All view groups by category, which hides that column
       localStorage.setItem('conclave.meetingsView', 'week');
       setSystemTime(new Date('2026-11-16T12:00:00Z'));
+      rowsImpl = pinnedRows;
       await mount();
     });
     afterEach(() => setSystemTime());
@@ -476,7 +479,7 @@ describe('meetings table', () => {
       sessionStorage.clear();
       localStorage.setItem('conclave.meetingsView', 'week');
       setSystemTime(new Date(today)); // only today's day group starts open
-      rowsImpl = () => fixture.map((r) => (r.id === 'missed' ? { ...r, calendarStart: '2026-11-16T09:00:00+00:00', createdAt: '2026-11-16 09:00:00+00:00' } : r));
+      rowsImpl = () => pinnedRows().map((r) => (r.id === 'missed' ? { ...r, calendarStart: '2026-11-16T09:00:00+00:00', createdAt: '2026-11-16 09:00:00+00:00' } : r));
       await mount();
     };
     afterEach(() => setSystemTime());

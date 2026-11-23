@@ -101,27 +101,54 @@ function shapeProblem(p: HotkeyParts): string | null {
   return null;
 }
 
-// Main first, then the built-in hotkeys and the custom modes; a blank optional hotkey means none
-export function hotkeyProblem(s: DictateSettings): string | null {
-  const hotkeys = [s.main_hotkey, ...BUILT_IN_IDS.map((id) => s.builtin_hotkeys[id]), ...s.modes.map((m) => m.hotkey)];
-  const seen = new Set<string>();
-  for (const [i, text] of hotkeys.entries()) {
-    if (i > 0 && !text?.trim()) continue;
-    const parts = hotkeyToParts(text ?? '');
+// Main first, then the built-in hotkeys and the custom modes; a blank optional hotkey means none.
+// `editing` (main, a built-in id or a mode id) is the binding being changed: a clash names the other one.
+export function hotkeyProblem(s: DictateSettings, editing?: string): string | null {
+  const bindings = [
+    { id: 'main', name: 'the main hotkey', text: s.main_hotkey },
+    ...BUILT_IN_MODES.map((m) => ({ id: m.id, name: m.name, text: s.builtin_hotkeys[m.id] })),
+    ...s.modes.map((m) => ({ id: m.id, name: m.name, text: m.hotkey })),
+  ];
+  const seen = new Map<string, string>();
+  for (const [i, b] of bindings.entries()) {
+    if (i > 0 && !b.text?.trim()) continue;
+    const parts = hotkeyToParts(b.text ?? '');
     const problem = shapeProblem(parts);
     if (problem) return problem;
     const combo = hotkeyFromParts(parts);
-    if (seen.has(combo)) return `'${combo}' is already used by another hotkey`;
-    seen.add(combo);
+    const owner = seen.get(combo);
+    if (owner !== undefined) {
+      const other = b.id === editing ? bindings.find((x) => x.id === owner)!.name : b.name;
+      return `'${combo}' is already used by ${other}`;
+    }
+    seen.set(combo, b.id);
   }
+  return null;
+}
+
+// The key of a keyboard event the backend accepts (A-Z, 0-9, F1-F24, Space), else null. Windows virtual
+// keys follow the layout, so a Latin letter comes from `key` (QWERTZ Y/Z); other layouts (Russian) fall back to `code`.
+export function keyFromCode(code: string, key?: string): string | null {
+  if (key && /^[a-zA-Z]$/.test(key)) return key.toUpperCase();
+  const m = /^(?:Key([A-Z])|Digit(\d)|F([1-9]|1\d|2[0-4]))$/.exec(code);
+  if (m) return m[1] ?? m[2] ?? `F${m[3]}`;
+  return code === 'Space' ? 'Space' : null;
+}
+
+// Why a word would be ignored, or null when it can be added (an empty one is ignored without a reason)
+export function wordProblem(words: string[], word: string): string | null {
+  const w = word.trim();
+  if (w === '') return null;
+  if (Array.from(w).length > MAX_WORD_CHARS) return `Words can be at most ${MAX_WORD_CHARS} characters`;
+  if (words.some((x) => x.toLowerCase() === w.toLowerCase())) return `"${w}" is already in the dictionary`;
+  if (words.length >= MAX_WORDS) return `The dictionary is full (${MAX_WORDS} words)`;
   return null;
 }
 
 // Trims, then ignores empty, over-long and duplicate (case-insensitive) words. Returns the same array when ignored.
 export function addWord(words: string[], word: string): string[] {
   const w = word.trim();
-  if (w === '' || Array.from(w).length > MAX_WORD_CHARS || words.length >= MAX_WORDS) return words;
-  if (words.some((x) => x.toLowerCase() === w.toLowerCase())) return words;
+  if (w === '' || wordProblem(words, w)) return words;
   return [...words, w];
 }
 

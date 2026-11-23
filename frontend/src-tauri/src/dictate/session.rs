@@ -290,8 +290,6 @@ static CAPTURING: AtomicBool = AtomicBool::new(false);
 /// The microphone preference the last reopen acted on (the bare device name, or None for no preference).
 /// None outside: no reopen has run yet.
 static REQUESTED: Mutex<Option<Option<String>>> = Mutex::new(None);
-/// Dictation's language policy, kept between dictations. Taken out while a dictation uses it.
-static DICTATE_POLICY: Mutex<Option<LanguagePolicy>> = Mutex::new(None);
 static LAST: Mutex<Option<LastDictation>> = Mutex::new(None);
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -590,15 +588,6 @@ fn speech_secs(a16: &[f32]) -> f32 {
     }
 }
 
-/// Takes the language policy out for one dictation, rebuilt when the allowed languages changed.
-fn take_policy() -> LanguagePolicy {
-    let allowed = get_allowed_languages_internal();
-    match lock(&DICTATE_POLICY).take() {
-        Some(policy) if policy.allowed() == allowed.as_slice() => policy,
-        _ => LanguagePolicy::new(allowed),
-    }
-}
-
 /// The LLM for cleanup: the cleanup provider and model if both are set, else the summary provider and model.
 async fn cleanup_target<R: Runtime>(app: &AppHandle<R>) -> Result<LlmTarget, String> {
     let state = app.try_state::<AppState>().ok_or("no database")?;
@@ -681,7 +670,8 @@ async fn process<R: Runtime>(
         nothing_heard(&app, &mode_id, epoch);
         return;
     };
-    let mut policy = take_policy();
+    // Fresh per dictation: a language kept from an earlier one made Whisper write English speech in Russian.
+    let mut policy = LanguagePolicy::new(get_allowed_languages_internal());
     let outcome = engine
         .transcribe_audio_with_confidence(
             a16,
@@ -690,7 +680,7 @@ async fn process<R: Runtime>(
             None,
         )
         .await;
-    *lock(&DICTATE_POLICY) = Some(policy);
+    info!("dictate: language {}", policy.current().unwrap_or("undecided"));
     let text = match outcome {
         Ok((text, _, _, _)) => text.trim().to_string(),
         Err(_) => {

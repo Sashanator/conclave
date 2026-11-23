@@ -36,7 +36,7 @@ export function LiveTranscriptAndNotes({ children, tabbed = false, meetingId, ..
       .catch((error) => { if (active) toast.error(`Failed to load Prep: ${String(error)}`); });
     return () => { active = false; };
   }, [meetingId, isRecording, uid, start]);
-  const split = useSplitRatio({ storageKey: 'conclave.live.transcriptRatio', defaultRatio: 0.6, min: 0.4, max: 0.8, label: 'transcript and notes' });
+  const split = useSplitRatio({ storageKey: 'conclave.live.transcriptRatio', defaultRatio: 0.6, min: 0.4, max: 0.8, label: 'transcript and notes', gutter: 8 });
   const notesPane = (
     <div className="flex min-h-0 min-w-0 flex-1 flex-col bg-background">
       {!tabbed && <h2 className="border-b border-border px-3 py-2 text-sm font-medium text-foreground">My notes</h2>}

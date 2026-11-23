@@ -70,9 +70,9 @@ function DigestsContent() {
   const rail = state === 'ready' && digest && (
     <section aria-labelledby="digest-meetings" className="space-y-2">
       <h2 id="digest-meetings" className="text-sm font-medium text-muted-foreground">Meetings in this digest</h2>
-      <div className="flex flex-col items-start gap-2">
+      <div className="flex flex-col gap-2">
         {digest.meetingLinks.map((m, i) => (
-          <MeetingChip key={`${m.id}-${i}`} meeting={m} from={from} />
+          <MeetingChip key={`${m.id}-${i}`} meeting={m} from={from} fill />
         ))}
       </div>
     </section>

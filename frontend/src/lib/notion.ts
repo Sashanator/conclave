@@ -2,7 +2,7 @@
 export type FixedKind = 'select' | 'status' | 'multi_select' | 'checkbox';
 export type FixedValue = { prop: string; kind: FixedKind; value: string | string[] | boolean };
 /** Every field holds a Notion property NAME. */
-export type Mapping = { titleProp: string; dueProp: string | null; meetingProp: string | null; fixed: FixedValue[] };
+export type Mapping = { titleProp: string; dueProp: string | null; meetingProp: string | null; fixed: FixedValue[]; emoji?: string | null; aiFill?: boolean };
 
 export type DestState = 'connected' | 'not_shared' | 'not_found' | 'token_missing' | 'token_rejected' | 'mapping_broken' | 'offline';
 
@@ -22,7 +22,7 @@ export type DbSchema = { databaseId: string; dataSourceId: string | null; title:
 export type DestStatus = { destId: string; state: DestState; message: string | null };
 export type CategoryDefault = { templateKey: string; destId: string | null };
 export type NotionConfig = { tokenLast4: string | null; destinations: Destination[]; categoryDefaults: CategoryDefault[] };
-export type SendReport = { sent: number; failed: number; ambiguous: number };
+export type SendReport = { sent: number; failed: number; ambiguous: number; aiNotFilled?: string[] };
 
 export const MAX_DESTINATIONS = 9;
 /** A task for a destination in one of these states waits; `offline` does not block (the send just fails again). */

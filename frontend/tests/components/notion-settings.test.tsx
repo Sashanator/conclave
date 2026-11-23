@@ -85,7 +85,7 @@ test('add database: read columns, map Due and Status, save', async () => {
   await click('Save');
   expect(calls.find((c) => c[0] === 'notion_save_destination')).toEqual(['notion_save_destination', { dest: {
     id: '', name: 'Job tasks', colour: 3, position: 2, databaseId: 'abc-def', dataSourceId: 'ds1',
-    mapping: { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'To do' }] }, lastStatus: null, lastMessage: null } }]);
+    mapping: { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'To do' }], emoji: null, aiFill: true }, lastStatus: null, lastMessage: null } }]);
 });
 
 test('Add database is disabled at nine destinations', async () => {
@@ -131,7 +131,18 @@ test('editing: a changed link needs Read columns; Read columns keeps the saved c
   await click('Read columns');
   await click('Save');
   expect(calls.find((c) => c[0] === 'notion_save_destination')![1].dest.mapping).toEqual(
-    { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'Done' }] });
+    { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'Done' }], emoji: null, aiFill: true });
+});
+
+test('editing without Read columns saves the emoji and the AI switch', async () => {
+  cfg.destinations = [dest('d-job', 0, { mapping: { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'Done' }] } })];
+  await render();
+  await act(async () => { r.root.findByProps({ 'aria-label': 'Edit d-job' }).props.onClick(); });
+  await typeIn('Page icon', '👷');
+  await act(async () => { r.root.findByProps({ 'aria-label': 'Let AI fill the other columns' }).props.onCheckedChange(false); });
+  await click('Save');
+  expect(calls.find((c) => c[0] === 'notion_save_destination')![1].dest.mapping).toEqual(
+    { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Status', kind: 'status', value: 'Done' }], emoji: '👷', aiFill: false });
 });
 
 test('a link changed after Read columns needs Read columns again; Save does not save the old database', async () => {

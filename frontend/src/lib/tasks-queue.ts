@@ -83,7 +83,12 @@ export const sendButtonLabel = (n: number, sending: boolean) => (sending ? 'Send
 export function resultLine(r: SendReport): { sent: string | null; notSent: string | null; aiNote: string | null } {
   const bad = r.failed + r.ambiguous;
   return { sent: r.sent > 0 ? `Sent ${r.sent} to Notion` : null, notSent: bad > 0 ? `${bad} not sent, see To review` : null,
-    aiNote: r.aiNotFilled?.length ? `AI couldn't fill the other columns (${r.aiNotFilled.join(', ')}).` : null };
+    aiNote: r.aiNotFilled?.length ? `AI couldn't fill the other columns (${aiNotFilledList(r.aiNotFilled)}).` : null };
+}
+
+/** Entries are "<db>" or "<db>: <reason>"; a bare name is dropped when a reason for it exists. */
+function aiNotFilledList(entries: string[]): string {
+  return entries.filter((e) => !entries.some((o) => o !== e && o.startsWith(`${e}: `))).join('; ');
 }
 
 /** After a reload, the row to focus: the wanted one, else the next surviving one, else the previous one. */

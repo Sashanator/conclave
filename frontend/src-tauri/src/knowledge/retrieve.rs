@@ -104,6 +104,10 @@ pub async fn retrieve(pool: &SqlitePool, plan: &SearchPlan, scope: Option<&[Stri
         filter_only(pool, &meetings, &filters, &mut col, &mut lines).await?;
     } else {
         keyword_matches(pool, &keywords, &meetings, &filters, &mut col, &mut lines).await?;
+        // Inflected or follow-up wording may not occur literally; a scope still shows its summaries
+        if scope.is_some() && col.scored.is_empty() {
+            filter_only(pool, &meetings, &filters, &mut col, &mut lines).await?;
+        }
     }
 
     // Score: distinct keywords found in the text or that led to the excerpt
@@ -218,12 +222,14 @@ async fn filter_only(
     col: &mut Collector,
     lines: &mut HashMap<String, Lines>,
 ) -> Result<(), sqlx::Error> {
+    // A single meeting may use the whole budget, so the end of a long summary is not lost
+    let share = if meetings.len() == 1 { ASK_MAX_EXCERPT_CHARS } else { SUMMARY_SHARE_CHARS };
     for (meeting_id, meta) in meetings {
         let Some(md) = meta.summary.as_deref() else { continue };
         if !filters.meeting_ok(meta) || !filters.person_in_meeting(meeting_id, meta) {
             continue;
         }
-        col.add(excerpt_of(meeting_id, meta, "summary", cut_chars(md, SUMMARY_SHARE_CHARS)), meta.when, &[]);
+        col.add(excerpt_of(meeting_id, meta, "summary", cut_chars(md, share)), meta.when, &[]);
     }
     for (meeting_id, idxs) in &filters.speakers {
         let Some(meta) = meetings.get(meeting_id) else { continue };
@@ -642,6 +648,32 @@ mod tests {
         let hits = retrieve(&pool, &SearchPlan::default(), Some(scope.as_slice())).await.unwrap();
         assert!(!hits.is_empty());
         assert!(hits.iter().all(|h| h.meeting_id == id_a));
+    }
+
+    #[tokio::test]
+    async fn scope_falls_back_to_summary_when_keywords_miss() {
+        let pool = test_pool().await;
+        let long = format!("Занятие закончилось отработкой мягкой конфронтации и домашним заданием. {}", "я".repeat(3000));
+        let id_a = meeting(&pool, "A", "2026-10-05", vec![seg("Обсудили бюджет", 0.0, None)]).await;
+        summary(&pool, &id_a, "standard_meeting", "Standard meeting", &long).await;
+        let id_b = meeting(&pool, "B", "2026-10-06", vec![seg("Другое", 0.0, None)]).await;
+        summary(&pool, &id_b, "standard_meeting", "Standard meeting", "Итоги B").await;
+        let scope = vec![id_a.clone()];
+        // Inflected keywords and a follow-up with no usable words both miss literally
+        for kws in [&["домашнее задание"][..], &["домашнее"][..]] {
+            let hits = retrieve(&pool, &plan(kws), Some(scope.as_slice())).await.unwrap();
+            assert_eq!(hits.len(), 1);
+            assert_eq!(hits[0].meeting_id, id_a);
+            assert_eq!(hits[0].source, "summary");
+            // The single meeting keeps more than its 1/30 share
+            assert!(hits[0].text.chars().count() > SUMMARY_SHARE_CHARS);
+        }
+        let hits = retrieve(&pool, &SearchPlan::default(), Some(scope.as_slice())).await.unwrap();
+        assert_eq!(hits.len(), 1);
+        // Unscoped, a miss stays empty
+        assert!(retrieve(&pool, &plan(&["домашнее"]), None).await.unwrap().is_empty());
+        // An empty scope has nothing to show
+        assert!(retrieve(&pool, &plan(&["домашнее"]), Some(&[])).await.unwrap().is_empty());
     }
 
     #[tokio::test]

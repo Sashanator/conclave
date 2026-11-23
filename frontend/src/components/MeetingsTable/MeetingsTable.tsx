@@ -12,7 +12,8 @@ import { useRecordingState } from '@/contexts/RecordingStateContext';
 import { useTemplates } from '@/hooks/meeting-details/useTemplates';
 import { useMeetingRows } from '@/hooks/useMeetingRows';
 import { useMeetingViews } from '@/hooks/useMeetingViews';
-import { arrangeRows, defaultCollapsed, effectiveHidden, parseViewConfig, readViewUi, saveViewUi, type SortId, type ViewUi } from '@/lib/meeting-views';
+import { useShowUnrecorded } from '@/lib/calendar-pref';
+import { arrangeRows, defaultCollapsed, effectiveHidden, isUnrecordedCalendarRow, parseViewConfig, readViewUi, saveViewUi, type SortId, type ViewUi } from '@/lib/meeting-views';
 import { rememberOrigin } from '@/lib/back-nav';
 import { meetingHref } from '@/lib/meeting-target';
 import { moveSelection, tableKeyAction } from '@/lib/meetings-keys';
@@ -39,6 +40,9 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const { views, active, config, dispatch, addView, renameView, removeView, setActive } = useMeetingViews();
   const { availableTemplates } = useTemplates();
   const { rows, loaded, error, reload, liveId, toggleReviewed, changeTemplate, removeMeeting } = useMeetingRows(availableTemplates);
+  const [showUnrecorded] = useShowUnrecorded();
+  // Filtered here so the sections and the tab counts agree; search keeps the full `rows`.
+  const shownRows = useMemo(() => (showUnrecorded ? rows : rows.filter((r) => !isUnrecordedCalendarRow(r))), [rows, showUnrecorded]);
   const { activeDuration } = useRecordingState();
   const [now, setNow] = useState(() => new Date());
   useEffect(() => { setNow(new Date()); }, [rows]); // every reload, so Today and Tomorrow roll over
@@ -55,8 +59,8 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   const hits = found ? found.hits : undefined;
 
   const sections = useMemo(
-    () => arrangeRows(rows, config, { liveId, now, templates: availableTemplates }),
-    [rows, config, liveId, now, availableTemplates],
+    () => arrangeRows(shownRows, config, { liveId, now, templates: availableTemplates }),
+    [shownRows, config, liveId, now, availableTemplates],
   );
   const data = useMemo(() => sections.flatMap((s) => s.rows), [sections]);
   // Groups the user flipped away from their default; a day that appears later gets its default.
@@ -94,8 +98,8 @@ export function MeetingsTable({ onAsk, onScopeChange }: {
   }), [sections, defaults, flipped, config.group, availableTemplates]);
 
   const counts = useMemo(() => Object.fromEntries(views.map((v) => [v.id,
-    arrangeRows(rows, parseViewConfig(v.id, v.configJson), { liveId, now, templates: availableTemplates }).reduce((n, s) => n + s.rows.length, 0)])),
-  [views, rows, liveId, now, availableTemplates]);
+    arrangeRows(shownRows, parseViewConfig(v.id, v.configJson), { liveId, now, templates: availableTemplates }).reduce((n, s) => n + s.rows.length, 0)])),
+  [views, shownRows, liveId, now, availableTemplates]);
 
   const markOrigin = useCallback(() => rememberOrigin({ path: '/', label: `Meetings / ${active?.name ?? 'All meetings'}` }), [active?.name]);
   const newMeeting = useCallback(async () => {

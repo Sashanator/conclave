@@ -6,6 +6,8 @@ import { invoke } from "@tauri-apps/api/core"
 import { useConfig } from "@/contexts/ConfigContext"
 import { useTheme } from "@/contexts/ThemeContext"
 import { parseThemePreference } from "@/lib/theme"
+import { Switch } from "@/components/ui/switch"
+import { useShowUnrecorded } from "@/lib/calendar-pref"
 import { Button } from "@/components/ui/button"
 import { SettingsRow } from "@/components/Settings/SettingsRow"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
@@ -17,6 +19,7 @@ export function PreferenceSettings() {
     loadPreferences
   } = useConfig();
   const { preference, setPreference } = useTheme();
+  const [showUnrecorded, setShowUnrecorded] = useShowUnrecorded();
 
   // Lazy load preferences on mount (only loads if not already cached)
   useEffect(() => {
@@ -60,6 +63,10 @@ export function PreferenceSettings() {
             <SelectItem value="conclave">Conclave</SelectItem>
           </SelectContent>
         </Select>
+      </SettingsRow>
+
+      <SettingsRow label="Show calendar events I didn't record" helper="Off hides upcoming and never-recorded events from the Meetings table" htmlFor="show-unrecorded">
+        <Switch id="show-unrecorded" aria-label="Show calendar events I didn't record" checked={showUnrecorded} onCheckedChange={setShowUnrecorded} />
       </SettingsRow>
 
       <SettingsRow

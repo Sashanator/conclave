@@ -3,6 +3,7 @@
 
 pub mod capture;
 pub mod cleanup;
+pub mod live;
 pub mod mute;
 pub mod pill;
 pub mod session;

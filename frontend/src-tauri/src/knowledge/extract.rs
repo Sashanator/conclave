@@ -239,7 +239,7 @@ fn clipped(items: Vec<String>) -> Vec<String> {
         .collect()
 }
 
-fn strip_fence(s: &str) -> &str {
+pub(crate) fn strip_fence(s: &str) -> &str {
     let Some(rest) = s.strip_prefix("```") else {
         return s;
     };
@@ -356,7 +356,7 @@ pub(crate) async fn run_one(pool: &SqlitePool, meeting_id: &str) -> Result<(), S
 }
 
 /// Resolves the knowledge model and makes one completion. Target errors are user-facing; call errors are not shown.
-async fn call_model(pool: SqlitePool, system: String, user: String) -> Result<Reply, String> {
+pub(crate) async fn call_model(pool: SqlitePool, system: String, user: String) -> Result<Reply, String> {
     let target = settings::target(&pool).await?;
     // The local sidecar cannot be cancelled, so a timed-out call would leave it busy (as copilot and Dictate do).
     if target.provider == LLMProvider::BuiltInAI {

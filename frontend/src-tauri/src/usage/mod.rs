@@ -24,6 +24,7 @@ pub(crate) enum Purpose {
     ConnectionTest,
     Prep,
     TemplateAssist,
+    NotionFill,
 }
 
 impl Purpose {
@@ -40,6 +41,7 @@ impl Purpose {
             Purpose::ConnectionTest => "connection_test",
             Purpose::Prep => "prep",
             Purpose::TemplateAssist => "template_assist",
+            Purpose::NotionFill => "notion_fill",
         }
     }
 }
@@ -161,6 +163,7 @@ mod tests {
         assert_eq!(Purpose::Ask.as_str(), "ask");
         assert_eq!(Purpose::Prep.as_str(), "prep");
         assert_eq!(Purpose::TemplateAssist.as_str(), "template_assist");
+        assert_eq!(Purpose::NotionFill.as_str(), "notion_fill");
     }
 
     #[tokio::test]

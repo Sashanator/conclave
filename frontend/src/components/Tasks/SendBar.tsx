@@ -3,7 +3,7 @@
 import { Button } from '@/components/ui/button';
 import { sendButtonLabel, type SendSummary } from '@/lib/tasks-queue';
 
-export type SendResult = { sent: string | null; notSent: string | null; error?: string };
+export type SendResult = { sent: string | null; notSent: string | null; aiNote?: string | null; error?: string };
 
 export function SendBar(p: { summary: SendSummary; sending: boolean; result: SendResult | null; onSend(): void; onView(): void }) {
   const { summary: s, result: r } = p;
@@ -23,6 +23,7 @@ export function SendBar(p: { summary: SendSummary; sending: boolean; result: Sen
           {r?.error && <span className="text-destructive">{r.error}</span>}
           {r?.sent && <span className="text-emerald-700 dark:text-emerald-400">{r.sent} <button type="button" className="underline" onClick={p.onView}>View</button></span>}
           {r?.notSent && <span className={`${amber} ${r.sent ? 'ml-2' : ''}`}>{r.notSent}</span>}
+          {r?.aiNote && <span className={`${amber} ${r.sent || r.notSent ? 'ml-2' : ''}`}>{r.aiNote}</span>}
         </span>
         <Button type="button" disabled={p.sending || n === 0} onClick={p.onSend}>{sendButtonLabel(n, p.sending)}</Button>
       </div>

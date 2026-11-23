@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
+import { Switch } from '@/components/ui/switch';
 import { SettingsRow, useSavedTick } from '@/components/Settings/SettingsRow';
 import { confirmAction } from '@/lib/confirm';
 import {
@@ -17,7 +18,7 @@ const Dot = ({ colour }: { colour: number }) => (
   <i aria-hidden="true" className="inline-block h-2 w-2 shrink-0 rounded-full ring-1 ring-border" style={{ background: `hsl(var(--db-${colour}))` }} />
 );
 
-type Form = { id: string; colour: number; position: number; old: Destination | null; name: string; link: string; schema: DbSchema | null; due: string; meeting: string; fixed: Record<string, string> };
+type Form = { id: string; colour: number; position: number; old: Destination | null; name: string; link: string; schema: DbSchema | null; due: string; meeting: string; fixed: Record<string, string>; emoji: string; aiFill: boolean };
 
 export function NotionSettings() {
   const [cfg, setCfg] = useState<NotionConfig | null>(null);
@@ -79,7 +80,7 @@ export function NotionSettings() {
 
   const openForm = (d: Destination | null) => {
     setFormErr(null);
-    setForm({ id: d?.id ?? '', colour: d?.colour ?? nextColour(dests), position: d?.position ?? dests.length, old: d, name: d?.name ?? '', link: d ? notionDbUrl(d.databaseId) : '', schema: null, due: '', meeting: '', fixed: {} });
+    setForm({ id: d?.id ?? '', colour: d?.colour ?? nextColour(dests), position: d?.position ?? dests.length, old: d, name: d?.name ?? '', link: d ? notionDbUrl(d.databaseId) : '', schema: null, due: '', meeting: '', fixed: {}, emoji: d?.mapping.emoji ?? '', aiFill: d?.mapping.aiFill ?? true });
   };
   const readColumns = async () => {
     if (!form) return;
@@ -113,7 +114,7 @@ export function NotionSettings() {
       const kind = p.kind as FixedKind;
       fixed.push({ prop: p.name, kind, value: kind === 'checkbox' ? v === 'true' : kind === 'multi_select' ? [v] : v });
     }
-    return { titleProp: c.title.name, dueProp: f.due || null, meetingProp: f.meeting || null, fixed };
+    return { titleProp: c.title.name, dueProp: f.due || null, meetingProp: f.meeting || null, fixed, emoji: f.emoji.trim() || null, aiFill: f.aiFill };
   };
   const saveForm = async () => {
     if (!form || savingRef.current || linkChanged) return; // a changed link needs Read columns first
@@ -121,7 +122,7 @@ export function NotionSettings() {
     const base = form.old;
     if (!base && !m) return;
     const dest: Destination = base && !m
-      ? { ...base, name: form.name.trim() }
+      ? { ...base, name: form.name.trim(), mapping: { ...base.mapping, emoji: form.emoji.trim() || null, aiFill: form.aiFill } }
       : { id: form.id, name: form.name.trim(), colour: form.colour, position: form.position, databaseId: form.schema!.databaseId, dataSourceId: form.schema!.dataSourceId, mapping: m!, lastStatus: null, lastMessage: null };
     savingRef.current = true;
     setSaving(true);
@@ -238,6 +239,14 @@ export function NotionSettings() {
                 {choices.unused.length > 0 && <p className="text-xs text-muted-foreground">Not used: {choices.unused.map((p) => p.name).join(', ')}</p>}
               </div>
             )}
+            <label className={field}>Page icon (emoji)<Input value={form.emoji} onChange={(e) => setForm({ ...form, emoji: e.target.value })} className="w-20" maxLength={16} /></label>
+            <div className="flex flex-col gap-1 text-sm">
+              <div className="flex items-center gap-2">
+                <Switch aria-label="Let AI fill the other columns" checked={form.aiFill} onCheckedChange={(v) => setForm({ ...form, aiFill: v })} />
+                <span>Let AI fill the other columns</span>
+              </div>
+              <p className="text-xs text-muted-foreground">AI fills the columns you leave unset (text, dates, choices, checkboxes, numbers, links) when you send. People, relations and files stay empty.</p>
+            </div>
             <Alert msg={formErr} />
             <div className="flex gap-2">
               <Button size="sm" onClick={saveForm} disabled={!canSave}>Save</Button>

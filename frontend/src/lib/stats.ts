@@ -62,6 +62,7 @@ export function formatTokens(n: number): string {
 // Plain labels for the purpose ids the usage recording writes. A Map, so ids like "constructor" stay unknown.
 const PURPOSE_LABELS = new Map<string, string>([
   ['summary', 'Summary'],
+  ['notion_fill', 'Notion columns'],
   ['template_pick', 'Template choice'],
   ['extraction', 'Task extraction'],
   ['copilot', 'Copilot'],

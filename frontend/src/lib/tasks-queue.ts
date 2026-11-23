@@ -80,9 +80,10 @@ export function sendSummary(tasks: TaskRow[], lookup: DestLookup): SendSummary {
 
 export const sendButtonLabel = (n: number, sending: boolean) => (sending ? 'Sending…' : n > 0 ? `Send ${n} to Notion` : 'Nothing to send');
 
-export function resultLine(r: SendReport): { sent: string | null; notSent: string | null } {
+export function resultLine(r: SendReport): { sent: string | null; notSent: string | null; aiNote: string | null } {
   const bad = r.failed + r.ambiguous;
-  return { sent: r.sent > 0 ? `Sent ${r.sent} to Notion` : null, notSent: bad > 0 ? `${bad} not sent, see To review` : null };
+  return { sent: r.sent > 0 ? `Sent ${r.sent} to Notion` : null, notSent: bad > 0 ? `${bad} not sent, see To review` : null,
+    aiNote: r.aiNotFilled?.length ? `AI couldn't fill the other columns (${r.aiNotFilled.join(', ')}).` : null };
 }
 
 /** After a reload, the row to focus: the wanted one, else the next surviving one, else the previous one. */

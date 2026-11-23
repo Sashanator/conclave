@@ -46,12 +46,22 @@ pub struct CustomMode {
     pub hotkey: Option<String>,
 }
 
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum LiveTextStyle {
+    #[default]
+    Panel,
+    Line,
+}
+
 #[derive(Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct DictateSettings {
     pub enabled: bool,
     /// None follows the microphone selected for Meetings.
     #[serde(default)]
     pub preferred_mic_device: Option<String>,
+    #[serde(default)]
+    pub live_text_style: LiveTextStyle,
     pub main_hotkey: String,
     pub default_mode: String,
     /// None means the same provider and model as summaries.
@@ -78,6 +88,7 @@ impl Default for DictateSettings {
         Self {
             enabled: false,
             preferred_mic_device: None,
+            live_text_style: LiveTextStyle::Panel,
             main_hotkey: DEFAULT_MAIN.display(),
             default_mode: CLEANED_UP_ID.to_string(),
             cleanup_provider: None,
@@ -107,6 +118,7 @@ pub fn sanitize(raw: Option<Value>) -> DictateSettings {
     let candidate = DictateSettings {
         enabled: field(&obj, "enabled", false),
         preferred_mic_device: field(&obj, "preferred_mic_device", None),
+        live_text_style: field(&obj, "live_text_style", LiveTextStyle::Panel),
         main_hotkey: field(&obj, "main_hotkey", DEFAULT_MAIN.display()),
         default_mode: field(&obj, "default_mode", CLEANED_UP_ID.to_string()),
         cleanup_provider: field(&obj, "cleanup_provider", None),
@@ -390,6 +402,7 @@ fn normalise(s: DictateSettings, strict: bool) -> Result<DictateSettings, String
     Ok(DictateSettings {
         enabled: s.enabled,
         preferred_mic_device: s.preferred_mic_device,
+        live_text_style: s.live_text_style,
         main_hotkey: main.display(),
         default_mode,
         cleanup_provider: optional_text(s.cleanup_provider),
@@ -506,6 +519,20 @@ mod tests {
 
     fn mode_json(id: &str, name: &str) -> Value {
         json!({"id": id, "name": name, "instructions": "Do it.", "examples": [], "hotkey": null})
+    }
+
+    #[test]
+    fn live_text_style_defaults_to_panel_and_round_trips() {
+        assert_eq!(sanitize(None).live_text_style, LiveTextStyle::Panel);
+        let mut raw = serde_json::to_value(DictateSettings::default()).unwrap();
+        assert_eq!(raw["live_text_style"], "panel");
+        raw.as_object_mut().unwrap().remove("live_text_style");
+        assert_eq!(serde_json::from_value::<DictateSettings>(raw.clone()).unwrap().live_text_style, LiveTextStyle::Panel);
+        raw["live_text_style"] = json!("line");
+        let saved = validate_for_save(&sanitize(Some(raw.clone()))).unwrap();
+        assert_eq!(saved.live_text_style, LiveTextStyle::Line);
+        raw["live_text_style"] = json!("sideways");
+        assert_eq!(sanitize(Some(raw)).live_text_style, LiveTextStyle::Panel);
     }
 
     #[test]

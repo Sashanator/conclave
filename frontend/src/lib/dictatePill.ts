@@ -1,3 +1,5 @@
+import type { LiveTextStyle } from '@/lib/dictate';
+
 // What the Dictate pill shows. The states and fields mirror PillState and PillView in dictate/pill.rs.
 
 export type PillState =
@@ -16,6 +18,9 @@ export interface PillView {
   elapsed_ms: number;
   level: number;
   mode: string;
+  committed?: string;
+  volatile?: string;
+  style: LiveTextStyle;
 }
 
 const COPY: Record<Exclude<PillState, 'hands-free'>, string> = {
@@ -52,4 +57,25 @@ export function pillTone(s: PillState): 'live' | 'busy' | 'ok' | 'warn' {
 
 export function showsControls(s: PillState): boolean {
   return s === 'hands-free';
+}
+
+// Rust omits text a view does not carry, so keep the previous text; an empty string clears it.
+export function mergeView(prev: PillView | null, next: PillView): PillView {
+  return {
+    ...next,
+    committed: next.committed ?? prev?.committed,
+    volatile: next.volatile ?? prev?.volatile,
+  };
+}
+
+export function hasText(v: PillView): boolean {
+  return !!(v.committed?.trim() || v.volatile?.trim());
+}
+
+// With live text on screen the timer replaces the "Listening" word.
+export function liveLabel(v: PillView): string {
+  if ((v.state === 'listening' || v.state === 'hands-free') && hasText(v)) {
+    return pillLabel({ ...v, state: 'hands-free' });
+  }
+  return pillLabel(v);
 }

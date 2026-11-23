@@ -87,6 +87,10 @@ impl ContinuousVadProcessor {
         })
     }
 
+    pub fn in_speech(&self) -> bool {
+        self.in_speech
+    }
+
     /// Process incoming audio samples and return any complete speech segments
     /// Handles resampling from input sample rate to 16kHz for VAD processing
     pub fn process_audio(&mut self, samples: &[f32]) -> Result<Vec<SpeechSegment>> {

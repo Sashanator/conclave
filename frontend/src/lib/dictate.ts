@@ -11,10 +11,13 @@ export interface CustomMode {
   hotkey: string | null;
 }
 
+export type LiveTextStyle = 'panel' | 'line';
+
 export interface DictateSettings {
   enabled: boolean;
   /** null follows the microphone selected for Meetings. */
   preferred_mic_device: string | null;
+  live_text_style: LiveTextStyle;
   main_hotkey: string;
   default_mode: string;
   /** null means the same provider and model as summaries. */

@@ -479,6 +479,12 @@ impl WhisperEngine {
     pub async fn is_model_loaded(&self) -> bool {
         self.current_context.read().await.is_some()
     }
+
+    /// True only when no Whisper call holds or waits for the inference lock (tokio's fair mutex
+    /// refuses try_lock while waiters are queued).
+    pub fn inference_idle(&self) -> bool {
+        self.inference_lock.try_lock().is_ok()
+    }
     
     // Enhanced function to clean repetitive text patterns and meaningless outputs
     fn clean_repetitive_text(text: &str) -> String {
@@ -2294,6 +2300,17 @@ mod tests {
         assert_eq!(prompt_to_apply(Some("Tauri.")), Some("Tauri."));
         // A NUL cannot cross into C, and tokenizing one would fail the whole chunk
         assert_eq!(prompt_to_apply(Some("Tau\0ri")), None);
+    }
+
+    #[tokio::test]
+    async fn inference_idle_is_false_while_a_call_holds_the_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let engine = WhisperEngine::new_with_models_dir(Some(dir.path().to_path_buf())).unwrap();
+        assert!(engine.inference_idle());
+        let held = engine.inference_lock.lock().await;
+        assert!(!engine.inference_idle());
+        drop(held);
+        assert!(engine.inference_idle());
     }
 
     #[tokio::test]

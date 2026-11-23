@@ -30,6 +30,7 @@ const placeholder = ({ placeholder: text }: { placeholder?: string }) => <>{text
 const BASE_SETTINGS: DictateSettings = {
   enabled: false,
   preferred_mic_device: null,
+  live_text_style: 'panel',
   main_hotkey: 'Ctrl+Win',
   default_mode: 'cleaned-up',
   cleanup_provider: null,
@@ -246,6 +247,16 @@ describe('Dictate page', () => {
     await act(async () => { microphone().props.onValueChange('same-as-meetings'); });
     await flush();
     expect(settings.preferred_mic_device).toBeNull();
+  });
+
+  test('Live text saves panel or one line', async () => {
+    const live = () => renderer!.root
+      .findAll((n) => n.props.onValueChange !== undefined && n.props.value !== undefined)
+      .find((n) => n.findAll((c) => c.props.id === 'dictate-live-text').length > 0)!;
+    expect(live().props.value).toBe('panel');
+    await act(async () => { live().props.onValueChange('line'); });
+    await flush();
+    expect(settings.live_text_style).toBe('line');
   });
 
   test('the dictionary note says the words are spelling hints for meeting summaries', () => {

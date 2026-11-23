@@ -52,7 +52,7 @@ describe('saveProviderKey', () => {
   });
 });
 
-const dictate = { enabled: true, preferred_mic_device: null, main_hotkey: 'Ctrl+Alt+D', default_mode: 'cleaned-up', cleanup_provider: 'groq', cleanup_model: null, builtin_hotkeys: {}, modes: [], dictionary: ['Conclave'] };
+const dictate = { enabled: true, preferred_mic_device: null, live_text_style: 'panel', main_hotkey: 'Ctrl+Alt+D', default_mode: 'cleaned-up', cleanup_provider: 'groq', cleanup_model: null, builtin_hotkeys: {}, modes: [], dictionary: ['Conclave'] };
 const copilot = { provider: 'claude', model: 'claude-sonnet-5-5', answer_language: 'de', alert_words: ['Sasha'] };
 const knowledge = { provider: null, model: null, my_names: ['Sasha'], extract_enabled: true, digest_enabled: false, calendar_host: 'cal.example', calendar_marker: '\u{1F4DE}' };
 const assist = { provider: 'openai', model: 'gpt-5', includeTranscript: true, hideEditHint: true };

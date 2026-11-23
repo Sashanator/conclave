@@ -6,7 +6,7 @@ import { cn } from '@/lib/utils';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { hotkeyProblem, withHotkey, type Commit, type DictateSettings, type DictateStatus } from '@/lib/dictate';
+import { hotkeyProblem, withHotkey, type Commit, type DictateSettings, type DictateStatus, type LiveTextStyle } from '@/lib/dictate';
 import { HotkeyPicker, KeyCaps } from './HotkeyPicker';
 
 export function DictateGeneral({ settings, status, commit }: { settings: DictateSettings; status: DictateStatus | null; commit: Commit }) {
@@ -82,6 +82,21 @@ export function DictateGeneral({ settings, status, commit }: { settings: Dictate
         {deviceError && <p role="alert" className="mt-1 text-sm text-destructive">{deviceError}</p>}
         {!loading && !deviceError && devices.length === 0 && <p className="mt-1 text-sm text-muted-foreground">No microphones found</p>}
         {missingMic && !loading && !deviceError && <p className="mt-1 text-sm text-muted-foreground">The selected microphone is unavailable. Dictate uses the default microphone until it returns.</p>}
+      </Row>
+
+      <Row label={<Label htmlFor="dictate-live-text">Live text</Label>} hint="How the words show while you speak. Takes effect on the next dictation.">
+        <Select
+          value={settings.live_text_style}
+          onValueChange={(v) => commit((s) => ({ ...s, live_text_style: v as LiveTextStyle }))}
+        >
+          <SelectTrigger id="dictate-live-text" aria-label="Live text">
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="panel">Panel</SelectItem>
+            <SelectItem value="line">One line</SelectItem>
+          </SelectContent>
+        </Select>
       </Row>
 
       <Row label={<span className="text-sm font-medium">Cleanup model</span>} hint="Used by every mode except &quot;As spoken&quot;">

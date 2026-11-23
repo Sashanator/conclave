@@ -1,6 +1,10 @@
 //! The AI fill for Notion columns: prompt, reply parser and the model call.
-use super::mapping::checked_value;
-use super::PropInfo;
+use super::client::NotionClient;
+use super::mapping::{checked_value, display_date, fillable_props, schema_from};
+use super::{Destination, PropInfo, BLOCKING_STATES};
+use crate::database::repositories::meeting::meeting_date_sql;
+use crate::summary::template_assist::{load_meeting_inputs, middle_cut};
+use std::collections::HashMap;
 use crate::knowledge::extract::{strip_fence, Reply};
 use crate::knowledge::EXTRACT_TIMEOUT_SECS;
 use crate::usage::{self, Purpose};
@@ -120,6 +124,103 @@ where
     .await;
     crate::summary::llm_client::reject_truncated(&reply.completion)?;
     parse_fill(&reply.completion.content, tasks.len(), cols)
+}
+
+type FillRow = (String, String, String, Option<String>, String, Option<String>, Option<String>, Option<String>);
+
+/// The AI pre-pass of Send: one model call per (meeting, database), run BEFORE any row is claimed as `sending`.
+/// Returns the values by task id, and the names of databases whose columns could not be filled (de-duplicated,
+/// first-seen order). Never fails: a missing fill only costs the extra columns, the task is still sent.
+pub(crate) async fn ai_values<F, Fut>(
+    pool: &SqlitePool,
+    client: &NotionClient,
+    dests: &HashMap<String, Destination>,
+    ids: &[String],
+    resend_ambiguous: bool,
+    call: &F,
+) -> (HashMap<String, Map<String, Value>>, Vec<String>)
+where
+    F: Fn(String, String) -> Fut,
+    Fut: Future<Output = Result<Reply, String>>,
+{
+    let sql = format!(
+        "SELECT t.id, t.text, t.owner, t.due_date, t.dest_id, t.meeting_id, COALESCE(m.title, t.meeting_title), COALESCE({}, t.meeting_date) \
+         FROM tasks t LEFT JOIN meetings m ON m.id = t.meeting_id \
+         WHERE t.id = ? AND t.review = 'keep' AND (t.send_ambiguous = 0 OR ?) AND t.dest_id IS NOT NULL",
+        meeting_date_sql("m")
+    );
+    // (meeting id, destination id) -> (meeting title, meeting date, tasks as (id, FillTask)), first-seen order.
+    type Group = ((Option<String>, String), (Option<String>, Option<String>, Vec<(String, FillTask)>));
+    let mut groups: Vec<Group> = Vec::new();
+    for id in ids {
+        let row: Result<Option<FillRow>, _> = sqlx::query_as(&sql).bind(id).bind(resend_ambiguous).fetch_optional(pool).await;
+        let Ok(Some((id, text, owner, due_date, dest_id, meeting_id, title, date))) = row else { continue };
+        let Some(d) = dests.get(&dest_id) else { continue };
+        if !d.mapping.ai_fill || d.last_status.as_deref().is_some_and(|s| BLOCKING_STATES.contains(&s)) {
+            continue;
+        }
+        let task = FillTask { text, owner, due_date };
+        let key = (meeting_id, dest_id);
+        match groups.iter_mut().find(|(k, _)| *k == key) {
+            Some((_, (_, _, tasks))) => tasks.push((id, task)),
+            None => groups.push((key, (title, date, vec![(id, task)]))),
+        }
+    }
+    let mut schemas: HashMap<String, Option<super::DbSchema>> = HashMap::new();
+    let mut out: HashMap<String, Map<String, Value>> = HashMap::new();
+    let mut not_filled: Vec<String> = Vec::new();
+    let mut note = |name: &str, reason: &str| {
+        log::warn!("notion: AI could not fill the columns of {name}: {reason}");
+        if !not_filled.iter().any(|n| n == name) {
+            not_filled.push(name.to_string());
+        }
+    };
+    for ((meeting_id, dest_id), (title, date, tasks)) in groups {
+        let d = &dests[&dest_id];
+        if !schemas.contains_key(&dest_id) {
+            let schema = match d.data_source_id.as_deref() {
+                Some(ds_id) => match client.data_source(ds_id).await {
+                    Ok(ds) => Some(schema_from(&d.database_id, &Value::Null, &ds)),
+                    Err(e) => {
+                        note(&d.name, &format!("could not read the columns ({})", e.state()));
+                        None
+                    }
+                },
+                None => {
+                    note(&d.name, "the database has no data source");
+                    None
+                }
+            };
+            schemas.insert(dest_id.clone(), schema);
+        }
+        let Some(schema) = &schemas[&dest_id] else { continue };
+        let cols = fillable_props(&d.mapping, schema);
+        if cols.is_empty() {
+            continue;
+        }
+        let inputs = match &meeting_id {
+            Some(m) => load_meeting_inputs(pool, m).await.ok(),
+            None => None,
+        };
+        let meeting = FillMeeting {
+            title,
+            date: date.and_then(|d| display_date(&d, &chrono::Local)),
+            summary: inputs.as_ref().map(|i| i.summary.clone()),
+            transcript: inputs.as_ref().map(|i| middle_cut(&i.transcript, FILL_MAX_TRANSCRIPT_CHARS)),
+        };
+        let (ids, fill_tasks): (Vec<String>, Vec<FillTask>) = tasks.into_iter().unzip();
+        match ask_fill(pool, meeting_id.as_deref(), &cols, &fill_tasks, &meeting, call).await {
+            Ok(maps) if maps.iter().any(|m| !m.is_empty()) => {
+                // A task the model gave nothing for is not reported: the other tasks got values.
+                for (id, m) in ids.into_iter().zip(maps) {
+                    out.insert(id, m);
+                }
+            }
+            Ok(_) => note(&d.name, "no usable values"),
+            Err(e) => note(&d.name, &e),
+        }
+    }
+    (out, not_filled)
 }
 
 #[cfg(test)]

@@ -7,9 +7,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use sqlx::SqlitePool;
 
 use super::client::{CallError, NotionClient};
+use super::fill;
 use super::mapping::{page_body, SendTask};
 use super::{list_destinations, set_dest_status, Destination, SendReport, BLOCKING_STATES};
 use crate::database::repositories::meeting::meeting_date_sql;
+use crate::knowledge::extract::{self, Reply as ModelReply};
 use crate::knowledge::tasks::stamp;
 
 pub(crate) const INTERRUPTED: &str = "Conclave closed while sending this task.";
@@ -46,7 +48,22 @@ async fn mark(pool: &SqlitePool, dests: &mut HashMap<String, Destination>, id: &
 /// `task_ids` None: every kept task with a destination, except unsure ones. Some: exactly those, re-checked.
 /// Unsure rows (`send_ambiguous`) are skipped unless `resend_ambiguous`, even when listed: only the UI's "Send again" sets it.
 /// After a final 429 or an offline error the run stops and the rest keep that error (no burst of calls).
+/// The AI pre-pass for the other columns runs before any row is claimed.
 pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Option<Vec<String>>, resend_ambiguous: bool) -> Result<SendReport, String> {
+    send_with(pool, client, task_ids, resend_ambiguous, |s, u| extract::call_model(pool.clone(), s, u)).await
+}
+
+pub(crate) async fn send_with<F, Fut>(
+    pool: &SqlitePool,
+    client: &NotionClient,
+    task_ids: Option<Vec<String>>,
+    resend_ambiguous: bool,
+    call: F,
+) -> Result<SendReport, String>
+where
+    F: Fn(String, String) -> Fut,
+    Fut: std::future::Future<Output = Result<ModelReply, String>>,
+{
     if SENDING.swap(true, Ordering::SeqCst) {
         return Err("A send is already running".into());
     }
@@ -72,6 +89,8 @@ pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Opt
         meeting_date_sql("m")
     );
     let mut report = SendReport::default();
+    let (ai, not_filled) = fill::ai_values(pool, client, &dests, &ids, resend_ambiguous, &call).await;
+    report.ai_not_filled = not_filled;
     let mut stopped: Option<String> = None;
     for id in ids {
         if let Some(msg) = &stopped {
@@ -116,7 +135,7 @@ pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Opt
             continue;
         }
         let task = SendTask { id: id.clone(), text, at, due_date, meeting_title, meeting_date, dest_id: dest.id.clone() };
-        let body = page_body(dest.data_source_id.as_deref().unwrap_or_default(), &dest.mapping, &task, None);
+        let body = page_body(dest.data_source_id.as_deref().unwrap_or_default(), &dest.mapping, &task, ai.get(&id));
         // Autocommit: this must be durable before the request leaves.
         let claimed = sqlx::query("UPDATE tasks SET review = 'sending', send_error = NULL, send_ambiguous = 0 WHERE id = ? AND review = 'keep' AND (send_ambiguous = 0 OR ?)")
             .bind(&id)
@@ -219,7 +238,8 @@ mod tests {
     use tokio::sync::Mutex;
 
     static SEND_TEST_LOCK: Mutex<()> = Mutex::const_new(());
-    const MAP: &str = r#"{"titleProp":"Name","dueProp":null,"meetingProp":null,"fixed":[]}"#;
+    const MAP: &str = r#"{"titleProp":"Name","dueProp":null,"meetingProp":null,"fixed":[],"aiFill":false}"#;
+    const MAP_AI: &str = r#"{"titleProp":"Name","dueProp":null,"meetingProp":null,"fixed":[],"emoji":"👷","aiFill":true}"#;
     const DS: &str = "01234567-89ab-cdef-0123-456789abcdef";
 
     async fn setup() -> SqlitePool {
@@ -509,5 +529,177 @@ mod tests {
     #[tokio::test]
     async fn startup_hook_skips_first_launch() {
         recover_at_startup(tauri::test::mock_app().handle()).await;
+    }
+
+    fn ds_reply() -> Reply {
+        reply(
+            200,
+            "",
+            &format!(
+                r#"{{"id":"{DS}","properties":{{"Name":{{"id":"n","type":"title","title":{{}}}},"Thema":{{"id":"t","type":"rich_text","rich_text":{{}}}},"Status":{{"id":"s","type":"status","status":{{"options":[{{"name":"To do"}}]}}}}}}}}"#
+            ),
+        )
+    }
+    async fn ai_on(pool: &SqlitePool) {
+        sqlx::query("UPDATE notion_destinations SET mapping_json = ? WHERE id = 'd1'").bind(MAP_AI).execute(pool).await.unwrap();
+    }
+    fn model(content: &'static str) -> ModelReply {
+        ModelReply {
+            provider: "fake".into(),
+            model: "m".into(),
+            completion: crate::summary::llm_client::LlmCompletion { content: content.into(), reasoning_stripped: false, usage: None, truncated: false },
+        }
+    }
+    /// Counting fake model call.
+    fn fake_ai(
+        n: &Arc<std::sync::atomic::AtomicUsize>,
+        content: Result<&'static str, &'static str>,
+    ) -> impl Fn(String, String) -> std::future::Ready<Result<ModelReply, String>> {
+        let n = n.clone();
+        move |_, _| {
+            n.fetch_add(1, Ordering::SeqCst);
+            std::future::ready(content.map(model).map_err(String::from))
+        }
+    }
+    fn calls(n: &Arc<std::sync::atomic::AtomicUsize>) -> usize {
+        n.load(Ordering::SeqCst)
+    }
+
+    #[tokio::test]
+    async fn ai_fills_other_columns_and_sets_the_icon() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        task(&pool, "t2", "keep", 0).await;
+        let f = serve(vec![ds_reply(), ok("p1"), ok("p2")]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call = fake_ai(&n, Ok(r#"{"1":{"Thema":"Dativ","Status":"To do"},"2":{"Thema":"Akkusativ"}}"#));
+        let r = send_with(&pool, &client(&f), None, false, call).await.unwrap();
+        assert_eq!((r.sent, r.failed, r.ambiguous), (2, 0, 0));
+        assert!(r.ai_not_filled.is_empty());
+        assert_eq!(calls(&n), 1);
+        let rq = f.requests.lock().unwrap();
+        assert!(rq[0].head.starts_with("GET") && rq[0].head.contains("/data_sources/"), "{}", rq[0].head);
+        for want in [r#""Thema""#, r#""Dativ""#, r#"{"status":{"name":"To do"}}"#, r#""icon":{"emoji":"👷","type":"emoji"}"#] {
+            assert!(rq[1].body.contains(want), "{want} in {}", rq[1].body);
+        }
+    }
+
+    #[tokio::test]
+    async fn ai_call_happens_before_any_row_is_sending() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        task(&pool, "t2", "keep", 0).await;
+        let f = serve(vec![ds_reply(), ok("p1"), ok("p2")]).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let call = {
+            let (pool, seen) = (pool.clone(), seen.clone());
+            move |_: String, _: String| {
+                let (pool, seen) = (pool.clone(), seen.clone());
+                async move {
+                    for id in ["t1", "t2"] {
+                        seen.lock().unwrap().push(row(&pool, id).await.0);
+                    }
+                    Ok(model(r#"{"1":{"Thema":"A"},"2":{"Thema":"B"}}"#))
+                }
+            }
+        };
+        let r = send_with(&pool, &client(&f), None, false, call).await.unwrap();
+        assert_eq!(*seen.lock().unwrap(), vec!["keep", "keep"]);
+        assert_eq!(r.sent, 2);
+    }
+
+    #[tokio::test]
+    async fn ai_failure_still_sends_and_reports_the_database() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        let f = serve(vec![ds_reply(), ok("p1")]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = send_with(&pool, &client(&f), None, false, fake_ai(&n, Err("boom"))).await.unwrap();
+        assert_eq!((r.sent, r.ai_not_filled), (1, vec!["Job tasks".to_string()]));
+        assert!(!f.requests.lock().unwrap()[1].body.contains("Thema"));
+        assert_eq!(row(&pool, "t1").await.0, "sent");
+    }
+
+    #[tokio::test]
+    async fn schema_read_failure_still_sends() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        let f = serve(vec![reply(503, "", "{}"), ok("p1")]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = send_with(&pool, &client(&f), None, false, fake_ai(&n, Ok("{}"))).await.unwrap();
+        assert_eq!(calls(&n), 0);
+        assert_eq!((r.sent, r.ambiguous, r.ai_not_filled), (1, 0, vec!["Job tasks".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn bad_ai_values_are_dropped_and_reported() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        let f = serve(vec![ds_reply(), ok("p1")]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // "Ghost" is no column of the database; "Later" is not a Status option; 5 is not text.
+        let call = fake_ai(&n, Ok(r#"{"1":{"Status":"Later","Thema":5,"Ghost":"x"}}"#));
+        let r = send_with(&pool, &client(&f), None, false, call).await.unwrap();
+        let body = f.requests.lock().unwrap()[1].body.clone();
+        assert!(!body.contains("Later") && !body.contains("Thema") && !body.contains("Ghost") && !body.contains("Status"), "{body}");
+        assert_eq!((r.sent, r.ai_not_filled), (1, vec!["Job tasks".to_string()]));
+    }
+
+    #[tokio::test]
+    async fn no_ai_call_when_off_or_nothing_to_fill() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        // (a) aiFill off
+        let pool = setup().await;
+        task(&pool, "t1", "keep", 0).await;
+        let f = serve(vec![ok("p1")]).await;
+        send_with(&pool, &client(&f), None, false, fake_ai(&n, Ok("{}"))).await.unwrap();
+        assert_eq!((calls(&n), reqs(&f)), (0, 1));
+        // (b) blocked destination: no model call, no schema request
+        let pool = setup().await;
+        ai_on(&pool).await;
+        sqlx::query("UPDATE notion_destinations SET last_status = 'not_shared' WHERE id = 'd1'").execute(&pool).await.unwrap();
+        task(&pool, "t1", "keep", 0).await;
+        let f = serve(vec![]).await;
+        send_with(&pool, &client(&f), None, false, fake_ai(&n, Ok("{}"))).await.unwrap();
+        assert_eq!((calls(&n), reqs(&f)), (0, 0));
+        // (c) only a title column: one GET, no model call, no notice
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        let only_name = reply(200, "", &format!(r#"{{"id":"{DS}","properties":{{"Name":{{"id":"n","type":"title","title":{{}}}}}}}}"#));
+        let f = serve(vec![only_name, ok("p1")]).await;
+        let r = send_with(&pool, &client(&f), None, false, fake_ai(&n, Ok("{}"))).await.unwrap();
+        assert_eq!((calls(&n), reqs(&f), r.sent), (0, 2, 1));
+        assert!(r.ai_not_filled.is_empty());
+    }
+
+    #[tokio::test]
+    async fn one_call_per_meeting_per_database() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES ('m2', 'Other', 't', 't')").execute(&pool).await.unwrap();
+        task(&pool, "t1", "keep", 0).await;
+        task(&pool, "t2", "keep", 0).await;
+        task(&pool, "t3", "keep", 0).await;
+        sqlx::query("UPDATE tasks SET meeting_id = 'm2' WHERE id IN ('t2', 't3')").execute(&pool).await.unwrap();
+        let f = serve(vec![ds_reply(), ok("p1"), ok("p2"), ok("p3")]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call = fake_ai(&n, Ok(r#"{"1":{"Thema":"A"},"2":{"Thema":"B"}}"#));
+        let r = send_with(&pool, &client(&f), None, false, call).await.unwrap();
+        assert_eq!((calls(&n), r.sent), (2, 3));
+        let gets = f.requests.lock().unwrap().iter().filter(|q| q.head.starts_with("GET")).count();
+        assert_eq!(gets, 1);
     }
 }

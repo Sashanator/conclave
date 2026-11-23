@@ -95,6 +95,9 @@ pub struct SendReport {
     pub sent: u32,
     pub failed: u32,
     pub ambiguous: u32,
+    /// Destination names whose extra columns the AI could not fill (the tasks were still sent).
+    #[serde(default)]
+    pub ai_not_filled: Vec<String>,
 }
 
 /// States of a destination that stop sending to it.

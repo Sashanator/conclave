@@ -116,7 +116,7 @@ pub(crate) async fn send(pool: &SqlitePool, client: &NotionClient, task_ids: Opt
             continue;
         }
         let task = SendTask { id: id.clone(), text, at, due_date, meeting_title, meeting_date, dest_id: dest.id.clone() };
-        let body = page_body(dest.data_source_id.as_deref().unwrap_or_default(), &dest.mapping, &task);
+        let body = page_body(dest.data_source_id.as_deref().unwrap_or_default(), &dest.mapping, &task, None);
         // Autocommit: this must be durable before the request leaves.
         let claimed = sqlx::query("UPDATE tasks SET review = 'sending', send_error = NULL, send_ambiguous = 0 WHERE id = ? AND review = 'keep' AND (send_ambiguous = 0 OR ?)")
             .bind(&id)

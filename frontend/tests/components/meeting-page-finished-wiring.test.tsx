@@ -175,7 +175,7 @@ mock.module('../../src/components/PageFrame/PageFrame', () => ({ PageFrame: ({ b
 mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...originals.aiSidebar, useAiSidebar: () => ({ open: false, toggle: toggleAsk }) }));
 const updateMeetingTitle = mock((_t: string) => {});
 const handleTemplateSelection = mock((_id: string, _name: string) => {});
-type HeaderProps = { actions?: ReactNode; live?: boolean; onChange: (r: unknown) => void; onMeetingDeleted: () => void; onRecordingDeleted: () => void; onRegenerateSummary: (id: string) => void };
+type HeaderProps = { actions?: ReactNode; live?: boolean; onChange: (r: unknown) => void; onMeetingDeleted: () => void; onRecordingDeleted: () => void};
 let headerProps: HeaderProps | undefined;
 mock.module('../../src/components/MeetingPage/MeetingHeader', () => ({ MeetingHeader: (p: HeaderProps) => { headerProps = p; return null; } }));
 let dirty = false;
@@ -262,12 +262,6 @@ test('this meeting being the live target marks it live', async () => {
   recordingState = { ...recordingState, isRecording: true, liveMeetingId: 'meeting-a' };
   await show();
   expect(headerProps!.live).toBe(true);
-});
-
-test('a category regenerate from the toast also picks the template', async () => {
-  await show();
-  await act(async () => { headerProps!.onRegenerateSummary('t1'); });
-  expect(handleTemplateSelection).toHaveBeenCalledWith('t1', 'Interview');
 });
 
 test('a header rename reaches the meeting data too', async () => {

@@ -13,13 +13,12 @@ import { DeleteRecordingDialog } from '@/components/MeetingPage/DeleteRecordingD
 type Props = {
   row: MeetingRow;
   live?: boolean;
-  /** A finished meeting: offers Delete recording and the Regenerate action after a category change. */
+  /** A finished meeting: offers Delete recording. */
   finished?: boolean;
   onChange: (row: MeetingRow) => void;
   onTitleSaved?: () => void;
   onMeetingDeleted?: () => void;
   onRecordingDeleted?: () => void;
-  onRegenerateSummary?: (templateId: string) => void;
   /** Rendered in the title row before the menu. */
   actions?: React.ReactNode;
   variant?: 'page' | 'compact' | 'new';
@@ -28,7 +27,7 @@ type Props = {
 const errText = (e: unknown) => (e instanceof Error ? e.message : String(e));
 
 /** Emoji above the title, then category and date, with the page menu (the two deletes). */
-export function MeetingHeader({ row, live = false, finished = false, onChange, onTitleSaved, onMeetingDeleted, onRecordingDeleted, onRegenerateSummary, actions, variant = 'page' }: Props) {
+export function MeetingHeader({ row, live = false, finished = false, onChange, onTitleSaved, onMeetingDeleted, onRecordingDeleted, actions, variant = 'page' }: Props) {
   const [dialog, setDialog] = useState<'meeting' | 'recording' | null>(null);
   const [deleting, setDeleting] = useState(false);
   const { availableTemplates } = useTemplates();
@@ -58,10 +57,7 @@ export function MeetingHeader({ row, live = false, finished = false, onChange, o
     try {
       await setTemplate(row.id, templateId || null);
       onChange({ ...row, templateId: templateId || null });
-      const name = availableTemplates.find((t) => t.id === templateId)?.name;
-      if (finished && name && onRegenerateSummary) {
-        toast.success('Category changed', { action: { label: `Regenerate summary with ${name}`, onClick: () => onRegenerateSummary(templateId) } });
-      }
+      // Never starts a summary: the Summary panel notes a mismatch and offers Regenerate
     } catch (error) { toast.error(`Failed to save the category: ${String(error)}`); }
   };
   // A failed delete keeps the page and the dialog's meeting; a folder warning is shown, the delete still counts.

@@ -34,6 +34,7 @@ import { useConfig } from '@/contexts/ConfigContext';
 import { lineSpeakerName } from '@/lib/speakers';
 import { appLog } from '@/lib/app-log';
 import { readSummaryMetadata } from '@/lib/summary-content';
+import { TemplateMismatchNote, templateMismatch } from '@/components/MeetingDetails/TemplateMismatchNote';
 import { pickTemplateIfAllowed, shouldRegenerate } from '@/lib/regenerate-guard';
 import { MeetingHeader } from '@/components/MeetingPage/MeetingHeader';
 import type { MeetingRow } from '@/lib/meetings';
@@ -215,6 +216,14 @@ export default function PageContent({
     ? { id: summaryMetadata.templateId, name: summaryMetadata.templateName, source: summaryMetadata.templateSource }
     : null;
 
+  const mismatch = templateMismatch({
+    shown: currentTemplate,
+    currentId: row?.templateId ?? null,
+    templates: templates.availableTemplates,
+    status: summaryGeneration.summaryStatus,
+    autoPending: shouldAutoGenerate,
+  });
+
   const copyOperations = useCopyOperations({
     meeting,
     transcripts: meetingData.transcripts,
@@ -322,10 +331,6 @@ export default function PageContent({
           onTitleSaved={onMeetingUpdated}
           onMeetingDeleted={() => router.push('/')}
           onRecordingDeleted={() => window.location.reload()}
-          onRegenerateSummary={(id) => {
-            const name = templates.availableTemplates.find((t) => t.id === id)?.name ?? id;
-            pickTemplateIfAllowed(meetingData.isSummaryDirty, () => templates.handleTemplateSelection(id, name), () => regenerateSummary(id));
-          }}
         />
       )}
       <div className="flex min-h-0 flex-1 flex-col">
@@ -380,7 +385,13 @@ export default function PageContent({
               speakers={speakers}
             />
           }
-          summary={
+          summary={<>
+            {mismatch && (
+              <TemplateMismatchNote
+                mismatch={mismatch}
+                onRegenerate={(id) => pickTemplateIfAllowed(meetingData.isSummaryDirty, () => templates.handleTemplateSelection(id, mismatch.current.name), () => regenerateSummary(id))}
+              />
+            )}
             <SummaryPanel
               meeting={meeting}
               meetingTitle={meetingData.meetingTitle}
@@ -422,7 +433,7 @@ export default function PageContent({
               namesChanged={speakers.namesChanged}
               onCostChanged={() => setCostKey((n) => n + 1)}
             />
-          }
+          </>}
         />
         {/* One element for the whole page, outside every tab, so switching tabs keeps playback. */}
         {audio.src && <audio ref={audio.audioRef} src={audio.src} preload="metadata" className="hidden" {...audio.audioEvents} />}

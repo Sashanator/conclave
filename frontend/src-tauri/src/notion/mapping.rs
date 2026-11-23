@@ -204,7 +204,7 @@ pub(crate) fn checked_value(p: &PropInfo, v: &Value) -> Option<Value> {
         "number" => v.as_number().filter(|n| n.as_f64().is_some_and(f64::is_finite)).map(|n| json!({"number":n})),
         "url" => {
             let s = v.as_str()?.trim();
-            let ok = (s.starts_with("http://") || s.starts_with("https://")) && !s.chars().any(char::is_whitespace) && s.chars().count() <= 2000;
+            let ok = (s.starts_with("http://") || s.starts_with("https://")) && !s.chars().any(char::is_whitespace) && s.encode_utf16().count() <= 2000;
             ok.then(|| json!({"url":s}))
         }
         _ => None,
@@ -214,6 +214,10 @@ pub(crate) fn checked_value(p: &PropInfo, v: &Value) -> Option<Value> {
 pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask, ai: Option<&serde_json::Map<String, Value>>) -> Value {
     let date = t.meeting_date.as_deref().and_then(|d| display_date(d, &chrono::Local));
     let mut props = ai.cloned().unwrap_or_default();
+    // Mapped and fixed columns are ours alone, even when we skip writing them below.
+    for n in [Some(&m.title_prop), m.due_prop.as_ref(), m.meeting_prop.as_ref()].into_iter().flatten().chain(m.fixed.iter().map(|f| &f.prop)) {
+        props.remove(n);
+    }
     props.insert(m.title_prop.clone(), json!({"title":[text_run(&t.text)]}));
     if let (Some(p), Some(d)) = (&m.due_prop, &t.due_date) {
         props.insert(p.clone(), json!({"date":{"start":d.chars().take(10).collect::<String>()}}));
@@ -412,7 +416,9 @@ mod tests {
         assert_eq!(checked_value(&tags, &json!(["Work", "Nope", "Work"])), Some(json!({"multi_select":[{"name":"Work"}]})));
         assert_eq!(checked_value(&urgent, &json!(false)), Some(json!({"checkbox":false})));
         let long = format!("https://{}", "a".repeat(2000));
-        let bad: [(&PropInfo, Value); 17] = [
+        let emoji_url = format!("https://x/{}", "😀".repeat(1000));
+        let bad: [(&PropInfo, Value); 18] = [
+            (&link, json!(emoji_url)),
             (&area, json!("Life")), (&area, json!(1)), (&done, json!("2026-02-30")), (&done, json!("30.11.2026")),
             (&score, json!("3")), (&link, json!("javascript:alert(1)")), (&link, json!("ftp://x")),
             (&link, json!("https://x y")), (&link, json!(long)), (&thema, json!("")), (&thema, json!(5)),
@@ -432,6 +438,22 @@ mod tests {
         assert_eq!(p["Status"]["status"]["name"], "To do");
         assert_eq!(p["Due"]["date"]["start"], "2026-11-26");
         assert!(p.get("Thema").is_some());
+    }
+
+    #[test]
+    fn stray_ai_values_for_mapped_columns_are_dropped() {
+        let mut t = task();
+        t.due_date = None;
+        let ai = json!({"Due":{"date":{"start":"2030-01-01"}},"Name":{"title":[]},"Meeting":{"rich_text":[]}});
+        let mut m = mapping();
+        m.fixed[0].kind = "relation".into(); // malformed fixed entry is skipped
+        let ai2 = json!({"Status":{"status":{"name":"Done"}},"Due":ai["Due"]});
+        let b = page_body("ds-1", &m, &t, ai2.as_object());
+        assert!(b["properties"].get("Due").is_none());
+        assert!(b["properties"].get("Status").is_none());
+        let b = page_body("ds-1", &mapping(), &t, ai.as_object());
+        assert!(b["properties"].get("Due").is_none());
+        assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"], "Send the deck");
     }
 
     fn task() -> SendTask {

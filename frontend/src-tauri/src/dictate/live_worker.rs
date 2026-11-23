@@ -46,8 +46,13 @@ impl LiveHandle {
     /// Hands the worker the whole recording and waits for its transcript. None: the worker is gone or panicked.
     pub async fn finish(self, all: Arc<Vec<f32>>) -> Option<LiveOutcome> {
         self.finish.send(all).ok()?;
-        self.task.await.ok()
-    }
+        match self.task.await {
+            Ok(o) => Some(o),
+            Err(e) => {
+                warn!("dictate: live worker ended abnormally: {e}");
+                None
+            }
+        }    }
 }
 
 enum Done {
@@ -154,7 +159,10 @@ async fn run(rate: u32, text_tx: watch::Sender<LiveText>, mut finish_rx: oneshot
                 }
             }
             // Nothing can decode what is still queued: fall back instead of waiting forever.
-            _ if finishing => core.fail(),
+            _ if finishing => {
+                warn!("dictate: live worker has no loaded model to finish with");
+                core.fail();
+            }
             _ => {}
         }
         let now = LiveText {
@@ -183,28 +191,60 @@ async fn run(rate: u32, text_tx: watch::Sender<LiveText>, mut finish_rx: oneshot
     LiveOutcome { transcript: core.transcript().trim().to_string(), speech_secs: core.speech_secs(), language, failed: core.failed() }
 }
 
+/// The result that stands in for a decode that panicked or never ran: a failed commit (fallback) or an empty preview.
+fn failed_done(job: &Job) -> Done {
+    match job {
+        Job::Commit { index, .. } => Done::Commit { index: *index, text: Err(()), policy: None },
+        Job::Preview { from, .. } => Done::Preview { from: *from, text: String::new() },
+    }
+}
+
 /// A commit sends its policy back; a preview works on a copy that is dropped. Commits are never cancelled.
+/// The decode runs as an inner task so that a panic still sends a result: otherwise the worker would wait for it forever.
 fn spawn_decode(engine: Arc<WhisperEngine>, rate: u32, mut p: LanguagePolicy, job: Job, tx: mpsc::UnboundedSender<Done>) {
     tauri::async_runtime::spawn(async move {
-        let (samples, prompt) = match &job {
-            Job::Commit { samples, prompt, .. } | Job::Preview { samples, prompt, .. } => (samples.clone(), prompt.clone()),
-        };
-        let a16 = tokio::task::spawn_blocking(move || resample_audio(&samples, rate, 16_000)).await.ok();
-        let text = match a16 {
-            Some(a16) => engine
-                .transcribe_audio_with_confidence(a16, Some("auto".to_string()), Some(&mut p), (!prompt.is_empty()).then_some(prompt.as_str()))
-                .await
-                .map(|(t, ..)| t)
-                .map_err(|_| ()),
-            None => Err(()),
-        };
-        let done = match job {
-            Job::Commit { index, .. } => {
-                let ok = text.is_ok();
-                Done::Commit { index, text, policy: ok.then_some(p) }
+        let fallback = failed_done(&job);
+        let inner = tauri::async_runtime::spawn(async move {
+            let (samples, prompt) = match &job {
+                Job::Commit { samples, prompt, .. } | Job::Preview { samples, prompt, .. } => (samples.clone(), prompt.clone()),
+            };
+            let a16 = tokio::task::spawn_blocking(move || resample_audio(&samples, rate, 16_000)).await.ok();
+            let text = match a16 {
+                Some(a16) => engine
+                    .transcribe_audio_with_confidence(a16, Some("auto".to_string()), Some(&mut p), (!prompt.is_empty()).then_some(prompt.as_str()))
+                    .await
+                    .map(|(t, ..)| t)
+                    .map_err(|e| warn!("dictate: live decode failed: {e}")),
+                None => {
+                    warn!("dictate: live resample failed");
+                    Err(())
+                }
+            };
+            match job {
+                Job::Commit { index, .. } => {
+                    let ok = text.is_ok();
+                    Done::Commit { index, text, policy: ok.then_some(p) }
+                }
+                Job::Preview { from, .. } => Done::Preview { from, text: text.unwrap_or_default() },
             }
-            Job::Preview { from, .. } => Done::Preview { from, text: text.unwrap_or_default() },
-        };
+        });
+        let done = inner.await.unwrap_or_else(|e| {
+            warn!("dictate: live decode task ended abnormally: {e}");
+            fallback
+        });
         let _ = tx.send(done);
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_dead_decode_becomes_a_failed_commit_or_an_empty_preview() {
+        let c = Job::Commit { index: 3, samples: vec![], prompt: String::new() };
+        assert!(matches!(failed_done(&c), Done::Commit { index: 3, text: Err(()), policy: None }));
+        let p = Job::Preview { from: 7, samples: vec![], prompt: String::new() };
+        assert!(matches!(failed_done(&p), Done::Preview { from: 7, ref text } if text.is_empty()));
+    }
 }

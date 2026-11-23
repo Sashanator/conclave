@@ -112,7 +112,17 @@ impl NotionClient {
     }
 
     pub async fn create_page(&self, body: &Value) -> Result<CreatedPage, CallError> {
-        let v = self.call(reqwest::Method::POST, "/pages", Some(body)).await?;
+        let v = match self.call(reqwest::Method::POST, "/pages", Some(body)).await {
+            // A 4xx is a definite refusal (no page exists), so one retry cannot double-send. An icon Notion
+            // doesn't know would otherwise block the whole database as "mapping_broken".
+            Err(CallError::Http { status: 400, message, .. }) if body.get("icon").is_some() && !message.contains("body.parent") => {
+                log::warn!("notion: page refused (HTTP 400) with an icon; retrying once without it");
+                let mut plain = body.clone();
+                plain.as_object_mut().map(|o| o.remove("icon"));
+                self.call(reqwest::Method::POST, "/pages", Some(&plain)).await?
+            }
+            r => r?,
+        };
         let id = v.get("id").and_then(Value::as_str).ok_or(CallError::NoAnswer)?.to_string();
         let url = v.get("url").and_then(Value::as_str).map(str::to_string);
         Ok(CreatedPage { id, url })
@@ -287,6 +297,23 @@ mod tests {
         let r = &f.requests.lock().unwrap()[0];
         assert!(r.head.to_lowercase().starts_with("post /pages "));
         assert_eq!(serde_json::from_str::<Value>(&r.body).unwrap(), body);
+    }
+
+    #[tokio::test]
+    async fn create_page_retries_once_without_the_icon_on_400() {
+        let f = serve(vec![reply(400, "", r#"{"code":"validation_error","message":"body.icon.emoji should be a valid emoji"}"#), reply(200, "", r#"{"id":"p1"}"#)]).await;
+        let body = serde_json::json!({"parent":{"data_source_id":"d"},"icon":{"type":"emoji","emoji":"x"},"properties":{}});
+        assert_eq!(client(&f).create_page(&body).await.unwrap().id, "p1");
+        let reqs = f.requests.lock().unwrap();
+        assert!(reqs[0].body.contains("\"icon\"") && !reqs[1].body.contains("\"icon\""));
+        drop(reqs);
+        // No icon, or still refused: no second call beyond the single retry.
+        let f = serve(vec![reply(400, "", r#"{"message":"body.properties.X"}"#)]).await;
+        let e = client(&f).create_page(&serde_json::json!({"properties":{}})).await.err().unwrap();
+        assert_eq!((e.state(), f.requests.lock().unwrap().len()), ("mapping_broken", 1));
+        let f = serve(vec![reply(400, "", "{}"), reply(400, "", "{}")]).await;
+        let e = client(&f).create_page(&serde_json::json!({"icon":{},"properties":{}})).await.err().unwrap();
+        assert_eq!((e.state(), f.requests.lock().unwrap().len()), ("mapping_broken", 2));
     }
 
     #[tokio::test]

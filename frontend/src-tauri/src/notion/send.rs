@@ -658,6 +658,97 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn settings_problem_is_named_in_the_report() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        let f = serve(vec![ds_reply(), ok("p1")]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let call = fake_ai(&n, Err("Built-in AI is not supported for this feature"));
+        let r = send_with(&pool, &client(&f), None, false, call).await.unwrap();
+        assert_eq!(r.sent, 1);
+        assert_eq!(r.ai_not_filled, vec!["Job tasks: Built-in AI can't fill columns, choose a cloud model in Models & keys".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn one_deadline_covers_the_whole_pre_pass() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        for (i, m) in ["m2", "m3"].iter().enumerate() {
+            sqlx::query("INSERT INTO meetings (id, title, created_at, updated_at) VALUES (?, 'Other', 't', 't')").bind(m).execute(&pool).await.unwrap();
+            task(&pool, &format!("t{}", i + 2), "keep", 0).await;
+            sqlx::query("UPDATE tasks SET meeting_id = ? WHERE id = ?").bind(m).bind(format!("t{}", i + 2)).execute(&pool).await.unwrap();
+        }
+        task(&pool, "t1", "keep", 0).await;
+        let dests: HashMap<String, Destination> = list_destinations(&pool).await.unwrap().into_iter().map(|d| (d.id.clone(), d)).collect();
+        let ids: Vec<String> = ["t1", "t2", "t3"].iter().map(|s| s.to_string()).collect();
+        let f = serve(vec![ds_reply()]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let hang = {
+            let n = n.clone();
+            move |_: String, _: String| {
+                n.fetch_add(1, Ordering::SeqCst);
+                async { tokio::time::sleep(Duration::from_secs(30)).await; Err::<ModelReply, _>("never".to_string()) }
+            }
+        };
+        let t0 = std::time::Instant::now();
+        let (out, not_filled) = fill::ai_values_within(Duration::from_millis(150), &pool, &client(&f), &dests, &ids, false, &hang).await;
+        assert!(t0.elapsed() < Duration::from_secs(5));
+        assert_eq!((out.len(), calls(&n)), (0, 1));
+        assert_eq!(not_filled, vec!["Job tasks".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn tasks_of_deleted_meetings_keep_their_own_title() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        task(&pool, "t2", "keep", 0).await;
+        for (id, title) in [("t1", "Alpha call"), ("t2", "Beta call")] {
+            sqlx::query("UPDATE tasks SET meeting_id = NULL, meeting_title = ? WHERE id = ?").bind(title).bind(id).execute(&pool).await.unwrap();
+        }
+        let f = serve(vec![ds_reply(), ok("p1"), ok("p2")]).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let call = {
+            let seen = seen.clone();
+            move |_: String, user: String| {
+                seen.lock().unwrap().push(user);
+                std::future::ready(Ok::<_, String>(model("{}")))
+            }
+        };
+        send_with(&pool, &client(&f), None, false, call).await.unwrap();
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.len(), 2);
+        assert!(seen[0].contains("Alpha call") && !seen[0].contains("Beta call"));
+        assert!(seen[1].contains("Beta call"));
+    }
+
+    #[tokio::test]
+    async fn summary_still_reaches_the_model_without_a_transcript() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        sqlx::query("INSERT INTO summary_processes (meeting_id, status, created_at, updated_at, result) VALUES ('m1', 'completed', 't', 't', ?)")
+            .bind(r##"{"markdown":"# Notes on Dativ"}"##).execute(&pool).await.unwrap();
+        let f = serve(vec![ds_reply(), ok("p1")]).await;
+        let seen = Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let call = {
+            let seen = seen.clone();
+            move |_: String, user: String| {
+                seen.lock().unwrap().push(user);
+                std::future::ready(Ok::<_, String>(model("{}")))
+            }
+        };
+        send_with(&pool, &client(&f), None, false, call).await.unwrap();
+        let u = seen.lock().unwrap()[0].clone();
+        assert!(u.contains("Notes on Dativ") && u.contains("No transcript."), "{u}");
+    }
+
+    #[tokio::test]
     async fn no_ai_call_when_off_or_nothing_to_fill() {
         let _l = SEND_TEST_LOCK.lock().await;
         let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));

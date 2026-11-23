@@ -141,6 +141,29 @@ fn fixed_value_ok(f: &FixedValue) -> bool {
 
 pub(crate) const BAD_EMOJI: &str = "Use one emoji for the page icon.";
 
+/// Notion answers 400 to a non-emoji icon, which would block the whole database, so check here.
+/// shortcut: an allowlist of the Unicode emoji blocks (text symbols such as ★ ☆ ✓ ✗ → ™ № are out), not Notion's real
+/// list; a rare unsupported pictograph still gets Notion's error, and the page is then sent without the icon.
+fn is_emoji(e: &str) -> bool {
+    const RANGES: [(u32, u32); 18] = [
+        (0x1F000, 0x1FAFF), // pictographs, flags (regional indicators), skin tones
+        (0x2600, 0x27BF),   // misc symbols and dingbats (minus the text symbols below)
+        (0x231A, 0x231B), (0x23E9, 0x23F3), (0x23F8, 0x23FA),
+        (0x2B05, 0x2B07), (0x2B1B, 0x2B1C), (0x2B50, 0x2B50), (0x2B55, 0x2B55),
+        (0x2194, 0x2199), (0x21A9, 0x21AA), (0x25AA, 0x25AB), (0x25FB, 0x25FE),
+        (0x00A9, 0x00A9), (0x00AE, 0x00AE), (0x203C, 0x2049), (0x3030, 0x3030),
+        (0x3297, 0x3299),
+    ];
+    const TEXT_SYMBOLS: [char; 4] = ['\u{2605}', '\u{2606}', '\u{2713}', '\u{2717}'];
+    let chars: Vec<char> = e.chars().collect();
+    chars.iter().enumerate().all(|(i, &c)| match c {
+        '\u{200D}' | '\u{FE0F}' | '\u{20E3}' => true,
+        // keycap base: 1\u{FE0F}\u{20E3}
+        '0'..='9' | '#' | '*' => chars[i + 1..].iter().find(|&&n| n != '\u{FE0F}') == Some(&'\u{20E3}'),
+        _ => !TEXT_SYMBOLS.contains(&c) && RANGES.iter().any(|&(a, b)| (a..=b).contains(&(c as u32))),
+    })
+}
+
 fn validate(d: &Destination) -> Result<(String, String, String), String> {
     let name = d.name.trim().to_string();
     if name.is_empty() || name.chars().count() > 60 {
@@ -161,9 +184,8 @@ fn validate(d: &Destination) -> Result<(String, String, String), String> {
     if let Some(f) = d.mapping.fixed.iter().find(|f| !fixed_value_ok(f)) {
         return Err(format!("\u{201c}{}\u{201d} has a value Conclave can't send.", f.prop));
     }
-    // shortcut: Notion holds the real emoji list; a rare non-emoji symbol (e.g. №) still gets Notion's error on the first send
     if let Some(e) = &d.mapping.emoji {
-        if !(1..=8).contains(&e.chars().count()) || e.chars().any(|c| c.is_ascii() || c.is_alphanumeric() || c.is_whitespace()) {
+        if !(1..=8).contains(&e.chars().count()) || !is_emoji(e) {
             return Err(BAD_EMOJI.into());
         }
     }
@@ -435,9 +457,13 @@ mod tests {
         // ZWJ sequence: person + ZWJ + male sign + variation selector 16
         save_destination(&pool, with(2, Some("\u{1F477}\u{200D}\u{2642}\u{FE0F}"))).await.unwrap();
         save_destination(&pool, with(3, None)).await.unwrap();
-        let emojis: Vec<_> = list_destinations(&pool).await.unwrap().into_iter().map(|d| d.mapping.emoji).collect();
+        // flag, keycap, plain emoji with VS16
+        for (n, e) in [(16, "\u{1F1E9}\u{1F1EA}"), (17, "1\u{FE0F}\u{20E3}"), (18, "\u{2764}\u{FE0F}"), (19, "\u{2B50}")] {
+            save_destination(&pool, with(n, Some(e))).await.unwrap_or_else(|e| panic!("{n}: {e}"));
+        }
+        let emojis: Vec<_> = list_destinations(&pool).await.unwrap().into_iter().map(|d| d.mapping.emoji).take(3).collect();
         assert_eq!(emojis, [Some("👷".into()), Some("\u{1F477}\u{200D}\u{2642}\u{FE0F}".into()), None]);
-        for (n, e) in [(4, "ab"), (5, "é"), (6, "ж"), (7, ""), (8, " 👷"), (9, "👷👷👷👷👷👷👷👷👷")] {
+        for (n, e) in [(4, "ab"), (5, "é"), (6, "ж"), (7, ""), (8, " 👷"), (9, "👷👷👷👷👷👷👷👷👷"), (10, "★"), (11, "→"), (12, "™"), (13, "№"), (14, "1"), (15, "✓")] {
             assert_eq!(save_destination(&pool, with(n, Some(e))).await.unwrap_err(), BAD_EMOJI, "{e:?}");
         }
     }

@@ -102,10 +102,8 @@ pub(crate) async fn load_transcript(pool: &SqlitePool, meeting_id: &str) -> Resu
     Ok(middle_cut(&lines.join("\n"), MAX_TRANSCRIPT_CHARS))
 }
 
-pub(crate) async fn load_meeting_inputs(
-    pool: &SqlitePool,
-    meeting_id: &str,
-) -> Result<MeetingInputs, String> {
+/// The saved summary result. Ok(None): no summary yet. Err: the read failed.
+async fn load_summary_result(pool: &SqlitePool, meeting_id: &str) -> Result<Option<serde_json::Value>, String> {
     let raw = sqlx::query_scalar::<_, Option<String>>(
         "SELECT result FROM summary_processes WHERE meeting_id = ?",
     )
@@ -114,13 +112,24 @@ pub(crate) async fn load_meeting_inputs(
     .await
     .map_err(|e| e.to_string())?
     .flatten();
-    let result = raw
+    Ok(raw
         .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+        .filter(|r| r["markdown"].as_str().is_some_and(|t| !t.trim().is_empty())))
+}
+
+/// The summary text alone, so a transcript problem cannot throw it away.
+pub(crate) async fn load_summary(pool: &SqlitePool, meeting_id: &str) -> Result<Option<String>, String> {
+    Ok(load_summary_result(pool, meeting_id).await?.and_then(|r| r["markdown"].as_str().map(str::to_string)))
+}
+
+pub(crate) async fn load_meeting_inputs(
+    pool: &SqlitePool,
+    meeting_id: &str,
+) -> Result<MeetingInputs, String> {
+    let result = load_summary_result(pool, meeting_id)
+        .await?
         .ok_or("This meeting has no summary yet.")?;
-    let markdown = result["markdown"]
-        .as_str()
-        .filter(|text| !text.trim().is_empty())
-        .ok_or("This meeting has no summary yet.")?;
+    let markdown = result["markdown"].as_str().unwrap_or_default();
     let summary = middle_cut(markdown, MAX_SUMMARY_CHARS);
     let edits = result["generated_markdown"]
         .as_str()

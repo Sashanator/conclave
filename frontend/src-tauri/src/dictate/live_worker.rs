@@ -49,10 +49,19 @@ impl LiveHandle {
         match self.task.await {
             Ok(o) => Some(o),
             Err(e) => {
-                warn!("dictate: live worker ended abnormally: {e}");
+                warn!("dictate: live worker ended abnormally ({})", join_reason(&e));
                 None
             }
-        }    }
+        }
+    }
+}
+
+/// Why a task ended. Never the error text: a panic message can quote the transcript.
+fn join_reason(e: &tauri::Error) -> &'static str {
+    match e {
+        tauri::Error::JoinError(j) if j.is_panic() => "panicked",
+        _ => "cancelled",
+    }
 }
 
 enum Done {
@@ -229,7 +238,7 @@ fn spawn_decode(engine: Arc<WhisperEngine>, rate: u32, mut p: LanguagePolicy, jo
             }
         });
         let done = inner.await.unwrap_or_else(|e| {
-            warn!("dictate: live decode task ended abnormally: {e}");
+            warn!("dictate: live decode task ended abnormally ({})", join_reason(&e));
             fallback
         });
         let _ = tx.send(done);

@@ -16,7 +16,7 @@ export type PageFrameProps = {
 export function PageFrame({ variant, title, breadcrumb, actions, rail, subnav, children }: PageFrameProps): JSX.Element {
   // One split shared by every reading page with a rail, so the meeting page and Digests remember the same width.
   const split = useSplitRatio({ storageKey: 'conclave.reading.mainRatio', defaultRatio: 0.6, min: 0.35, max: 0.8, label: 'summary and side panel', gutter: 32 });
-  const nav = useSplitRatio({ storageKey: 'conclave.subnav.width', defaultRatio: variant === 'reading' ? 300 : 220, min: 160, max: 520, label: 'navigation', px: 'start', offset: 16 });
+  const nav = useSplitRatio({ storageKey: `conclave.subnav.width.${variant}`, defaultRatio: variant === 'reading' ? 300 : 220, min: 160, max: 520, label: 'navigation', px: 'start', offset: 16 });
   const bounded = variant === 'list' || variant === 'reading';
 
   const header = (

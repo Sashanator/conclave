@@ -41,7 +41,7 @@ export function TranscriptRecovery({
   onDelete,
   onLoadPreview,
 }: TranscriptRecoveryProps) {
-  const split = useSplitRatio({ storageKey: 'conclave.recovery.listWidth', defaultRatio: 280, min: 200, max: 480, label: 'meeting list', px: 'start', offset: 24 });
+  const split = useSplitRatio({ storageKey: 'conclave.recovery.listWidth', defaultRatio: 280, min: 200, max: 480, label: 'meeting list', px: 'start', offset: 36 });
   const [selectedMeetingId, setSelectedMeetingId] = useState<string | null>(null);
   const [previewTranscripts, setPreviewTranscripts] = useState<StoredTranscript[]>([]);
   const [isLoadingPreview, setIsLoadingPreview] = useState(false);

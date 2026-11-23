@@ -693,7 +693,9 @@ pub fn run() {
             backup::run_at_startup(_app.handle());
 
             // Built here, not by tauri.conf.json: the backup dialog above pumps messages, and a window that
-            // already exists would run commands before AppState is managed.
+            // already existed would run commands while setup is blocked. AppState is managed further down;
+            // setup runs on the main thread, so no command reaches it before setup returns, unless a later
+            // step pumps messages too (keep new dialogs above this line).
             let main_cfg = _app.config().app.windows[0].clone();
             tauri::WebviewWindowBuilder::from_config(_app.handle(), &main_cfg)?.build()?;
 

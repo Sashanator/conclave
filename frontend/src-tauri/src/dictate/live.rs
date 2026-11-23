@@ -35,6 +35,7 @@ pub struct LiveCore {
     buf: Vec<f32>, // audio from `committed_to` on
     vad_end: usize,
     in_speech: bool,
+    speech_mark: usize, // `total` at the last chunk flagged as speech
     silence_run: usize, // samples pushed since speech last flagged (trimming does not reset it)
     held_speech: f32,
     decided: bool,
@@ -59,7 +60,7 @@ pub struct LiveCore {
 impl LiveCore {
     pub fn new(rate: u32) -> Self {
         Self {
-            rate,
+            rate: rate.max(1), // 0 would make every length 0 and the split loop spin
             total: 0,
             cut: 0,
             committed_to: 0,
@@ -67,6 +68,7 @@ impl LiveCore {
             buf: Vec::new(),
             vad_end: 0,
             in_speech: false,
+            speech_mark: 0,
             silence_run: 0,
             held_speech: 0.0,
             decided: false,
@@ -102,6 +104,7 @@ impl LiveCore {
         self.in_speech = in_speech;
         self.silence_run = if in_speech { 0 } else { self.silence_run + samples.len() };
         if in_speech {
+            self.speech_mark = self.total;
             let (max, win) = (self.samples(MAX_SEGMENT_SECS), self.samples(SPLIT_WINDOW_SECS));
             while self.total - self.cut >= max {
                 let ws = self.cut + max - win;
@@ -111,14 +114,20 @@ impl LiveCore {
                 self.speech_secs += secs;
                 self.close_range(at, secs);
             }
-        } else if self.total - self.cut > self.samples(SILENCE_KEEP_SECS + 1.0) {
-            // Silence is never decoded; the held prefix before `cut` stays.
-            let n = self.total - self.cut - self.samples(SILENCE_KEEP_SECS);
-            let from = self.cut - self.committed_to;
-            self.buf.drain(from..from + n);
-            self.removed += n;
-            self.total -= n;
-            self.last_preview_total = self.last_preview_total.min(self.total);
+        } else {
+            // The VAD reports a phrase only after the chunk that ends it, so never trim flagged speech
+            // it has not reported yet (the core does not depend on feed order).
+            let from = self.cut.max(self.vad_end);
+            let unreported = self.speech_mark > from.max(self.vad_end + self.samples(SILENCE_KEEP_SECS));
+            if !unreported && self.total - from > self.samples(SILENCE_KEEP_SECS + 1.0) {
+                // Silence is never decoded; the held prefix before `cut` stays.
+                let n = self.total - from - self.samples(SILENCE_KEEP_SECS);
+                self.buf.drain(from - self.committed_to..from - self.committed_to + n);
+                self.removed += n;
+                self.total -= n;
+                self.last_preview_total = self.last_preview_total.min(self.total);
+                self.speech_mark = self.speech_mark.min(self.total);
+            }
         }
     }
 
@@ -126,7 +135,7 @@ impl LiveCore {
         if self.cancelled || self.finishing {
             return;
         }
-        self.speech_secs += ((end_ms - start_ms) / 1000.0) as f32;
+        self.speech_secs += ((end_ms - start_ms).max(0.0) / 1000.0) as f32;
         let idx = |ms: f64| ((ms * self.rate as f64 / 1000.0) as usize).saturating_sub(self.removed).min(self.total);
         let (s, e) = (idx(start_ms), idx(end_ms));
         self.vad_end = self.vad_end.max(e);
@@ -243,7 +252,7 @@ impl LiveCore {
             return;
         }
         // The VAD flush may report a stretch shorter than the recording-time minimum; keep it.
-        self.cut = self.cut.max(self.vad_end);
+        self.cut = self.cut.max(self.vad_end.min(self.total));
         self.release();
         self.buf.clear();
         self.finishing = true;
@@ -331,10 +340,19 @@ mod tests {
         core.on_vad_segment(s, s + secs as f64 * 1000.0);
     }
 
+    /// Real worker order: the chunk that ends the phrase arrives flagged not-in-speech
+    /// before the VAD reports the segment.
+    fn seg_real(core: &mut LiveCore, secs: f32) {
+        let s = core.total as f64 / core.rate as f64 * 1000.0;
+        speech(core, secs);
+        core.push_audio(&vec![0.0; n(0.05)], false);
+        core.on_vad_segment(s, s + secs as f64 * 1000.0);
+    }
+
     /// First decision made: 3 s of speech released, commit 0 ("zero", en) done.
     fn decided(rate: u32) -> LiveCore {
         let mut c = LiveCore::new(rate);
-        seg(&mut c, 3.0);
+        seg_real(&mut c, 3.0);
         assert!(matches!(c.next_job(0, false, true), Some(Job::Commit { index: 0, .. })));
         c.on_commit_done(0, Ok("zero".into()), Some("en".into()));
         c
@@ -382,19 +400,71 @@ mod tests {
     }
 
     #[test]
-    fn finish_keeps_a_short_vad_overlap_after_a_force_cut() {
+    fn finish_keeps_a_short_vad_overlap_past_the_cut() {
         let mut c = decided(R);
-        let base = c.total;
+        let ct = c.committed_to;
         speech(&mut c, 1.0);
-        c.on_vad_segment(3000.0, 4100.0); // closes [3 s, 4.1 s)? total is only 4.0 s: clamped
-        let _ = commit(&mut c); // the segment was long enough while recording
+        c.on_vad_segment(ct as f64 * 1000.0 / R as f64, (ct + n(1.0)) as f64 * 1000.0 / R as f64);
+        commit(&mut c);
         c.on_commit_done(1, Ok("a".into()), None);
+        let cut = c.cut;
         speech(&mut c, 0.1);
-        c.on_vad_segment(4000.0, 4100.0); // 0.1 s past the cut: under the 0.25 s rule
+        let start = (cut + n(0.05)) as f64 * 1000.0 / R as f64;
+        c.on_vad_segment(start, c.total as f64 * 1000.0 / R as f64); // 0.1 s past the cut: under 0.25 s
         assert!(!matches!(c.next_job(0, false, true), Some(Job::Commit { .. })));
+        let total = c.total;
         c.finish();
         let (_, samples, _) = commit(&mut c);
-        assert_eq!(samples.len(), c.total - base - n(1.0));
+        assert_eq!(samples.len(), total - cut);
+    }
+
+    #[test]
+    fn force_cut_then_short_vad_overlap_is_kept_at_finish() {
+        let mut c = LiveCore::new(R);
+        speech(&mut c, 20.0);
+        let (_, first, _) = commit(&mut c);
+        c.on_commit_done(0, Ok("a".into()), None);
+        c.on_vad_segment(19_800.0, 20_000.0); // 0.2 s past the force cut
+        assert!(!matches!(c.next_job(0, false, true), Some(Job::Commit { .. })));
+        c.finish();
+        let (idx, rest, _) = commit(&mut c);
+        assert_eq!((idx, first.len() + rest.len()), (1, n(20.0)));
+    }
+
+    #[test]
+    fn silence_after_phrase_end_does_not_eat_unreported_speech() {
+        let mut c = LiveCore::new(R);
+        speech(&mut c, 3.0);
+        c.push_audio(&vec![0.0; n(0.15)], false); // the chunk that ends the phrase
+        c.on_vad_segment(0.0, 3000.0);
+        c.finish();
+        let (_, samples, _) = commit(&mut c);
+        assert_eq!(samples.len(), n(3.0));
+    }
+
+    #[test]
+    fn zero_rate_does_not_hang() {
+        let mut c = LiveCore::new(0);
+        c.push_audio(&[0.5; 100], true);
+        c.finish();
+        assert!(c.is_done() || matches!(c.next_job(0, false, true), Some(Job::Commit { .. })));
+    }
+
+    #[test]
+    fn vad_ms_convert_at_48khz() {
+        let mut c = LiveCore::new(48_000);
+        c.push_audio(&vec![0.5; 48_000 * 3], true);
+        c.on_vad_segment(1000.0, 2500.0);
+        c.finish();
+        let Some(Job::Commit { samples, .. }) = c.next_job(0, false, true) else { panic!() };
+        assert_eq!(samples.len(), 120_000);
+    }
+
+    #[test]
+    fn reversed_vad_segment_does_not_lower_speech_secs() {
+        let mut c = LiveCore::new(R);
+        c.on_vad_segment(1000.0, 500.0);
+        assert_eq!(c.speech_secs(), 0.0);
     }
 
     #[test]

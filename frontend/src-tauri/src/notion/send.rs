@@ -424,7 +424,8 @@ mod tests {
         let pool = setup().await;
         task(&pool, "t1", "keep", 0).await;
         task(&pool, "t2", "keep", 0).await;
-        let dead = NotionClient::with_base("http://127.0.0.1:1", "t", Duration::from_millis(200));
+        // Windows retries a refused connect for ~2s; a shorter timeout turns "offline" into "maybe sent".
+        let dead = NotionClient::with_base("http://127.0.0.1:1", "t", Duration::from_secs(5));
         let r = send(&pool, &dead, None, false).await.unwrap();
         assert_eq!((r.sent, r.failed), (0, 2));
         assert!(row(&pool, "t2").await.2.unwrap().contains("could not be reached"));

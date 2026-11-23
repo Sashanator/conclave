@@ -10,6 +10,7 @@ import { PrepChat } from '@/components/Prep/PrepChat';
 import { Button } from '@/components/ui/button';
 import { LanguagesSpoken } from '@/components/LanguagesSpoken';
 import { useConfig } from '@/contexts/ConfigContext';
+import { SplitHandle, useSplitRatio } from '@/hooks/useSplitRatio';
 import { AudioSummaryLine } from './AudioSummaryLine';
 
 /** A meeting with no recording yet: Start on top, the audio line and languages, with the prep notes in a second column. */
@@ -24,6 +25,8 @@ export function NewMeetingView({ row, live, disabled, onStart, header }: {
   onStart: () => void;
 }) {
   const { transcriptModelConfig: { provider } } = useConfig(); // Parakeet only auto-detects: no spoken-languages list, as in Settings
+  // gutter = the 0.5rem handle track + two gap-x-4 gaps, so the handle follows the pointer.
+  const split = useSplitRatio({ storageKey: 'conclave.newMeeting.formRatio', defaultRatio: 0.5, min: 0.3, max: 0.7, label: 'form and prep notes', gutter: 40 });
   const [prep, setPrep] = useState<MeetingPrep | null>(null);
   const [material, setMaterial] = useState('');
   const saved = useRef('');
@@ -88,13 +91,19 @@ export function NewMeetingView({ row, live, disabled, onStart, header }: {
 
   return (
     <div className="@container">
-      <div className="grid gap-10 @[80rem]:grid-cols-2">
+      <div
+        ref={split.containerRef}
+        {...split.containerHandlers}
+        style={{ '--cols': `minmax(0,${split.ratio}fr) 0.5rem minmax(0,${1 - split.ratio}fr)` } as React.CSSProperties}
+        className="grid gap-10 @[80rem]:grid-cols-[var(--cols)] @[80rem]:gap-x-4"
+      >
         <div className="min-w-0 max-w-[880px] space-y-6">
           {header}
           {start}
           <AudioSummaryLine changeable={!disabled} />
           {provider !== 'parakeet' && <LanguagesSpoken />}
         </div>
+        <SplitHandle {...split.separatorProps} className="hidden @[80rem]:flex" />
         <section aria-labelledby="prep-notes" className="min-w-0 max-w-[880px] space-y-2">
           <h2 id="prep-notes" className="text-base font-semibold text-foreground">Prep material and chat</h2>
           <textarea

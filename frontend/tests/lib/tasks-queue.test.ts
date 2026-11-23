@@ -57,8 +57,13 @@ describe('tasks queue', () => {
     expect(sendButtonLabel(3, false)).toBe('Send 3 to Notion');
     expect(sendButtonLabel(0, false)).toBe('Nothing to send');
     expect(sendButtonLabel(3, true)).toBe('Sending…');
-    expect(resultLine({ sent: 2, failed: 1, ambiguous: 1 })).toEqual({ sent: 'Sent 2 to Notion', notSent: '2 not sent, see To review' });
-    expect(resultLine({ sent: 0, failed: 0, ambiguous: 0 })).toEqual({ sent: null, notSent: null });
+    expect(resultLine({ sent: 2, failed: 1, ambiguous: 1 })).toEqual({ sent: 'Sent 2 to Notion', notSent: '2 not sent, see To review', aiNote: null });
+    expect(resultLine({ sent: 0, failed: 0, ambiguous: 0 })).toEqual({ sent: null, notSent: null, aiNote: null });
+    expect(resultLine({ sent: 1, failed: 0, ambiguous: 0, aiNotFilled: ['Hausaufgaben'] }).aiNote).toBe("AI couldn't fill the other columns (Hausaufgaben).");
+    expect(resultLine({ sent: 1, failed: 0, ambiguous: 0, aiNotFilled: ['Job tasks: Built-in AI can\'t fill columns, choose a cloud model', 'Personal tasks'] }).aiNote)
+      .toBe("AI couldn't fill the other columns (Job tasks: Built-in AI can't fill columns, choose a cloud model; Personal tasks).");
+    expect(resultLine({ sent: 1, failed: 0, ambiguous: 0, aiNotFilled: ['Job tasks', 'Job tasks: no cloud model'] }).aiNote)
+      .toBe("AI couldn't fill the other columns (Job tasks: no cloud model).");
     expect(waitingText('Personal tasks', 'not_shared')).toBe("Personal tasks isn't shared with Conclave yet, so this task waits.");
     expect(waitingText('Job tasks', 'mapping_broken')).toBe("Job tasks isn't connected (Mapping broken), so this task waits.");
   });

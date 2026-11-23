@@ -296,6 +296,14 @@ describe('sending', () => {
     expect(status()).toContain('View');
   });
 
+  test('send shows the AI fill notice', async () => {
+    await setup();
+    sendReport = { sent: 2, failed: 0, ambiguous: 0, aiNotFilled: ['Job tasks'] };
+    await click(sendBtn());
+    expect(status()).toContain('Sent 2 to Notion');
+    expect(status()).toContain("AI couldn't fill the other columns (Job tasks).");
+  });
+
   test('in flight: disabled, no second send by click or Ctrl+Enter', async () => {
     await setup();
     let release!: () => void;

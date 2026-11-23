@@ -168,9 +168,56 @@ fn clock(at: f64) -> String {
     }
 }
 
-pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask) -> Value {
+/// Column kinds the AI may fill.
+pub(crate) const FILL_KINDS: [&str; 8] = ["rich_text", "date", "select", "multi_select", "status", "checkbox", "number", "url"];
+
+/// Columns the AI may fill: a fillable kind, not mapped or fixed, and with options when it picks from a list.
+pub(crate) fn fillable_props<'a>(m: &Mapping, s: &'a DbSchema) -> Vec<&'a PropInfo> {
+    let taken = |n: &str| {
+        n == m.title_prop || m.due_prop.as_deref() == Some(n) || m.meeting_prop.as_deref() == Some(n) || m.fixed.iter().any(|f| f.prop == n)
+    };
+    s.properties
+        .iter()
+        .filter(|p| FILL_KINDS.contains(&p.kind.as_str()) && !taken(&p.name))
+        .filter(|p| !matches!(p.kind.as_str(), "select" | "multi_select" | "status") || !p.options.is_empty())
+        .collect()
+}
+
+/// An AI value as a Notion property value, or None when Notion could reject it (the AI is untrusted).
+pub(crate) fn checked_value(p: &PropInfo, v: &Value) -> Option<Value> {
+    let known = |s: &Value| s.as_str().filter(|s| p.options.iter().any(|o| o == s)).map(str::to_owned);
+    match p.kind.as_str() {
+        "rich_text" => v.as_str().map(str::trim).filter(|s| !s.is_empty()).map(|s| json!({"rich_text":[text_run(s)]})),
+        "date" => crate::knowledge::extract::iso_date(v.as_str()?).map(|d| json!({"date":{"start":d}})),
+        "select" => known(v).map(|n| json!({"select":{"name":n}})),
+        "status" => known(v).map(|n| json!({"status":{"name":n}})),
+        "multi_select" => {
+            let mut names: Vec<String> = Vec::new();
+            for n in v.as_array()?.iter().filter_map(|i| known(i)) {
+                if !names.contains(&n) {
+                    names.push(n);
+                }
+            }
+            (!names.is_empty()).then(|| json!({"multi_select": names.iter().map(|n| json!({"name":n})).collect::<Vec<_>>()}))
+        }
+        "checkbox" => v.as_bool().map(|b| json!({"checkbox":b})),
+        "number" => v.as_number().filter(|n| n.as_f64().is_some_and(f64::is_finite)).map(|n| json!({"number":n})),
+        "url" => {
+            let s = v.as_str()?.trim();
+            let ok = (s.starts_with("http://") || s.starts_with("https://")) && !s.chars().any(char::is_whitespace) && s.encode_utf16().count() <= 2000;
+            ok.then(|| json!({"url":s}))
+        }
+        _ => None,
+    }
+}
+
+pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask, ai: Option<&serde_json::Map<String, Value>>) -> Value {
     let date = t.meeting_date.as_deref().and_then(|d| display_date(d, &chrono::Local));
-    let mut props = serde_json::Map::new();
+    let mut props = ai.cloned().unwrap_or_default();
+    // Mapped and fixed columns are ours alone, even when we skip writing them below.
+    for n in [Some(&m.title_prop), m.due_prop.as_ref(), m.meeting_prop.as_ref()].into_iter().flatten().chain(m.fixed.iter().map(|f| &f.prop)) {
+        props.remove(n);
+    }
     props.insert(m.title_prop.clone(), json!({"title":[text_run(&t.text)]}));
     if let (Some(p), Some(d)) = (&m.due_prop, &t.due_date) {
         props.insert(p.clone(), json!({"date":{"start":d.chars().take(10).collect::<String>()}}));
@@ -210,11 +257,15 @@ pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask) -> Valu
         }
         None => vec![text_run(&format!("From a deleted meeting{tail}"))],
     };
-    json!({
+    let mut body = json!({
         "parent": {"data_source_id": data_source_id},
         "properties": props,
         "children": [{"object":"block","type":"paragraph","paragraph":{"rich_text":runs}}],
-    })
+    });
+    if let Some(e) = &m.emoji {
+        body["icon"] = json!({"type":"emoji","emoji":e});
+    }
+    body
 }
 
 #[cfg(test)]
@@ -254,6 +305,12 @@ mod tests {
             "Status":{"id":"s","name":"Status","type":"status","status":{"options":[{"name":"To do"},{"name":"Done"}]}},
             "Meeting":{"id":"m","name":"Meeting","type":"rich_text","rich_text":{}},
             "Due":{"id":"d","name":"Due","type":"date","date":{}},
+            "Thema":{"id":"th","name":"Thema","type":"rich_text","rich_text":{}},
+            "Area":{"id":"a","name":"Area","type":"select","select":{"options":[{"name":"Job"}]}},
+            "Score":{"id":"sc","name":"Score","type":"number","number":{}},
+            "Link":{"id":"l","name":"Link","type":"url","url":{}},
+            "Owner":{"id":"o","name":"Owner","type":"people","people":{}},
+            "Done":{"id":"dn","name":"Done","type":"date","date":{}},
             "Name":{"id":"n","name":"Name","type":"title","title":{}}}});
         (db, ds)
     }
@@ -265,8 +322,8 @@ mod tests {
         assert_eq!(s.title, "Job tasks");
         assert_eq!(s.data_source_id.as_deref(), Some("ds-1"));
         let names: Vec<_> = s.properties.iter().map(|p| p.name.as_str()).collect();
-        assert_eq!(names, ["Name", "Due", "Meeting", "Status", "Tags", "Urgent"]);
-        assert_eq!(s.properties[3].options, ["To do", "Done"]);
+        assert_eq!(names, ["Name", "Area", "Done", "Due", "Link", "Meeting", "Owner", "Score", "Status", "Tags", "Thema", "Urgent"]);
+        assert_eq!(s.properties[8].options, ["To do", "Done"]);
         assert_eq!(first_data_source(&db).as_deref(), Some(DASHED));
         assert_eq!(first_data_source(&json!({"data_sources":[{"id":"zz"}]})), None);
     }
@@ -281,7 +338,19 @@ mod tests {
                 FixedValue { prop: "Tags".into(), kind: "multi_select".into(), value: json!(["Work"]) },
                 FixedValue { prop: "Urgent".into(), kind: "checkbox".into(), value: json!(true) },
             ],
+            emoji: None,
+            ai_fill: true,
         }
+    }
+
+    #[test]
+    fn page_body_sets_the_emoji_icon() {
+        let t = task();
+        let mut m = mapping();
+        m.emoji = Some("👷".into());
+        assert_eq!(page_body("ds", &m, &t, None)["icon"], json!({"type":"emoji","emoji":"👷"}));
+        m.emoji = None;
+        assert!(page_body("ds", &m, &t, None).get("icon").is_none());
     }
 
     #[test]
@@ -313,6 +382,80 @@ mod tests {
         );
     }
 
+    fn prop(name: &str, kind: &str, options: &[&str]) -> PropInfo {
+        PropInfo { id: "x".into(), name: name.into(), kind: kind.into(), options: options.iter().map(|o| o.to_string()).collect() }
+    }
+
+    #[test]
+    fn fillable_props_skips_title_mapped_fixed_and_unsupported() {
+        let (db, ds) = schema_json();
+        let mut s = schema_from(DASHED, &db, &ds);
+        let names = |s: &DbSchema| fillable_props(&mapping(), s).iter().map(|p| p.name.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&s), ["Area", "Done", "Link", "Score", "Thema"]);
+        s.properties.iter_mut().find(|p| p.name == "Area").unwrap().options.clear();
+        assert_eq!(names(&s), ["Done", "Link", "Score", "Thema"]);
+    }
+
+    #[test]
+    fn checked_value_drops_what_notion_would_reject() {
+        let area = prop("Area", "select", &["Job"]);
+        let done = prop("Done", "date", &[]);
+        let score = prop("Score", "number", &[]);
+        let link = prop("Link", "url", &[]);
+        let thema = prop("Thema", "rich_text", &[]);
+        let tags = prop("Tags", "multi_select", &["Work"]);
+        let urgent = prop("Urgent", "checkbox", &[]);
+        let status = prop("Status", "status", &["To do"]);
+        assert_eq!(checked_value(&area, &json!("Job")), Some(json!({"select":{"name":"Job"}})));
+        assert_eq!(checked_value(&status, &json!("To do")), Some(json!({"status":{"name":"To do"}})));
+        assert_eq!(checked_value(&done, &json!("2026-11-30")), Some(json!({"date":{"start":"2026-11-30"}})));
+        assert_eq!(checked_value(&score, &json!(3.5)), Some(json!({"number":3.5})));
+        assert_eq!(checked_value(&link, &json!("https://x.y")), Some(json!({"url":"https://x.y"})));
+        assert_eq!(checked_value(&thema, &json!(" Dativ "))
+            .unwrap()["rich_text"][0]["text"]["content"], "Dativ");
+        assert_eq!(checked_value(&tags, &json!(["Work", "Nope", "Work"])), Some(json!({"multi_select":[{"name":"Work"}]})));
+        assert_eq!(checked_value(&urgent, &json!(false)), Some(json!({"checkbox":false})));
+        let long = format!("https://{}", "a".repeat(2000));
+        let emoji_url = format!("https://x/{}", "😀".repeat(1000));
+        let bad: [(&PropInfo, Value); 18] = [
+            (&link, json!(emoji_url)),
+            (&area, json!("Life")), (&area, json!(1)), (&done, json!("2026-02-30")), (&done, json!("30.11.2026")),
+            (&score, json!("3")), (&link, json!("javascript:alert(1)")), (&link, json!("ftp://x")),
+            (&link, json!("https://x y")), (&link, json!(long)), (&thema, json!("")), (&thema, json!(5)),
+            (&tags, json!(["Nope"])), (&tags, json!("Work")), (&urgent, json!("true")), (&status, json!("Done")),
+            (&area, Value::Null), (&prop("Owner", "people", &[]), json!("x")),
+        ];
+        for (p, v) in bad {
+            assert_eq!(checked_value(p, &v), None, "{} {v}", p.name);
+        }
+    }
+
+    #[test]
+    fn page_body_mapped_and_fixed_values_win_over_ai() {
+        let ai = json!({"Status":{"status":{"name":"Done"}},"Due":{"date":{"start":"2030-01-01"}},"Thema":{"rich_text":[]}});
+        let b = page_body("ds-1", &mapping(), &task(), ai.as_object());
+        let p = &b["properties"];
+        assert_eq!(p["Status"]["status"]["name"], "To do");
+        assert_eq!(p["Due"]["date"]["start"], "2026-11-26");
+        assert!(p.get("Thema").is_some());
+    }
+
+    #[test]
+    fn stray_ai_values_for_mapped_columns_are_dropped() {
+        let mut t = task();
+        t.due_date = None;
+        let ai = json!({"Due":{"date":{"start":"2030-01-01"}},"Name":{"title":[]},"Meeting":{"rich_text":[]}});
+        let mut m = mapping();
+        m.fixed[0].kind = "relation".into(); // malformed fixed entry is skipped
+        let ai2 = json!({"Status":{"status":{"name":"Done"}},"Due":ai["Due"]});
+        let b = page_body("ds-1", &m, &t, ai2.as_object());
+        assert!(b["properties"].get("Due").is_none());
+        assert!(b["properties"].get("Status").is_none());
+        let b = page_body("ds-1", &mapping(), &t, ai.as_object());
+        assert!(b["properties"].get("Due").is_none());
+        assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"], "Send the deck");
+    }
+
     fn task() -> SendTask {
         SendTask {
             id: "1".into(),
@@ -327,7 +470,7 @@ mod tests {
 
     #[test]
     fn page_body_maps_every_property_kind() {
-        let b = page_body("ds-1", &mapping(), &task());
+        let b = page_body("ds-1", &mapping(), &task(), None);
         assert_eq!(b["parent"], json!({"data_source_id":"ds-1"}));
         let p = &b["properties"];
         assert_eq!(p["Name"], json!({"title":[{"type":"text","text":{"content":"Send the deck"}}]}));
@@ -350,7 +493,7 @@ mod tests {
         t.meeting_title = None;
         t.meeting_date = None;
         t.at = None;
-        let b = page_body("ds-1", &mapping(), &t);
+        let b = page_body("ds-1", &mapping(), &t, None);
         assert!(b["properties"].get("Due").is_none());
         assert_eq!(b["properties"]["Meeting"]["rich_text"][0]["text"]["content"], "Deleted meeting");
         assert_eq!(b["children"][0]["paragraph"]["rich_text"][0]["text"]["content"], "From a deleted meeting");
@@ -360,11 +503,11 @@ mod tests {
     fn long_text_is_cut_to_2000_chars() {
         let mut t = task();
         t.text = "я".repeat(2500);
-        let b = page_body("ds-1", &mapping(), &t);
+        let b = page_body("ds-1", &mapping(), &t, None);
         assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"].as_str().unwrap().chars().count(), 2000);
         // Notion counts UTF-16 units: an emoji is 2, and is never split.
         t.text = "😀".repeat(1500);
-        let b = page_body("ds-1", &mapping(), &t);
+        let b = page_body("ds-1", &mapping(), &t, None);
         assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"].as_str().unwrap().chars().count(), 1000);
     }
 

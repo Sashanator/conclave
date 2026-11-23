@@ -222,7 +222,7 @@ mod tests {
     }
 
     async fn add(pool: &SqlitePool, name: &str, due: Option<&str>) -> Destination {
-        let mapping = Mapping { title_prop: "Name".into(), due_prop: due.map(Into::into), meeting_prop: None, fixed: vec![] };
+        let mapping = Mapping { title_prop: "Name".into(), due_prop: due.map(Into::into), meeting_prop: None, fixed: vec![], emoji: None, ai_fill: true };
         let d = Destination {
             id: String::new(),
             name: name.into(),

@@ -137,6 +137,13 @@ impl SessionBuffer {
         self.session.take().unwrap_or_default()
     }
 
+    /// Copies the session from index `from` on, without ending it. None outside a session.
+    #[allow(dead_code)] // shortcut: no caller until the live worker (Task 6), remove then
+    pub fn samples_since(&self, from: usize) -> Option<Vec<f32>> {
+        let s = self.session.as_ref()?;
+        Some(s.get(from..).unwrap_or(&[]).to_vec())
+    }
+
     pub fn cancel(&mut self) {
         self.session = None;
     }
@@ -226,6 +233,17 @@ impl MicCapture {
 
     pub fn end(&self) -> CapturedAudio {
         CapturedAudio { samples: lock(&self.buf).end(), sample_rate: self.rate }
+    }
+
+    /// Copies the active session from sample index `from` on. None when no session is active.
+    #[allow(dead_code)] // shortcut: no caller until the live worker (Task 6), remove then
+    pub fn samples_since(&self, from: usize) -> Option<Vec<f32>> {
+        lock(&self.buf).samples_since(from)
+    }
+
+    #[allow(dead_code)] // shortcut: no caller until the live worker (Task 6), remove then
+    pub fn sample_rate(&self) -> u32 {
+        self.rate
     }
 
     pub fn cancel(&self) {
@@ -394,6 +412,19 @@ mod tests {
         s.cancel();
         s.begin(Vec::new());
         assert_eq!(s.end(), vec![3.0, 4.0]);
+    }
+
+    #[test]
+    fn samples_since_copies_the_session_tail() {
+        let mut b = SessionBuffer::new(2, 100);
+        assert_eq!(b.samples_since(0), None);
+        b.push(&[1.0, 2.0]);
+        b.begin(Vec::new());
+        b.push(&[3.0]);
+        assert_eq!(b.samples_since(0), Some(vec![1.0, 2.0, 3.0]));
+        assert_eq!(b.samples_since(2), Some(vec![3.0]));
+        assert_eq!(b.samples_since(9), Some(vec![]));
+        assert_eq!(b.end(), vec![1.0, 2.0, 3.0]); // copying never consumes
     }
 
     #[test]

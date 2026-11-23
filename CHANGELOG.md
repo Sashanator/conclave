@@ -1,5 +1,11 @@
 # Conclave changelog
 
+## v2.4.0 — 2026-11-23
+- **AI fills your Notion columns.** When you click Send, the AI reads the meeting's summary and transcript and fills every column of the Notion database (date, topic, status, notes and the rest), choosing only options that already exist. Columns you mapped or fixed in Settings keep your values.
+- **An emoji for every row.** Give each Notion database an emoji in Settings → Notion; every task Conclave creates there gets it as its icon.
+- **A switch per database.** "Let AI fill the other columns" can be turned off for any database.
+- If the AI can't fill the columns (no cloud model, no key, or no answer within two minutes), the tasks are still sent and the Send bar says which databases weren't filled and why. A task is never sent twice.
+
 ## v2.3.0 — 2026-11-23
 - **Resize every panel.** Drag the edge between the sidebar, lists, the meeting text, the side panel and the Ask/Copilot panel to the width you like; each width is remembered. Stats, Practice and What's new use the whole window.
 - **Hide calendar events you didn't record.** A new switch in Settings → Appearance & app removes upcoming and missed calendar events from the Meetings table. Search still finds them.

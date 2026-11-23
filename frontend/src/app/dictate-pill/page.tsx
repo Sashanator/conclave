@@ -27,7 +27,10 @@ export default function DictatePill() {
   const [view, setView] = useState<PillView | null>(null);
   const [clipped, setClipped] = useState(false);
   // The palette class is read once; the pill window lives for one dictation.
-  const [conclave] = useState(() => document.documentElement.classList.contains('theme-conclave'));
+  const [conclave, setConclave] = useState(false);
+  useEffect(() => {
+    setConclave(document.documentElement.classList.contains('theme-conclave'));
+  }, []);
   const cardRef = useRef<HTMLDivElement>(null);
   const textRef = useRef<HTMLDivElement>(null);
   const paraRef = useRef<HTMLParagraphElement>(null);

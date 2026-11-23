@@ -135,7 +135,9 @@ where
             continue;
         }
         let task = SendTask { id: id.clone(), text, at, due_date, meeting_title, meeting_date, dest_id: dest.id.clone() };
-        let body = page_body(dest.data_source_id.as_deref().unwrap_or_default(), &dest.mapping, &task, ai.get(&id));
+        // The row's database may have changed during the pre-pass: values made for another database are dropped.
+        let ai_map = ai.get(&id).filter(|(d, _)| *d == dest.id).map(|(_, m)| m);
+        let body = page_body(dest.data_source_id.as_deref().unwrap_or_default(), &dest.mapping, &task, ai_map);
         // Autocommit: this must be durable before the request leaves.
         let claimed = sqlx::query("UPDATE tasks SET review = 'sending', send_error = NULL, send_ambiguous = 0 WHERE id = ? AND review = 'keep' AND (send_ambiguous = 0 OR ?)")
             .bind(&id)
@@ -701,5 +703,49 @@ mod tests {
         assert_eq!((calls(&n), r.sent), (2, 3));
         let gets = f.requests.lock().unwrap().iter().filter(|q| q.head.starts_with("GET")).count();
         assert_eq!(gets, 1);
+    }
+
+    #[tokio::test]
+    async fn values_made_for_another_database_are_not_sent() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        let f = serve(vec![ds_reply(), ok("p1")]).await;
+        let call = {
+            let pool = pool.clone();
+            move |_: String, _: String| {
+                let pool = pool.clone();
+                async move {
+                    sqlx::query("UPDATE tasks SET dest_id = 'd2' WHERE id = 't1'").execute(&pool).await.unwrap();
+                    Ok(model(r#"{"1":{"Thema":"Dativ"}}"#))
+                }
+            }
+        };
+        let r = send_with(&pool, &client(&f), None, false, call).await.unwrap();
+        assert_eq!(r.sent, 1);
+        assert!(!f.requests.lock().unwrap()[1].body.contains("Dativ"));
+        assert_eq!(status(&pool, "d2").await.as_deref(), Some("connected"));
+    }
+
+    #[tokio::test]
+    async fn a_task_the_reply_skips_is_reported() {
+        let _l = SEND_TEST_LOCK.lock().await;
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        task(&pool, "t2", "keep", 0).await;
+        let f = serve(vec![ds_reply(), ok("p1"), ok("p2")]).await;
+        let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let r = send_with(&pool, &client(&f), None, false, fake_ai(&n, Ok(r#"{"1":{"Thema":"A"}}"#))).await.unwrap();
+        assert_eq!((r.sent, r.ai_not_filled), (2, vec!["Job tasks".to_string()]));
+        // An empty map for a present task is fine.
+        let pool = setup().await;
+        ai_on(&pool).await;
+        task(&pool, "t1", "keep", 0).await;
+        task(&pool, "t2", "keep", 0).await;
+        let f = serve(vec![ds_reply(), ok("p1"), ok("p2")]).await;
+        let r = send_with(&pool, &client(&f), None, false, fake_ai(&n, Ok(r#"{"1":{"Thema":"A"},"2":{}}"#))).await.unwrap();
+        assert!(r.ai_not_filled.is_empty());
     }
 }

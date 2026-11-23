@@ -91,6 +91,17 @@ pub(crate) fn meeting_blocks(
     Ok((inputs.summary.clone(), edits, transcript))
 }
 
+pub(crate) async fn load_transcript(pool: &SqlitePool, meeting_id: &str) -> Result<String, String> {
+    let lines: Vec<String> = sqlx::query_scalar(
+        "SELECT transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time ASC, id ASC",
+    )
+    .bind(meeting_id)
+    .fetch_all(pool)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(middle_cut(&lines.join("\n"), MAX_TRANSCRIPT_CHARS))
+}
+
 pub(crate) async fn load_meeting_inputs(
     pool: &SqlitePool,
     meeting_id: &str,
@@ -118,14 +129,7 @@ pub(crate) async fn load_meeting_inputs(
         .as_str()
         .filter(|s| !s.is_empty())
         .map(str::to_string);
-    let lines: Vec<String> = sqlx::query_scalar(
-        "SELECT transcript FROM transcripts WHERE meeting_id = ? ORDER BY audio_start_time ASC, id ASC",
-    )
-    .bind(meeting_id)
-    .fetch_all(pool)
-    .await
-    .map_err(|e| e.to_string())?;
-    let transcript = middle_cut(&lines.join("\n"), MAX_TRANSCRIPT_CHARS);
+    let transcript = load_transcript(pool, meeting_id).await?;
     Ok(MeetingInputs {
         template_id,
         summary,

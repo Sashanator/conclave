@@ -360,7 +360,7 @@ pub(crate) async fn call_model(pool: SqlitePool, system: String, user: String) -
     let target = settings::target(&pool).await?;
     // The local sidecar cannot be cancelled, so a timed-out call would leave it busy (as copilot and Dictate do).
     if target.provider == LLMProvider::BuiltInAI {
-        return Err("Built-in AI is not supported for task extraction".to_string());
+        return Err("Built-in AI is not supported for this feature".to_string());
     }
     let completion = complete(&target, &system, &user, None, None)
         .await

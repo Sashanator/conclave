@@ -1,5 +1,9 @@
 # Conclave changelog
 
+## v2.5.0 — 2026-11-23
+- **See your words while you dictate.** The Dictate pill now shows what Conclave hears as you speak: final words in normal text, words still being guessed in grey. Pick Panel (three lines above the pill) or One line in Dictate → Live text.
+- **Faster paste after long dictations.** Phrases are transcribed while you speak, so only the last one is left when you release the key.
+
 ## v2.4.0 — 2026-11-23
 - **AI fills your Notion columns.** When you click Send, the AI reads the meeting's summary and transcript and fills every column of the Notion database (date, topic, status, notes and the rest), choosing only options that already exist. Columns you mapped or fixed in Settings keep your values.
 - **An emoji for every row.** Give each Notion database an emoji in Settings → Notion; every task Conclave creates there gets it as its icon.

@@ -1,5 +1,6 @@
 pub mod client;
 pub mod commands;
+pub mod fill;
 pub mod mapping;
 pub mod send;
 

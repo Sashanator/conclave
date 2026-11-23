@@ -210,11 +210,15 @@ pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask) -> Valu
         }
         None => vec![text_run(&format!("From a deleted meeting{tail}"))],
     };
-    json!({
+    let mut body = json!({
         "parent": {"data_source_id": data_source_id},
         "properties": props,
         "children": [{"object":"block","type":"paragraph","paragraph":{"rich_text":runs}}],
-    })
+    });
+    if let Some(e) = &m.emoji {
+        body["icon"] = json!({"type":"emoji","emoji":e});
+    }
+    body
 }
 
 #[cfg(test)]
@@ -281,7 +285,19 @@ mod tests {
                 FixedValue { prop: "Tags".into(), kind: "multi_select".into(), value: json!(["Work"]) },
                 FixedValue { prop: "Urgent".into(), kind: "checkbox".into(), value: json!(true) },
             ],
+            emoji: None,
+            ai_fill: true,
         }
+    }
+
+    #[test]
+    fn page_body_sets_the_emoji_icon() {
+        let t = task();
+        let mut m = mapping();
+        m.emoji = Some("👷".into());
+        assert_eq!(page_body("ds", &m, &t)["icon"], json!({"type":"emoji","emoji":"👷"}));
+        m.emoji = None;
+        assert!(page_body("ds", &m, &t).get("icon").is_none());
     }
 
     #[test]

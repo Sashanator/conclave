@@ -4,6 +4,7 @@
 pub mod capture;
 pub mod cleanup;
 pub mod live;
+pub mod live_worker;
 pub mod mute;
 pub mod pill;
 pub mod session;

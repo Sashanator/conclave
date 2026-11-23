@@ -1,7 +1,5 @@
 //! Live dictation segment scheduler. Pure: no I/O, no clock, no threads. The async worker (Task 6)
 //! feeds it audio and VAD segments and asks it for the next decode job.
-// Task 6 (the worker) is the only caller; until it lands everything here is unused.
-#![allow(dead_code)]
 
 use std::collections::VecDeque;
 

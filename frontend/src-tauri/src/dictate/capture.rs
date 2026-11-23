@@ -138,7 +138,6 @@ impl SessionBuffer {
     }
 
     /// Copies the session from index `from` on, without ending it. None outside a session.
-    #[allow(dead_code)] // shortcut: no caller until the live worker (Task 6), remove then
     pub fn samples_since(&self, from: usize) -> Option<Vec<f32>> {
         let s = self.session.as_ref()?;
         Some(s.get(from..).unwrap_or(&[]).to_vec())
@@ -236,12 +235,10 @@ impl MicCapture {
     }
 
     /// Copies the active session from sample index `from` on. None when no session is active.
-    #[allow(dead_code)] // shortcut: no caller until the live worker (Task 6), remove then
     pub fn samples_since(&self, from: usize) -> Option<Vec<f32>> {
         lock(&self.buf).samples_since(from)
     }
 
-    #[allow(dead_code)] // shortcut: no caller until the live worker (Task 6), remove then
     pub fn sample_rate(&self) -> u32 {
         self.rate
     }

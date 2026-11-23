@@ -3,7 +3,7 @@
 // the pill, Whisper, cleanup, the clipboard and the hotkey hook. Dictated text stays in memory and is never logged.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Mutex, MutexGuard, OnceLock, PoisonError};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock, PoisonError};
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait};
@@ -18,6 +18,8 @@ use tokio::sync::mpsc::{unbounded_channel, UnboundedReceiver, UnboundedSender};
 
 use super::capture::{CapturedAudio, MicCapture};
 use super::cleanup::{self, ModeSpec};
+use super::live::{tail_chars, PILL_TAIL_CHARS};
+use super::live_worker::{self, LiveHandle, LiveOutcome};
 use super::mute::MuteGuard;
 use super::pill::{self, PillState, PillView};
 use super::settings::{self, DictateSettings, LiveTextStyle};
@@ -297,7 +299,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 }
 
 /// Runs `f` on the open microphone, if it is alive.
-fn with_live_mic<T>(f: impl FnOnce(&MicCapture) -> T) -> Option<T> {
+pub(super) fn with_live_mic<T>(f: impl FnOnce(&MicCapture) -> T) -> Option<T> {
     lock(&MIC).as_ref().filter(|m| m.is_alive()).map(f)
 }
 
@@ -383,6 +385,8 @@ struct Exec {
     /// Dictate's epoch when the current capture began.
     epoch: u64,
     style: LiveTextStyle,
+    /// The live decode worker of the current capture. Dropping it cancels the worker.
+    live: Option<LiveHandle>,
 }
 
 impl Exec {
@@ -394,7 +398,10 @@ impl Exec {
                 self.started = Some(Instant::now());
                 self.epoch = EPOCH.load(Ordering::SeqCst);
                 self.pill_state = None;
-                if !begin_capture() {
+                self.live = None;
+                if begin_capture() {
+                    self.live = with_live_mic(|m| m.sample_rate()).map(live_worker::start);
+                } else {
                     warn!("dictate: no microphone to capture from");
                     let _ = tx.send(SessionEvent::CaptureFailed);
                     tauri::async_runtime::spawn(reopen(app.clone()));
@@ -408,13 +415,14 @@ impl Exec {
                 }
             }
             Effect::CancelCapture => {
+                self.live = None;
                 with_live_mic(|m| m.cancel());
                 CAPTURING.store(false, Ordering::SeqCst);
             }
             Effect::EndCaptureAndProcess(target) => {
                 let captured = with_live_mic(|m| m.end());
                 CAPTURING.store(false, Ordering::SeqCst);
-                tauri::async_runtime::spawn(process(app.clone(), tx.clone(), target, captured, self.epoch));
+                tauri::async_runtime::spawn(process(app.clone(), tx.clone(), target, captured, self.epoch, self.live.take()));
             }
             Effect::MuteOn => self.muted = Some(MuteGuard::new()),
             Effect::MuteOff => self.muted = None,
@@ -440,12 +448,16 @@ impl Exec {
     }
 
     /// Keeps the live pill's level and elapsed time moving while a dictation is being recorded.
-    fn tick<R: Runtime>(&self, app: &AppHandle<R>, capturing: bool) {
+    fn tick<R: Runtime>(&mut self, app: &AppHandle<R>, capturing: bool) {
         let Some(state) = self.pill_state else { return };
         if !capturing || !matches!(state, PillState::Listening | PillState::HandsFree) {
             return;
         }
+        // Text goes out only when it changed since the last tick.
+        let text = self.live.as_mut().filter(|l| l.text.has_changed().unwrap_or(false)).map(|l| l.text.borrow_and_update().clone());
         let view = PillView {
+            committed: text.as_ref().map(|t| t.committed.clone()),
+            volatile: text.map(|t| t.volatile),
             elapsed_ms: self.started.map_or(0, |t| t.elapsed().as_millis() as u64),
             level: with_live_mic(|m| m.level()).unwrap_or(0.0),
             ..PillView::new(state, &self.mode)
@@ -611,6 +623,39 @@ fn nothing_heard<R: Runtime>(app: &AppHandle<R>, mode_id: &str, epoch: u64) {
     }
 }
 
+/// The live outcome, unless the worker failed or is gone: then the caller decodes the whole recording.
+fn usable(outcome: Option<LiveOutcome>) -> Option<LiveOutcome> {
+    outcome.filter(|o| !o.failed)
+}
+
+/// Decodes a whole recording in one go: (text, speech seconds). None when preparation or Whisper failed.
+/// Silence is not decoded: the text is empty and the caller's speech check ends the dictation.
+async fn full_decode(samples: &[f32], rate: u32) -> Option<(String, f32)> {
+    let samples = samples.to_vec();
+    let (a16, secs) = tokio::task::spawn_blocking(move || {
+        let a16 = resample_audio(&samples, rate, 16_000);
+        let secs = speech_secs(&a16);
+        (a16, secs)
+    })
+    .await
+    .ok()?;
+    if matches!(check_speech(secs), SpeechCheck::NothingHeard) {
+        return Some((String::new(), secs));
+    }
+    let engine = whisper_engine()?;
+    // Fresh per dictation: a language kept from an earlier one made Whisper write English speech in Russian.
+    let mut policy = LanguagePolicy::new(get_allowed_languages_internal());
+    let outcome = engine.transcribe_audio_with_confidence(a16, Some("auto".to_string()), Some(&mut policy), None).await;
+    info!("dictate: language {}", policy.current().unwrap_or("undecided"));
+    match outcome {
+        Ok((text, _, _, _)) => Some((text, secs)),
+        Err(_) => {
+            warn!("dictate: transcription failed");
+            None
+        }
+    }
+}
+
 /// One dictation after the mic is closed: VAD, Whisper, cleanup, paste. Errors end in a pill state, never a panic.
 async fn process<R: Runtime>(
     app: AppHandle<R>,
@@ -618,6 +663,7 @@ async fn process<R: Runtime>(
     target: Target,
     captured: Option<CapturedAudio>,
     epoch: u64,
+    live: Option<LiveHandle>,
 ) {
     let _done = DoneGuard(tx);
     let s = settings::current();
@@ -629,21 +675,6 @@ async fn process<R: Runtime>(
         return;
     };
     let rate = audio.sample_rate;
-    let prepared = tokio::task::spawn_blocking(move || {
-        let a16 = resample_audio(&audio.samples, rate, 16_000);
-        let secs = speech_secs(&a16);
-        (a16, secs)
-    })
-    .await;
-    let Ok((a16, secs)) = prepared else {
-        nothing_heard(&app, &mode_id, epoch);
-        return;
-    };
-    if matches!(check_speech(secs), SpeechCheck::NothingHeard) {
-        info!("dictate: nothing heard ({:.1} s of speech)", secs);
-        nothing_heard(&app, &mode_id, epoch);
-        return;
-    }
     if !engine_is_whisper(&app).await {
         warn!("dictate: transcript provider is not localWhisper, dictation skipped");
         nothing_heard(&app, &mode_id, epoch);
@@ -662,33 +693,41 @@ async fn process<R: Runtime>(
         return;
     }
     set_pill(&app, PillState::Transcribing, &mode_id);
-    let Some(engine) = whisper_engine() else {
-        nothing_heard(&app, &mode_id, epoch);
-        return;
+    let all = Arc::new(audio.samples);
+    let outcome = match live {
+        Some(h) => h.finish(all.clone()).await,
+        None => None,
     };
-    // Fresh per dictation: a language kept from an earlier one made Whisper write English speech in Russian.
-    let mut policy = LanguagePolicy::new(get_allowed_languages_internal());
-    let outcome = engine
-        .transcribe_audio_with_confidence(
-            a16,
-            Some("auto".to_string()),
-            Some(&mut policy),
-            None,
-        )
-        .await;
-    info!("dictate: language {}", policy.current().unwrap_or("undecided"));
-    let text = match outcome {
-        Ok((text, _, _, _)) => text.trim().to_string(),
-        Err(_) => {
-            warn!("dictate: transcription failed");
-            nothing_heard(&app, &mode_id, epoch);
-            return;
+    let (text, secs) = match usable(outcome) {
+        Some(o) => {
+            info!("dictate: language {}", o.language.as_deref().unwrap_or("undecided"));
+            (o.transcript, o.speech_secs)
+        }
+        None => {
+            info!("dictate: live path unavailable, full decode");
+            match full_decode(&all, rate).await {
+                Some(r) => r,
+                None => {
+                    nothing_heard(&app, &mode_id, epoch);
+                    return;
+                }
+            }
         }
     };
+    if matches!(check_speech(secs), SpeechCheck::NothingHeard) {
+        info!("dictate: nothing heard ({:.1} s of speech)", secs);
+        nothing_heard(&app, &mode_id, epoch);
+        return;
+    }
+    let text = text.trim().to_string();
     if text.is_empty() {
         nothing_heard(&app, &mode_id, epoch);
         return;
     }
+    let mut view = PillView::new(PillState::Transcribing, &mode_id);
+    view.committed = Some(tail_chars(&text, PILL_TAIL_CHARS).to_string());
+    view.volatile = Some(String::new());
+    pill::update(&app, &view);
     info!("dictate: transcribed {} chars in {} ms", text.chars().count(), started.elapsed().as_millis());
     if !still_on(epoch) {
         // Dictate went off while Whisper ran: the text stays for the tray, but nothing is cleaned up or pasted.
@@ -860,6 +899,14 @@ async fn model_downloaded<R: Runtime>(app: &AppHandle<R>) -> bool {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn live_outcome_falls_back_unless_it_succeeded() {
+        let ok = LiveOutcome { transcript: "a".into(), speech_secs: 1.0, language: None, failed: false };
+        assert!(usable(None).is_none());
+        assert!(usable(Some(LiveOutcome { failed: true, ..ok.clone() })).is_none());
+        assert_eq!(usable(Some(ok)).map(|o| o.transcript), Some("a".to_string()));
+    }
+
     use super::*;
     use crate::dictate::settings::{self as settings_mod, CustomMode};
 

@@ -20,8 +20,12 @@ const originals = {
   language: { ...await import('../../src/components/LanguageSelection') },
   crumb: { ...await import('../../src/components/BackCrumb') },
   meter: { ...await import('../../src/components/AudioLevelMeter') },
+  micPicker: { ...await import('../../src/components/MeetingPage/MicPicker') },
+  silentMic: { ...await import('../../src/components/MeetingPage/SilentMicWarning') },
 };
 afterAll(() => {
+  mock.module('../../src/components/MeetingPage/MicPicker', () => originals.micPicker);
+  mock.module('../../src/components/MeetingPage/SilentMicWarning', () => originals.silentMic);
   mock.module('@tauri-apps/api/core', () => originals.core);
   mock.module('@tauri-apps/api/event', () => originals.event);
   mock.module('@tauri-apps/api/path', () => originals.path);
@@ -81,6 +85,8 @@ mock.module('../../src/components/AiSidebar/AiSidebarProvider', () => ({ ...orig
 mock.module('../../src/hooks/useRecordingStop', () => ({ useRecordingStop: () => ({ handleRecordingStop, setIsStopping }) }));
 mock.module('../../src/app/_components/TranscriptPanel', () => ({ TranscriptPanel: () => <div>Live transcript</div> }));
 mock.module('../../src/app/_components/ContinueControl', () => ({ ContinueControl: () => null }));
+mock.module('../../src/components/MeetingPage/MicPicker', () => ({ MicPicker: () => <span>Mic picker</span>, useLiveMic: () => ['mic', () => {}] }));
+mock.module('../../src/components/MeetingPage/SilentMicWarning', () => ({ SilentMicWarning: () => null }));
 mock.module('../../src/components/DeviceSelection', () => ({ DeviceSelection: () => <span>Microphone</span> }));
 mock.module('../../src/components/LanguageSelection', () => ({ LanguageSelection: () => <span>Language</span> }));
 
@@ -111,7 +117,7 @@ beforeEach(() => {
 
 test('the header shows the time, Pause, Stop and summarize and the audio line', async () => {
   const t = text((await mount()).root);
-  for (const s of ['Recording 01:13', 'Pause', 'Stop and summarize', 'Live transcript', 'Mic: mic']) expect(t).toContain(s);
+  for (const s of ['Recording 01:13', 'Pause', 'Stop and summarize', 'Live transcript', 'Mic:Mic picker', 'System audio: sys']) expect(t).toContain(s);
   expect(t).not.toContain('Microphone');
 });
 

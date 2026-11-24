@@ -7,6 +7,7 @@ import { LiveTranscriptAndNotes } from '@/app/_components/LiveTranscriptAndNotes
 import { MeetingHeader } from '@/components/MeetingPage/MeetingHeader';
 import type { MeetingRow } from '@/lib/meetings';
 import { AudioSummaryLine } from '@/components/MeetingPage/AudioSummaryLine';
+import { SilentMicWarning } from '@/components/MeetingPage/SilentMicWarning';
 import { LiveLevels } from '@/components/MeetingPage/LiveLevels';
 import { BackCrumb } from '@/components/BackCrumb';
 import { useAiSidebar } from '@/components/AiSidebar/AiSidebarProvider';
@@ -67,7 +68,8 @@ export function RecordingView({ row, onChange, onTitleSaved, showModal }: { row:
       ) : (
         <div className="flex flex-nowrap items-center gap-4"><h1 className="min-w-0 flex-1 truncate text-xl font-semibold">New recording</h1>{actions}</div>
       )}
-      <div className="py-3"><AudioSummaryLine changeable={false} /></div>
+      <div className="py-3"><AudioSummaryLine changeable={false} live /></div>
+      {isRecording && <SilentMicWarning />}
       {failed && (
         <div role="alert" className="flex items-center gap-3 border-b border-border bg-background py-2 text-sm text-foreground">
           <span>The meeting was not saved. Its transcript and notes are still here.</span>

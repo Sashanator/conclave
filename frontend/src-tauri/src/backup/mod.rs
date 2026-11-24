@@ -163,19 +163,20 @@ fn new_backup_dir(kind_dir: &Path, name: &str) -> anyhow::Result<PathBuf> {
 }
 
 fn copy_one(src: &Path, dest_root: &Path, rel: &str, out: &mut Vec<ManifestFile>) -> anyhow::Result<()> {
-    let dest = dest_root.join(rel);
+    // Component joins, not a "/" string: a `\\?\` verbatim root does not normalise "/" (os error 161).
+    let dest = rel.split('/').fold(dest_root.to_path_buf(), |p, c| p.join(c));
     if let Some(parent) = dest.parent() {
-        fs::create_dir_all(parent)?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
-    let size = fs::copy(src, &dest).with_context(|| format!("copying {}", src.display()))?;
+    let size = fs::copy(src, &dest).with_context(|| format!("copying {} to {}", src.display(), dest.display()))?;
     out.push(ManifestFile { path: rel.to_string(), size_bytes: size });
     Ok(())
 }
 
 fn copy_tree(src: &Path, dest_root: &Path, rel: &str, out: &mut Vec<ManifestFile>) -> anyhow::Result<()> {
     for e in fs::read_dir(src).with_context(|| format!("reading {}", src.display()))? {
-        let e = e?;
-        let ft = e.file_type()?;
+        let e = e.with_context(|| format!("reading an entry of {}", src.display()))?;
+        let ft = e.file_type().with_context(|| format!("reading type of {}", e.path().display()))?;
         let r = format!("{rel}/{}", e.file_name().to_string_lossy());
         if ft.is_dir() {
             copy_tree(&e.path(), dest_root, &r, out)?;
@@ -190,9 +191,9 @@ fn copy_tree(src: &Path, dest_root: &Path, rel: &str, out: &mut Vec<ManifestFile
 fn copy_user_files(data_dir: &Path, templates: Option<&Path>, dest: &Path) -> anyhow::Result<Vec<ManifestFile>> {
     let mut out = Vec::new();
     for e in fs::read_dir(data_dir).with_context(|| format!("reading {}", data_dir.display()))? {
-        let e = e?;
+        let e = e.with_context(|| format!("reading an entry of {}", data_dir.display()))?;
         let name = e.file_name().to_string_lossy().into_owned();
-        if e.file_type()?.is_file() && name.to_lowercase().ends_with(".json") {
+        if e.file_type().with_context(|| format!("reading type of {}", e.path().display()))?.is_file() && name.to_lowercase().ends_with(".json") {
             copy_one(&e.path(), dest, &name, &mut out)?;
         }
     }
@@ -442,6 +443,21 @@ mod tests {
         assert_eq!(fs::read(b.join("templates/.seeded-v1")).unwrap(), b"s");
         assert!(!b.join("notes.txt").exists() && !b.join("m.json").exists() && !b.join("models").exists());
     }
+    #[test]
+    fn nested_and_dot_template_folders_back_up_with_slash_manifest_paths() {
+        let d = tempdir().unwrap();
+        w(&d.path().join(DB_FILE_NAME), "db");
+        let t = d.path().join("tpl");
+        w(&t.join(".history/interview/a.json"), "n");
+        w(&t.join(".seeded-v1"), "s");
+        let info = pre_upgrade_backup(d.path(), Some(&t), "9.9.9").unwrap().unwrap();
+        let dir = PathBuf::from(&info.path);
+        assert_eq!(fs::read(dir.join("templates").join(".history").join("interview").join("a.json")).unwrap(), b"n");
+        let m: Manifest = serde_json::from_slice(&fs::read(dir.join(MANIFEST_FILE)).unwrap()).unwrap();
+        let paths: Vec<_> = m.files.iter().map(|f| f.path.as_str()).collect();
+        assert!(paths.contains(&"templates/.history/interview/a.json") && paths.contains(&"templates/.seeded-v1"));
+    }
+
     #[test]
     fn missing_wal_and_templates_are_fine() {
         let d = tempdir().unwrap();

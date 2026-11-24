@@ -1,5 +1,5 @@
 // TS mirrors of the Rust `notion` types (camelCase over the Tauri boundary) plus small pure helpers.
-export type FixedKind = 'select' | 'status' | 'multi_select' | 'checkbox';
+export type FixedKind = 'select' | 'status' | 'multi_select' | 'checkbox' | 'date';
 export type FixedValue = { prop: string; kind: FixedKind; value: string | string[] | boolean };
 /** Every field holds a Notion property NAME. */
 export type Mapping = { titleProp: string; dueProp: string | null; meetingProp: string | null; fixed: FixedValue[]; emoji?: string | null; aiFill?: boolean };

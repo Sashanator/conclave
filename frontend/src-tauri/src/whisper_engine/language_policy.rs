@@ -10,13 +10,11 @@ pub const MIN_SHARE: f32 = 0.8;
 pub struct LanguagePolicy {
     allowed: Vec<String>,
     current: Option<String>,
-    // The language the last `choose` returned, confident or not.
-    last: Option<String>,
 }
 
 impl LanguagePolicy {
     pub fn new(allowed: Vec<String>) -> Self {
-        Self { allowed, current: None, last: None }
+        Self { allowed, current: None }
     }
 
     pub fn is_active(&self) -> bool {
@@ -63,16 +61,7 @@ impl LanguagePolicy {
         if confident && duration_secs >= SWITCH_MIN_SECS {
             self.current = Some(best_lang);
         }
-        self.last = Some(chosen.clone());
         chosen
-    }
-
-    /// Dictate's live path calls this after its first commit: an unconfident first choice then
-    /// sticks as the dictation's language. The meeting path never calls it.
-    pub fn lock_if_unset(&mut self) {
-        if self.current.is_none() {
-            self.current = self.last.clone();
-        }
     }
 }
 
@@ -105,17 +94,6 @@ mod tests {
         copy.choose(&[0.05, 0.9], 4.0);
         assert_eq!(copy.current(), Some("en"));
         assert_eq!(real.current(), None);
-    }
-
-    #[test]
-    fn lock_if_unset_keeps_an_unconfident_first_choice() {
-        let mut p = policy(&["ru", "en"], None);
-        assert_eq!(p.choose(&[0.25, 0.6], 4.0), "en"); // share 0.71 < 0.8: not confident
-        assert_eq!(p.current(), None);
-        p.lock_if_unset();
-        assert_eq!(p.current(), Some("en"));
-        p.choose(&[0.9, 0.05], 4.0); // a later confident switch still works
-        assert_eq!(p.current(), Some("ru"));
     }
 
     #[test]

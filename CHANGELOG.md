@@ -1,5 +1,9 @@
 # Conclave changelog
 
+## v2.5.3 — 2026-11-24
+- **Live dictation keeps your language.** If the first phrase sounded a bit like another language, the whole dictation used to stick to it, so English could come out translated into Russian. Each unsure phrase now uses its own best guess; a clear phrase of 3 seconds or more still sets the language.
+- **Wider Dictate page.** On wide windows, General and Modes sit side by side, with Dictionary across the full width below.
+
 ## v2.5.2 — 2026-11-24
 - **Summaries survive a restart.** If Conclave closes or updates before a meeting's summary starts, opening the meeting later (within 24 hours) generates it. If no summary model is set up, you see a message instead of an empty page.
 - **Claude prices update themselves.** Once a week Conclave fetches current Claude prices from OpenRouter's public model list, so cost figures stay right without manual edits. Prices you set yourself in Settings → Costs still win; the page shows when prices were last updated.

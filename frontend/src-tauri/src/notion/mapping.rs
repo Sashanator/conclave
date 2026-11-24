@@ -118,6 +118,7 @@ pub(crate) fn check_mapping(m: &Mapping, s: &DbSchema) -> Vec<String> {
             ("select" | "status", Value::String(v)) => vec![v.as_str()],
             ("multi_select", Value::Array(a)) if a.iter().all(Value::is_string) => a.iter().filter_map(Value::as_str).collect(),
             ("checkbox", Value::Bool(_)) => vec![],
+            ("date", Value::String(v)) if v == "today" => vec![],
             _ => {
                 invalid.push(format!("“{}” has an invalid value", f.prop));
                 continue;
@@ -238,6 +239,7 @@ pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask, ai: Opt
                 json!({"multi_select": a.iter().filter_map(Value::as_str).map(|n| json!({"name":n})).collect::<Vec<_>>()})
             }
             ("checkbox", Value::Bool(b)) => json!({"checkbox":b}),
+            ("date", Value::String(v)) if v == "today" => json!({"date":{"start":chrono::Local::now().format("%Y-%m-%d").to_string()}}),
             _ => continue,
         };
         props.insert(f.prop.clone(), v);
@@ -380,6 +382,20 @@ mod tests {
             check_mapping(&m, &s),
             ["“Status” has an invalid value", "“Tags” has an invalid value", "“Urgent” has an invalid value"]
         );
+    }
+
+    #[test]
+    fn fixed_date_today_checks_and_writes_the_local_day() {
+        let (db, ds) = schema_json();
+        let s = schema_from(DASHED, &db, &ds);
+        let mut m = mapping();
+        m.fixed.push(FixedValue { prop: "Done".into(), kind: "date".into(), value: json!("today") });
+        assert!(check_mapping(&m, &s).is_empty());
+        let t = SendTask { due_date: None, meeting_title: None, meeting_date: None, ..task() };
+        let body = page_body("ds-1", &m, &t, None);
+        assert_eq!(body["properties"]["Done"]["date"]["start"], json!(chrono::Local::now().format("%Y-%m-%d").to_string()));
+        m.fixed[3].value = json!("tomorrow");
+        assert_eq!(check_mapping(&m, &s), ["“Done” has an invalid value"]);
     }
 
     fn prop(name: &str, kind: &str, options: &[&str]) -> PropInfo {

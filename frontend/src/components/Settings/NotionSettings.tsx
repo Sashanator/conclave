@@ -94,6 +94,7 @@ export function NotionSettings() {
         const p = c.fixed.find((x) => x.name === f.prop);
         const v = Array.isArray(f.value) ? f.value[0] : String(f.value);
         if (p && (p.kind === 'checkbox' || p.options.includes(v))) fixed[f.prop] = v;
+        else if (f.kind === 'date' && v === 'today' && c.dates.some((x) => x.name === f.prop) && f.prop !== m?.dueProp) fixed[f.prop] = v;
       }
       setForm({
         ...form, schema, fixed, name: form.name || schema.title,
@@ -108,7 +109,7 @@ export function NotionSettings() {
     const c = mappingChoices(f.schema);
     if (!c.title) return null;
     const fixed: FixedValue[] = [];
-    for (const p of c.fixed) {
+    for (const p of [...c.fixed, ...c.dates.filter((d) => d.name !== f.due)]) {
       const v = f.fixed[p.name];
       if (!v) continue;
       const kind = p.kind as FixedKind;
@@ -226,11 +227,13 @@ export function NotionSettings() {
                     {choices.texts.map((p) => <option key={p.id} value={p.name}>{p.name}</option>)}
                   </select>
                 </label>
-                {choices.fixed.map((p) => (
+                {[...choices.fixed, ...choices.dates.filter((d) => d.name !== form.due)].map((p) => (
                   <label key={p.id} className={field}>{p.name}
                     <select className={selectCls} value={form.fixed[p.name] ?? ''} onChange={(e) => setForm({ ...form, fixed: { ...form.fixed, [p.name]: e.target.value } })}>
                       <option value="">Not set</option>
-                      {p.kind === 'checkbox'
+                      {p.kind === 'date'
+                        ? <option value="today">Today (day you send)</option>
+                        : p.kind === 'checkbox'
                         ? <><option value="true">Checked</option><option value="false">Unchecked</option></>
                         : p.options.map((o) => <option key={o} value={o}>{o}</option>)}
                     </select>

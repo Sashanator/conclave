@@ -28,7 +28,7 @@ mock.module('@tauri-apps/api/core', () => ({
       case 'notion_test': tested = true; return [{ destId: '', state: 'connected', message: null }, { destId: 'd-personal', state: 'not_shared', message: null }];
       case 'notion_read_columns':
         if (readFails) throw new Error('Notion says no');
-        return { databaseId: 'abc-def', dataSourceId: 'ds1', title: 'Tasks', properties: [prop('Name', 'title'), prop('Due', 'date'), prop('Status', 'status', ['To do', 'Done']), prop('Owner', 'people')] };
+        return { databaseId: 'abc-def', dataSourceId: 'ds1', title: 'Tasks', properties: [prop('Name', 'title'), prop('Due', 'date'), prop('Sent', 'date'), prop('Status', 'status', ['To do', 'Done']), prop('Owner', 'people')] };
       default: return null;
     }
   },
@@ -78,7 +78,7 @@ test('add database: read columns, map Due and Status, save', async () => {
   await typeIn('Notion database link', 'https://www.notion.so/abc');
   await click('Read columns');
   const dueSel = r.root.findAll((n) => n.type === 'label' && text(n).startsWith('Due date'))[0].findByType('select');
-  expect(dueSel.findAllByType('option').map(text)).toEqual(['None', 'Due']);
+  expect(dueSel.findAllByType('option').map(text)).toEqual(['None', 'Due', 'Sent']);
   await pick('Due date', 'Due');
   await pick('Status', 'To do');
   expect(text(r.root)).toContain('Not used: Owner');
@@ -165,4 +165,18 @@ test('Save is disabled while saving, so a double click creates one database', as
   const save = btn('Save').props.onClick;
   await act(async () => { await Promise.all([save(), save()]); });
   expect(calls.filter((c) => c[0] === 'notion_save_destination').length).toBe(1);
+});
+
+test('a date column can be fixed to Today; the Due date column is not offered as fixed', async () => {
+  cfg.destinations = [dest('d-job', 0, { mapping: { titleProp: 'Name', dueProp: 'Due', meetingProp: null, fixed: [{ prop: 'Sent', kind: 'date', value: 'today' }] } })];
+  await render();
+  await act(async () => { r.root.findByProps({ 'aria-label': 'Edit d-job' }).props.onClick(); });
+  await typeIn('Notion database link', 'https://www.notion.so/abc');
+  await click('Read columns');
+  const sent = r.root.findAll((n) => n.type === 'label' && text(n).startsWith('Sent'))[0].findByType('select');
+  expect(sent.props.value).toBe('today');
+  expect(sent.findAllByType('option').map(text)).toEqual(['Not set', 'Today (day you send)']);
+  expect(r.root.findAll((n) => n.type === 'label' && text(n) === 'Due' + 'Not set' + 'Today (day you send)').length).toBe(0);
+  await click('Save');
+  expect(calls.find((c) => c[0] === 'notion_save_destination')![1].dest.mapping.fixed).toEqual([{ prop: 'Sent', kind: 'date', value: 'today' }]);
 });

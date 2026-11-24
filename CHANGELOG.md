@@ -1,5 +1,9 @@
 # Conclave changelog
 
+## v2.5.2 — 2026-11-24
+- **Summaries survive a restart.** If Conclave closes or updates before a meeting's summary starts, opening the meeting later (within 24 hours) generates it. If no summary model is set up, you see a message instead of an empty page.
+- **Claude prices update themselves.** Once a week Conclave fetches current Claude prices from OpenRouter's public model list, so cost figures stay right without manual edits. Prices you set yourself in Settings → Costs still win; the page shows when prices were last updated.
+
 ## v2.5.1 — 2026-11-24
 - **Date column set to today.** In Settings → Notion, any date column other than the due date can be set to "Today (day you send)". Every task you send then gets that day, and the AI leaves the column alone.
 - **Clearer backup warning.** If the pre-upgrade backup fails, the warning now names the file or folder it couldn't copy. Backups also copy nested template folders more reliably.

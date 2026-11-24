@@ -164,7 +164,6 @@ function MeetingDetailsContent() {
     }
 
     const startedFor = meetingId;
-    if (startedFor) markAutoAttempt(startedFor);
     setupInFlight.current = startedFor;
     const stale = () => currentMeetingId.current !== startedFor; // the user moved to another meeting meanwhile
     try {
@@ -199,10 +198,12 @@ function MeetingDetailsContent() {
         setShouldAutoGenerate(true);
       } else {
         console.log('⚠️ No model configured and gemma3:1b not found');
+        markAutoAttempt(startedFor!); // gave up: a reopen must not repeat the toast
         toast.error('No summary model is set up, so the summary was not generated. Choose one in Settings, then generate it.', { id: 'auto-summary-setup' });
       }
     } catch (error) {
       if (stale()) return;
+      markAutoAttempt(startedFor!);
       console.error('❌ Failed to setup auto-generation:', error);
       toast.error(`Could not start the automatic summary: ${String(error)}`, { id: 'auto-summary-setup' });
     } finally {

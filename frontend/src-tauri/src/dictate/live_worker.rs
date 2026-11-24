@@ -152,7 +152,6 @@ async fn run(rate: u32, text_tx: watch::Sender<LiveText>, mut finish_rx: oneshot
                         if let Some(p) = returned {
                             policy = p;
                         }
-                        policy.lock_if_unset();
                     }
                     core.on_commit_done(index, text, policy.current().map(str::to_string));
                 }

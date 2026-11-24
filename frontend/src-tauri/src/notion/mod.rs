@@ -135,6 +135,7 @@ fn fixed_value_ok(f: &FixedValue) -> bool {
         "select" | "status" => f.value.is_string(),
         "multi_select" => f.value.as_array().is_some_and(|a| a.iter().all(|v| v.is_string())),
         "checkbox" => f.value.is_boolean(),
+        "date" => f.value.as_str() == Some("today"),
         _ => false,
     }
 }
@@ -183,6 +184,9 @@ fn validate(d: &Destination) -> Result<(String, String, String), String> {
     }
     if let Some(f) = d.mapping.fixed.iter().find(|f| !fixed_value_ok(f)) {
         return Err(format!("\u{201c}{}\u{201d} has a value Conclave can't send.", f.prop));
+    }
+    if let Some(f) = d.mapping.fixed.iter().find(|f| Some(&f.prop) == d.mapping.due_prop.as_ref()) {
+        return Err(format!("\u{201c}{}\u{201d} is the due date column, so it can't also be fixed.", f.prop));
     }
     if let Some(e) = &d.mapping.emoji {
         if !(1..=8).contains(&e.chars().count()) || !is_emoji(e) {
@@ -425,7 +429,14 @@ mod tests {
         let mut d = dest("", "Work");
         d.mapping.fixed = vec![FixedValue { prop: "Done".into(), kind: "checkbox".into(), value: "yes".into() }];
         assert!(save_destination(&pool, d).await.unwrap_err().contains("has a value Conclave can't send."));
-        for i in 0..9 {
+        let mut d = dest("", "Work");
+        d.mapping.due_prop = Some("Due".into());
+        d.mapping.fixed = vec![FixedValue { prop: "Due".into(), kind: "date".into(), value: "today".into() }];
+        assert!(save_destination(&pool, d).await.unwrap_err().contains("due date column"));
+        let mut d = dest("", "Work");
+        d.mapping.fixed = vec![FixedValue { prop: "Sent".into(), kind: "date".into(), value: "today".into() }];
+        save_destination(&pool, d).await.unwrap();
+        for i in 0..8 {
             save_destination(&pool, dest_on(&format!("D{i}"), i + 1)).await.unwrap();
         }
         assert_eq!(

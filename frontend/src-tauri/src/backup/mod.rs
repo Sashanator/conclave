@@ -249,7 +249,7 @@ pub fn pre_upgrade_backup(data_dir: &Path, templates: Option<&Path>, current: &s
             size_bytes: files.iter().map(|f| f.size_bytes).sum(),
             files,
         };
-        fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec_pretty(&m)?).context("writing backup manifest")?;
+        fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec_pretty(&m)?).with_context(|| format!("writing backup manifest {}", dir.join(MANIFEST_FILE).display()))?;
         Ok(info(m, &dir))
     })();
     finish(result, &kind_dir, PRE_UPGRADE, KEEP_PRE_UPGRADE, &dir)
@@ -268,7 +268,7 @@ pub async fn manual_backup(pool: &sqlx::SqlitePool, data_dir: &Path, templates: 
     let result = async {
         let db_copy = dir.join(DB_FILE_NAME);
         sqlx::query("VACUUM INTO ?").bind(db_copy.to_string_lossy().into_owned()).execute(pool).await.context("copying the database")?;
-        let mut files = vec![ManifestFile { path: DB_FILE_NAME.into(), size_bytes: fs::metadata(&db_copy)?.len() }];
+        let mut files = vec![ManifestFile { path: DB_FILE_NAME.into(), size_bytes: fs::metadata(&db_copy).with_context(|| format!("reading {}", db_copy.display()))?.len() }];
         files.extend(copy_user_files(data_dir, templates, &dir)?);
         let m = Manifest {
             kind: MANUAL.into(),
@@ -278,7 +278,7 @@ pub async fn manual_backup(pool: &sqlx::SqlitePool, data_dir: &Path, templates: 
             size_bytes: files.iter().map(|f| f.size_bytes).sum(),
             files,
         };
-        fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec_pretty(&m)?).context("writing backup manifest")?;
+        fs::write(dir.join(MANIFEST_FILE), serde_json::to_vec_pretty(&m)?).with_context(|| format!("writing backup manifest {}", dir.join(MANIFEST_FILE).display()))?;
         Ok::<_, anyhow::Error>(info(m, &dir))
     }
     .await;

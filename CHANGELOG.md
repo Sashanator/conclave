@@ -1,5 +1,9 @@
 # Conclave changelog
 
+## v2.5.6 — 2026-11-24
+- **Change the microphone during a recording.** The "Mic:" item on the recording screen is now a menu: pick another microphone and the recording switches to it right away. It always shows the microphone actually being recorded, also after Conclave switches on its own.
+- **Warning when your microphone is silent.** If the recording microphone sends no sound at all for 10 seconds, a warning appears with the microphone menu so you can switch. Dismiss it if the silence is on purpose.
+
 ## v2.5.5 — 2026-11-24
 - **Fewer false backup warnings after updates.** During an update, Windows can briefly start an extra copy of Conclave that can't write to your data folder. Its backup failed and showed a warning even though the real start made a good backup. Conclave now retries the backup for a few seconds before warning, so that copy no longer shows the warning. A backup that keeps failing still asks you whether to continue.
 - If the data folder can't be written, the failure record goes to your Windows temp folder (`conclave-backup-failures.txt`) and says which program started Conclave.

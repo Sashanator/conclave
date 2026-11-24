@@ -1733,6 +1733,25 @@ pub async fn follow_mic(device_name: String) -> Result<(), FollowError> {
     }
 }
 
+/// The microphone the live recording is capturing now (None when not recording).
+#[tauri::command]
+pub fn get_recording_mic() -> Option<String> {
+    current_mic_name()
+}
+
+/// The user picks another microphone mid-recording. Wraps `follow_mic` (validates the name, restores the old mic on failure).
+#[tauri::command]
+pub async fn switch_recording_mic<R: Runtime>(app: AppHandle<R>, device_name: String) -> Result<(), String> {
+    match follow_mic(device_name.clone()).await {
+        Ok(()) => {
+            let _ = app.emit("mic-device-switched", serde_json::json!({ "device_name": device_name }));
+            Ok(())
+        }
+        Err(FollowError::SessionGone) => Err("Not recording, so there is no microphone to switch.".to_string()),
+        Err(FollowError::Failed(e)) => Err(e),
+    }
+}
+
 /// Disconnect fallback: swap the active mic to the system default input
 /// device. Triggered from the background device event processor after the
 /// device monitor's polling threshold (3 × 2s) fires `DeviceDisconnected`

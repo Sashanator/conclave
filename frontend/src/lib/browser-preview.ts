@@ -331,6 +331,8 @@ export const previewHandlers: Record<string, (args: any) => unknown> = {
   get_audio_backend_info: () => [],
   get_current_audio_backend: () => 'default',
   api_save_meeting_title: () => null,
+  get_recording_mic: () => 'Preview mic',
+  switch_recording_mic: () => null,
   get_audio_devices: () => [{ name: 'Preview mic', device_type: 'Input' }, { name: 'Preview speakers', device_type: 'Output' }],
   get_ollama_models: () => [],
   take_backfill_error: () => null,

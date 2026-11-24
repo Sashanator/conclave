@@ -1,4 +1,5 @@
 "use client";
+import { markAutoAttempt } from '@/lib/auto-summary';
 import { useState, useEffect, useRef, useMemo } from 'react';
 import { MeetingSummary, SummaryProcessResponse, Transcript, TranscriptMark } from '@/types';
 import { useSidebar } from '@/components/Sidebar/SidebarProvider';
@@ -290,6 +291,7 @@ export default function PageContent({
     }
 
     autoGenerationStartedMeetingIdRef.current = meeting.id;
+    markAutoAttempt(meeting.id); // only a start counts: leaving while the speaker job runs must allow a retry
     console.log(`🤖 Auto-generating summary with ${modelConfig.provider}/${modelConfig.model}...`);
     appLog('info', `summary: auto-generating for ${meeting.id} with ${modelConfig.provider}/${modelConfig.model} (speaker ID ${speakersOn ? 'done' : 'off'}${replaceOnAuto ? ', replacing' : ''})`);
     onAutoGenerateComplete?.();

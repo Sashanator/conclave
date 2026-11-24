@@ -1,5 +1,9 @@
 # Conclave changelog
 
+## v2.5.1 — 2026-11-24
+- **Date column set to today.** In Settings → Notion, any date column other than the due date can be set to "Today (day you send)". Every task you send then gets that day, and the AI leaves the column alone.
+- **Clearer backup warning.** If the pre-upgrade backup fails, the warning now names the file or folder it couldn't copy. Backups also copy nested template folders more reliably.
+
 ## v2.5.0 — 2026-11-23
 - **See your words while you dictate.** The Dictate pill now shows what Conclave hears as you speak: final words in normal text, words still being guessed in grey. Pick Panel (three lines above the pill) or One line in Dictate → Live text.
 - **Faster paste after long dictations.** Phrases are transcribed while you speak, so only the last one is left when you release the key.

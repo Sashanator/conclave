@@ -81,12 +81,15 @@ export default function DictatePage() {
   };
 
   return (
-    <PageFrame variant="form" title="Dictate">
+    <PageFrame variant="dashboard" title="Dictate">
       {settings ? (
-        <div className="max-w-[720px] space-y-6">
+        // Wide windows: General and Modes side by side, Dictionary full width below
+        <div className="grid max-w-[720px] gap-6 2xl:max-w-[1480px] 2xl:grid-cols-2 2xl:items-start">
           <DictateGeneral settings={settings} status={status} commit={commit} />
           <ModeList settings={settings} commit={commit} />
-          <DictionaryEditor settings={settings} commit={commit} />
+          <div className="2xl:col-span-2">
+            <DictionaryEditor settings={settings} commit={commit} />
+          </div>
         </div>
       ) : (
         <div role="status" aria-label="Loading Dictate" className="max-w-[720px] animate-pulse space-y-6">

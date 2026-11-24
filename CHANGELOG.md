@@ -1,5 +1,8 @@
 # Conclave changelog
 
+## v2.5.4 — 2026-11-24
+- **Backup warnings leave a record.** If the backup before an upgrade fails, Conclave now writes what went wrong to `backup-failures.txt` in its data folder, even when nothing reaches the log, and the warning shows each step of the error on its own line with the file's location. This is to track down the warning some upgrades still show.
+
 ## v2.5.3 — 2026-11-24
 - **Live dictation keeps your language.** If the first phrase sounded a bit like another language, the whole dictation used to stick to it, so English could come out translated into Russian. Each unsure phrase now uses its own best guess; a clear phrase of 3 seconds or more still sets the language.
 - **Wider Dictate page.** On wide windows, General and Modes sit side by side, with Dictionary across the full width below.

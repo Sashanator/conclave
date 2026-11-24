@@ -7,6 +7,10 @@ use tauri::Manager;
 pub const BACKUP_FAILED_MESSAGE: &str =
     "Couldn't back up your data before upgrading. Continue without a backup, or quit?";
 
+/// In the data dir itself: the backups folder may be what fails, and the failing launch has written nothing to the log.
+pub const FAILURES_FILE: &str = "backup-failures.txt";
+const FAILURES_MAX_BYTES: u64 = 256 * 1024;
+
 /// true = go on to migrations; calls `ask_continue` only when the backup failed.
 pub fn may_migrate(data_dir: &Path, templates: Option<&Path>, current: &str, ask_continue: impl FnOnce(&str) -> bool) -> bool {
     match pre_upgrade_backup(data_dir, templates, current) {
@@ -17,8 +21,43 @@ pub fn may_migrate(data_dir: &Path, templates: Option<&Path>, current: &str, ask
         Ok(None) => true,
         Err(e) => {
             error!("backup: {e:#}");
-            ask_continue(&format!("{BACKUP_FAILED_MESSAGE}\n\n{e:#}"))
+            // One cause per line: Windows shortens a long single line with "..."
+            let causes: Vec<String> = e.chain().map(|c| c.to_string()).collect();
+            let file = data_dir.join(FAILURES_FILE);
+            // Written before the dialog: a launch that dies while it is open still leaves its entry
+            append(&file, &failure_entry(current, &causes), true);
+            let go_on = ask_continue(&format!("{BACKUP_FAILED_MESSAGE}\n\n{}\n\nDetails: {}", causes.join("\n"), file.display()));
+            append(&file, &format!("choice: {}\n\n", if go_on { "Continue" } else { "Quit" }), false);
+            go_on
         }
+    }
+}
+
+fn failure_entry(current: &str, causes: &[String]) -> String {
+    format!(
+        "---- {} | pid {} | v{current}\nexe: {}\nargs: {:?}\n{}\n",
+        chrono::Local::now().to_rfc3339(),
+        std::process::id(),
+        std::env::current_exe().map(|p| p.display().to_string()).unwrap_or_else(|e| format!("unknown ({e})")),
+        // args_os: env::args panics on an argument that is not valid Unicode
+        std::env::args_os().skip(1).collect::<Vec<_>>(),
+        causes.iter().map(|c| format!("  {c}")).collect::<Vec<_>>().join("\n"),
+    )
+}
+
+/// Appends `text`; with `may_restart`, starts the file over once it passes FAILURES_MAX_BYTES. Never fails startup.
+fn append(file: &Path, text: &str, may_restart: bool) {
+    use std::io::Write;
+    let restart = may_restart && std::fs::metadata(file).is_ok_and(|m| m.len() >= FAILURES_MAX_BYTES);
+    let written = std::fs::OpenOptions::new()
+        .create(true)
+        .write(true)
+        .append(!restart)
+        .truncate(restart)
+        .open(file)
+        .and_then(|mut f| f.write_all(text.as_bytes()));
+    if let Err(e) = written {
+        error!("backup: could not record the failure in {}: {e}", file.display());
     }
 }
 
@@ -117,5 +156,31 @@ mod tests {
     fn backup_failure_continue_proceeds() {
         let d = data_dir();
         assert!(may_migrate(d.path(), None, "bad version!", |_| true));
+    }
+
+    #[test]
+    fn backup_failure_is_recorded_with_causes_and_choice() {
+        let d = data_dir();
+        let mut msg = String::new();
+        may_migrate(d.path(), None, "bad version!", |m| {
+            msg = m.to_string();
+            true
+        });
+        assert!(msg.contains(FAILURES_FILE));
+        may_migrate(d.path(), None, "bad version!", |_| false);
+        let text = std::fs::read_to_string(d.path().join(FAILURES_FILE)).unwrap();
+        assert_eq!(text.matches("---- ").count(), 2);
+        assert!(text.contains("invalid app version") && text.contains(&format!("pid {}", std::process::id())));
+        assert!(text.contains("choice: Continue") && text.contains("choice: Quit"));
+    }
+
+    #[test]
+    fn failures_file_starts_over_when_too_big() {
+        let d = data_dir();
+        let file = d.path().join(FAILURES_FILE);
+        std::fs::write(&file, vec![b'x'; FAILURES_MAX_BYTES as usize]).unwrap();
+        append(&file, &failure_entry("1.0.0", &["boom".into()]), true);
+        let text = std::fs::read_to_string(&file).unwrap();
+        assert!(text.starts_with("---- ") && text.contains("  boom"));
     }
 }

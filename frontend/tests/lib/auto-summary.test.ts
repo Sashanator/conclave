@@ -1,5 +1,5 @@
 import { describe, expect, test } from 'bun:test';
-import { autoSummaryAllowed } from '../../src/lib/auto-summary';
+import { autoAttempted, autoSummaryAllowed, markAutoAttempt } from '../../src/lib/auto-summary';
 
 const now = new Date('2026-11-24T12:00:00Z');
 const base = { source: null, autoSummaryOn: true, endedAt: '2026-11-24 10:00:00.123456789+00:00', now };
@@ -21,5 +21,14 @@ describe('autoSummaryAllowed', () => {
     expect(autoSummaryAllowed({ ...base, endedAt: undefined })).toBe(false);
     expect(autoSummaryAllowed({ ...base, endedAt: 'nope' })).toBe(false);
     expect(autoSummaryAllowed({ ...base, endedAt: '2026-11-25 10:00:00+00:00' })).toBe(false);
+  });
+});
+
+describe('attempt memory', () => {
+  test('remembers a meeting once marked', () => {
+    expect(autoAttempted('m-x')).toBe(false);
+    markAutoAttempt('m-x');
+    expect(autoAttempted('m-x')).toBe(true);
+    expect(autoAttempted('m-y')).toBe(false);
   });
 });

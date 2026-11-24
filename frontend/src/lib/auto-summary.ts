@@ -15,3 +15,9 @@ export function autoSummaryAllowed(o: { source: string | null; autoSummaryOn: bo
   const age = o.now.getTime() - parseDbTime(o.endedAt).getTime();
   return age >= 0 && age <= DAY_MS; // NaN (bad date) fails both
 }
+
+// Meetings whose automatic attempt already ran this app session. Some failures happen before the
+// backend writes a summary row, so "idle" alone would retry (and toast again) on every reopen.
+const attempted = new Set<string>();
+export const markAutoAttempt = (id: string) => void attempted.add(id);
+export const autoAttempted = (id: string) => attempted.has(id);

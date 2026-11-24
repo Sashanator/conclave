@@ -9,7 +9,7 @@ import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
 import { toast } from "sonner";
-import { autoSummaryAllowed } from "@/lib/auto-summary";
+import { autoAttempted, autoSummaryAllowed, markAutoAttempt } from "@/lib/auto-summary";
 import { lineAtTime, parseMeetingTarget } from "@/lib/meeting-target";
 import { heldMeetingId, pageKeyFor, showRecordingView } from "@/lib/recording-target";
 import { useRecordingStart } from "@/hooks/useRecordingStart";
@@ -139,12 +139,22 @@ function MeetingDetailsContent() {
     }
   }, []);
 
+  const currentMeetingId = useRef(meetingId);
+  currentMeetingId.current = meetingId;
+  const setupInFlight = useRef<string | null>(null);
+
   // Set up auto-generation - respects DB as source of truth
   const setupAutoGeneration = useCallback(async () => {
-    if (hasCheckedAutoGen) return; // Only check once
+    if (hasCheckedAutoGen || setupInFlight.current === meetingId) return; // Only check once, and not twice at the same time
 
     // Opened some other way (e.g. after a restart cut the first attempt short): needs the meeting's end time
     if (source !== 'recording' && !(row && row.id === meetingId)) return; // not loaded yet; checked again when it is
+
+    // An attempt that already ran this session (even one that gave up early) is not repeated on a reopen
+    if (source !== 'recording' && meetingId && autoAttempted(meetingId)) {
+      setHasCheckedAutoGen(true);
+      return;
+    }
 
     // Respect the auto-summary toggle; without a recording hand-off only a meeting that ended within 24 h qualifies
     if (!autoSummaryAllowed({ source, autoSummaryOn: isAutoSummary, endedAt: row?.endedAt, now: new Date() })) {
@@ -153,9 +163,14 @@ function MeetingDetailsContent() {
       return;
     }
 
+    const startedFor = meetingId;
+    if (startedFor) markAutoAttempt(startedFor);
+    setupInFlight.current = startedFor;
+    const stale = () => currentMeetingId.current !== startedFor; // the user moved to another meeting meanwhile
     try {
       // Check what's currently in database
       const currentConfig = await invoke('api_get_model_config') as any;
+      if (stale()) return;
 
       // If DB already has a model, use it (never override!)
       if (currentConfig && currentConfig.model) {
@@ -167,6 +182,7 @@ function MeetingDetailsContent() {
 
       // DB is empty - check if gemma3:1b exists as fallback
       const hasGemma = await checkForGemmaModel();
+      if (stale()) return;
 
       if (hasGemma) {
         console.log('💾 DB empty, using gemma3:1b as initial default');
@@ -178,15 +194,19 @@ function MeetingDetailsContent() {
           apiKey: null,
           ollamaEndpoint: null,
         });
+        if (stale()) return;
 
         setShouldAutoGenerate(true);
       } else {
         console.log('⚠️ No model configured and gemma3:1b not found');
-        toast.error('No summary model is set up, so the summary was not generated. Choose one in Settings, then generate it.');
+        toast.error('No summary model is set up, so the summary was not generated. Choose one in Settings, then generate it.', { id: 'auto-summary-setup' });
       }
     } catch (error) {
+      if (stale()) return;
       console.error('❌ Failed to setup auto-generation:', error);
-      toast.error(`Could not start the automatic summary: ${String(error)}`);
+      toast.error(`Could not start the automatic summary: ${String(error)}`, { id: 'auto-summary-setup' });
+    } finally {
+      if (setupInFlight.current === startedFor) setupInFlight.current = null;
     }
 
     setHasCheckedAutoGen(true);

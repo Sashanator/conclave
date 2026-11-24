@@ -95,6 +95,15 @@ fn base() -> Vec<PriceRow> {
 
 /// The override if there is one, else the fetched row, else the built-in row.
 pub fn lookup(provider: &str, model: &str) -> Option<PriceRow> {
+    lookup_exact(provider, model).or_else(|| {
+        // A dated id (claude-sonnet-4-5-20250929) uses the undated row's price.
+        let (undated, date) = model.rsplit_once('-')?;
+        (date.len() == 8 && date.bytes().all(|b| b.is_ascii_digit()))
+            .then(|| lookup_exact(provider, undated))?
+    })
+}
+
+fn lookup_exact(provider: &str, model: &str) -> Option<PriceRow> {
     let overrides = CACHE.read().unwrap_or_else(PoisonError::into_inner);
     overrides
         .iter()
@@ -147,7 +156,7 @@ fn check(r: &PriceRow) -> Result<(), String> {
 /// row and logs it without its content. Rows equal to a built-in row are not stored, so a later
 /// app release can still update that price.
 fn normalise(rows: Vec<PriceRow>, strict: bool) -> Result<Vec<PriceRow>, String> {
-    let built = base();
+    let built = built_in();
     let mut seen = HashSet::new();
     let mut kept = Vec::new();
     for mut r in rows {
@@ -176,6 +185,26 @@ fn normalise(rows: Vec<PriceRow>, strict: bool) -> Result<Vec<PriceRow>, String>
         });
     }
     Ok(kept)
+}
+
+/// The page sends back every row it shows, fetched ones included. A row equal to a fetched row
+/// that is not already an override is taken as untouched and not stored, so later fetches still
+/// update it. shortcut: typing a price equal to the fetched one is not stored either; it
+/// follows the fetched price until the user changes it to something else.
+fn without_untouched_fetched(rows: Vec<PriceRow>) -> Vec<PriceRow> {
+    let fetched = FETCHED
+        .read()
+        .unwrap_or_else(PoisonError::into_inner)
+        .as_ref()
+        .map(|f| f.rows.clone())
+        .unwrap_or_default();
+    let current = CACHE.read().unwrap_or_else(PoisonError::into_inner).clone();
+    let same = |o: &PriceRow, r: &PriceRow| {
+        same_key(o, r) && PriceRow { built_in: false, ..o.clone() } == PriceRow { built_in: false, ..r.clone() }
+    };
+    rows.into_iter()
+        .filter(|r| !fetched.iter().any(|o| same(o, r)) || current.iter().any(|o| same(o, r)))
+        .collect()
 }
 
 fn set_cache(rows: Vec<PriceRow>) {
@@ -273,11 +302,14 @@ fn is_stale(fetched_at: Option<i64>, now: i64) -> bool {
     fetched_at.map_or(true, |at| at > now || now - at > REFRESH_AFTER_SECS)
 }
 
+const MAX_FETCHED_ROWS: usize = 50;
+
 fn clean_fetched(rows: Vec<PriceRow>) -> Vec<PriceRow> {
     let mut seen = HashSet::new();
     rows.into_iter()
         .filter(|r| check(r).is_ok() && seen.insert((r.provider.clone(), r.model.clone())))
         .map(|r| PriceRow { built_in: false, ..r })
+        .take(MAX_FETCHED_ROWS)
         .collect()
 }
 
@@ -307,7 +339,8 @@ fn per_million(v: Option<&str>) -> Option<f64> {
 
 #[derive(Deserialize)]
 struct ApiList {
-    data: Vec<ApiModel>,
+    // Rows are parsed one by one, so one malformed row cannot fail the whole refresh.
+    data: Vec<Value>,
 }
 
 #[derive(Deserialize)]
@@ -330,6 +363,7 @@ fn parse_models(list: ApiList) -> Vec<PriceRow> {
     let rows = list
         .data
         .into_iter()
+        .filter_map(|v| serde_json::from_value::<ApiModel>(v).ok())
         .filter_map(|m| {
             let model = map_model_id(&m.id)?;
             let p = m.pricing?;
@@ -409,7 +443,7 @@ pub async fn costs_save_prices<R: Runtime>(
     rows: Vec<PriceRow>,
 ) -> Result<Vec<PriceRow>, String> {
     let _saving = SAVE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
-    let overrides = normalise(rows, true)?;
+    let overrides = normalise(without_untouched_fetched(rows), true)?;
     let value = serde_json::to_value(&overrides).map_err(|e| e.to_string())?;
     let store = app.store(STORE_FILE).map_err(|e| e.to_string())?;
     store.set(KEY, value);
@@ -678,7 +712,7 @@ mod tests {
         set_cache_for_test(Vec::new());
         let merged_rows = merged();
         assert_eq!(merged_rows.iter().find(|r| r.model == "claude-new-9").unwrap().input, 7.0);
-        assert!(normalise(merged_rows, true).unwrap().is_empty());
+        assert!(normalise(without_untouched_fetched(merged_rows), true).unwrap().is_empty());
         set_fetched(None);
         set_cache_for_test(Vec::new());
         assert_eq!(sonnet(), 2.0);
@@ -723,5 +757,38 @@ mod tests {
         assert!(fetch_rows(&junk).await.is_err());
         let empty = serve_once("200 OK", r#"{"data":[]}"#).await;
         assert!(fetch_rows(&empty).await.is_err());
+    }
+
+    #[test]
+    fn dated_ids_use_the_undated_price() {
+        let _g = guard();
+        set_cache_for_test(Vec::new());
+        assert_eq!(lookup("claude", "claude-sonnet-5-5-20260101").unwrap().input, 2.0);
+        assert!(lookup("claude", "claude-sonnet-5-5-2026").is_none());
+        assert!(lookup("claude", "claude-nope-20260101").is_none());
+    }
+
+    #[test]
+    fn one_bad_row_does_not_fail_the_list() {
+        let list: ApiList = serde_json::from_value(serde_json::json!({"data": [
+            {"id": 5, "pricing": "junk"},
+            {"id": "anthropic/claude-sonnet-5.5", "pricing": {"prompt": "0.000003", "completion": "0.000015",
+              "input_cache_read": "0.0000003", "input_cache_write": "0.00000375"}}
+        ]})).unwrap();
+        assert_eq!(parse_models(list).len(), 1);
+    }
+
+    #[test]
+    fn user_rows_equal_to_fetched_survive_and_fetched_rows_are_capped() {
+        let _g = guard();
+        set_fetched(Some(Fetched { at: 1, rows: vec![fetched_row("claude-sonnet-5-5", 3.0)] }));
+        // An existing override equal to the fetched price stays; an untouched fetched row is not stored.
+        set_cache_for_test(normalise(vec![row("claude", "claude-sonnet-5-5", 3.0, 9.0, 0.5, 1.0)], true).unwrap());
+        let kept = normalise(without_untouched_fetched(merged()), true).unwrap();
+        assert_eq!(kept.len(), 1);
+        set_fetched(None);
+        set_cache_for_test(Vec::new());
+        let many = (0..80).map(|i| fetched_row(&format!("claude-m-{i}"), 1.0)).collect();
+        assert_eq!(clean_fetched(many).len(), MAX_FETCHED_ROWS);
     }
 }

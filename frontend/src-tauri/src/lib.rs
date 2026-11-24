@@ -1096,6 +1096,7 @@ pub fn run() {
             copilot::ask::copilot_cancel,
             // Usage and cost commands
             usage::prices::costs_get_prices,
+            usage::prices::costs_prices_fetched_at,
             usage::prices::costs_save_prices,
             // Knowledge commands
             knowledge::settings::knowledge_get_settings,

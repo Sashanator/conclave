@@ -58,6 +58,7 @@ function without<T>(record: Record<string, T>, key: string): Record<string, T> {
 export function CostsSettings() {
   const [rows, setRows] = useState<PriceRow[] | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [fetchedAt, setFetchedAt] = useState<number | null>(null);
   const [drafts, setDrafts] = useState<Record<string, string>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [draft, setDraft] = useState<NewRow | null>(null);
@@ -73,6 +74,8 @@ export function CostsSettings() {
     invoke<PriceRow[]>('costs_get_prices')
       .then(apply)
       .catch((err) => setLoadError(String(err)));
+    // Only a caption: if it cannot be read, the page just shows no date
+    invoke<number | null>('costs_prices_fetched_at').then(setFetchedAt).catch(() => {});
   }, []);
 
   function apply(list: PriceRow[]) {
@@ -159,6 +162,11 @@ export function CostsSettings() {
       <div>
         <h2 id={settingId("Model prices")} className="text-lg font-semibold">Model prices</h2>
         <p className="text-sm text-muted-foreground">Dollars per million tokens, used to estimate the cost of each LLM call.</p>
+        {fetchedAt && (
+          <p className="text-sm text-muted-foreground">
+            Prices updated {new Date(fetchedAt * 1000).toLocaleDateString()} from OpenRouter
+          </p>
+        )}
       </div>
 
       <table className="w-full text-sm">

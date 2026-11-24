@@ -36,6 +36,7 @@ const USER_ROW: Price = { provider: 'ollama', model: 'llama3', input: 0, output:
 
 let prices: Price[];
 let loadFails = false;
+let fetchedAt: number | null = null;
 const MAX_MESSAGE = 'each price must be from 0 to 1000 $ per million tokens';
 
 const invoke = mock(async (command: string, args?: Record<string, unknown>): Promise<unknown> => {
@@ -49,6 +50,7 @@ const invoke = mock(async (command: string, args?: Record<string, unknown>): Pro
     prices = structuredClone(rows);
     return structuredClone(prices);
   }
+  if (command === 'costs_prices_fetched_at') return fetchedAt;
   if (command === 'api_get_api_key') return null;
   if (command === 'api_get_model_config') return null;
   if (command === 'api_get_custom_openai_config') return null;
@@ -148,6 +150,7 @@ async function remount() {
 beforeEach(async () => {
   prices = structuredClone([...BUILT_IN, USER_ROW]);
   loadFails = false;
+  fetchedAt = null;
   invoke.mockClear();
   renderer?.unmount();
   renderer = null;
@@ -158,6 +161,17 @@ beforeEach(async () => {
 });
 
 describe('costs settings', () => {
+  test('shows the update date only when prices were fetched', async () => {
+    expect(JSON.stringify(renderer!.toJSON())).not.toContain('from OpenRouter');
+    fetchedAt = Date.UTC(2026, 10, 20, 12) / 1000;
+    renderer!.unmount();
+    await act(async () => {
+      renderer = create(<CostsSettings />);
+    });
+    await flush();
+    expect(JSON.stringify(renderer!.toJSON())).toContain('from OpenRouter');
+  });
+
   test('an edit sends the whole list with only that price changed', async () => {
     await editPrice('Input price for claude claude-haiku-5-5', '0.2');
 

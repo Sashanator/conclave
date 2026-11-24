@@ -1,5 +1,9 @@
 # Conclave changelog
 
+## v2.5.5 — 2026-11-24
+- **Fewer false backup warnings after updates.** During an update, Windows can briefly start an extra copy of Conclave that can't write to your data folder. Its backup failed and showed a warning even though the real start made a good backup. Conclave now retries the backup for a few seconds before warning, so that copy no longer shows the warning. A backup that keeps failing still asks you whether to continue.
+- If the data folder can't be written, the failure record goes to your Windows temp folder (`conclave-backup-failures.txt`) and says which program started Conclave.
+
 ## v2.5.4 — 2026-11-24
 - **Backup warnings leave a record.** If the backup before an upgrade fails, Conclave now writes what went wrong to `backup-failures.txt` in its data folder, even when nothing reaches the log, and the warning shows each step of the error on its own line with the file's location. This is to track down the warning some upgrades still show.
 

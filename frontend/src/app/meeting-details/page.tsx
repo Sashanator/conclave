@@ -9,6 +9,7 @@ import { useConfig } from "@/contexts/ConfigContext";
 import { usePaginatedTranscripts } from "@/hooks/usePaginatedTranscripts";
 import { parseSummaryContent } from "@/lib/summary-content";
 import { toast } from "sonner";
+import { autoSummaryAllowed } from "@/lib/auto-summary";
 import { lineAtTime, parseMeetingTarget } from "@/lib/meeting-target";
 import { heldMeetingId, pageKeyFor, showRecordingView } from "@/lib/recording-target";
 import { useRecordingStart } from "@/hooks/useRecordingStart";
@@ -142,16 +143,12 @@ function MeetingDetailsContent() {
   const setupAutoGeneration = useCallback(async () => {
     if (hasCheckedAutoGen) return; // Only check once
 
-    // Only auto-generate if navigated from recording
-    if (source !== 'recording') {
-      console.log('Not from recording navigation, skipping auto-generation');
-      setHasCheckedAutoGen(true);
-      return;
-    }
+    // Opened some other way (e.g. after a restart cut the first attempt short): needs the meeting's end time
+    if (source !== 'recording' && !(row && row.id === meetingId)) return; // not loaded yet; checked again when it is
 
-    // Respect user's auto-summary toggle preference
-    if (!isAutoSummary) {
-      console.log('Auto-summary is disabled in settings');
+    // Respect the auto-summary toggle; without a recording hand-off only a meeting that ended within 24 h qualifies
+    if (!autoSummaryAllowed({ source, autoSummaryOn: isAutoSummary, endedAt: row?.endedAt, now: new Date() })) {
+      console.log('Auto-summary is off, or this meeting is not a fresh one; skipping auto-generation');
       setHasCheckedAutoGen(true);
       return;
     }
@@ -185,13 +182,15 @@ function MeetingDetailsContent() {
         setShouldAutoGenerate(true);
       } else {
         console.log('⚠️ No model configured and gemma3:1b not found');
+        toast.error('No summary model is set up, so the summary was not generated. Choose one in Settings, then generate it.');
       }
     } catch (error) {
       console.error('❌ Failed to setup auto-generation:', error);
+      toast.error(`Could not start the automatic summary: ${String(error)}`);
     }
 
     setHasCheckedAutoGen(true);
-  }, [hasCheckedAutoGen, checkForGemmaModel, source, isAutoSummary]);
+  }, [hasCheckedAutoGen, checkForGemmaModel, source, isAutoSummary, row, meetingId]);
 
   // Sync meeting metadata from pagination hook to meeting details state
   useEffect(() => {

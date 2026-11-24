@@ -134,6 +134,11 @@ pub fn start_worker<R: Runtime>(app: AppHandle<R>) {
                 }
                 Err(e) => {
                     drop(model_files);
+                    // The app is shutting down (or restarting for an update): nothing to retry, and unfinished jobs are requeued at the next start.
+                    if pool.is_closed() {
+                        info!("speakers: database closed, worker stops");
+                        return;
+                    }
                     log::error!("speakers: could not take the next job: {e}");
                     tokio::time::sleep(Duration::from_secs(5)).await;
                 }
@@ -1025,6 +1030,15 @@ mod tests {
 
     async fn speaker_count(pool: &SqlitePool) -> usize {
         SpeakersRepository::meeting_speakers(pool, "m1").await.unwrap().len()
+    }
+
+    #[tokio::test]
+    async fn closed_pool_fails_the_claim_and_reports_closed() {
+        // The worker loop stops on exactly this pair instead of logging every 5 s.
+        let pool = test_pool().await;
+        pool.close().await;
+        assert!(SpeakersRepository::claim_next(&pool).await.is_err());
+        assert!(pool.is_closed());
     }
 
     #[tokio::test]

@@ -212,7 +212,7 @@ pub(crate) fn checked_value(p: &PropInfo, v: &Value) -> Option<Value> {
     }
 }
 
-pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask, ai: Option<&serde_json::Map<String, Value>>) -> Value {
+pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask, today: &str, ai: Option<&serde_json::Map<String, Value>>) -> Value {
     let date = t.meeting_date.as_deref().and_then(|d| display_date(d, &chrono::Local));
     let mut props = ai.cloned().unwrap_or_default();
     // Mapped and fixed columns are ours alone, even when we skip writing them below.
@@ -220,8 +220,9 @@ pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask, ai: Opt
         props.remove(n);
     }
     props.insert(m.title_prop.clone(), json!({"title":[text_run(&t.text)]}));
-    if let (Some(p), Some(d)) = (&m.due_prop, &t.due_date) {
-        props.insert(p.clone(), json!({"date":{"start":d.chars().take(10).collect::<String>()}}));
+    // Due is always the day of sending (local date), not the model's guess.
+    if let Some(p) = &m.due_prop {
+        props.insert(p.clone(), json!({"date":{"start":today}}));
     }
     if let Some(p) = &m.meeting_prop {
         let v = match (&t.meeting_title, &date) {
@@ -272,6 +273,7 @@ pub(crate) fn page_body(data_source_id: &str, m: &Mapping, t: &SendTask, ai: Opt
 
 #[cfg(test)]
 mod tests {
+    const TODAY: &str = "2030-05-06";
     use super::*;
     use crate::notion::FixedValue;
     use chrono::FixedOffset;
@@ -350,9 +352,9 @@ mod tests {
         let t = task();
         let mut m = mapping();
         m.emoji = Some("👷".into());
-        assert_eq!(page_body("ds", &m, &t, None)["icon"], json!({"type":"emoji","emoji":"👷"}));
+        assert_eq!(page_body("ds", &m, &t, TODAY, None)["icon"], json!({"type":"emoji","emoji":"👷"}));
         m.emoji = None;
-        assert!(page_body("ds", &m, &t, None).get("icon").is_none());
+        assert!(page_body("ds", &m, &t, TODAY, None).get("icon").is_none());
     }
 
     #[test]
@@ -392,7 +394,7 @@ mod tests {
         m.fixed.push(FixedValue { prop: "Done".into(), kind: "date".into(), value: json!("today") });
         assert!(check_mapping(&m, &s).is_empty());
         let t = SendTask { due_date: None, meeting_title: None, meeting_date: None, ..task() };
-        let body = page_body("ds-1", &m, &t, None);
+        let body = page_body("ds-1", &m, &t, TODAY, None);
         assert_eq!(body["properties"]["Done"]["date"]["start"], json!(chrono::Local::now().format("%Y-%m-%d").to_string()));
         m.fixed[3].value = json!("tomorrow");
         assert_eq!(check_mapping(&m, &s), ["“Done” has an invalid value"]);
@@ -449,10 +451,10 @@ mod tests {
     #[test]
     fn page_body_mapped_and_fixed_values_win_over_ai() {
         let ai = json!({"Status":{"status":{"name":"Done"}},"Due":{"date":{"start":"2030-01-01"}},"Thema":{"rich_text":[]}});
-        let b = page_body("ds-1", &mapping(), &task(), ai.as_object());
+        let b = page_body("ds-1", &mapping(), &task(), TODAY, ai.as_object());
         let p = &b["properties"];
         assert_eq!(p["Status"]["status"]["name"], "To do");
-        assert_eq!(p["Due"]["date"]["start"], "2026-11-26");
+        assert_eq!(p["Due"]["date"]["start"], TODAY);
         assert!(p.get("Thema").is_some());
     }
 
@@ -464,11 +466,11 @@ mod tests {
         let mut m = mapping();
         m.fixed[0].kind = "relation".into(); // malformed fixed entry is skipped
         let ai2 = json!({"Status":{"status":{"name":"Done"}},"Due":ai["Due"]});
-        let b = page_body("ds-1", &m, &t, ai2.as_object());
-        assert!(b["properties"].get("Due").is_none());
+        let b = page_body("ds-1", &m, &t, TODAY, ai2.as_object());
+        assert_eq!(b["properties"]["Due"], json!({"date":{"start":TODAY}})); // the AI's own Due is replaced
         assert!(b["properties"].get("Status").is_none());
-        let b = page_body("ds-1", &mapping(), &t, ai.as_object());
-        assert!(b["properties"].get("Due").is_none());
+        let b = page_body("ds-1", &mapping(), &t, TODAY, ai.as_object());
+        assert_eq!(b["properties"]["Due"], json!({"date":{"start":TODAY}}));
         assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"], "Send the deck");
     }
 
@@ -486,11 +488,11 @@ mod tests {
 
     #[test]
     fn page_body_maps_every_property_kind() {
-        let b = page_body("ds-1", &mapping(), &task(), None);
+        let b = page_body("ds-1", &mapping(), &task(), TODAY, None);
         assert_eq!(b["parent"], json!({"data_source_id":"ds-1"}));
         let p = &b["properties"];
         assert_eq!(p["Name"], json!({"title":[{"type":"text","text":{"content":"Send the deck"}}]}));
-        assert_eq!(p["Due"], json!({"date":{"start":"2026-11-26"}}));
+        assert_eq!(p["Due"], json!({"date":{"start":TODAY}})); // not the task's own due_date (2026-11-26)
         assert_eq!(p["Status"], json!({"status":{"name":"To do"}}));
         assert_eq!(p["Tags"], json!({"multi_select":[{"name":"Work"}]}));
         assert_eq!(p["Urgent"], json!({"checkbox":true}));
@@ -503,14 +505,21 @@ mod tests {
     }
 
     #[test]
+    fn due_is_today_even_without_a_task_due_date() {
+        let mut t = task();
+        t.due_date = None;
+        assert_eq!(page_body("ds-1", &mapping(), &t, TODAY, None)["properties"]["Due"], json!({"date":{"start":TODAY}}));
+    }
+
+    #[test]
     fn page_body_without_due_or_meeting() {
         let mut t = task();
         t.due_date = None;
         t.meeting_title = None;
         t.meeting_date = None;
         t.at = None;
-        let b = page_body("ds-1", &mapping(), &t, None);
-        assert!(b["properties"].get("Due").is_none());
+        let b = page_body("ds-1", &mapping(), &t, TODAY, None);
+        assert_eq!(b["properties"]["Due"], json!({"date":{"start":TODAY}}));
         assert_eq!(b["properties"]["Meeting"]["rich_text"][0]["text"]["content"], "Deleted meeting");
         assert_eq!(b["children"][0]["paragraph"]["rich_text"][0]["text"]["content"], "From a deleted meeting");
     }
@@ -519,11 +528,11 @@ mod tests {
     fn long_text_is_cut_to_2000_chars() {
         let mut t = task();
         t.text = "я".repeat(2500);
-        let b = page_body("ds-1", &mapping(), &t, None);
+        let b = page_body("ds-1", &mapping(), &t, TODAY, None);
         assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"].as_str().unwrap().chars().count(), 2000);
         // Notion counts UTF-16 units: an emoji is 2, and is never split.
         t.text = "😀".repeat(1500);
-        let b = page_body("ds-1", &mapping(), &t, None);
+        let b = page_body("ds-1", &mapping(), &t, TODAY, None);
         assert_eq!(b["properties"]["Name"]["title"][0]["text"]["content"].as_str().unwrap().chars().count(), 1000);
     }
 

@@ -173,7 +173,7 @@ fn settings_reason(e: &str) -> Option<&'static str> {
 
 /// The AI pre-pass of Send: one model call per (meeting, database), run BEFORE any row is claimed as `sending`.
 /// Returns the values by task id, and the databases whose columns could not be filled (de-duplicated, first-seen
-/// order; "name: reason" when the cause is a settings problem). Never fails: a missing fill only costs the extra
+/// order; "name: reason"). Never fails: a missing fill only costs the extra
 /// columns, the task is still sent.
 pub(crate) async fn ai_values<F, Fut>(
     pool: &SqlitePool,
@@ -241,7 +241,7 @@ where
         log::warn!("notion: AI could not fill the columns of {name}: {reason}");
         let entry = match settings_reason(reason) {
             Some(r) => format!("{name}: {r}"),
-            None => name.to_string(),
+            None => format!("{name}: {reason}"),
         };
         if !not_filled.contains(&entry) {
             not_filled.push(entry);

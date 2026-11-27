@@ -355,7 +355,21 @@ pub(crate) async fn run_one(pool: &SqlitePool, meeting_id: &str) -> Result<(), S
     .await
 }
 
-/// Resolves the knowledge model and makes one completion. Target errors are user-facing; call errors are not shown.
+/// Logs the full call error and returns a short user-facing reason that keeps the HTTP status.
+pub(crate) fn model_error(e: &str) -> String {
+    log::warn!("knowledge: the model call failed: {e}");
+    let short: String = e
+        .trim_start_matches("LLM API request failed with status ")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    match short.char_indices().nth(150) {
+        Some((i, _)) => format!("The model call failed ({}…)", &short[..i]),
+        None => format!("The model call failed ({short})"),
+    }
+}
+
+/// Resolves the knowledge model and makes one completion. Target errors and call errors are user-facing (call errors are shortened).
 pub(crate) async fn call_model(pool: SqlitePool, system: String, user: String) -> Result<Reply, String> {
     let target = settings::target(&pool).await?;
     // The local sidecar cannot be cancelled, so a timed-out call would leave it busy (as copilot and Dictate do).
@@ -364,7 +378,7 @@ pub(crate) async fn call_model(pool: SqlitePool, system: String, user: String) -
     }
     let completion = complete(&target, &system, &user, None, None)
         .await
-        .map_err(|_| "The model call failed".to_string())?;
+        .map_err(|e| model_error(&e.to_string()))?;
     Ok(Reply {
         provider: target.provider.as_str().to_string(),
         model: target.model.clone(),
@@ -590,6 +604,15 @@ pub async fn extraction_status(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn model_error_keeps_status_and_shortens_body() {
+        let e = format!("LLM API request failed with status 429 Too Many Requests: {{\n  \"x\": \"{}\" }}", "a".repeat(400));
+        let m = super::model_error(&e);
+        assert!(m.starts_with("The model call failed (429 Too Many Requests: { \"x\""), "{m}");
+        assert!(!m.contains('\n') && m.chars().count() < 200, "{m}");
+        assert_eq!(super::model_error("timed out"), "The model call failed (timed out)");
+    }
+
     #[test]
     fn gist() {
         assert_eq!(gist_from_summary("## Summary\nWe agreed to ship. Then more.").as_deref(), Some("We agreed to ship."));

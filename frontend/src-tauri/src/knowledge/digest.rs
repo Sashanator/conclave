@@ -470,7 +470,7 @@ async fn call_model(pool: SqlitePool, system: String, user: String) -> Result<Re
     }
     let completion = complete(&target, &system, &user, None, None)
         .await
-        .map_err(|_| "The model call failed".to_string())?;
+        .map_err(|e| super::extract::model_error(&e.to_string()))?;
     Ok(Reply {
         provider: target.provider.as_str().to_string(),
         model: target.model.clone(),

@@ -1,5 +1,9 @@
 # Conclave changelog
 
+## v2.5.7 — 2026-11-27
+- **Notion tasks are due today.** Tasks sent to Notion now always get the day you send them as their due date, instead of a date the AI guessed.
+- **Clearer reason when AI can't fill Notion columns.** The notice now says why, for example the model provider's error such as "429 Too Many Requests", instead of only the database name. The full error is in the log.
+
 ## v2.5.6 — 2026-11-24
 - **Change the microphone during a recording.** The "Mic:" item on the recording screen is now a menu: pick another microphone and the recording switches to it right away. It always shows the microphone actually being recorded, also after Conclave switches on its own.
 - **Warning when your microphone is silent.** If the recording microphone sends no sound at all for 10 seconds, a warning appears with the microphone menu so you can switch. Dismiss it if the silence is on purpose.

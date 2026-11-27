@@ -137,7 +137,7 @@ where
         let task = SendTask { id: id.clone(), text, at, due_date, meeting_title, meeting_date, dest_id: dest.id.clone() };
         // The row's database may have changed during the pre-pass: values made for another database are dropped.
         let ai_map = ai.get(&id).filter(|(d, _)| *d == dest.id).map(|(_, m)| m);
-        let body = page_body(dest.data_source_id.as_deref().unwrap_or_default(), &dest.mapping, &task, ai_map);
+        let body = page_body(dest.data_source_id.as_deref().unwrap_or_default(), &dest.mapping, &task, &chrono::Local::now().format("%Y-%m-%d").to_string(), ai_map);
         // Autocommit: this must be durable before the request leaves.
         let claimed = sqlx::query("UPDATE tasks SET review = 'sending', send_error = NULL, send_ambiguous = 0 WHERE id = ? AND review = 'keep' AND (send_ambiguous = 0 OR ?)")
             .bind(&id)
@@ -623,7 +623,7 @@ mod tests {
         let f = serve(vec![ds_reply(), ok("p1")]).await;
         let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let r = send_with(&pool, &client(&f), None, false, fake_ai(&n, Err("boom"))).await.unwrap();
-        assert_eq!((r.sent, r.ai_not_filled), (1, vec!["Job tasks".to_string()]));
+        assert_eq!((r.sent, r.ai_not_filled), (1, vec!["Job tasks: boom".to_string()]));
         assert!(!f.requests.lock().unwrap()[1].body.contains("Thema"));
         assert_eq!(row(&pool, "t1").await.0, "sent");
     }
@@ -638,7 +638,7 @@ mod tests {
         let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let r = send_with(&pool, &client(&f), None, false, fake_ai(&n, Ok("{}"))).await.unwrap();
         assert_eq!(calls(&n), 0);
-        assert_eq!((r.sent, r.ambiguous, r.ai_not_filled), (1, 0, vec!["Job tasks".to_string()]));
+        assert_eq!((r.sent, r.ambiguous, r.ai_not_filled), (1, 0, vec!["Job tasks: could not read the columns (offline)".to_string()]));
     }
 
     #[tokio::test]
@@ -654,7 +654,7 @@ mod tests {
         let r = send_with(&pool, &client(&f), None, false, call).await.unwrap();
         let body = f.requests.lock().unwrap()[1].body.clone();
         assert!(!body.contains("Later") && !body.contains("Thema") && !body.contains("Ghost") && !body.contains("Status"), "{body}");
-        assert_eq!((r.sent, r.ai_not_filled), (1, vec!["Job tasks".to_string()]));
+        assert_eq!((r.sent, r.ai_not_filled), (1, vec!["Job tasks: no usable values".to_string()]));
     }
 
     #[tokio::test]
@@ -697,7 +697,7 @@ mod tests {
         let (out, not_filled) = fill::ai_values_within(Duration::from_millis(150), &pool, &client(&f), &dests, &ids, false, &hang).await;
         assert!(t0.elapsed() < Duration::from_secs(5));
         assert_eq!((out.len(), calls(&n)), (0, 1));
-        assert_eq!(not_filled, vec!["Job tasks".to_string()]);
+        assert_eq!(not_filled, vec!["Job tasks: ran out of time".to_string()]);
     }
 
     #[tokio::test]
@@ -829,7 +829,7 @@ mod tests {
         let f = serve(vec![ds_reply(), ok("p1"), ok("p2")]).await;
         let n = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let r = send_with(&pool, &client(&f), None, false, fake_ai(&n, Ok(r#"{"1":{"Thema":"A"}}"#))).await.unwrap();
-        assert_eq!((r.sent, r.ai_not_filled), (2, vec!["Job tasks".to_string()]));
+        assert_eq!((r.sent, r.ai_not_filled), (2, vec!["Job tasks: the reply skipped some tasks".to_string()]));
         // An empty map for a present task is fine.
         let pool = setup().await;
         ai_on(&pool).await;
